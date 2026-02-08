@@ -1,0 +1,311 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Duty Agent</title>
+    <style>
+        /* ==================== Fluent Design System (ClassIsland Style) ==================== */
+        :root {
+            --bg-color: #f3f3f3;
+            --card-bg: #ffffff;
+            --text-primary: #1a1a1a;
+            --text-secondary: #5e5e5e;
+            --accent: #0067c0;
+            --accent-hover: #1975c5;
+            --border: #e5e5e5;
+            --card-border: #f0f0f0;
+            --radius-card: 8px;
+            --radius-control: 4px;
+        }
+
+        @media (prefers-color-scheme: dark) {
+            :root {
+                --bg-color: #202020;
+                --card-bg: #2b2b2b;
+                --text-primary: #ffffff;
+                --text-secondary: #dcdcdc;
+                --accent: #4cc2ff;
+                --accent-hover: #4cc2ff;
+                --border: #3d3d3d;
+                --card-border: #353535;
+            }
+        }
+
+        body {
+            margin: 0; padding: 24px 32px;
+            font-family: "Microsoft YaHei UI", "Segoe UI Variable", sans-serif;
+            background-color: var(--bg-color);
+            color: var(--text-primary);
+            user-select: none;
+            overflow-y: auto;
+        }
+
+        /* 标题区 */
+        header { margin-bottom: 24px; }
+        h1 { font-size: 28px; font-weight: 600; margin: 0; }
+        p.subtitle { color: var(--text-secondary); font-size: 14px; margin-top: 4px; }
+
+        /* 分组标题 */
+        h2.group-title {
+            font-size: 14px; color: var(--text-secondary); font-weight: 600;
+            margin: 24px 0 12px 4px;
+        }
+
+        /* 设置卡片容器 */
+        .settings-group {
+            background: var(--card-bg);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-card);
+            overflow: hidden;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.02);
+        }
+
+        /* 单个设置项 (Expander Style) */
+        .settings-card {
+            display: flex; align-items: center; justify-content: space-between;
+            padding: 16px 20px;
+            border-bottom: 1px solid var(--card-border);
+            transition: background 0.1s;
+        }
+        .settings-card:last-child { border-bottom: none; }
+        .settings-card:hover { background-color: rgba(0,0,0,0.02); }
+
+        .card-info { display: flex; align-items: center; gap: 16px; flex: 1; }
+        .card-icon { font-size: 20px; color: var(--text-primary); width: 24px; text-align: center; }
+        .card-text { display: flex; flex-direction: column; }
+        .card-title { font-size: 14px; font-weight: 500; }
+        .card-desc { font-size: 12px; color: var(--text-secondary); margin-top: 2px; }
+
+        /* 控件样式 */
+        .fluent-input {
+            padding: 6px 10px; border: 1px solid var(--border); border-radius: var(--radius-control);
+            background: transparent; color: var(--text-primary); font-family: inherit; font-size: 14px;
+            width: 200px; outline: none; transition: all 0.2s; border-bottom-width: 2px;
+        }
+        .fluent-input:focus { border-bottom-color: var(--accent); background: rgba(255,255,255,0.5); }
+
+        .fluent-btn {
+            padding: 6px 24px; border-radius: var(--radius-control); border: 1px solid var(--border);
+            background: var(--card-bg); color: var(--text-primary); cursor: pointer; font-size: 14px;
+            transition: all 0.1s;
+        }
+        .fluent-btn:hover { background: rgba(0,0,0,0.04); }
+        .fluent-btn:active { background: rgba(0,0,0,0.08); transform: scale(0.98); }
+        
+        .fluent-btn.primary {
+            background: var(--accent); color: white; border-color: transparent;
+        }
+        .fluent-btn.primary:hover { background: var(--accent-hover); }
+
+        /* 排班池可视化 */
+        .schedule-container {
+            display: flex; gap: 12px; padding: 16px; overflow-x: auto;
+            background: var(--card-bg); border: 1px solid var(--border); border-radius: var(--radius-card);
+        }
+        .day-column {
+            min-width: 100px; padding: 12px; background: rgba(0,0,0,0.02); border-radius: 6px;
+            display: flex; flex-direction: column; align-items: center; border: 1px solid transparent;
+        }
+        .day-column.today { background: rgba(0, 103, 192, 0.08); border-color: var(--accent); }
+        .day-label { font-size: 12px; color: var(--text-secondary); margin-bottom: 8px; font-weight: 600; }
+        .student-chip {
+            font-size: 13px; padding: 4px 12px; background: var(--card-bg); border-radius: 12px;
+            margin-bottom: 6px; border: 1px solid var(--border); width: 100%; text-align: center;
+            box-shadow: 0 1px 2px rgba(0,0,0,0.03);
+        }
+
+        /* 状态指示器 */
+        .status-area {
+            font-size: 12px; color: var(--text-secondary); margin-top: 8px; display: flex; align-items: center; gap: 6px;
+        }
+        .dot { width: 8px; height: 8px; border-radius: 50%; background: #ccc; }
+        .dot.processing { background: #e3a008; animation: pulse 1s infinite; }
+        .dot.success { background: #1cc286; }
+        @keyframes pulse { 0% { opacity: 0.5; } 50% { opacity: 1; } 100% { opacity: 0.5; } }
+
+    </style>
+</head>
+<body>
+
+    <header>
+        <h1>Duty Agent</h1>
+        <p class="subtitle">智能值日生安排 · Powered by LLM</p>
+    </header>
+
+    <h2 class="group-title">控制台</h2>
+    <div class="settings-group" style="padding: 20px;">
+        <div style="display: flex; gap: 12px;">
+            <input type="text" id="instruction" class="fluent-input" style="flex: 1;" placeholder="输入指令 (例: 下周三张三请假)...">
+            <button class="fluent-btn primary" onclick="runTask()">✨ 生成排班</button>
+        </div>
+        <div class="status-area">
+            <div class="dot" id="status-dot"></div>
+            <span id="status-text">系统就绪</span>
+        </div>
+    </div>
+
+    <h2 class="group-title">排班日程池</h2>
+    <div class="schedule-container" id="schedule-pool">
+        <div style="padding: 20px; color: #999; font-size: 13px;">等待数据加载...</div>
+    </div>
+
+    <h2 class="group-title">模型配置</h2>
+    <div class="settings-group">
+        <div class="settings-card">
+            <div class="card-info">
+                <span class="card-icon">🔑</span>
+                <div class="card-text">
+                    <span class="card-title">API Key</span>
+                    <span class="card-desc">用于连接推理模型的密钥</span>
+                </div>
+            </div>
+            <input type="password" id="cfg-apikey" class="fluent-input" value="sk-***************">
+        </div>
+
+        <div class="settings-card">
+            <div class="card-info">
+                <span class="card-icon">🌐</span>
+                <div class="card-text">
+                    <span class="card-title">Base URL</span>
+                    <span class="card-desc">兼容 OpenAI 格式的接口地址</span>
+                </div>
+            </div>
+            <input type="text" id="cfg-baseurl" class="fluent-input" value="https://integrate.api.nvidia.com/v1">
+        </div>
+
+        <div class="settings-card">
+            <div class="card-info">
+                <span class="card-icon">🤖</span>
+                <div class="card-text">
+                    <span class="card-title">Model ID</span>
+                    <span class="card-desc">指定使用的模型 (如 deepseek-chat)</span>
+                </div>
+            </div>
+            <input type="text" id="cfg-model" class="fluent-input" value="moonshotai/kimi-k2-thinking">
+        </div>
+    </div>
+
+    <h2 class="group-title">名单管理</h2>
+    <div class="settings-group">
+        <div class="settings-card" onclick="openRosterFile()" style="cursor: pointer;">
+            <div class="card-info">
+                <span class="card-icon">👥</span>
+                <div class="card-text">
+                    <span class="card-title">编辑 roster.csv</span>
+                    <span class="card-desc">点击打开本地文件进行名单增删</span>
+                </div>
+            </div>
+            <span style="font-size: 12px; color: var(--accent);">打开文件 ↗</span>
+        </div>
+    </div>
+
+    <div style="height: 40px;"></div>
+
+    <script>
+        // ================= 逻辑部分 =================
+        const isWebView = window.chrome && window.chrome.webview;
+
+        // 模拟数据 (用于直接打开HTML预览)
+        const MOCK_DATA = [
+            { date: "2026-02-09", day: "Mon", students: ["王五", "赵六"] },
+            { date: "2026-02-10", day: "Tue", students: ["张三", "李四"] },
+            { date: "2026-02-11", day: "Wed", students: ["孙七", "周八"] },
+            { date: "2026-02-12", day: "Thu", students: ["吴九", "郑十"] },
+            { date: "2026-02-13", day: "Fri", students: ["王五", "张三"] }
+        ];
+
+        function init() {
+            if (isWebView) {
+                window.chrome.webview.postMessage({ type: 'ready' });
+            } else {
+                renderSchedule(MOCK_DATA); // 预览模式
+            }
+        }
+
+        function renderSchedule(data) {
+            const container = document.getElementById('schedule-pool');
+            container.innerHTML = '';
+            
+            const today = new Date().toISOString().split('T')[0];
+
+            data.forEach(item => {
+                const isToday = item.date === today;
+                const div = document.createElement('div');
+                div.className = `day-column ${isToday ? 'today' : ''}`;
+                
+                let html = `
+                    <div class="day-label">${item.date} (${item.day})</div>
+                `;
+                item.students.forEach(s => {
+                    html += `<div class="student-chip">${s}</div>`;
+                });
+                div.innerHTML = html;
+                container.appendChild(div);
+            });
+        }
+
+        function runTask() {
+            const instruction = document.getElementById('instruction').value;
+            const btn = document.querySelector('button.fluent-btn.primary');
+            const dot = document.getElementById('status-dot');
+            const txt = document.getElementById('status-text');
+
+            // UI 锁定
+            btn.disabled = true;
+            btn.style.opacity = 0.6;
+            dot.className = "dot processing";
+            txt.innerText = "正在推理...";
+
+            if (isWebView) {
+                // 发送给 C#
+                window.chrome.webview.postMessage({ 
+                    type: 'run_agent', 
+                    instruction: instruction 
+                });
+            } else {
+                // 演示
+                setTimeout(() => {
+                    dot.className = "dot success";
+                    txt.innerText = "生成成功";
+                    btn.disabled = false;
+                    btn.style.opacity = 1;
+                }, 2000);
+            }
+        }
+
+        function openRosterFile() {
+            if(isWebView) {
+                window.chrome.webview.postMessage({ type: 'open_roster' });
+            } else {
+                alert("将调用系统关联程序打开 roster.csv");
+            }
+        }
+
+        // 监听 C# 消息
+        if (isWebView) {
+            window.chrome.webview.addEventListener('message', event => {
+                const msg = event.data;
+                if (msg.type === 'update_ui') {
+                    // 更新 API Key 输入框等
+                    if(msg.config) {
+                        document.getElementById('cfg-apikey').value = msg.config.api_key;
+                        document.getElementById('cfg-baseurl').value = msg.config.base_url;
+                    }
+                    // 更新排班表
+                    if(msg.schedule) {
+                        renderSchedule(msg.schedule);
+                    }
+                    // 恢复状态
+                    document.querySelector('button.fluent-btn.primary').disabled = false;
+                    document.querySelector('button.fluent-btn.primary').style.opacity = 1;
+                    document.getElementById('status-dot').className = "dot success";
+                    document.getElementById('status-text').innerText = "就绪";
+                }
+            });
+        }
+
+        init();
+    </script>
+</body>
+</html>

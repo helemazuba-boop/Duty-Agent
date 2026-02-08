@@ -1,0 +1,92 @@
+using System.Text.Json.Serialization;
+using DutyIsland.Services;
+
+namespace DutyIsland.Models;
+
+public class DutyConfig
+{
+    private string _decryptedApiKey = string.Empty;
+
+    [JsonPropertyName("python_path")]
+    public string PythonPath { get; set; } = "python";
+
+    [JsonPropertyName("api_key")]
+    public string EncryptedApiKey { get; set; } = string.Empty;
+
+    [JsonIgnore]
+    public string DecryptedApiKey
+    {
+        get
+        {
+            if (!string.IsNullOrEmpty(_decryptedApiKey))
+            {
+                return _decryptedApiKey;
+            }
+
+            if (string.IsNullOrWhiteSpace(EncryptedApiKey))
+            {
+                return string.Empty;
+            }
+
+            try
+            {
+                _decryptedApiKey = SecurityHelper.DecryptString(EncryptedApiKey);
+            }
+            catch
+            {
+                _decryptedApiKey = EncryptedApiKey;
+            }
+
+            return _decryptedApiKey;
+        }
+        set
+        {
+            _decryptedApiKey = value ?? string.Empty;
+            EncryptedApiKey = string.IsNullOrWhiteSpace(_decryptedApiKey)
+                ? string.Empty
+                : SecurityHelper.EncryptString(_decryptedApiKey);
+        }
+    }
+
+    [JsonPropertyName("base_url")]
+    public string BaseUrl { get; set; } = "https://integrate.api.nvidia.com/v1";
+
+    [JsonPropertyName("model")]
+    public string Model { get; set; } = "moonshotai/kimi-k2-thinking";
+
+    [JsonPropertyName("enable_auto_run")]
+    public bool EnableAutoRun { get; set; }
+
+    [JsonPropertyName("auto_run_day")]
+    public string AutoRunDay { get; set; } = "Monday";
+
+    [JsonPropertyName("auto_run_time")]
+    public string AutoRunTime { get; set; } = "08:00";
+
+    [JsonPropertyName("auto_run_coverage_days")]
+    public int AutoRunCoverageDays { get; set; } = 5;
+
+    [JsonPropertyName("per_day")]
+    public int PerDay { get; set; } = 2;
+
+    [JsonPropertyName("skip_weekends")]
+    public bool SkipWeekends { get; set; } = true;
+
+    [JsonPropertyName("duty_rule")]
+    public string DutyRule { get; set; } = string.Empty;
+
+    [JsonPropertyName("start_from_today")]
+    public bool StartFromToday { get; set; } = false;
+
+    [JsonPropertyName("auto_run_retry_times")]
+    public int AutoRunRetryTimes { get; set; } = 3;
+
+    [JsonPropertyName("ai_consecutive_failures")]
+    public int AiConsecutiveFailures { get; set; } = 0;
+
+    [JsonPropertyName("last_auto_run_date")]
+    public string LastAutoRunDate { get; set; } = string.Empty;
+
+    [JsonPropertyName("component_refresh_time")]
+    public string ComponentRefreshTime { get; set; } = "08:00";
+}

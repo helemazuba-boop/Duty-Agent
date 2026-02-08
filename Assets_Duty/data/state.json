@@ -1,0 +1,40 @@
+{
+  "nothing": "",
+  "schedule_pool": [
+    {
+      "date": "2026-02-08",
+      "day": "Sun",
+      "students": [
+        "李四"
+      ]
+    },
+    {
+      "date": "2026-02-09",
+      "day": "Mon",
+      "students": [
+        "王五"
+      ]
+    },
+    {
+      "date": "2026-02-10",
+      "day": "Tue",
+      "students": [
+        "赵六"
+      ]
+    },
+    {
+      "date": "2026-02-11",
+      "day": "Wed",
+      "students": [
+        "张三"
+      ]
+    },
+    {
+      "date": "2026-02-12",
+      "day": "Thu",
+      "students": [
+        "李四"
+      ]
+    }
+  ]
+}

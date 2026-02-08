@@ -1,0 +1,63 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+	<PropertyGroup>
+        <TargetFramework>net8.0-windows</TargetFramework>
+        <Nullable>enable</Nullable>
+        <ImplicitUsings>enable</ImplicitUsings>
+        <EnableDynamicLoading>True</EnableDynamicLoading>
+        <RootNamespace>DutyIsland</RootNamespace>
+		<AssemblyName>Duty-Agent</AssemblyName>
+		<Product>Duty-Agent</Product>
+		<Version>0.2.3.0</Version>
+	</PropertyGroup>
+    
+	<ItemGroup>
+		<PackageReference Include="ClassIsland.PluginSdk" Version="2.0.0.2">
+			<ExcludeAssets>runtime; native</ExcludeAssets>
+		</PackageReference>
+		<PackageReference Include="DotNetCommon.PinYin" Version="8.0.0" />
+		<PackageReference Include="Pastel" Version="4.2.0" />
+		<PackageReference Include="Sentry" Version="6.1.0-alpha.1" />
+		<PackageReference Include="System.Security.Cryptography.ProtectedData" Version="8.0.0" />
+		<PackageReference Include="System.Management" Version="8.0.0" />
+		<PackageReference Include="SuperAutoIsland.Interface" Version="0.1.2.4" />
+	</ItemGroup>
+
+	<ItemGroup>
+		<None Update="manifest.yml">
+			<CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+		</None>
+		<None Update="icon.png">
+			<CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+		</None>
+		<None Update="README.md">
+			<CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+		</None>
+		<None Update="LICENSE">
+			<CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+		</None>
+	</ItemGroup>
+
+	<ItemGroup>
+		<None Update="Assets_Duty\**\*">
+			<CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+		</None>
+	</ItemGroup>
+
+	<ItemGroup>
+		<Compile Remove="Views\ImportWorkersWindow.axaml.cs" />
+		<Compile Remove="Views\SettingPages\DebugSettingsPage.axaml.cs" />
+		<Compile Remove="Views\SettingPages\DutyProfileSettingsPage.axaml.cs" />
+		<Compile Remove="Views\SettingPages\DutyRollingSettingsPage.axaml.cs" />
+		<Compile Remove="SecRandom-CI-master\**\*.cs" />
+		<AvaloniaXaml Remove="Views\ImportWorkersWindow.axaml" />
+		<AvaloniaXaml Remove="Views\SettingPages\DebugSettingsPage.axaml" />
+		<AvaloniaXaml Remove="Views\SettingPages\DutyProfileSettingsPage.axaml" />
+		<AvaloniaXaml Remove="Views\SettingPages\DutyRollingSettingsPage.axaml" />
+		<AvaloniaXaml Remove="SecRandom-CI-master\**\*.axaml" />
+	</ItemGroup>
+	
+	<ItemGroup>
+		<AvaloniaResource Include="Assets\**" />
+	</ItemGroup>
+</Project>
+

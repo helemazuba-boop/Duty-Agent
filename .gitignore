@@ -1,0 +1,26 @@
+# .NET
+bin/
+obj/
+*.user
+*.userosscache
+*.sln.docstates
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.env
+.venv
+env/
+venv/
+python-embed/
+
+# Project Specific
+Assets_Duty/data/ipc_input.json
+Assets_Duty/data/ipc_result.json
+Assets_Duty/data/*.tmp
+*.log
+
+# OS
+.DS_Store
+Thumbs.db

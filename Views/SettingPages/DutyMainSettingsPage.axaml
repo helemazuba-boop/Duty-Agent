@@ -1,0 +1,73 @@
+<ci:SettingsPageBase x:Class="DutyIsland.Views.SettingPages.DutyMainSettingsPage"
+                     xmlns="https://github.com/avaloniaui"
+                     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+                     xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+                     xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+                     xmlns:ci="http://classisland.tech/schemas/xaml/core"
+                     xmlns:local="clr-namespace:DutyIsland.Views.SettingPages"
+                     x:DataType="local:DutyMainSettingsPage"
+                     d:DataContext="{d:DesignInstance local:DutyMainSettingsPage}"
+                     mc:Ignorable="d">
+    <ScrollViewer>
+        <StackPanel Margin="20" Spacing="15">
+            <TextBlock Text="Duty-Agent Console" FontWeight="Bold" FontSize="18" />
+
+            <Border BorderBrush="#33000000" BorderThickness="1" CornerRadius="6" Padding="12">
+                <StackPanel Spacing="10">
+                    <TextBlock Text="AI Scheduling" FontWeight="SemiBold" />
+
+                    <TextBlock Text="Instruction" />
+                    <TextBox x:Name="InstructionBox"
+                             Watermark="Enter instruction, e.g. Zhang San is absent on Wednesday."
+                             Height="60"
+                             AcceptsReturn="True" />
+
+                    <TextBlock Text="Apply Mode" />
+                    <ComboBox x:Name="ApplyModeComboBox" HorizontalAlignment="Stretch">
+                        <ComboBoxItem Content="Append" />
+                        <ComboBoxItem Content="Replace Future" />
+                        <ComboBoxItem Content="Replace Overlap" />
+                        <ComboBoxItem Content="Replace All" />
+                    </ComboBox>
+
+                    <Button x:Name="RunAgentBtn"
+                            Content="Run AI Scheduling"
+                            Click="OnRunAgentClick"
+                            HorizontalAlignment="Stretch" />
+
+                    <TextBlock x:Name="StatusText"
+                               Text="Ready"
+                               Foreground="Gray"
+                               HorizontalAlignment="Center" />
+                </StackPanel>
+            </Border>
+
+            <Border BorderBrush="#33000000" BorderThickness="1" CornerRadius="6" Padding="12">
+                <StackPanel Spacing="10">
+                    <TextBlock Text="Data" FontWeight="SemiBold" />
+                    <Button x:Name="OpenRosterBtn"
+                            Content="Open roster file (roster.csv)"
+                            Click="OnOpenRosterClick" />
+
+                    <TextBlock Text="Duty Stats Preview" FontWeight="SemiBold" />
+                    <TextBox x:Name="StudentStatsBox"
+                             IsReadOnly="True"
+                             Height="200"
+                             AcceptsReturn="True"
+                             ScrollViewer.VerticalScrollBarVisibility="Auto" />
+                </StackPanel>
+            </Border>
+
+            <Border BorderBrush="#33000000" BorderThickness="1" CornerRadius="6" Padding="12">
+                <StackPanel Spacing="10">
+                    <TextBlock Text="Scheduled Duties" FontWeight="SemiBold" />
+                    <TextBox x:Name="ScheduledStudentsBox"
+                             IsReadOnly="True"
+                             Height="200"
+                             AcceptsReturn="True"
+                             ScrollViewer.VerticalScrollBarVisibility="Auto" />
+                </StackPanel>
+            </Border>
+        </StackPanel>
+    </ScrollViewer>
+</ci:SettingsPageBase>
