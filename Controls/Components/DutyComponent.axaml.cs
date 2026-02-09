@@ -1,12 +1,12 @@
-using System.IO;
-using System.Text.Json;
 using Avalonia.Controls;
 using Avalonia.Interactivity;
 using Avalonia.Media;
 using Avalonia.Threading;
 using ClassIsland.Core.Abstractions.Controls;
 using ClassIsland.Core.Attributes;
+using ClassIsland.Shared;
 using DutyIsland.Models;
+using DutyIsland.Services;
 
 namespace DutyIsland.Controls.Components;
 
@@ -14,6 +14,7 @@ namespace DutyIsland.Controls.Components;
 public partial class DutyComponent : ComponentBase
 {
     private readonly DispatcherTimer _timer;
+    private readonly DutyBackendService _service = IAppHost.GetService<DutyBackendService>();
 
     public DutyComponent()
     {
@@ -29,6 +30,7 @@ public partial class DutyComponent : ComponentBase
     protected override void OnLoaded(RoutedEventArgs e)
     {
         base.OnLoaded(e);
+        _service.ScheduleUpdated += OnScheduleUpdated;
         _timer.Start();
         UpdateState();
     }
@@ -36,27 +38,23 @@ public partial class DutyComponent : ComponentBase
     protected override void OnUnloaded(RoutedEventArgs e)
     {
         _timer.Stop();
+        _service.ScheduleUpdated -= OnScheduleUpdated;
         base.OnUnloaded(e);
+    }
+
+    private void OnScheduleUpdated(object? sender, EventArgs e)
+    {
+        UpdateState();
     }
 
     private void UpdateState()
     {
         try
         {
-            var pluginBaseDir = Path.GetDirectoryName(typeof(DutyComponent).Assembly.Location) ?? AppContext.BaseDirectory;
-            var path = Path.Combine(pluginBaseDir, "Assets_Duty", "data", "state.json");
-            if (!File.Exists(path))
+            var state = _service.LoadState();
+            if (state.SchedulePool.Count == 0)
             {
-                DutyText.Text = "state.json not found";
-                DutyText.Foreground = Brushes.Red;
-                return;
-            }
-
-            var json = File.ReadAllText(path);
-            var state = JsonSerializer.Deserialize<DutyState>(json);
-            if (state?.SchedulePool == null)
-            {
-                DutyText.Text = "Invalid schedule data";
+                DutyText.Text = "No schedule data";
                 DutyText.Foreground = Brushes.Red;
                 return;
             }
@@ -65,8 +63,10 @@ public partial class DutyComponent : ComponentBase
             var item = state.SchedulePool.Find(x => x.Date == today);
             if (item != null)
             {
-                var classroom = string.Join(", ", item.ClassroomStudents);
-                var cleaning = string.Join(", ", item.CleaningAreaStudents);
+                var classroomStudents = GetClassroomStudents(item);
+                var cleaningStudents = GetCleaningStudents(item);
+                var classroom = classroomStudents.Count > 0 ? string.Join(", ", classroomStudents) : "-";
+                var cleaning = cleaningStudents.Count > 0 ? string.Join(", ", cleaningStudents) : "-";
                 DutyText.Text = $"Classroom: {classroom} | Cleaning: {cleaning}";
                 DutyText.ClearValue(TextBlock.ForegroundProperty);
             }
@@ -81,5 +81,15 @@ public partial class DutyComponent : ComponentBase
             DutyText.Text = "Failed to load duty data";
             DutyText.Foreground = Brushes.Red;
         }
+    }
+
+    private static IReadOnlyList<string> GetClassroomStudents(SchedulePoolItem item)
+    {
+        return item.ClassroomStudents.Count > 0 ? item.ClassroomStudents : item.Students;
+    }
+
+    private static IReadOnlyList<string> GetCleaningStudents(SchedulePoolItem item)
+    {
+        return item.CleaningAreaStudents.Count > 0 ? item.CleaningAreaStudents : item.Students;
     }
 }

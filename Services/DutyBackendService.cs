@@ -1,6 +1,4 @@
-using System.ComponentModel;
 using System.Diagnostics;
-using System.Globalization;
 using System.Text;
 using System.Text.Json;
 using Avalonia.Threading;
@@ -15,6 +13,55 @@ public class DutyBackendService : IDisposable
     private const int AutoRunRetryCooldownMinutes = 30;
     private static readonly string PluginBaseDirectory =
         Path.GetDirectoryName(typeof(DutyBackendService).Assembly.Location) ?? AppContext.BaseDirectory;
+    private static readonly Dictionary<string, DayOfWeek> AutoRunDayAliases = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ["mon"] = DayOfWeek.Monday,
+        ["monday"] = DayOfWeek.Monday,
+        ["1"] = DayOfWeek.Monday,
+        ["周一"] = DayOfWeek.Monday,
+        ["星期一"] = DayOfWeek.Monday,
+        ["鍛ㄤ竴"] = DayOfWeek.Monday,
+        ["tue"] = DayOfWeek.Tuesday,
+        ["tuesday"] = DayOfWeek.Tuesday,
+        ["2"] = DayOfWeek.Tuesday,
+        ["周二"] = DayOfWeek.Tuesday,
+        ["星期二"] = DayOfWeek.Tuesday,
+        ["鍛ㄤ簩"] = DayOfWeek.Tuesday,
+        ["wed"] = DayOfWeek.Wednesday,
+        ["wednesday"] = DayOfWeek.Wednesday,
+        ["3"] = DayOfWeek.Wednesday,
+        ["周三"] = DayOfWeek.Wednesday,
+        ["星期三"] = DayOfWeek.Wednesday,
+        ["鍛ㄤ笁"] = DayOfWeek.Wednesday,
+        ["thu"] = DayOfWeek.Thursday,
+        ["thursday"] = DayOfWeek.Thursday,
+        ["4"] = DayOfWeek.Thursday,
+        ["周四"] = DayOfWeek.Thursday,
+        ["星期四"] = DayOfWeek.Thursday,
+        ["鍛ㄥ洓"] = DayOfWeek.Thursday,
+        ["fri"] = DayOfWeek.Friday,
+        ["friday"] = DayOfWeek.Friday,
+        ["5"] = DayOfWeek.Friday,
+        ["周五"] = DayOfWeek.Friday,
+        ["星期五"] = DayOfWeek.Friday,
+        ["鍛ㄤ簲"] = DayOfWeek.Friday,
+        ["sat"] = DayOfWeek.Saturday,
+        ["saturday"] = DayOfWeek.Saturday,
+        ["6"] = DayOfWeek.Saturday,
+        ["周六"] = DayOfWeek.Saturday,
+        ["星期六"] = DayOfWeek.Saturday,
+        ["鍛ㄥ叚"] = DayOfWeek.Saturday,
+        ["sun"] = DayOfWeek.Sunday,
+        ["sunday"] = DayOfWeek.Sunday,
+        ["7"] = DayOfWeek.Sunday,
+        ["0"] = DayOfWeek.Sunday,
+        ["周日"] = DayOfWeek.Sunday,
+        ["周天"] = DayOfWeek.Sunday,
+        ["星期日"] = DayOfWeek.Sunday,
+        ["星期天"] = DayOfWeek.Sunday,
+        ["鍛ㄦ棩"] = DayOfWeek.Sunday
+    };
+
     private readonly string _basePath = Path.Combine(PluginBaseDirectory, "Assets_Duty");
     private readonly string _dataDir;
     private readonly string _configPath;
@@ -119,7 +166,8 @@ public class DutyBackendService : IDisposable
         string dutyRule,
         bool startFromToday,
         int autoRunCoverageDays,
-        string componentRefreshTime)
+        string componentRefreshTime,
+        string pythonPath)
     {
         lock (_configLock)
         {
@@ -127,14 +175,15 @@ public class DutyBackendService : IDisposable
             Config.BaseUrl = baseUrl;
             Config.Model = model;
             Config.EnableAutoRun = enableAutoRun;
-            Config.AutoRunDay = autoRunDay;
+            Config.AutoRunDay = NormalizeAutoRunDay(autoRunDay);
             Config.AutoRunTime = NormalizeTimeOrThrow(autoRunTime);
-            Config.PerDay = perDay;
+            Config.PerDay = Math.Clamp(perDay, 1, 30);
             Config.SkipWeekends = skipWeekends;
             Config.DutyRule = dutyRule;
             Config.StartFromToday = startFromToday;
-            Config.AutoRunCoverageDays = autoRunCoverageDays;
+            Config.AutoRunCoverageDays = Math.Clamp(autoRunCoverageDays, 1, 30);
             Config.ComponentRefreshTime = NormalizeTimeOrThrow(componentRefreshTime);
+            Config.PythonPath = string.IsNullOrWhiteSpace(pythonPath) ? Config.PythonPath : pythonPath.Trim();
             SaveConfig();
         }
     }
@@ -148,7 +197,7 @@ public class DutyBackendService : IDisposable
 
         LoadConfig();
 
-        var pythonPath = ValidatePythonPath(Config.PythonPath, _basePath);
+        var pythonPath = ValidatePythonPath(Config.PythonPath, PluginBaseDirectory, _basePath);
         var inputPath = Path.Combine(_dataDir, "ipc_input.json");
         var resultPath = Path.Combine(_dataDir, "ipc_result.json");
         var scriptPath = Path.Combine(_basePath, "core.py");
@@ -200,7 +249,11 @@ public class DutyBackendService : IDisposable
         process.BeginErrorReadLine();
         process.WaitForExit();
 
-        if (process.ExitCode != 0 || !File.Exists(resultPath)) return false;
+        if (process.ExitCode != 0 || !File.Exists(resultPath))
+        {
+            Debug.WriteLine($"Core agent failed. ExitCode={process.ExitCode}\nSTDOUT:\n{stdout}\nSTDERR:\n{stderr}");
+            return false;
+        }
 
         try
         {
@@ -224,9 +277,14 @@ public class DutyBackendService : IDisposable
         try
         {
             var json = File.ReadAllText(path);
-            return JsonSerializer.Deserialize<DutyState>(json) ?? new DutyState();
+            var state = JsonSerializer.Deserialize<DutyState>(json) ?? new DutyState();
+            NormalizeLegacyState(state);
+            return state;
         }
-        catch { return new DutyState(); }
+        catch
+        {
+            return new DutyState();
+        }
     }
 
     public void Dispose()
@@ -271,14 +329,45 @@ public class DutyBackendService : IDisposable
                 SaveConfig();
             }
         }
-        catch { }
+        catch
+        {
+        }
     }
 
-    private static string ValidatePythonPath(string configuredPath, string basePath)
+    private static string ValidatePythonPath(string configuredPath, string pluginBasePath, string assetsBasePath)
     {
+        var embeddedDefaultPath = Path.Combine(assetsBasePath, "python-embed", "python.exe");
+        if (string.IsNullOrWhiteSpace(configuredPath))
+        {
+            return embeddedDefaultPath;
+        }
+
         var trimmed = configuredPath.Trim();
-        if (trimmed.StartsWith(".\\")) trimmed = Path.Combine(basePath, trimmed.Substring(2));
-        return trimmed;
+        if (Path.IsPathRooted(trimmed))
+        {
+            return trimmed;
+        }
+
+        var normalized = trimmed
+            .Replace('/', Path.DirectorySeparatorChar)
+            .TrimStart('.', Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+
+        var candidates = new[]
+        {
+            Path.GetFullPath(Path.Combine(pluginBasePath, normalized)),
+            Path.GetFullPath(Path.Combine(assetsBasePath, normalized)),
+            Path.GetFullPath(embeddedDefaultPath)
+        };
+
+        foreach (var candidate in candidates.Distinct(StringComparer.OrdinalIgnoreCase))
+        {
+            if (File.Exists(candidate))
+            {
+                return candidate;
+            }
+        }
+
+        return Path.GetFullPath(Path.Combine(pluginBasePath, normalized));
     }
 
     private static string NormalizeTimeOrThrow(string? time)
@@ -290,14 +379,40 @@ public class DutyBackendService : IDisposable
     private static bool IsAutoRunDayMatched(string autoRunDay, DayOfWeek currentDay)
     {
         if (string.IsNullOrWhiteSpace(autoRunDay)) return true;
-        var day = autoRunDay.Trim();
-        if (day.Equals("周一") || day.Equals("Monday", StringComparison.OrdinalIgnoreCase)) return currentDay == DayOfWeek.Monday;
-        if (day.Equals("周二") || day.Equals("Tuesday", StringComparison.OrdinalIgnoreCase)) return currentDay == DayOfWeek.Tuesday;
-        if (day.Equals("周三") || day.Equals("Wednesday", StringComparison.OrdinalIgnoreCase)) return currentDay == DayOfWeek.Wednesday;
-        if (day.Equals("周四") || day.Equals("Thursday", StringComparison.OrdinalIgnoreCase)) return currentDay == DayOfWeek.Thursday;
-        if (day.Equals("周五") || day.Equals("Friday", StringComparison.OrdinalIgnoreCase)) return currentDay == DayOfWeek.Friday;
-        if (day.Equals("周六") || day.Equals("Saturday", StringComparison.OrdinalIgnoreCase)) return currentDay == DayOfWeek.Saturday;
-        if (day.Equals("周日") || day.Equals("Sunday", StringComparison.OrdinalIgnoreCase)) return currentDay == DayOfWeek.Sunday;
-        return false;
+        return TryParseAutoRunDay(autoRunDay, out var parsedDay) && parsedDay == currentDay;
+    }
+
+    private static bool TryParseAutoRunDay(string autoRunDay, out DayOfWeek day)
+    {
+        var normalized = autoRunDay.Trim();
+        if (AutoRunDayAliases.TryGetValue(normalized, out day))
+        {
+            return true;
+        }
+
+        return Enum.TryParse(normalized, ignoreCase: true, out day);
+    }
+
+    private static string NormalizeAutoRunDay(string autoRunDay)
+    {
+        return TryParseAutoRunDay(autoRunDay, out var day)
+            ? day.ToString()
+            : DayOfWeek.Monday.ToString();
+    }
+
+    private static void NormalizeLegacyState(DutyState state)
+    {
+        foreach (var item in state.SchedulePool)
+        {
+            if (item.ClassroomStudents.Count == 0 && item.Students.Count > 0)
+            {
+                item.ClassroomStudents = [.. item.Students];
+            }
+
+            if (item.CleaningAreaStudents.Count == 0 && item.Students.Count > 0)
+            {
+                item.CleaningAreaStudents = [.. item.Students];
+            }
+        }
     }
 }

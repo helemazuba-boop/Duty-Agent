@@ -8,7 +8,7 @@ public class DutyConfig
     private string _decryptedApiKey = string.Empty;
 
     [JsonPropertyName("python_path")]
-    public string PythonPath { get; set; } = "python";
+    public string PythonPath { get; set; } = @".\Assets_Duty\python-embed\python.exe";
 
     [JsonPropertyName("api_key")]
     public string EncryptedApiKey { get; set; } = string.Empty;

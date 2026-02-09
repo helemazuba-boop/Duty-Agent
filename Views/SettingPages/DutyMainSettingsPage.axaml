@@ -14,6 +14,79 @@
 
             <Border BorderBrush="#33000000" BorderThickness="1" CornerRadius="6" Padding="12">
                 <StackPanel Spacing="10">
+                    <TextBlock Text="Runtime Config" FontWeight="SemiBold" />
+
+                    <TextBlock Text="Python Path" />
+                    <TextBox x:Name="PythonPathBox"
+                             Watermark=".\Assets_Duty\python-embed\python.exe" />
+
+                    <TextBlock Text="API Key" />
+                    <TextBox x:Name="ApiKeyBox" PasswordChar="*" />
+
+                    <TextBlock Text="Base URL" />
+                    <TextBox x:Name="BaseUrlBox"
+                             Watermark="https://api.deepseek.com/v1" />
+
+                    <TextBlock Text="Model" />
+                    <TextBox x:Name="ModelBox"
+                             Watermark="deepseek-chat" />
+
+                    <Grid ColumnDefinitions="*,*" ColumnSpacing="10">
+                        <StackPanel Grid.Column="0" Spacing="6">
+                            <TextBlock Text="Auto Run Day" />
+                            <ComboBox x:Name="AutoRunDayComboBox" HorizontalAlignment="Stretch">
+                                <ComboBoxItem Content="Monday" />
+                                <ComboBoxItem Content="Tuesday" />
+                                <ComboBoxItem Content="Wednesday" />
+                                <ComboBoxItem Content="Thursday" />
+                                <ComboBoxItem Content="Friday" />
+                                <ComboBoxItem Content="Saturday" />
+                                <ComboBoxItem Content="Sunday" />
+                            </ComboBox>
+                        </StackPanel>
+
+                        <StackPanel Grid.Column="1" Spacing="6">
+                            <TextBlock Text="Auto Run Time (HH:mm)" />
+                            <TextBox x:Name="AutoRunTimeBox" Watermark="08:00" />
+                        </StackPanel>
+                    </Grid>
+
+                    <Grid ColumnDefinitions="*,*" ColumnSpacing="10">
+                        <StackPanel Grid.Column="0" Spacing="6">
+                            <TextBlock Text="Coverage Days (1-30)" />
+                            <TextBox x:Name="CoverageDaysBox" />
+                        </StackPanel>
+
+                        <StackPanel Grid.Column="1" Spacing="6">
+                            <TextBlock Text="Per Area Per Day (1-30)" />
+                            <TextBox x:Name="PerDayBox" />
+                        </StackPanel>
+                    </Grid>
+
+                    <TextBlock Text="Component Refresh Time (HH:mm)" />
+                    <TextBox x:Name="ComponentRefreshTimeBox" Watermark="08:00" />
+
+                    <StackPanel Orientation="Horizontal" Spacing="16">
+                        <CheckBox x:Name="EnableAutoRunCheckBox" Content="Enable Auto Run" />
+                        <CheckBox x:Name="SkipWeekendsCheckBox" Content="Skip Weekends" />
+                        <CheckBox x:Name="StartFromTodayCheckBox" Content="Start From Today" />
+                    </StackPanel>
+
+                    <TextBlock Text="Duty Rule (Optional)" />
+                    <TextBox x:Name="DutyRuleBox"
+                             Height="70"
+                             AcceptsReturn="True"
+                             TextWrapping="Wrap" />
+
+                    <Button x:Name="SaveConfigBtn"
+                            Content="Save Config"
+                            Click="OnSaveConfigClick"
+                            HorizontalAlignment="Stretch" />
+                </StackPanel>
+            </Border>
+
+            <Border BorderBrush="#33000000" BorderThickness="1" CornerRadius="6" Padding="12">
+                <StackPanel Spacing="10">
                     <TextBlock Text="AI Scheduling" FontWeight="SemiBold" />
 
                     <TextBlock Text="Instruction" />
@@ -63,7 +136,7 @@
                     <TextBlock Text="Scheduled Duties" FontWeight="SemiBold" />
                     <TextBox x:Name="ScheduledStudentsBox"
                              IsReadOnly="True"
-                             Height="200"
+                             Height="220"
                              AcceptsReturn="True"
                              ScrollViewer.VerticalScrollBarVisibility="Auto" />
                 </StackPanel>
