@@ -1,4 +1,4 @@
-using Avalonia.Controls;
+﻿using Avalonia.Controls;
 using Avalonia.Interactivity;
 using Avalonia.Media;
 using Avalonia.Threading;
@@ -10,8 +10,8 @@ using DutyIsland.Services;
 
 namespace DutyIsland.Controls.Components;
 
-[ComponentInfo("00318064-DACC-419F-8228-79F3413CAB54", "Duty Staff", "\uE31E", "Displays today's duty staff.")]
-public partial class DutyComponent : ComponentBase
+[ComponentInfo("00318064-DACC-419F-8228-79F3413CAB54", "\u503C\u65E5\u4EBA\u5458", "\uE31E", "\u663E\u793A\u4ECA\u65E5\u503C\u65E5\u5B89\u6392\u3002")]
+public partial class DutyComponent : ComponentBase<DutyComponentSettings>
 {
     private readonly DispatcherTimer _timer;
     private readonly DutyBackendService _service = IAppHost.GetService<DutyBackendService>();
@@ -54,42 +54,50 @@ public partial class DutyComponent : ComponentBase
             var state = _service.LoadState();
             if (state.SchedulePool.Count == 0)
             {
-                DutyText.Text = "No schedule data";
+                DutyText.Text = "\u6682\u65E0\u6392\u73ED\u6570\u636E";
                 DutyText.Foreground = Brushes.Red;
                 return;
             }
 
             var today = DateTime.Now.ToString("yyyy-MM-dd");
             var item = state.SchedulePool.Find(x => x.Date == today);
-            if (item != null)
+            if (item == null)
             {
-                var classroomStudents = GetClassroomStudents(item);
-                var cleaningStudents = GetCleaningStudents(item);
-                var classroom = classroomStudents.Count > 0 ? string.Join(", ", classroomStudents) : "-";
-                var cleaning = cleaningStudents.Count > 0 ? string.Join(", ", cleaningStudents) : "-";
-                DutyText.Text = $"Classroom: {classroom} | Cleaning: {cleaning}";
-                DutyText.ClearValue(TextBlock.ForegroundProperty);
-            }
-            else
-            {
-                DutyText.Text = "No duty assigned today";
+                DutyText.Text = "\u4ECA\u65E5\u6682\u65E0\u503C\u65E5\u5B89\u6392";
                 DutyText.Foreground = Brushes.Red;
+                return;
             }
+
+            var areaOrder = _service.GetAreaNames();
+            var assignments = _service.GetAreaAssignments(item);
+            foreach (var area in assignments.Keys)
+            {
+                if (!areaOrder.Contains(area, StringComparer.Ordinal))
+                {
+                    areaOrder.Add(area);
+                }
+            }
+
+            var segments = areaOrder
+                .Select(area =>
+                {
+                    var students = assignments.TryGetValue(area, out var names) ? names : [];
+                    var text = students.Count > 0 ? string.Join("\u3001", students) : "\u65E0";
+                    return $"{area}\uFF1A{text}";
+                })
+                .ToList();
+
+            var separator = Settings?.UsePerAreaMultiLine == true
+                ? Environment.NewLine
+                : "\uFF1B";
+
+            DutyText.Text = string.Join(separator, segments);
+            DutyText.ClearValue(TextBlock.ForegroundProperty);
         }
         catch
         {
-            DutyText.Text = "Failed to load duty data";
+            DutyText.Text = "\u52A0\u8F7D\u503C\u65E5\u6570\u636E\u5931\u8D25";
             DutyText.Foreground = Brushes.Red;
         }
-    }
-
-    private static IReadOnlyList<string> GetClassroomStudents(SchedulePoolItem item)
-    {
-        return item.ClassroomStudents.Count > 0 ? item.ClassroomStudents : item.Students;
-    }
-
-    private static IReadOnlyList<string> GetCleaningStudents(SchedulePoolItem item)
-    {
-        return item.CleaningAreaStudents.Count > 0 ? item.CleaningAreaStudents : item.Students;
     }
 }

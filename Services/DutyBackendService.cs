@@ -11,6 +11,10 @@ public class DutyBackendService : IDisposable
 {
     private const string AutoRunInstruction = "Please generate duty schedule automatically based on roster.csv.";
     private const int AutoRunRetryCooldownMinutes = 30;
+    private const string DefaultAreaClassroom = "\u6559\u5BA4";
+    private const string DefaultAreaCleaning = "\u6E05\u6D01\u533A";
+    private const string DefaultNotificationTemplate =
+        "{scene}{status}\uFF0C\u65E5\u671F\uFF1A{date}\uFF0C\u533A\u57DF\uFF1A{areas}";
     private static readonly string PluginBaseDirectory =
         Path.GetDirectoryName(typeof(DutyBackendService).Assembly.Location) ?? AppContext.BaseDirectory;
     private static readonly Dictionary<string, DayOfWeek> AutoRunDayAliases = new(StringComparer.OrdinalIgnoreCase)
@@ -70,6 +74,7 @@ public class DutyBackendService : IDisposable
     private readonly Timer _autoRunTimer;
     private readonly object _configLock = new();
     private DateTime _lastAutoRunAttempt = DateTime.MinValue;
+    private static readonly UTF8Encoding Utf8NoBom = new(encoderShouldEmitUTF8Identifier: false);
 
     public event EventHandler? ScheduleUpdated;
 
@@ -109,6 +114,8 @@ public class DutyBackendService : IDisposable
             if (!File.Exists(_configPath))
             {
                 Config = new DutyConfig();
+                Config.AreaNames = NormalizeAreaNames(Config.AreaNames);
+                Config.NotificationTemplates = NormalizeNotificationTemplates(Config.NotificationTemplates);
                 SaveConfig();
                 return;
             }
@@ -117,6 +124,8 @@ public class DutyBackendService : IDisposable
             {
                 var json = File.ReadAllText(_configPath, Encoding.UTF8);
                 var config = JsonSerializer.Deserialize<DutyConfig>(json) ?? new DutyConfig();
+                config.AreaNames = NormalizeAreaNames(config.AreaNames);
+                config.NotificationTemplates = NormalizeNotificationTemplates(config.NotificationTemplates);
 
                 if (!string.IsNullOrWhiteSpace(config.EncryptedApiKey))
                 {
@@ -136,6 +145,8 @@ public class DutyBackendService : IDisposable
             {
                 Debug.WriteLine($"LoadConfig Error: {ex.Message}");
                 Config = new DutyConfig();
+                Config.AreaNames = NormalizeAreaNames(Config.AreaNames);
+                Config.NotificationTemplates = NormalizeNotificationTemplates(Config.NotificationTemplates);
                 SaveConfig();
             }
         }
@@ -150,7 +161,7 @@ public class DutyBackendService : IDisposable
                 WriteIndented = true
             };
             var json = JsonSerializer.Serialize(Config, options);
-            File.WriteAllText(_configPath, json, Encoding.UTF8);
+            File.WriteAllText(_configPath, json, Utf8NoBom);
         }
     }
 
@@ -167,7 +178,9 @@ public class DutyBackendService : IDisposable
         bool startFromToday,
         int autoRunCoverageDays,
         string componentRefreshTime,
-        string pythonPath)
+        string pythonPath,
+        IEnumerable<string>? areaNames = null,
+        IEnumerable<string>? notificationTemplates = null)
     {
         lock (_configLock)
         {
@@ -184,24 +197,42 @@ public class DutyBackendService : IDisposable
             Config.AutoRunCoverageDays = Math.Clamp(autoRunCoverageDays, 1, 30);
             Config.ComponentRefreshTime = NormalizeTimeOrThrow(componentRefreshTime);
             Config.PythonPath = string.IsNullOrWhiteSpace(pythonPath) ? Config.PythonPath : pythonPath.Trim();
+            Config.AreaNames = NormalizeAreaNames(areaNames ?? Config.AreaNames);
+            Config.NotificationTemplates =
+                NormalizeNotificationTemplates(notificationTemplates ?? Config.NotificationTemplates);
             SaveConfig();
         }
     }
 
     public bool RunCoreAgent(string instruction, string applyMode = "append", string? overrideModel = null)
     {
+        var result = RunCoreAgentWithMessage(instruction, applyMode, overrideModel);
+        if (!result.Success)
+        {
+            Debug.WriteLine($"RunCoreAgent failed: {result.Message}");
+        }
+
+        return result.Success;
+    }
+
+    public (bool Success, string Message) RunCoreAgentWithMessage(
+        string instruction,
+        string applyMode = "append",
+        string? overrideModel = null)
+    {
         if (string.IsNullOrWhiteSpace(instruction))
         {
-            throw new ArgumentException("Instruction must not be empty.", nameof(instruction));
+            return (false, "排班指令不能为空。");
         }
 
         LoadConfig();
         var apiKeyPlain = Config.DecryptedApiKey.Trim();
         if (string.IsNullOrWhiteSpace(apiKeyPlain))
         {
-            throw new InvalidOperationException("API key is missing or cannot be decrypted on this device.");
+            return (false, "API Key 为空，或无法在当前设备解密。");
         }
 
+        var areaNames = GetAreaNames();
         var pythonPath = ValidatePythonPath(Config.PythonPath, PluginBaseDirectory, _basePath);
         var inputPath = Path.Combine(_dataDir, "ipc_input.json");
         var resultPath = Path.Combine(_dataDir, "ipc_result.json");
@@ -209,7 +240,7 @@ public class DutyBackendService : IDisposable
 
         if (!File.Exists(scriptPath))
         {
-            throw new FileNotFoundException($"Core script not found: {scriptPath}");
+            return (false, $"未找到核心脚本：{scriptPath}");
         }
 
         if (File.Exists(resultPath))
@@ -227,9 +258,10 @@ public class DutyBackendService : IDisposable
             duty_rule = Config.DutyRule,
             start_from_today = Config.StartFromToday,
             base_url = Config.BaseUrl,
-            model = overrideModel ?? Config.Model
+            model = overrideModel ?? Config.Model,
+            area_names = areaNames
         };
-        File.WriteAllText(inputPath, JsonSerializer.Serialize(inputData), Encoding.UTF8);
+        File.WriteAllText(inputPath, JsonSerializer.Serialize(inputData), Utf8NoBom);
 
         var startInfo = new ProcessStartInfo
         {
@@ -249,31 +281,227 @@ public class DutyBackendService : IDisposable
         process.OutputDataReceived += (_, args) => { if (args.Data != null) stdout.AppendLine(args.Data); };
         process.ErrorDataReceived += (_, args) => { if (args.Data != null) stderr.AppendLine(args.Data); };
 
-        if (!process.Start()) return false;
+        if (!process.Start())
+        {
+            return (false, "无法启动 Python 进程。");
+        }
         process.BeginOutputReadLine();
         process.BeginErrorReadLine();
         process.WaitForExit();
 
-        if (process.ExitCode != 0 || !File.Exists(resultPath))
+        var stderrText = stderr.ToString().Trim();
+        var stdoutText = stdout.ToString().Trim();
+
+        if (process.ExitCode != 0)
         {
-            Debug.WriteLine($"Core agent failed. ExitCode={process.ExitCode}\nSTDOUT:\n{stdout}\nSTDERR:\n{stderr}");
-            return false;
+            var message = TryReadCoreErrorMessage(resultPath);
+            if (string.IsNullOrWhiteSpace(message))
+            {
+                message = SummarizePythonError(stderrText);
+            }
+
+            if (string.IsNullOrWhiteSpace(message))
+            {
+                message = SummarizePythonError(stdoutText);
+            }
+
+            if (string.IsNullOrWhiteSpace(message))
+            {
+                message = "核心进程执行失败。";
+            }
+
+            return (false, $"排班失败（ExitCode={process.ExitCode}）：{message}");
+        }
+
+        if (!File.Exists(resultPath))
+        {
+            var message = SummarizePythonError(stderrText);
+            if (string.IsNullOrWhiteSpace(message))
+            {
+                message = SummarizePythonError(stdoutText);
+            }
+
+            if (string.IsNullOrWhiteSpace(message))
+            {
+                message = "未生成 ipc_result.json。";
+            }
+
+            return (false, message);
         }
 
         try
         {
             var resultJson = File.ReadAllText(resultPath, Encoding.UTF8);
             using var doc = JsonDocument.Parse(resultJson);
-            return doc.RootElement.TryGetProperty("status", out var status) &&
-                   string.Equals(status.GetString(), "success", StringComparison.OrdinalIgnoreCase);
+            var success = doc.RootElement.TryGetProperty("status", out var status) &&
+                          string.Equals(status.GetString(), "success", StringComparison.OrdinalIgnoreCase);
+            if (success)
+            {
+                return (true, "执行成功。");
+            }
+
+            var errorMessage = doc.RootElement.TryGetProperty("message", out var messageElement)
+                ? (messageElement.GetString() ?? string.Empty).Trim()
+                : string.Empty;
+            if (errorMessage.Length == 0)
+            {
+                errorMessage = "核心进程返回非 success 状态。";
+            }
+
+            return (false, errorMessage);
         }
-        catch
+        catch (Exception ex)
         {
-            return false;
+            return (false, $"解析结果文件失败：{ex.Message}");
         }
     }
 
+    private static string? TryReadCoreErrorMessage(string resultPath)
+    {
+        try
+        {
+            if (!File.Exists(resultPath))
+            {
+                return null;
+            }
+
+            var resultJson = File.ReadAllText(resultPath, Encoding.UTF8);
+            using var doc = JsonDocument.Parse(resultJson);
+            if (!doc.RootElement.TryGetProperty("message", out var messageElement))
+            {
+                return null;
+            }
+
+            var message = (messageElement.GetString() ?? string.Empty).Trim();
+            return message.Length == 0 ? null : message;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static string? SummarizePythonError(string output)
+    {
+        if (string.IsNullOrWhiteSpace(output))
+        {
+            return null;
+        }
+
+        var lines = output
+            .Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries)
+            .Select(line => line.Trim())
+            .Where(line => line.Length > 0)
+            .ToList();
+
+        if (lines.Count == 0)
+        {
+            return null;
+        }
+
+        var tracebackTail = lines.LastOrDefault(line => line.Contains(':'));
+        if (!string.IsNullOrWhiteSpace(tracebackTail))
+        {
+            var parts = tracebackTail.Split(':', 2, StringSplitOptions.TrimEntries);
+            if (parts.Length == 2 && parts[1].Length > 0)
+            {
+                return parts[1];
+            }
+
+            return tracebackTail;
+        }
+
+        return lines[^1];
+    }
+
     public string GetRosterPath() => Path.Combine(_dataDir, "roster.csv");
+
+    public List<string> GetAreaNames()
+    {
+        lock (_configLock)
+        {
+            return NormalizeAreaNames(Config.AreaNames);
+        }
+    }
+
+    public List<string> GetNotificationTemplates()
+    {
+        lock (_configLock)
+        {
+            return NormalizeNotificationTemplates(Config.NotificationTemplates);
+        }
+    }
+
+    public Dictionary<string, List<string>> GetAreaAssignments(SchedulePoolItem item)
+    {
+        var areaNames = GetAreaNames();
+        var assignments = BuildAreaAssignments(item, areaNames);
+        foreach (var area in areaNames)
+        {
+            assignments.TryAdd(area, []);
+        }
+        return assignments;
+    }
+
+    public List<RosterEntry> LoadRosterEntries()
+    {
+        var path = GetRosterPath();
+        if (!File.Exists(path))
+        {
+            return [];
+        }
+
+        try
+        {
+            return RosterWorkbookHelper.LoadCsv(path);
+        }
+        catch (Exception ex)
+        {
+            Debug.WriteLine($"LoadRosterEntries Error: {ex.Message}");
+            return [];
+        }
+    }
+
+    public void SaveRosterEntries(IEnumerable<RosterEntry>? rosterEntries)
+    {
+        var path = GetRosterPath();
+        var directory = Path.GetDirectoryName(path);
+        if (!string.IsNullOrWhiteSpace(directory))
+        {
+            Directory.CreateDirectory(directory);
+        }
+
+        var map = new Dictionary<int, RosterEntry>();
+        foreach (var entry in rosterEntries ?? [])
+        {
+            var id = entry.Id;
+            var name = (entry.Name ?? string.Empty).Trim();
+            if (id <= 0 || name.Length == 0)
+            {
+                continue;
+            }
+
+            map[id] = new RosterEntry
+            {
+                Id = id,
+                Name = name,
+                Active = entry.Active
+            };
+        }
+
+        var builder = new StringBuilder();
+        builder.AppendLine("id,name,active");
+        foreach (var item in map.Values.OrderBy(x => x.Id))
+        {
+            builder.Append(item.Id);
+            builder.Append(',');
+            builder.Append(EscapeCsv(item.Name));
+            builder.Append(',');
+            builder.AppendLine(item.Active ? "1" : "0");
+        }
+
+        File.WriteAllText(path, builder.ToString(), new UTF8Encoding(encoderShouldEmitUTF8Identifier: true));
+    }
 
     public DutyState LoadState()
     {
@@ -405,19 +633,158 @@ public class DutyBackendService : IDisposable
             : DayOfWeek.Monday.ToString();
     }
 
-    private static void NormalizeLegacyState(DutyState state)
+    private void NormalizeLegacyState(DutyState state)
     {
+        var areaNames = GetAreaNames();
         foreach (var item in state.SchedulePool)
         {
-            if (item.ClassroomStudents.Count == 0 && item.Students.Count > 0)
-            {
-                item.ClassroomStudents = [.. item.Students];
-            }
+            var assignments = BuildAreaAssignments(item, areaNames);
+            item.AreaAssignments = assignments;
 
-            if (item.CleaningAreaStudents.Count == 0 && item.Students.Count > 0)
+            var firstArea = areaNames[0];
+            var secondArea = areaNames.Count > 1 ? areaNames[1] : firstArea;
+            item.ClassroomStudents = assignments.TryGetValue(firstArea, out var firstStudents) ? [.. firstStudents] : [];
+            item.CleaningAreaStudents = assignments.TryGetValue(secondArea, out var secondStudents) ? [.. secondStudents] : [];
+
+            if (item.Students.Count == 0 && item.ClassroomStudents.Count > 0)
             {
-                item.CleaningAreaStudents = [.. item.Students];
+                item.Students = [.. item.ClassroomStudents];
             }
         }
+    }
+
+    private static Dictionary<string, List<string>> BuildAreaAssignments(
+        SchedulePoolItem item,
+        IReadOnlyList<string> areaNames)
+    {
+        var assignments = new Dictionary<string, List<string>>(StringComparer.Ordinal);
+
+        if (item.AreaAssignments.Count > 0)
+        {
+            foreach (var (area, students) in item.AreaAssignments)
+            {
+                var areaName = (area ?? string.Empty).Trim();
+                if (areaName.Length == 0)
+                {
+                    continue;
+                }
+
+                var normalizedStudents = NormalizeStudents(students);
+                if (normalizedStudents.Count > 0)
+                {
+                    assignments[areaName] = normalizedStudents;
+                }
+            }
+        }
+
+        var firstArea = areaNames[0];
+        var secondArea = areaNames.Count > 1 ? areaNames[1] : firstArea;
+
+        var classroomStudents = NormalizeStudents(item.ClassroomStudents);
+        var cleaningStudents = NormalizeStudents(item.CleaningAreaStudents);
+        var legacyStudents = NormalizeStudents(item.Students);
+
+        if (classroomStudents.Count > 0 && !assignments.ContainsKey(firstArea))
+        {
+            assignments[firstArea] = classroomStudents;
+        }
+
+        if (cleaningStudents.Count > 0 && !assignments.ContainsKey(secondArea))
+        {
+            assignments[secondArea] = cleaningStudents;
+        }
+
+        if (assignments.Count == 0 && legacyStudents.Count > 0)
+        {
+            assignments[firstArea] = legacyStudents;
+        }
+
+        return assignments;
+    }
+
+    private static List<string> NormalizeStudents(IEnumerable<string>? rawStudents)
+    {
+        var students = new List<string>();
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        if (rawStudents == null)
+        {
+            return students;
+        }
+
+        foreach (var raw in rawStudents)
+        {
+            var name = (raw ?? string.Empty).Trim();
+            if (name.Length == 0 || !seen.Add(name))
+            {
+                continue;
+            }
+
+            students.Add(name);
+        }
+
+        return students;
+    }
+
+    private static List<string> NormalizeAreaNames(IEnumerable<string>? rawAreas)
+    {
+        var areas = new List<string>();
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        if (rawAreas != null)
+        {
+            foreach (var raw in rawAreas)
+            {
+                var area = (raw ?? string.Empty).Trim();
+                if (area.Length == 0 || !seen.Add(area))
+                {
+                    continue;
+                }
+
+                areas.Add(area);
+            }
+        }
+
+        if (areas.Count == 0)
+        {
+            areas.Add(DefaultAreaClassroom);
+            areas.Add(DefaultAreaCleaning);
+        }
+
+        return areas;
+    }
+
+    private static List<string> NormalizeNotificationTemplates(IEnumerable<string>? rawTemplates)
+    {
+        var templates = new List<string>();
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        if (rawTemplates != null)
+        {
+            foreach (var raw in rawTemplates)
+            {
+                var template = (raw ?? string.Empty).Trim();
+                if (template.Length == 0 || !seen.Add(template))
+                {
+                    continue;
+                }
+
+                templates.Add(template);
+            }
+        }
+
+        if (templates.Count == 0)
+        {
+            templates.Add(DefaultNotificationTemplate);
+        }
+
+        return templates;
+    }
+
+    private static string EscapeCsv(string text)
+    {
+        if (text.IndexOfAny([',', '"', '\r', '\n']) < 0)
+        {
+            return text;
+        }
+
+        return $"\"{text.Replace("\"", "\"\"")}\"";
     }
 }

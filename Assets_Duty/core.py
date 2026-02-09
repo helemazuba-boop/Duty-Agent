@@ -6,7 +6,9 @@ import csv
 import json
 import os
 import re
+import socket
 import sys
+import time
 import traceback
 import urllib.error
 import urllib.request
@@ -17,6 +19,9 @@ from typing import Dict, List, Optional, Tuple
 DEFAULT_DAYS = 5
 DEFAULT_PER_DAY = 2
 DAY_NAMES = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+LLM_TIMEOUT_SECONDS = 120
+LLM_MAX_RETRIES = 2
+LLM_RETRY_BACKOFF_SECONDS = 2
 
 
 class Context:
@@ -52,7 +57,8 @@ def load_config(ctx: Context) -> dict:
     if not config_path.exists():
         raise FileNotFoundError(f"Config file not found: {config_path}")
 
-    with open(config_path, "r", encoding="utf-8") as f:
+    # Accept both UTF-8 and UTF-8 BOM to avoid host-side encoding differences.
+    with open(config_path, "r", encoding="utf-8-sig") as f:
         config = json.load(f)
 
     for key in ("base_url", "model"):
@@ -101,7 +107,7 @@ def load_roster(csv_path: Path) -> Tuple[Dict[str, int], Dict[int, str], List[in
 def load_state(path: Path) -> dict:
     if not path.exists():
         return {"schedule_pool": []}
-    with open(path, "r", encoding="utf-8") as f:
+    with open(path, "r", encoding="utf-8-sig") as f:
         data = json.load(f)
     if "schedule_pool" not in data or not isinstance(data["schedule_pool"], list):
         data["schedule_pool"] = []
@@ -237,6 +243,15 @@ def clean_json_response(text: str) -> str:
     return m.group(0) if m else text
 
 
+def is_timeout_error(ex: Exception) -> bool:
+    if isinstance(ex, (TimeoutError, socket.timeout)):
+        return True
+    reason = getattr(ex, "reason", None)
+    if isinstance(reason, (TimeoutError, socket.timeout)):
+        return True
+    return "timed out" in str(ex).lower()
+
+
 def call_llm(system_prompt: str, user_prompt: str, config: dict) -> dict:
     base_url = str(config["base_url"]).rstrip("/")
     url = f"{base_url}/chat/completions"
@@ -259,14 +274,32 @@ def call_llm(system_prompt: str, user_prompt: str, config: dict) -> dict:
         },
     )
 
-    try:
-        with urllib.request.urlopen(req, timeout=60) as resp:
-            raw = resp.read().decode("utf-8")
-    except urllib.error.HTTPError as ex:
-        detail = ex.read().decode("utf-8", errors="ignore")
-        raise RuntimeError(f"HTTP error {ex.code}: {detail}") from ex
-    except urllib.error.URLError as ex:
-        raise RuntimeError(f"Network error: {ex.reason}") from ex
+    last_error: Optional[Exception] = None
+    for attempt in range(LLM_MAX_RETRIES + 1):
+        try:
+            with urllib.request.urlopen(req, timeout=LLM_TIMEOUT_SECONDS) as resp:
+                raw = resp.read().decode("utf-8")
+            break
+        except urllib.error.HTTPError as ex:
+            detail = ex.read().decode("utf-8", errors="ignore")
+            retryable = ex.code == 429 or 500 <= ex.code < 600
+            if retryable and attempt < LLM_MAX_RETRIES:
+                time.sleep(LLM_RETRY_BACKOFF_SECONDS * (attempt + 1))
+                continue
+            raise RuntimeError(f"HTTP 错误 {ex.code}: {detail}") from ex
+        except (urllib.error.URLError, TimeoutError, socket.timeout) as ex:
+            last_error = ex
+            if attempt < LLM_MAX_RETRIES and is_timeout_error(ex):
+                time.sleep(LLM_RETRY_BACKOFF_SECONDS * (attempt + 1))
+                continue
+            if is_timeout_error(ex):
+                raise RuntimeError(
+                    f"网络请求超时（{LLM_TIMEOUT_SECONDS}秒），请检查网络连接或稍后重试。"
+                ) from ex
+            reason = getattr(ex, "reason", ex)
+            raise RuntimeError(f"网络错误: {reason}") from ex
+    else:
+        raise RuntimeError(f"网络请求失败: {last_error}") from last_error
 
     response = json.loads(raw)
     choices = response.get("choices", [])
@@ -452,7 +485,7 @@ def main():
 
         input_data = {}
         if ctx.paths["input"].exists():
-            with open(ctx.paths["input"], "r", encoding="utf-8") as f:
+            with open(ctx.paths["input"], "r", encoding="utf-8-sig") as f:
                 input_data = json.load(f)
 
         instruction = str(input_data.get("instruction", ""))

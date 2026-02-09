@@ -27,4 +27,7 @@ public class SchedulePoolItem
 
     [JsonPropertyName("cleaning_area_students")]
     public List<string> CleaningAreaStudents { get; set; } = [];
+
+    [JsonPropertyName("area_assignments")]
+    public Dictionary<string, List<string>> AreaAssignments { get; set; } = new(StringComparer.Ordinal);
 }
