@@ -196,6 +196,11 @@ public class DutyBackendService : IDisposable
         }
 
         LoadConfig();
+        var apiKeyPlain = Config.DecryptedApiKey.Trim();
+        if (string.IsNullOrWhiteSpace(apiKeyPlain))
+        {
+            throw new InvalidOperationException("API key is missing or cannot be decrypted on this device.");
+        }
 
         var pythonPath = ValidatePythonPath(Config.PythonPath, PluginBaseDirectory, _basePath);
         var inputPath = Path.Combine(_dataDir, "ipc_input.json");
@@ -221,7 +226,6 @@ public class DutyBackendService : IDisposable
             skip_weekends = Config.SkipWeekends,
             duty_rule = Config.DutyRule,
             start_from_today = Config.StartFromToday,
-            api_key_plain = Config.DecryptedApiKey,
             base_url = Config.BaseUrl,
             model = overrideModel ?? Config.Model
         };
@@ -236,6 +240,7 @@ public class DutyBackendService : IDisposable
             RedirectStandardOutput = true,
             RedirectStandardError = true
         };
+        startInfo.EnvironmentVariables["DUTY_AGENT_API_KEY"] = apiKeyPlain;
 
         using var process = new Process { StartInfo = startInfo };
         var stdout = new StringBuilder();

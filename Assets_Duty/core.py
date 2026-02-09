@@ -55,10 +55,17 @@ def load_config(ctx: Context) -> dict:
     with open(config_path, "r", encoding="utf-8") as f:
         config = json.load(f)
 
-    for key in ("api_key", "base_url", "model"):
+    for key in ("base_url", "model"):
         if not str(config.get(key, "")).strip():
             raise ValueError(f"Missing config field: {key}")
     return config
+
+
+def load_api_key_from_env() -> str:
+    api_key = os.environ.get("DUTY_AGENT_API_KEY", "").strip()
+    if not api_key:
+        raise ValueError("Missing API key: DUTY_AGENT_API_KEY environment variable is empty.")
+    return api_key
 
 
 def load_roster(csv_path: Path) -> Tuple[Dict[str, int], Dict[int, str], List[int]]:
@@ -449,6 +456,13 @@ def main():
                 input_data = json.load(f)
 
         instruction = str(input_data.get("instruction", ""))
+        base_url = str(input_data.get("base_url", ctx.config.get("base_url", ""))).strip()
+        model = str(input_data.get("model", ctx.config.get("model", ""))).strip()
+        if not base_url or not model:
+            raise ValueError("Missing config field: base_url/model.")
+        ctx.config["base_url"] = base_url
+        ctx.config["model"] = model
+        ctx.config["api_key"] = load_api_key_from_env()
         days_to_generate = parse_int(
             input_data.get("days_to_generate", ctx.config.get("auto_run_coverage_days", DEFAULT_DAYS)),
             DEFAULT_DAYS,

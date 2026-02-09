@@ -34,7 +34,7 @@ public class DutyConfig
             }
             catch
             {
-                _decryptedApiKey = EncryptedApiKey;
+                _decryptedApiKey = string.Empty;
             }
 
             return _decryptedApiKey;

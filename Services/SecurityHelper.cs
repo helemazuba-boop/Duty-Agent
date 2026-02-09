@@ -1,4 +1,3 @@
-using System.Management;
 using System.Net.NetworkInformation;
 using System.Security.Cryptography;
 using System.Text;
@@ -8,7 +7,6 @@ namespace DutyIsland.Services;
 public static class SecurityHelper
 {
     private const string AesMacPrefix = "aesmac:v1:";
-    private const string DpapiPrefix = "dpapi:v1:";
     private const int AesKeyBytes = 32;
     private const int HmacKeyBytes = 32;
     private const int SaltBytes = 16;
@@ -16,8 +14,6 @@ public static class SecurityHelper
     private const int HmacBytes = 32;
     private const int KeyDerivationIterations = 120_000;
 
-    private static readonly byte[] LegacyDpapiEntropy =
-        SHA256.HashData(Encoding.UTF8.GetBytes("Duty-Agent.ApiKey.v1"));
     private static readonly byte[] AppBindingEntropy =
         SHA256.HashData(Encoding.UTF8.GetBytes("Duty-Agent.ApiKey.MacBinding.v1"));
 
@@ -76,23 +72,12 @@ public static class SecurityHelper
             return string.Empty;
         }
 
-        if (IsCurrentEncryptionFormat(encryptedText))
+        if (!IsCurrentEncryptionFormat(encryptedText))
         {
-            return DecryptAesMacString(encryptedText);
+            throw new CryptographicException("Unsupported API key format. Re-enter the key on this device.");
         }
 
-        if (IsDpapiFormat(encryptedText))
-        {
-            return DecryptDpapiString(encryptedText);
-        }
-
-        if (!LooksLikeLegacyCiphertext(encryptedText))
-        {
-            // Backward compatibility: treat non-ciphertext as plain text key.
-            return encryptedText;
-        }
-
-        return DecryptLegacyString(encryptedText);
+        return DecryptAesMacString(encryptedText);
     }
 
     private static string DecryptAesMacString(string encryptedText)
@@ -248,104 +233,5 @@ public static class SecurityHelper
             "npcap"
         };
         return ignoredKeywords.Any(adapterText.Contains);
-    }
-
-    private static bool IsDpapiFormat(string encryptedText)
-    {
-        return encryptedText.StartsWith(DpapiPrefix, StringComparison.Ordinal);
-    }
-
-    private static string DecryptDpapiString(string encryptedText)
-    {
-        var payload = encryptedText[DpapiPrefix.Length..];
-        var protectedBytes = Convert.FromBase64String(payload);
-        var plainBytes = ProtectedData.Unprotect(protectedBytes, LegacyDpapiEntropy, DataProtectionScope.CurrentUser);
-        return Encoding.UTF8.GetString(plainBytes);
-    }
-
-    private static string DecryptLegacyString(string encryptedText)
-    {
-        var allBytes = Convert.FromBase64String(encryptedText);
-        if (allBytes.Length <= 16)
-        {
-            throw new FormatException("Invalid encrypted payload.");
-        }
-
-        var iv = new byte[16];
-        var cipherBytes = new byte[allBytes.Length - iv.Length];
-        Buffer.BlockCopy(allBytes, 0, iv, 0, iv.Length);
-        Buffer.BlockCopy(allBytes, iv.Length, cipherBytes, 0, cipherBytes.Length);
-
-        using var aes = Aes.Create();
-        aes.KeySize = 256;
-        aes.Mode = CipherMode.CBC;
-        aes.Padding = PaddingMode.PKCS7;
-        aes.Key = GetLegacyHardwareFingerprint();
-        aes.IV = iv;
-
-        using var decryptor = aes.CreateDecryptor(aes.Key, aes.IV);
-        var plainBytes = decryptor.TransformFinalBlock(cipherBytes, 0, cipherBytes.Length);
-        return Encoding.UTF8.GetString(plainBytes);
-    }
-
-    private static bool LooksLikeLegacyCiphertext(string encryptedText)
-    {
-        try
-        {
-            var bytes = Convert.FromBase64String(encryptedText);
-            return bytes.Length > 16 && bytes.Length % 16 == 0;
-        }
-        catch
-        {
-            return false;
-        }
-    }
-
-    private static byte[] GetLegacyHardwareFingerprint()
-    {
-        try
-        {
-            var cpuId = TryGetWmiValue("SELECT ProcessorId FROM Win32_Processor", "ProcessorId");
-            var diskSerial = TryGetWmiValue("SELECT SerialNumber FROM Win32_PhysicalMedia", "SerialNumber");
-            if (string.IsNullOrWhiteSpace(diskSerial))
-            {
-                diskSerial = TryGetWmiValue("SELECT VolumeSerialNumber FROM Win32_LogicalDisk WHERE DeviceID='C:'", "VolumeSerialNumber");
-            }
-
-            var fingerprintSource = $"{cpuId}|{diskSerial}|{Environment.MachineName}";
-            return SHA256.HashData(Encoding.UTF8.GetBytes(fingerprintSource));
-        }
-        catch
-        {
-            var fallbackSource = $"fallback|{Environment.MachineName}";
-            return SHA256.HashData(Encoding.UTF8.GetBytes(fallbackSource));
-        }
-    }
-
-    private static string TryGetWmiValue(string query, string propertyName)
-    {
-        try
-        {
-            using var searcher = new ManagementObjectSearcher(query);
-            using var results = searcher.Get();
-            foreach (var item in results)
-            {
-                if (item is not ManagementObject managementObject)
-                {
-                    continue;
-                }
-
-                var value = managementObject[propertyName]?.ToString();
-                if (!string.IsNullOrWhiteSpace(value))
-                {
-                    return value.Trim();
-                }
-            }
-        }
-        catch
-        {
-        }
-
-        return string.Empty;
     }
 }
