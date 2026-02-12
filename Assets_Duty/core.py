@@ -18,10 +18,12 @@ from typing import Dict, List, Optional, Tuple
 
 DEFAULT_DAYS = 5
 DEFAULT_PER_DAY = 2
+DEFAULT_AREA_NAMES = ["教室", "清洁区"]
 DAY_NAMES = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 LLM_TIMEOUT_SECONDS = 120
 LLM_MAX_RETRIES = 2
 LLM_RETRY_BACKOFF_SECONDS = 2
+AI_RESPONSE_MAX_CHARS = 20000
 
 
 class Context:
@@ -45,10 +47,12 @@ def save_json_atomic(path: Path, data: dict):
     os.replace(str(tmp_path), str(path))
 
 
-def write_result(path: Path, status: str, message: str = ""):
+def write_result(path: Path, status: str, message: str = "", extra: Optional[dict] = None):
     payload = {"status": status}
     if message:
         payload["message"] = message
+    if isinstance(extra, dict):
+        payload.update(extra)
     save_json_atomic(path, payload)
 
 
@@ -74,6 +78,18 @@ def load_api_key_from_env() -> str:
     return api_key
 
 
+def to_unique_name(raw_name: str, seen_counts: Dict[str, int]) -> str:
+    base_name = raw_name.strip()
+    if not base_name:
+        return ""
+
+    next_count = seen_counts.get(base_name, 0) + 1
+    seen_counts[base_name] = next_count
+    if next_count == 1:
+        return base_name
+    return f"{base_name}{next_count}"
+
+
 def load_roster(csv_path: Path) -> Tuple[Dict[str, int], Dict[int, str], List[int]]:
     if not csv_path.exists():
         raise FileNotFoundError(f"roster.csv not found: {csv_path}")
@@ -81,6 +97,7 @@ def load_roster(csv_path: Path) -> Tuple[Dict[str, int], Dict[int, str], List[in
     name_to_id: Dict[str, int] = {}
     id_to_name: Dict[int, str] = {}
     active_ids: List[int] = []
+    seen_name_counts: Dict[str, int] = {}
 
     with open(csv_path, "r", encoding="utf-8-sig", newline="") as f:
         reader = csv.DictReader(f)
@@ -91,10 +108,24 @@ def load_roster(csv_path: Path) -> Tuple[Dict[str, int], Dict[int, str], List[in
             if not raw_id or not raw_name:
                 continue
 
-            pid = int(raw_id)
-            active = int(raw_active) if raw_active else 1
-            name_to_id[raw_name] = pid
-            id_to_name[pid] = raw_name
+            try:
+                pid = int(raw_id)
+            except (TypeError, ValueError):
+                continue
+            if pid <= 0:
+                continue
+
+            try:
+                active = int(raw_active) if raw_active else 1
+            except (TypeError, ValueError):
+                active = 1
+
+            unique_name = to_unique_name(raw_name, seen_name_counts)
+            if not unique_name:
+                continue
+
+            name_to_id[unique_name] = pid
+            id_to_name[pid] = unique_name
             if active == 1:
                 active_ids.append(pid)
 
@@ -139,6 +170,46 @@ def parse_int(value, default: int, minimum: int = 1, maximum: int = 365) -> int:
     return parsed
 
 
+def normalize_area_names(raw_area_names) -> List[str]:
+    seen = set()
+    areas: List[str] = []
+    if isinstance(raw_area_names, list):
+        candidates = raw_area_names
+    else:
+        candidates = []
+
+    for raw in candidates:
+        name = str(raw).strip()
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        areas.append(name)
+
+    if not areas:
+        return DEFAULT_AREA_NAMES[:]
+    return areas
+
+
+def normalize_area_per_day_counts(
+    area_names: List[str],
+    raw_counts,
+    fallback_per_day: int,
+) -> Dict[str, int]:
+    fallback = parse_int(fallback_per_day, DEFAULT_PER_DAY, 1, 30)
+    source: Dict[str, int] = {}
+    if isinstance(raw_counts, dict):
+        for key, value in raw_counts.items():
+            area = str(key).strip()
+            if not area:
+                continue
+            source[area] = parse_int(value, fallback, 1, 30)
+
+    normalized: Dict[str, int] = {}
+    for area in area_names:
+        normalized[area] = source.get(area, fallback)
+    return normalized
+
+
 def get_pool_entries_with_date(state_data: dict) -> List[Tuple[dict, date]]:
     pool = state_data.get("schedule_pool", [])
     result = []
@@ -171,7 +242,9 @@ def get_anchor_id(
         classroom_students = entry.get("classroom_students", [])
         cleaning_area_students = entry.get("cleaning_area_students", [])
         legacy_students = entry.get("students", [])
-        for name_list in (cleaning_area_students, classroom_students, legacy_students):
+        area_assignments = entry.get("area_assignments", {})
+        area_assignment_lists = area_assignments.values() if isinstance(area_assignments, dict) else []
+        for name_list in list(area_assignment_lists) + [cleaning_area_students, classroom_students, legacy_students]:
             if not isinstance(name_list, list) or not name_list:
                 continue
             last_name = str(name_list[-1]).strip()
@@ -198,10 +271,14 @@ def build_prompts(
     instruction: str,
     days: int,
     per_day: int,
+    area_names: List[str],
+    area_per_day_counts: Dict[str, int],
     duty_rule: str,
     start_date: date,
     skip_weekends: bool,
 ) -> Tuple[str, str]:
+    area_schema = ", ".join([f'"{name}": [101, 102]' for name in area_names])
+    area_count_lines = [f"{name} students per day: {area_per_day_counts.get(name, per_day)}" for name in area_names]
     system_prompt = (
         "You are a scheduling engine.\n"
         "Only process numeric IDs and output strict JSON.\n"
@@ -209,12 +286,13 @@ def build_prompts(
         "Output schema:\n"
         "{\n"
         '  "schedule": [\n'
-        '    {"day": "Mon", "classroom_ids": [101, 102], "cleaning_area_ids": [103, 104]},\n'
-        '    {"day": "Tue", "classroom_ids": [105, 106], "cleaning_area_ids": [107, 108]}\n'
+        f'    {{"day": "Mon", "area_ids": {{{area_schema}}}}},\n'
+        f'    {{"day": "Tue", "area_ids": {{{area_schema}}}}}\n'
         "  ]\n"
         "}\n"
         "The day field must use: Mon, Tue, Wed, Thu, Fri, Sat, Sun.\n"
-        "For each day, both classroom_ids and cleaning_area_ids must be arrays."
+        "For each day, area_ids must be an object where each area name maps to an array of IDs.\n"
+        "Legacy keys such as classroom_ids and cleaning_area_ids are accepted for compatibility."
     )
 
     prompt_parts = [
@@ -222,15 +300,15 @@ def build_prompts(
         f"Last ID: {last_id}",
         f"Start Date: {start_date}",
         f"Skip Weekends: {skip_weekends}",
-        f"Classroom students per day: {per_day}",
-        f"Cleaning area students per day: {per_day}",
+        f"Areas: {area_names}",
         f"Days to generate: {days}",
         f'Instruction: "{instruction}"',
     ]
+    prompt_parts.extend(area_count_lines)
     duty_rule = (duty_rule or "").strip()
     if duty_rule:
         prompt_parts.append(f"Rules:\n{duty_rule}")
-    prompt_parts.append("Task: Generate schedule for two cleaning areas: classroom and cleaning area.")
+    prompt_parts.append("Task: Generate schedule for all listed areas using area_ids.")
     user_prompt = "\n".join(prompt_parts)
     return system_prompt, user_prompt
 
@@ -252,7 +330,7 @@ def is_timeout_error(ex: Exception) -> bool:
     return "timed out" in str(ex).lower()
 
 
-def call_llm(system_prompt: str, user_prompt: str, config: dict) -> dict:
+def call_llm(system_prompt: str, user_prompt: str, config: dict) -> Tuple[dict, str]:
     base_url = str(config["base_url"]).rstrip("/")
     url = f"{base_url}/chat/completions"
     payload = {
@@ -309,7 +387,7 @@ def call_llm(system_prompt: str, user_prompt: str, config: dict) -> dict:
     content = message.get("content") or ""
     if not content.strip():
         raise RuntimeError("LLM returned empty content.")
-    return json.loads(clean_json_response(content))
+    return json.loads(clean_json_response(content)), content
 
 
 def generate_target_dates(start_date: date, days: int, skip_weekends: bool) -> List[date]:
@@ -350,74 +428,112 @@ def fill_rotation_ids(
     return result, (curr_idx - 1 + len(active_ids)) % len(active_ids)
 
 
-def extract_ids(entry: dict, keys: Tuple[str, ...], active_set: set, per_day: int) -> List[int]:
-    result: List[int] = []
-    for key in keys:
-        values = entry.get(key, [])
-        if not isinstance(values, list):
-            continue
+def extract_ids_from_value(value, active_set: set, limit: int) -> List[int]:
+    if not isinstance(value, list):
+        return []
 
-        for raw in values:
-            try:
-                pid = int(raw)
-            except Exception:
-                continue
-            if pid not in active_set or pid in result:
-                continue
-            result.append(pid)
-            if len(result) >= per_day:
-                return result
+    result: List[int] = []
+    for raw in value:
+        try:
+            pid = int(raw)
+        except Exception:
+            continue
+        if pid not in active_set or pid in result:
+            continue
+        result.append(pid)
+        if len(result) >= limit:
+            break
     return result
 
 
-def normalize_dual_area_schedule_ids(
+def extract_area_ids(
+    entry: dict,
+    area_name: str,
+    area_index: int,
+    active_set: set,
+    per_area_count: int,
+) -> List[int]:
+    result: List[int] = []
+
+    def append_ids(value):
+        nonlocal result
+        if len(result) >= per_area_count:
+            return
+        for pid in extract_ids_from_value(value, active_set, per_area_count):
+            if pid in result:
+                continue
+            result.append(pid)
+            if len(result) >= per_area_count:
+                break
+
+    for key in ("area_ids", "areas", "area_assignments"):
+        area_map = entry.get(key)
+        if not isinstance(area_map, dict):
+            continue
+        append_ids(area_map.get(area_name))
+        append_ids(area_map.get(str(area_index)))
+        append_ids(area_map.get(str(area_index + 1)))
+
+    normalized_name_key = re.sub(r"\s+", "_", area_name.strip().lower())
+    append_ids(entry.get(area_name))
+    append_ids(entry.get(f"{area_name}_ids"))
+    append_ids(entry.get(normalized_name_key))
+    append_ids(entry.get(f"{normalized_name_key}_ids"))
+
+    if area_index == 0:
+        for key in ("classroom_ids", "ids"):
+            append_ids(entry.get(key))
+    elif area_index == 1:
+        for key in ("cleaning_area_ids", "cleaning_ids", "area_ids", "zone_ids"):
+            value = entry.get(key)
+            if key == "area_ids" and isinstance(value, dict):
+                continue
+            append_ids(value)
+    else:
+        append_ids(entry.get(f"area_{area_index + 1}_ids"))
+        append_ids(entry.get(f"zone_{area_index + 1}_ids"))
+
+    return result
+
+
+def normalize_multi_area_schedule_ids(
     schedule_raw: list,
     active_ids: List[int],
-    per_day: int,
+    area_names: List[str],
+    area_per_day_counts: Dict[str, int],
     days: int,
     anchor_id: int,
 ) -> List[dict]:
     active_set = set(active_ids)
-    classroom_index = active_ids.index(anchor_id) if anchor_id in active_set else len(active_ids) - 1
-    cleaning_index = classroom_index
+    anchor_index = active_ids.index(anchor_id) if anchor_id in active_set else len(active_ids) - 1
+    area_indexes: Dict[str, int] = {name: anchor_index for name in area_names}
     normalized: List[dict] = []
 
     for day_idx in range(days):
-        classroom_ids: List[int] = []
-        cleaning_area_ids: List[int] = []
+        day_assignments: Dict[str, List[int]] = {}
+        used_ids: set = set()
+        entry = schedule_raw[day_idx] if day_idx < len(schedule_raw) else {}
+        if not isinstance(entry, dict):
+            entry = {}
 
-        if day_idx < len(schedule_raw):
-            entry = schedule_raw[day_idx]
-            if isinstance(entry, dict):
-                classroom_ids = extract_ids(entry, ("classroom_ids", "ids"), active_set, per_day)
-                cleaning_area_ids = extract_ids(
-                    entry,
-                    ("cleaning_area_ids", "cleaning_ids", "area_ids", "zone_ids"),
-                    active_set,
-                    per_day,
-                )
-                cleaning_area_ids = [pid for pid in cleaning_area_ids if pid not in classroom_ids]
+        for area_index, area_name in enumerate(area_names):
+            per_area_count = area_per_day_counts.get(area_name, DEFAULT_PER_DAY)
+            initial_ids = extract_area_ids(entry, area_name, area_index, active_set, per_area_count)
+            initial_ids = [pid for pid in initial_ids if pid not in used_ids]
 
-        classroom_ids, classroom_index = fill_rotation_ids(
-            classroom_ids,
-            active_ids,
-            classroom_index,
-            per_day,
-        )
-        cleaning_area_ids, cleaning_index = fill_rotation_ids(
-            cleaning_area_ids,
-            active_ids,
-            cleaning_index,
-            per_day,
-            avoid_ids=set(classroom_ids),
-        )
+            filled_ids, area_indexes[area_name] = fill_rotation_ids(
+                initial_ids,
+                active_ids,
+                area_indexes[area_name],
+                per_area_count,
+                avoid_ids=used_ids,
+            )
 
-        normalized.append(
-            {
-                "classroom_ids": classroom_ids,
-                "cleaning_area_ids": cleaning_area_ids,
-            }
-        )
+            day_assignments[area_name] = filled_ids
+            used_ids.update(filled_ids)
+
+        normalized.append({"area_ids": day_assignments})
+
     return normalized
 
 
@@ -425,14 +541,26 @@ def restore_schedule(
     normalized_ids: List[dict],
     id_to_name: Dict[int, str],
     target_dates: List[date],
+    area_names: List[str],
 ) -> List[dict]:
     restored = []
+    fallback_first_area = area_names[0] if area_names else DEFAULT_AREA_NAMES[0]
+    fallback_second_area = area_names[1] if len(area_names) > 1 else fallback_first_area
+
     for idx, day_entry in enumerate(normalized_ids):
         d = target_dates[idx]
-        classroom_ids = day_entry.get("classroom_ids", [])
-        cleaning_area_ids = day_entry.get("cleaning_area_ids", [])
-        classroom_students = [id_to_name[pid] for pid in classroom_ids if pid in id_to_name]
-        cleaning_area_students = [id_to_name[pid] for pid in cleaning_area_ids if pid in id_to_name]
+        area_ids_map = day_entry.get("area_ids", {})
+        if not isinstance(area_ids_map, dict):
+            area_ids_map = {}
+
+        area_assignments: Dict[str, List[str]] = {}
+        for area_name in area_names:
+            area_ids = area_ids_map.get(area_name, [])
+            students = [id_to_name[pid] for pid in area_ids if pid in id_to_name]
+            area_assignments[area_name] = students
+
+        classroom_students = area_assignments.get(fallback_first_area, [])
+        cleaning_area_students = area_assignments.get(fallback_second_area, [])
         restored.append(
             {
                 "date": d.strftime("%Y-%m-%d"),
@@ -440,33 +568,47 @@ def restore_schedule(
                 "students": classroom_students,
                 "classroom_students": classroom_students,
                 "cleaning_area_students": cleaning_area_students,
+                "area_assignments": area_assignments,
             }
         )
     return restored
 
 
+def dedupe_pool_by_date(entries: List[dict]) -> List[dict]:
+    by_date: Dict[str, dict] = {}
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        date_key = str(entry.get("date", "")).strip()
+        if not date_key:
+            continue
+        by_date[date_key] = entry
+    return [by_date[d] for d in sorted(by_date.keys())]
+
+
 def merge_schedule_pool(state_data: dict, restored: List[dict], apply_mode: str, start_date: date) -> List[dict]:
     pool = state_data.get("schedule_pool", [])
+    if not isinstance(pool, list):
+        pool = []
+
     if apply_mode == "append":
-        return pool + restored
+        return dedupe_pool_by_date(pool + restored)
 
     if apply_mode == "replace_all":
-        return restored
+        return dedupe_pool_by_date(restored)
 
     if apply_mode == "replace_future":
         today_str = datetime.now().strftime("%Y-%m-%d")
         kept = [x for x in pool if x.get("date", "") <= today_str]
-        return kept + restored
+        return dedupe_pool_by_date(kept + restored)
 
     if apply_mode == "replace_overlap":
         start_str = start_date.strftime("%Y-%m-%d")
         end_str = restored[-1]["date"]
         kept = [x for x in pool if x.get("date", "") < start_str or x.get("date", "") > end_str]
-        merged = kept + restored
-        merged.sort(key=lambda x: x.get("date", ""))
-        return merged
+        return dedupe_pool_by_date(kept + restored)
 
-    return pool + restored
+    return dedupe_pool_by_date(pool + restored)
 
 
 def main():
@@ -508,26 +650,35 @@ def main():
             1,
             30,
         )
+        area_names = normalize_area_names(input_data.get("area_names", ctx.config.get("area_names", DEFAULT_AREA_NAMES)))
+        area_per_day_counts = normalize_area_per_day_counts(
+            area_names,
+            input_data.get("area_per_day_counts", ctx.config.get("area_per_day_counts", {})),
+            per_day,
+        )
         skip_weekends = parse_bool(
             input_data.get("skip_weekends", ctx.config.get("skip_weekends", True)),
             True,
         )
+        duty_rule = str(input_data.get("duty_rule", ctx.config.get("duty_rule", ""))).strip()
+        apply_mode = str(input_data.get("apply_mode", "append")).strip().lower()
         start_from_today = parse_bool(
             input_data.get("start_from_today", ctx.config.get("start_from_today", False)),
             False,
         )
-        duty_rule = str(input_data.get("duty_rule", ctx.config.get("duty_rule", ""))).strip()
-        apply_mode = str(input_data.get("apply_mode", "append")).strip().lower()
 
         # Start date
-        if start_from_today:
-            start_date = datetime.now().date()
-        else:
-            entries = get_pool_entries_with_date(state_data)
-            if entries:
+        today_date = datetime.now().date()
+        entries = get_pool_entries_with_date(state_data)
+        if apply_mode == "append":
+            if start_from_today:
+                start_date = today_date
+            elif entries:
                 start_date = entries[-1][1] + timedelta(days=1)
             else:
-                start_date = datetime.now().date() + timedelta(days=1)
+                start_date = today_date
+        else:
+            start_date = today_date
 
         anchor_id = get_anchor_id(state_data, name_to_id, active_ids, start_date, apply_mode)
         sanitized_instruction = anonymize_instruction(instruction, name_to_id)
@@ -537,26 +688,35 @@ def main():
             sanitized_instruction,
             days_to_generate,
             per_day,
+            area_names,
+            area_per_day_counts,
             duty_rule,
             start_date,
             skip_weekends,
         )
 
-        llm_result = call_llm(system_prompt, user_prompt, ctx.config)
+        llm_result, llm_response_text = call_llm(system_prompt, user_prompt, ctx.config)
         schedule_raw = llm_result.get("schedule", [])
         target_dates = generate_target_dates(start_date, days_to_generate, skip_weekends)
-        normalized_ids = normalize_dual_area_schedule_ids(
+        normalized_ids = normalize_multi_area_schedule_ids(
             schedule_raw,
             active_ids,
-            per_day,
+            area_names,
+            area_per_day_counts,
             days_to_generate,
             anchor_id,
         )
-        restored = restore_schedule(normalized_ids, id_to_name, target_dates)
+        restored = restore_schedule(normalized_ids, id_to_name, target_dates, area_names)
         state_data["schedule_pool"] = merge_schedule_pool(state_data, restored, apply_mode, start_date)
 
         save_json_atomic(ctx.paths["state"], state_data)
-        write_result(ctx.paths["result"], "success")
+        write_result(
+            ctx.paths["result"],
+            "success",
+            extra={
+                "ai_response": (llm_response_text or "")[:AI_RESPONSE_MAX_CHARS],
+            },
+        )
     except Exception as ex:
         traceback.print_exc()
         try:

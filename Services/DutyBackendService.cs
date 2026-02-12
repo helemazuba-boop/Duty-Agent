@@ -11,10 +11,15 @@ public class DutyBackendService : IDisposable
 {
     private const string AutoRunInstruction = "Please generate duty schedule automatically based on roster.csv.";
     private const int AutoRunRetryCooldownMinutes = 30;
+    private const int CoreProcessTimeoutMs = 300_000;
+    private const string ApiKeyMask = "********";
     private const string DefaultAreaClassroom = "\u6559\u5BA4";
     private const string DefaultAreaCleaning = "\u6E05\u6D01\u533A";
     private const string DefaultNotificationTemplate =
         "{scene}{status}\uFF0C\u65E5\u671F\uFF1A{date}\uFF0C\u533A\u57DF\uFF1A{areas}";
+    private const string DefaultDutyReminderTemplate =
+        "\u503C\u65E5\u63D0\u9192\uFF1A{date} {time}\uFF0C{assignments}";
+    private const string DefaultDutyReminderTime = "07:40";
     private static readonly string PluginBaseDirectory =
         Path.GetDirectoryName(typeof(DutyBackendService).Assembly.Location) ?? AppContext.BaseDirectory;
     private static readonly Dictionary<string, DayOfWeek> AutoRunDayAliases = new(StringComparer.OrdinalIgnoreCase)
@@ -24,37 +29,31 @@ public class DutyBackendService : IDisposable
         ["1"] = DayOfWeek.Monday,
         ["周一"] = DayOfWeek.Monday,
         ["星期一"] = DayOfWeek.Monday,
-        ["鍛ㄤ竴"] = DayOfWeek.Monday,
         ["tue"] = DayOfWeek.Tuesday,
         ["tuesday"] = DayOfWeek.Tuesday,
         ["2"] = DayOfWeek.Tuesday,
         ["周二"] = DayOfWeek.Tuesday,
         ["星期二"] = DayOfWeek.Tuesday,
-        ["鍛ㄤ簩"] = DayOfWeek.Tuesday,
         ["wed"] = DayOfWeek.Wednesday,
         ["wednesday"] = DayOfWeek.Wednesday,
         ["3"] = DayOfWeek.Wednesday,
         ["周三"] = DayOfWeek.Wednesday,
         ["星期三"] = DayOfWeek.Wednesday,
-        ["鍛ㄤ笁"] = DayOfWeek.Wednesday,
         ["thu"] = DayOfWeek.Thursday,
         ["thursday"] = DayOfWeek.Thursday,
         ["4"] = DayOfWeek.Thursday,
         ["周四"] = DayOfWeek.Thursday,
         ["星期四"] = DayOfWeek.Thursday,
-        ["鍛ㄥ洓"] = DayOfWeek.Thursday,
         ["fri"] = DayOfWeek.Friday,
         ["friday"] = DayOfWeek.Friday,
         ["5"] = DayOfWeek.Friday,
         ["周五"] = DayOfWeek.Friday,
         ["星期五"] = DayOfWeek.Friday,
-        ["鍛ㄤ簲"] = DayOfWeek.Friday,
         ["sat"] = DayOfWeek.Saturday,
         ["saturday"] = DayOfWeek.Saturday,
         ["6"] = DayOfWeek.Saturday,
         ["周六"] = DayOfWeek.Saturday,
         ["星期六"] = DayOfWeek.Saturday,
-        ["鍛ㄥ叚"] = DayOfWeek.Saturday,
         ["sun"] = DayOfWeek.Sunday,
         ["sunday"] = DayOfWeek.Sunday,
         ["7"] = DayOfWeek.Sunday,
@@ -62,17 +61,20 @@ public class DutyBackendService : IDisposable
         ["周日"] = DayOfWeek.Sunday,
         ["周天"] = DayOfWeek.Sunday,
         ["星期日"] = DayOfWeek.Sunday,
-        ["星期天"] = DayOfWeek.Sunday,
-        ["鍛ㄦ棩"] = DayOfWeek.Sunday
+        ["星期天"] = DayOfWeek.Sunday
     };
 
     private readonly string _basePath = Path.Combine(PluginBaseDirectory, "Assets_Duty");
     private readonly string _dataDir;
     private readonly string _configPath;
+    private readonly DutyNotificationService _notificationService;
     private readonly FileSystemWatcher _watcher;
     private readonly Timer _debounceTimer;
     private readonly Timer _autoRunTimer;
     private readonly object _configLock = new();
+    private readonly object _dutyReminderLock = new();
+    private readonly SemaphoreSlim _runCoreGate = new(1, 1);
+    private readonly HashSet<string> _sentDutyReminderSlots = new(StringComparer.Ordinal);
     private DateTime _lastAutoRunAttempt = DateTime.MinValue;
     private static readonly UTF8Encoding Utf8NoBom = new(encoderShouldEmitUTF8Identifier: false);
 
@@ -80,8 +82,9 @@ public class DutyBackendService : IDisposable
 
     public DutyConfig Config { get; private set; } = new();
 
-    public DutyBackendService()
+    public DutyBackendService(DutyNotificationService notificationService)
     {
+        _notificationService = notificationService;
         _dataDir = Path.Combine(_basePath, "data");
         _configPath = Path.Combine(_dataDir, "config.json");
         Directory.CreateDirectory(_dataDir);
@@ -115,7 +118,13 @@ public class DutyBackendService : IDisposable
             {
                 Config = new DutyConfig();
                 Config.AreaNames = NormalizeAreaNames(Config.AreaNames);
+                Config.AreaPerDayCounts = NormalizeAreaPerDayCounts(
+                    Config.AreaNames,
+                    Config.AreaPerDayCounts,
+                    Config.PerDay);
                 Config.NotificationTemplates = NormalizeNotificationTemplates(Config.NotificationTemplates);
+                Config.DutyReminderTimes = NormalizeDutyReminderTimes(Config.DutyReminderTimes);
+                Config.DutyReminderTemplates = NormalizeDutyReminderTemplates(Config.DutyReminderTemplates);
                 SaveConfig();
                 return;
             }
@@ -125,18 +134,26 @@ public class DutyBackendService : IDisposable
                 var json = File.ReadAllText(_configPath, Encoding.UTF8);
                 var config = JsonSerializer.Deserialize<DutyConfig>(json) ?? new DutyConfig();
                 config.AreaNames = NormalizeAreaNames(config.AreaNames);
+                config.AreaPerDayCounts = NormalizeAreaPerDayCounts(
+                    config.AreaNames,
+                    config.AreaPerDayCounts,
+                    config.PerDay);
                 config.NotificationTemplates = NormalizeNotificationTemplates(config.NotificationTemplates);
+                config.DutyReminderTimes = NormalizeDutyReminderTimes(config.DutyReminderTimes);
+                config.DutyReminderTemplates = NormalizeDutyReminderTemplates(config.DutyReminderTemplates);
 
                 if (!string.IsNullOrWhiteSpace(config.EncryptedApiKey))
                 {
-                    var plainApiKey = config.DecryptedApiKey;
-                    if (string.Equals(plainApiKey, config.EncryptedApiKey, StringComparison.Ordinal))
+                    if (!SecurityHelper.IsCurrentEncryptionFormat(config.EncryptedApiKey))
                     {
-                        config.DecryptedApiKey = plainApiKey;
+                        // Migrate legacy plaintext API keys to encrypted storage.
+                        config.DecryptedApiKey = config.EncryptedApiKey;
                         Config = config;
                         SaveConfig();
                         return;
                     }
+
+                    _ = config.DecryptedApiKey;
                 }
 
                 Config = config;
@@ -146,7 +163,13 @@ public class DutyBackendService : IDisposable
                 Debug.WriteLine($"LoadConfig Error: {ex.Message}");
                 Config = new DutyConfig();
                 Config.AreaNames = NormalizeAreaNames(Config.AreaNames);
+                Config.AreaPerDayCounts = NormalizeAreaPerDayCounts(
+                    Config.AreaNames,
+                    Config.AreaPerDayCounts,
+                    Config.PerDay);
                 Config.NotificationTemplates = NormalizeNotificationTemplates(Config.NotificationTemplates);
+                Config.DutyReminderTimes = NormalizeDutyReminderTimes(Config.DutyReminderTimes);
+                Config.DutyReminderTemplates = NormalizeDutyReminderTemplates(Config.DutyReminderTemplates);
                 SaveConfig();
             }
         }
@@ -180,11 +203,15 @@ public class DutyBackendService : IDisposable
         string componentRefreshTime,
         string pythonPath,
         IEnumerable<string>? areaNames = null,
-        IEnumerable<string>? notificationTemplates = null)
+        IEnumerable<KeyValuePair<string, int>>? areaPerDayCounts = null,
+        IEnumerable<string>? notificationTemplates = null,
+        bool? dutyReminderEnabled = null,
+        IEnumerable<string>? dutyReminderTimes = null,
+        IEnumerable<string>? dutyReminderTemplates = null)
     {
         lock (_configLock)
         {
-            Config.DecryptedApiKey = apiKey;
+            Config.DecryptedApiKey = ResolveApiKeyInput(apiKey, Config.DecryptedApiKey);
             Config.BaseUrl = baseUrl;
             Config.Model = model;
             Config.EnableAutoRun = enableAutoRun;
@@ -198,8 +225,16 @@ public class DutyBackendService : IDisposable
             Config.ComponentRefreshTime = NormalizeTimeOrThrow(componentRefreshTime);
             Config.PythonPath = string.IsNullOrWhiteSpace(pythonPath) ? Config.PythonPath : pythonPath.Trim();
             Config.AreaNames = NormalizeAreaNames(areaNames ?? Config.AreaNames);
+            Config.AreaPerDayCounts = NormalizeAreaPerDayCounts(
+                Config.AreaNames,
+                areaPerDayCounts ?? Config.AreaPerDayCounts,
+                Config.PerDay);
             Config.NotificationTemplates =
                 NormalizeNotificationTemplates(notificationTemplates ?? Config.NotificationTemplates);
+            Config.DutyReminderEnabled = dutyReminderEnabled ?? Config.DutyReminderEnabled;
+            Config.DutyReminderTimes = NormalizeDutyReminderTimes(dutyReminderTimes ?? Config.DutyReminderTimes);
+            Config.DutyReminderTemplates =
+                NormalizeDutyReminderTemplates(dutyReminderTemplates ?? Config.DutyReminderTemplates);
             SaveConfig();
         }
     }
@@ -215,24 +250,36 @@ public class DutyBackendService : IDisposable
         return result.Success;
     }
 
-    public (bool Success, string Message) RunCoreAgentWithMessage(
+    public CoreRunResult RunCoreAgentWithMessage(
         string instruction,
         string applyMode = "append",
-        string? overrideModel = null)
+        string? overrideModel = null,
+        Action<CoreRunProgress>? progress = null)
     {
+        static CoreRunProgress BuildProgress(string phase, string message) => new(phase, message);
+
         if (string.IsNullOrWhiteSpace(instruction))
         {
-            return (false, "排班指令不能为空。");
+            return CoreRunResult.Fail("Instruction cannot be empty.", code: "validation");
         }
 
+        if (!_runCoreGate.Wait(0))
+        {
+            return CoreRunResult.Fail("Another schedule run is already in progress.", code: "busy");
+        }
+
+        try
+        {
+        progress?.Invoke(BuildProgress("read_api_key", "Reading encrypted API key."));
         LoadConfig();
         var apiKeyPlain = Config.DecryptedApiKey.Trim();
         if (string.IsNullOrWhiteSpace(apiKeyPlain))
         {
-            return (false, "API Key 为空，或无法在当前设备解密。");
+            return CoreRunResult.Fail("API key is empty or unavailable on this device.", code: "config");
         }
 
         var areaNames = GetAreaNames();
+        var areaPerDayCounts = GetAreaPerDayCounts();
         var pythonPath = ValidatePythonPath(Config.PythonPath, PluginBaseDirectory, _basePath);
         var inputPath = Path.Combine(_dataDir, "ipc_input.json");
         var resultPath = Path.Combine(_dataDir, "ipc_result.json");
@@ -240,7 +287,7 @@ public class DutyBackendService : IDisposable
 
         if (!File.Exists(scriptPath))
         {
-            return (false, $"未找到核心脚本：{scriptPath}");
+            return CoreRunResult.Fail($"Core script not found: {scriptPath}");
         }
 
         if (File.Exists(resultPath))
@@ -248,18 +295,20 @@ public class DutyBackendService : IDisposable
             File.Delete(resultPath);
         }
 
+        progress?.Invoke(BuildProgress("build_prompt", "Building prompt and payload."));
         var inputData = new
         {
             instruction,
             apply_mode = applyMode,
+            start_from_today = Config.StartFromToday,
             days_to_generate = Config.AutoRunCoverageDays,
             per_day = Config.PerDay,
             skip_weekends = Config.SkipWeekends,
             duty_rule = Config.DutyRule,
-            start_from_today = Config.StartFromToday,
             base_url = Config.BaseUrl,
             model = overrideModel ?? Config.Model,
-            area_names = areaNames
+            area_names = areaNames,
+            area_per_day_counts = areaPerDayCounts
         };
         File.WriteAllText(inputPath, JsonSerializer.Serialize(inputData), Utf8NoBom);
 
@@ -281,20 +330,49 @@ public class DutyBackendService : IDisposable
         process.OutputDataReceived += (_, args) => { if (args.Data != null) stdout.AppendLine(args.Data); };
         process.ErrorDataReceived += (_, args) => { if (args.Data != null) stderr.AppendLine(args.Data); };
 
-        if (!process.Start())
+        var processStarted = false;
+        try
         {
-            return (false, "无法启动 Python 进程。");
+            if (!process.Start())
+            {
+                return CoreRunResult.Fail("Failed to start Python process.");
+            }
+
+            processStarted = true;
+            PythonProcessTracker.Register(process);
+            process.BeginOutputReadLine();
+            process.BeginErrorReadLine();
+            progress?.Invoke(BuildProgress("wait_response", "Waiting for model response."));
+            if (!process.WaitForExit(CoreProcessTimeoutMs))
+            {
+                try
+                {
+                    process.Kill(entireProcessTree: true);
+                }
+                catch
+                {
+                }
+
+                return CoreRunResult.Fail(
+                    $"Core process timed out after {CoreProcessTimeoutMs / 1000} seconds.");
+            }
+
+            process.WaitForExit();
         }
-        process.BeginOutputReadLine();
-        process.BeginErrorReadLine();
-        process.WaitForExit();
+        finally
+        {
+            if (processStarted)
+            {
+                PythonProcessTracker.Unregister(process);
+            }
+        }
 
         var stderrText = stderr.ToString().Trim();
         var stdoutText = stdout.ToString().Trim();
 
         if (process.ExitCode != 0)
         {
-            var message = TryReadCoreErrorMessage(resultPath);
+            var (message, aiResponse) = TryReadCoreResultFields(resultPath);
             if (string.IsNullOrWhiteSpace(message))
             {
                 message = SummarizePythonError(stderrText);
@@ -307,10 +385,12 @@ public class DutyBackendService : IDisposable
 
             if (string.IsNullOrWhiteSpace(message))
             {
-                message = "核心进程执行失败。";
+                message = "Core process execution failed.";
             }
 
-            return (false, $"排班失败（ExitCode={process.ExitCode}）：{message}");
+            return CoreRunResult.Fail(
+                $"Schedule generation failed (ExitCode={process.ExitCode}): {message}",
+                aiResponse);
         }
 
         if (!File.Exists(resultPath))
@@ -323,21 +403,25 @@ public class DutyBackendService : IDisposable
 
             if (string.IsNullOrWhiteSpace(message))
             {
-                message = "未生成 ipc_result.json。";
+                message = "ipc_result.json was not generated.";
             }
 
-            return (false, message);
+            return CoreRunResult.Fail(message);
         }
 
         try
         {
+            progress?.Invoke(BuildProgress("organize_result", "Organizing schedule result."));
             var resultJson = File.ReadAllText(resultPath, Encoding.UTF8);
             using var doc = JsonDocument.Parse(resultJson);
             var success = doc.RootElement.TryGetProperty("status", out var status) &&
                           string.Equals(status.GetString(), "success", StringComparison.OrdinalIgnoreCase);
+            var aiResponse = doc.RootElement.TryGetProperty("ai_response", out var aiElement)
+                ? (aiElement.GetString() ?? string.Empty)
+                : string.Empty;
             if (success)
             {
-                return (true, "执行成功。");
+                return CoreRunResult.Ok("Execution succeeded.", aiResponse);
             }
 
             var errorMessage = doc.RootElement.TryGetProperty("message", out var messageElement)
@@ -345,40 +429,84 @@ public class DutyBackendService : IDisposable
                 : string.Empty;
             if (errorMessage.Length == 0)
             {
-                errorMessage = "核心进程返回非 success 状态。";
+                errorMessage = "Core process returned a non-success status.";
             }
 
-            return (false, errorMessage);
+            return CoreRunResult.Fail(errorMessage, aiResponse);
         }
         catch (Exception ex)
         {
-            return (false, $"解析结果文件失败：{ex.Message}");
+            return CoreRunResult.Fail($"Failed to parse result file: {ex.Message}");
+        }
+        }
+        finally
+        {
+            _runCoreGate.Release();
         }
     }
 
-    private static string? TryReadCoreErrorMessage(string resultPath)
+    private static (string? Message, string? AiResponse) TryReadCoreResultFields(string resultPath)
     {
         try
         {
             if (!File.Exists(resultPath))
             {
-                return null;
+                return (null, null);
             }
 
             var resultJson = File.ReadAllText(resultPath, Encoding.UTF8);
             using var doc = JsonDocument.Parse(resultJson);
-            if (!doc.RootElement.TryGetProperty("message", out var messageElement))
+            var message = doc.RootElement.TryGetProperty("message", out var messageElement)
+                ? (messageElement.GetString() ?? string.Empty).Trim()
+                : null;
+            if (message?.Length == 0)
             {
-                return null;
+                message = null;
             }
 
-            var message = (messageElement.GetString() ?? string.Empty).Trim();
-            return message.Length == 0 ? null : message;
+            var aiResponse = doc.RootElement.TryGetProperty("ai_response", out var aiElement)
+                ? (aiElement.GetString() ?? string.Empty).Trim()
+                : null;
+            if (aiResponse?.Length == 0)
+            {
+                aiResponse = null;
+            }
+
+            return (message, aiResponse);
         }
         catch
         {
-            return null;
+            return (null, null);
         }
+    }
+
+    public string GetApiKeyMaskForUi()
+    {
+        lock (_configLock)
+        {
+            return string.IsNullOrWhiteSpace(Config.EncryptedApiKey) ? string.Empty : ApiKeyMask;
+        }
+    }
+
+    public static string ResolveApiKeyInput(string? incomingApiKey, string existingApiKey)
+    {
+        if (incomingApiKey is null)
+        {
+            return existingApiKey;
+        }
+
+        var trimmed = incomingApiKey.Trim();
+        if (trimmed.Length == 0)
+        {
+            return string.Empty;
+        }
+
+        if (string.Equals(trimmed, ApiKeyMask, StringComparison.Ordinal))
+        {
+            return existingApiKey;
+        }
+
+        return trimmed;
     }
 
     private static string? SummarizePythonError(string output)
@@ -424,11 +552,36 @@ public class DutyBackendService : IDisposable
         }
     }
 
+    public Dictionary<string, int> GetAreaPerDayCounts()
+    {
+        lock (_configLock)
+        {
+            var areaNames = NormalizeAreaNames(Config.AreaNames);
+            return NormalizeAreaPerDayCounts(areaNames, Config.AreaPerDayCounts, Config.PerDay);
+        }
+    }
+
     public List<string> GetNotificationTemplates()
     {
         lock (_configLock)
         {
             return NormalizeNotificationTemplates(Config.NotificationTemplates);
+        }
+    }
+
+    public List<string> GetDutyReminderTimes()
+    {
+        lock (_configLock)
+        {
+            return NormalizeDutyReminderTimes(Config.DutyReminderTimes);
+        }
+    }
+
+    public List<string> GetDutyReminderTemplates()
+    {
+        lock (_configLock)
+        {
+            return NormalizeDutyReminderTemplates(Config.DutyReminderTemplates);
         }
     }
 
@@ -471,27 +624,28 @@ public class DutyBackendService : IDisposable
             Directory.CreateDirectory(directory);
         }
 
-        var map = new Dictionary<int, RosterEntry>();
+        var normalized = new List<RosterEntry>();
+        var nameCounts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
         foreach (var entry in rosterEntries ?? [])
         {
-            var id = entry.Id;
-            var name = (entry.Name ?? string.Empty).Trim();
-            if (id <= 0 || name.Length == 0)
+            var baseName = (entry.Name ?? string.Empty).Trim();
+            if (baseName.Length == 0)
             {
                 continue;
             }
 
-            map[id] = new RosterEntry
+            var uniqueName = ToUniqueRosterName(baseName, nameCounts);
+            normalized.Add(new RosterEntry
             {
-                Id = id,
-                Name = name,
+                Id = normalized.Count + 1,
+                Name = uniqueName,
                 Active = entry.Active
-            };
+            });
         }
 
         var builder = new StringBuilder();
         builder.AppendLine("id,name,active");
-        foreach (var item in map.Values.OrderBy(x => x.Id))
+        foreach (var item in normalized)
         {
             builder.Append(item.Id);
             builder.Append(',');
@@ -540,9 +694,11 @@ public class DutyBackendService : IDisposable
         try
         {
             LoadConfig();
+            var now = DateTime.Now;
+            TryPublishDutyReminderNotifications(now);
+
             if (!Config.EnableAutoRun) return;
 
-            var now = DateTime.Now;
             if (Config.LastAutoRunDate == now.ToString("yyyy-MM-dd")) return;
             if ((now - _lastAutoRunAttempt).TotalMinutes < AutoRunRetryCooldownMinutes) return;
 
@@ -752,6 +908,51 @@ public class DutyBackendService : IDisposable
         return areas;
     }
 
+    private static Dictionary<string, int> NormalizeAreaPerDayCounts(
+        IReadOnlyList<string> areaNames,
+        IEnumerable<KeyValuePair<string, int>>? rawCounts,
+        int fallbackPerDay)
+    {
+        var fallback = Math.Clamp(fallbackPerDay, 1, 30);
+        var source = new Dictionary<string, int>(StringComparer.Ordinal);
+
+        if (rawCounts != null)
+        {
+            foreach (var pair in rawCounts)
+            {
+                var area = (pair.Key ?? string.Empty).Trim();
+                if (area.Length == 0)
+                {
+                    continue;
+                }
+
+                source[area] = Math.Clamp(pair.Value, 1, 30);
+            }
+        }
+
+        var normalized = new Dictionary<string, int>(StringComparer.Ordinal);
+        foreach (var area in areaNames)
+        {
+            var key = (area ?? string.Empty).Trim();
+            if (key.Length == 0)
+            {
+                continue;
+            }
+
+            normalized[key] = source.TryGetValue(key, out var count)
+                ? Math.Clamp(count, 1, 30)
+                : fallback;
+        }
+
+        if (normalized.Count == 0)
+        {
+            normalized[DefaultAreaClassroom] = fallback;
+            normalized[DefaultAreaCleaning] = fallback;
+        }
+
+        return normalized;
+    }
+
     private static List<string> NormalizeNotificationTemplates(IEnumerable<string>? rawTemplates)
     {
         var templates = new List<string>();
@@ -778,6 +979,219 @@ public class DutyBackendService : IDisposable
         return templates;
     }
 
+    public void PublishDutyReminderNotificationNow(string? dateText = null, string? timeText = null)
+    {
+        LoadConfig();
+
+        var dateValue = (dateText ?? string.Empty).Trim();
+        if (dateValue.Length == 0)
+        {
+            dateValue = DateTime.Now.ToString("yyyy-MM-dd");
+        }
+
+        var timeValue = (timeText ?? string.Empty).Trim();
+        if (timeValue.Length == 0)
+        {
+            timeValue = DateTime.Now.ToString("HH:mm");
+        }
+
+        PublishDutyReminderNotification(dateValue, timeValue);
+    }
+
+    private void TryPublishDutyReminderNotifications(DateTime now)
+    {
+        if (!Config.DutyReminderEnabled)
+        {
+            return;
+        }
+
+        var reminderTimes = NormalizeDutyReminderTimes(Config.DutyReminderTimes);
+        if (reminderTimes.Count == 0)
+        {
+            return;
+        }
+
+        var today = now.ToString("yyyy-MM-dd");
+        var dueTimes = new List<string>();
+
+        lock (_dutyReminderLock)
+        {
+            _sentDutyReminderSlots.RemoveWhere(x => !x.StartsWith($"{today}|", StringComparison.Ordinal));
+
+            foreach (var reminderTime in reminderTimes)
+            {
+                if (!TimeSpan.TryParse(reminderTime, out var triggerTime))
+                {
+                    continue;
+                }
+
+                var triggerAt = now.Date.Add(triggerTime);
+                if (now < triggerAt || now >= triggerAt.AddMinutes(1))
+                {
+                    continue;
+                }
+
+                var slotKey = $"{today}|{reminderTime}";
+                if (_sentDutyReminderSlots.Add(slotKey))
+                {
+                    dueTimes.Add(reminderTime);
+                }
+            }
+        }
+
+        foreach (var reminderTime in dueTimes)
+        {
+            PublishDutyReminderNotification(today, reminderTime);
+        }
+    }
+
+    private void PublishDutyReminderNotification(string dateText, string timeText)
+    {
+        var state = LoadState();
+        var areaNames = GetAreaNames();
+        var areaPerDayCounts = GetAreaPerDayCounts();
+        var item = state.SchedulePool.LastOrDefault(x => string.Equals(x.Date, dateText, StringComparison.Ordinal));
+        var assignments = item is null
+            ? new Dictionary<string, List<string>>(StringComparer.Ordinal)
+            : GetAreaAssignments(item);
+
+        var assignmentSegments = areaNames
+            .Select(area =>
+            {
+                var students = assignments.TryGetValue(area, out var names) ? names : [];
+                var studentText = students.Count > 0 ? string.Join("\u3001", students) : "\u65E0";
+                return $"{area}\uFF1A{studentText}";
+            })
+            .ToList();
+
+        var dutyStudents = assignments
+            .Values
+            .SelectMany(x => x ?? [])
+            .Select(x => (x ?? string.Empty).Trim())
+            .Where(x => x.Length > 0)
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
+
+        var scene = "\u503C\u65E5\u63D0\u9192";
+        var status = item is null ? "\u65E0\u5B89\u6392" : "\u8BF7\u5230\u5C97";
+        var fallbackText = item is null
+            ? $"{scene}\uFF1A{dateText} {timeText}\uFF0C\u4ECA\u65E5\u6682\u65E0\u503C\u65E5\u5B89\u6392\u3002"
+            : $"{scene}\uFF1A{dateText} {timeText}\uFF0C{string.Join("\uFF1B", assignmentSegments)}";
+
+        var placeholders = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["scene"] = scene,
+            ["status"] = status,
+            ["date"] = dateText,
+            ["time"] = timeText,
+            ["areas"] = string.Join("\u3001", areaNames),
+            ["duty_students"] = dutyStudents.Count > 0 ? string.Join("\u3001", dutyStudents) : "\u6682\u65E0",
+            ["assignments"] = assignmentSegments.Count > 0
+                ? string.Join("\uFF1B", assignmentSegments)
+                : "\u6682\u65E0\u503C\u65E5\u5B89\u6392",
+            ["days"] = Config.AutoRunCoverageDays.ToString(),
+            ["per_day"] = Config.PerDay.ToString(),
+            ["mode"] = "duty_reminder",
+            ["instruction"] = string.Empty,
+            ["message"] = item is null
+                ? "\u4ECA\u65E5\u6682\u65E0\u503C\u65E5\u5B89\u6392"
+                : "\u8BF7\u6309\u5B89\u6392\u5B8C\u6210\u503C\u65E5"
+        };
+
+        _notificationService.PublishFromTemplates(
+            NormalizeDutyReminderTemplates(Config.DutyReminderTemplates),
+            placeholders,
+            fallbackText,
+            durationSeconds: 8);
+    }
+
+    private static List<string> NormalizeDutyReminderTemplates(IEnumerable<string>? rawTemplates)
+    {
+        var templates = new List<string>();
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        if (rawTemplates != null)
+        {
+            foreach (var raw in rawTemplates)
+            {
+                var template = (raw ?? string.Empty).Trim();
+                if (template.Length == 0 || !seen.Add(template))
+                {
+                    continue;
+                }
+
+                templates.Add(template);
+            }
+        }
+
+        if (templates.Count == 0)
+        {
+            templates.Add(DefaultDutyReminderTemplate);
+        }
+
+        return templates;
+    }
+
+    private static List<string> NormalizeDutyReminderTimes(IEnumerable<string>? rawTimes)
+    {
+        var times = new List<string>();
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        if (rawTimes != null)
+        {
+            foreach (var raw in rawTimes)
+            {
+                var text = raw ?? string.Empty;
+                foreach (var token in text.Split([',', ';', '\r', '\n'], StringSplitOptions.RemoveEmptyEntries))
+                {
+                    if (!TryNormalizeDutyReminderTime(token, out var normalized) || !seen.Add(normalized))
+                    {
+                        continue;
+                    }
+
+                    times.Add(normalized);
+                }
+            }
+        }
+
+        if (times.Count == 0)
+        {
+            times.Add(DefaultDutyReminderTime);
+        }
+
+        times.Sort(StringComparer.Ordinal);
+        return times;
+    }
+
+    private static bool TryNormalizeDutyReminderTime(string raw, out string normalized)
+    {
+        normalized = string.Empty;
+        var text = (raw ?? string.Empty).Trim();
+        if (!TimeSpan.TryParse(text, out var time))
+        {
+            return false;
+        }
+
+        if (time < TimeSpan.Zero || time >= TimeSpan.FromDays(1))
+        {
+            return false;
+        }
+
+        normalized = time.ToString(@"hh\:mm");
+        return true;
+    }
+
+    private static string ToUniqueRosterName(string baseName, IDictionary<string, int> nameCounts)
+    {
+        if (!nameCounts.TryGetValue(baseName, out var count))
+        {
+            nameCounts[baseName] = 1;
+            return baseName;
+        }
+
+        count++;
+        nameCounts[baseName] = count;
+        return $"{baseName}{count}";
+    }
+
     private static string EscapeCsv(string text)
     {
         if (text.IndexOfAny([',', '"', '\r', '\n']) < 0)
@@ -786,5 +1200,47 @@ public class DutyBackendService : IDisposable
         }
 
         return $"\"{text.Replace("\"", "\"\"")}\"";
+    }
+
+    public sealed class CoreRunResult
+    {
+        public bool Success { get; init; }
+        public string Message { get; init; } = string.Empty;
+        public string AiResponse { get; init; } = string.Empty;
+        public string Code { get; init; } = string.Empty;
+
+        public static CoreRunResult Ok(string message, string? aiResponse = null, string? code = null)
+        {
+            return new CoreRunResult
+            {
+                Success = true,
+                Message = message,
+                AiResponse = aiResponse ?? string.Empty,
+                Code = code ?? string.Empty
+            };
+        }
+
+        public static CoreRunResult Fail(string message, string? aiResponse = null, string? code = null)
+        {
+            return new CoreRunResult
+            {
+                Success = false,
+                Message = message,
+                AiResponse = aiResponse ?? string.Empty,
+                Code = code ?? string.Empty
+            };
+        }
+    }
+
+    public sealed class CoreRunProgress
+    {
+        public string Phase { get; }
+        public string Message { get; }
+
+        public CoreRunProgress(string phase, string message)
+        {
+            Phase = phase;
+            Message = message;
+        }
     }
 }

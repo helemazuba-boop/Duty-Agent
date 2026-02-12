@@ -6,26 +6,39 @@
   <title>Duty-Agent 测试控制台</title>
   <style>
     :root {
-      --bg1: #ffffff;
-      --bg2: #ffffff;
-      --card: #ffffff;
-      --line: #d5dde5;
+      --bg1: rgba(248, 251, 255, 0.55);
+      --bg2: rgba(239, 246, 255, 0.45);
+      --card: rgba(255, 255, 255, 0.82);
+      --line: rgba(148, 163, 184, 0.35);
       --text: #1f2937;
-      --muted: #6b7280;
+      --muted: #64748b;
       --brand: #0f766e;
       --warn: #d97706;
       --danger: #b91c1c;
       --ok: #0f766e;
+      --input-bg: rgba(255, 255, 255, 0.72);
+      --table-head: rgba(248, 250, 252, 0.80);
       --radius: 14px;
       --shadow: 0 12px 28px rgba(15,23,42,.08);
     }
     * { box-sizing: border-box; }
-    html, body { margin: 0; min-height: 100%; }
+    html, body {
+      margin: 0;
+      min-height: 100%;
+      background: #f6f9ff;
+    }
     body {
       font-family: "Noto Sans SC", "Microsoft YaHei UI", "Segoe UI", sans-serif;
       color: var(--text);
-      background: #ffffff;
+      background: linear-gradient(145deg, var(--bg1), var(--bg2));
       padding: 18px;
+      opacity: 0;
+      transform: translateY(8px);
+      transition: opacity .24s ease, transform .24s ease;
+    }
+    body.page-ready {
+      opacity: 1;
+      transform: translateY(0);
     }
     .shell { max-width: 1500px; margin: 0 auto; }
     .topbar {
@@ -36,12 +49,12 @@
     .topbar h1 { margin: 0; font-size: 23px; }
     .topbar p { margin: 3px 0 0; color: var(--muted); font-size: 12px; }
     .mode { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-    .chip { border: 1px solid var(--line); border-radius: 999px; padding: 6px 10px; background: #fff; font-size: 12px; color: var(--muted); display: inline-flex; align-items: center; gap: 6px; }
+    .chip { border: 1px solid var(--line); border-radius: 999px; padding: 6px 10px; background: var(--card); font-size: 12px; color: var(--muted); display: inline-flex; align-items: center; gap: 6px; }
     .dot { width: 8px; height: 8px; border-radius: 50%; background: #9ca3af; }
     .dot.ok { background: var(--ok); }
     .dot.warn { background: var(--warn); }
     .dot.err { background: var(--danger); }
-    .pill { border: 1px solid var(--line); border-radius: 999px; padding: 2px 8px; font-size: 11px; color: var(--muted); background: #fff; }
+    .pill { border: 1px solid var(--line); border-radius: 999px; padding: 2px 8px; font-size: 11px; color: var(--muted); background: var(--card); }
     .mono { font-family: "Consolas", "JetBrains Mono", "Courier New", monospace; }
     .grid { display: grid; grid-template-columns: 1.1fr 1.2fr 1.4fr; gap: 12px; }
     .col { display: grid; gap: 12px; align-content: start; }
@@ -51,7 +64,7 @@
     }
     .head {
       display: flex; align-items: center; justify-content: space-between; gap: 8px;
-      padding: 10px 12px; border-bottom: 1px solid var(--line); background: #ffffff;
+      padding: 10px 12px; border-bottom: 1px solid var(--line); background: var(--card);
     }
     .head h2 { margin: 0; font-size: 14px; }
     .body { padding: 11px 12px; display: grid; gap: 9px; }
@@ -61,14 +74,18 @@
     label { font-size: 12px; color: var(--muted); }
     input, select, textarea, button { font: inherit; font-size: 13px; }
     input, select, textarea {
-      width: 100%; border: 1px solid var(--line); border-radius: 10px; background: #fff;
+      width: 100%; border: 1px solid var(--line); border-radius: 10px; background: var(--input-bg);
       color: var(--text); padding: 8px 9px; outline: none;
     }
     input:focus, select:focus, textarea:focus { border-color: var(--brand); box-shadow: 0 0 0 3px rgba(15,118,110,.14); }
     textarea { min-height: 84px; resize: vertical; }
     button {
-      border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; background: #fff;
+      border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; background: var(--input-bg);
       color: var(--text); cursor: pointer;
+    }
+    button:disabled {
+      opacity: .6;
+      cursor: not-allowed;
     }
     button.primary { background: linear-gradient(135deg, #0f766e, #115e59); color: #fff; border-color: transparent; }
     button.warn { background: linear-gradient(135deg, #d97706, #b45309); color: #fff; border-color: transparent; }
@@ -77,27 +94,34 @@
     .btns { display: flex; flex-wrap: wrap; gap: 7px; }
     .hint {
       font-size: 12px; color: var(--muted); line-height: 1.4;
-      background: #ffffff; border: 1px dashed var(--line); border-radius: 10px; padding: 7px 8px;
+      background: var(--card); border: 1px dashed var(--line); border-radius: 10px; padding: 7px 8px;
     }
     .status {
       display: flex; align-items: center; gap: 8px; font-size: 12px;
-      border: 1px solid var(--line); border-radius: 10px; padding: 7px 8px; background: #ffffff;
+      border: 1px solid var(--line); border-radius: 10px; padding: 7px 8px; background: var(--card);
     }
     .status.ok { border-color: rgba(15,118,110,.35); }
     .status.err { border-color: rgba(185,28,28,.35); }
     .list select { min-height: 86px; }
-    .table-wrap { overflow: auto; border: 1px solid var(--line); border-radius: 10px; background: #fff; }
+    .table-wrap { overflow: auto; border: 1px solid var(--line); border-radius: 10px; background: var(--card); }
     table { width: 100%; border-collapse: collapse; min-width: 420px; }
     th, td { border-bottom: 1px solid #edf1f5; text-align: left; font-size: 12px; padding: 8px 9px; vertical-align: top; }
-    th { background: #f8fafc; color: #475569; position: sticky; top: 0; }
+    th { background: var(--table-head); color: var(--muted); position: sticky; top: 0; }
     tr.sel { background: rgba(15,118,110,.12); }
     #noticeList { display: grid; gap: 7px; max-height: 160px; overflow: auto; }
-    .notice { border: 1px solid var(--line); border-left: 4px solid var(--brand); border-radius: 10px; padding: 7px 8px; background: #fff; font-size: 12px; }
+    .notice { border: 1px solid var(--line); border-left: 4px solid var(--brand); border-radius: 10px; padding: 7px 8px; background: var(--card); font-size: 12px; }
     .notice.fail { border-left-color: var(--danger); }
     #snapshot { min-height: 170px; font-size: 12px; }
     #log {
       min-height: 140px; max-height: 300px; overflow: auto; border: 1px solid var(--line); border-radius: 10px;
-      background: #ffffff; color: #1f2937; padding: 9px; font-size: 12px; line-height: 1.45; white-space: pre-wrap;
+      background: var(--card); color: var(--text); padding: 9px; font-size: 12px; line-height: 1.45; white-space: pre-wrap;
+    }
+    @media (prefers-reduced-motion: reduce) {
+      body {
+        opacity: 1;
+        transform: none;
+        transition: none;
+      }
     }
     @media (max-width: 1200px) {
       .grid { grid-template-columns: 1fr; }
@@ -120,6 +144,8 @@
       </select>
       <span class="chip"><span id="bridgeDot" class="dot"></span><span id="bridgeText">宿主未启用</span></span>
       <span id="runtimeTag" class="pill mono">运行模式：本地模拟</span>
+      <span id="previewUrlTag" class="pill mono">本地调试URL：-</span>
+      <span id="apiOverwriteUrlTag" class="pill mono">覆盖排班API：-</span>
     </div>
   </section>
 
@@ -149,13 +175,33 @@
           </div>
           <div class="btns">
             <button id="runBtn" class="primary">执行排班</button>
-            <button id="mockPlusOneBtn">模拟+1天</button>
             <button id="loadBtn">加载数据</button>
             <button id="saveCfgBtn">保存配置</button>
             <button id="saveRosterBtn">保存名单</button>
           </div>
+          <div class="row">
+            <label for="apiInstruction">本地接口覆盖排班指令（可留空复用上方排班指令）</label>
+            <textarea id="apiInstruction" placeholder="例如：从今天开始覆盖排7天，每个区域每天2人。"></textarea>
+          </div>
+          <div class="row two">
+            <div class="row">
+              <label for="apiBaseUrl">API 基址（自动填充）</label>
+              <input id="apiBaseUrl" type="text" placeholder="http://127.0.0.1:48380">
+            </div>
+            <div class="row">
+              <label for="apiStatus">接口状态</label>
+              <input id="apiStatus" type="text" value="待命" readonly>
+            </div>
+          </div>
+          <div class="btns">
+            <button id="apiOverwriteBtn">通过本地接口覆盖排班</button>
+          </div>
+          <div class="row">
+            <label for="apiResponse">接口响应</label>
+            <textarea id="apiResponse" class="mono" placeholder="这里显示 /api/v1/schedule/overwrite 的 JSON 响应"></textarea>
+          </div>
           <div id="runStatus" class="status"><span class="dot warn"></span><span>等待操作</span></div>
-          <div class="hint">导出快照会把接口密钥掩码为 <span class="mono">***仅运行时***</span>，用于校验“密钥仅运行时使用”的流程。</div>
+          <div class="hint">导出快照会把接口密钥掩码为 <span class="mono">***仅运行时***</span>，用于校验“密钥仅运行时使用”的流程。覆盖接口固定使用 <span class="mono">replace_all</span>。</div>
         </div>
       </section>
 
@@ -207,6 +253,9 @@
           <div class="btns">
             <button id="previewNotice">本地预览</button>
             <button id="sendNotice" class="warn">发送到宿主</button>
+            <button id="triggerRunCompletionNotice">触发完成排班通知</button>
+            <button id="triggerDutyReminderNotice">触发值日提醒通知</button>
+            <button id="openInBrowserBtn">浏览器打开 test.html</button>
           </div>
           <div id="noticeList"></div>
         </div>
@@ -233,9 +282,9 @@
             <div class="row"><label for="cfgPer">每区域每日人数</label><input id="cfgPer" type="number" min="1" max="30"></div>
             <div class="row"><label for="cfgRefresh">组件刷新时间</label><input id="cfgRefresh" type="time" step="60"></div>
           </div>
-          <div class="row two">
-            <div class="row"><label for="cfgSkip">跳过周末</label><select id="cfgSkip"><option value="true">是</option><option value="false">否</option></select></div>
-            <div class="row"><label for="cfgStart">从今天开始</label><select id="cfgStart"><option value="false">否</option><option value="true">是</option></select></div>
+          <div class="row">
+            <label for="cfgSkip">跳过周末</label>
+            <select id="cfgSkip"><option value="true">是</option><option value="false">否</option></select>
           </div>
           <div class="row"><label for="cfgRule">排班规则</label><textarea id="cfgRule"></textarea></div>
         </div>
@@ -293,7 +342,7 @@
           </div>
           <textarea id="snapshot" class="mono" placeholder="导入或查看快照 JSON"></textarea>
           <div id="log" class="mono"></div>
-          <div class="hint">宿主消息 action：<span class="mono">ready / load_all / save_config / save_roster / run_core / publish_notification</span></div>
+          <div class="hint">宿主消息 action：<span class="mono">ready / load_all / save_config / save_roster / run_core / publish_notification / trigger_run_completion_notification / trigger_duty_reminder_notification / open_test_in_browser</span></div>
         </div>
       </section>
     </div>
@@ -314,7 +363,6 @@ const DEFAULT_CONFIG = {
   per_day: 2,
   skip_weekends: true,
   duty_rule: '',
-  start_from_today: false,
   component_refresh_time: '08:00',
   area_names: ['教室', '清洁区'],
   notification_templates: ['{scene}{status}，日期：{date}，区域：{areas}']
@@ -333,11 +381,15 @@ const DEFAULT_STATE = { seed_anchor: '', schedule_pool: [] };
 const DAY = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
 const API_KEY_MASK = '***仅运行时***';
 const LEGACY_API_KEY_MASK = '***runtime-only***';
+const HOST_API_KEY_MASK = '********';
 const hasBridge = !!(window.chrome && window.chrome.webview);
 
 let runtimeMode = 'mock';
 let selectedRosterId = null;
 let logFilter = 'all';
+let runInProgress = false;
+let localPreviewUrl = '';
+let apiOverwriteUrl = '';
 const logEntries = [];
 const LOG_MAX = 500;
 const LOG_LEVEL_LABELS = {
@@ -410,6 +462,40 @@ function list(input, fallback) {
 }
 function names(v) { return list(v, []); }
 
+function applyHostTheme(payload) {
+  if (!payload || typeof payload !== 'object') return;
+  const root = document.documentElement;
+  const map = {
+    '--bg1': payload.bg1,
+    '--bg2': payload.bg2,
+    '--card': payload.card,
+    '--line': payload.line,
+    '--text': payload.text,
+    '--muted': payload.muted,
+    '--shadow': payload.shadow,
+    '--input-bg': payload.input_bg,
+    '--table-head': payload.table_head
+  };
+  for (const [key, value] of Object.entries(map)) {
+    if (typeof value === 'string' && value.trim()) {
+      root.style.setProperty(key, value.trim());
+    }
+  }
+  root.setAttribute('data-host-theme', String(payload.mode || 'light'));
+}
+
+function toUniqueStudentName(baseName) {
+  const normalized = String(baseName ?? '').trim();
+  if (!normalized) return '';
+
+  const existing = new Set(store.roster.map((x) => String(x?.name ?? '').trim()).filter(Boolean));
+  if (!existing.has(normalized)) return normalized;
+
+  let suffix = 2;
+  while (existing.has(`${normalized}${suffix}`)) suffix += 1;
+  return `${normalized}${suffix}`;
+}
+
 function normalizeConfig(input) {
   const raw = input && typeof input === 'object' ? input : {};
   return {
@@ -424,7 +510,6 @@ function normalizeConfig(input) {
     per_day: clamp(int(raw.per_day, 2), 1, 30),
     skip_weekends: bool(raw.skip_weekends, true),
     duty_rule: String(raw.duty_rule ?? ''),
-    start_from_today: bool(raw.start_from_today, false),
     component_refresh_time: String(raw.component_refresh_time ?? '08:00').trim() || '08:00',
     area_names: list(raw.area_names, DEFAULT_CONFIG.area_names),
     notification_templates: list(raw.notification_templates, DEFAULT_CONFIG.notification_templates)
@@ -509,13 +594,59 @@ function assignment(item, areaOrder = []) {
   return ordered;
 }
 
+function isSecretKeyName(key) {
+  const k = String(key || '').trim().toLowerCase();
+  return k === 'api_key' ||
+    k === 'apikey' ||
+    k === 'encrypted_api_key' ||
+    k === 'authorization' ||
+    k === 'api-key' ||
+    k === 'token';
+}
+
+function maskSecret(value) {
+  const text = String(value ?? '').trim();
+  if (!text) return '***';
+  if (text.length <= 8) return '***';
+  return `${text.slice(0, 4)}...${text.slice(-2)}`;
+}
+
+function sanitizeForLog(value, keyHint = '') {
+  if (value === null || value === undefined) return value;
+  if (Array.isArray(value)) {
+    return value.map((item) => sanitizeForLog(item, keyHint));
+  }
+  if (typeof value === 'object') {
+    const out = {};
+    for (const [key, nested] of Object.entries(value)) {
+      out[key] = isSecretKeyName(key) ? maskSecret(nested) : sanitizeForLog(nested, key);
+    }
+    return out;
+  }
+  if (typeof value === 'string') {
+    if (isSecretKeyName(keyHint)) return maskSecret(value);
+    if (/^bearer\s+/i.test(value.trim())) return 'Bearer ***';
+  }
+  return value;
+}
+
+function setRunInProgress(isRunning, statusText) {
+  runInProgress = !!isRunning;
+  const runBtn = $('runBtn');
+  runBtn.disabled = runInProgress;
+  runBtn.textContent = runInProgress ? '执行中...' : '执行排班';
+  if (runInProgress) {
+    setStatus('warn', statusText || '正在执行排班，请稍候...');
+  }
+}
+
 function log(level, msg, payload) {
   const upper = String(level || 'INFO').toUpperCase();
   const entry = {
     time: now(),
     level: upper,
     text: String(msg || ''),
-    payload: payload === undefined ? null : payload
+    payload: payload === undefined ? null : sanitizeForLog(payload)
   };
   logEntries.push(entry);
   if (logEntries.length > LOG_MAX) {
@@ -585,6 +716,50 @@ function setMode(mode) {
   }
 }
 
+function setLocalPreviewUrl(url) {
+  const text = String(url || '').trim();
+  localPreviewUrl = text;
+  $('previewUrlTag').textContent = text ? `本地调试URL：${text}` : '本地调试URL：-';
+  if (!apiOverwriteUrl && text) {
+    try {
+      setApiOverwriteUrl(`${new URL(text).origin}/api/v1/schedule/overwrite`);
+    } catch {
+    }
+  }
+}
+
+function setApiOverwriteUrl(url) {
+  const text = String(url || '').trim();
+  apiOverwriteUrl = text;
+  $('apiOverwriteUrlTag').textContent = text ? `覆盖排班API：${text}` : '覆盖排班API：-';
+  if (text) {
+    try {
+      $('apiBaseUrl').value = new URL(text).origin;
+    } catch {
+    }
+  }
+}
+
+function resolveOverwriteApiEndpoint() {
+  const fromInput = String($('apiBaseUrl').value || '').trim();
+  if (fromInput) {
+    return `${fromInput.replace(/\/+$/, '')}/api/v1/schedule/overwrite`;
+  }
+  if (apiOverwriteUrl) {
+    return apiOverwriteUrl;
+  }
+  if (localPreviewUrl) {
+    try {
+      return `${new URL(localPreviewUrl).origin}/api/v1/schedule/overwrite`;
+    } catch {
+    }
+  }
+  if (window.location.protocol.startsWith('http')) {
+    return `${window.location.origin}/api/v1/schedule/overwrite`;
+  }
+  return '';
+}
+
 function renderOptions(selectId, values) {
   const el = $(selectId);
   el.innerHTML = '';
@@ -600,7 +775,7 @@ function renderOptions(selectId, values) {
 function renderConfig() {
   const c = store.config;
   $('cfgPython').value = c.python_path;
-  $('cfgApi').value = c.api_key;
+  $('cfgApi').value = String(c.api_key || '').trim() ? API_KEY_MASK : '';
   $('cfgBase').value = c.base_url;
   $('cfgModel').value = c.model;
   $('cfgAuto').value = String(c.enable_auto_run);
@@ -610,16 +785,20 @@ function renderConfig() {
   $('cfgPer').value = c.per_day;
   $('cfgRefresh').value = c.component_refresh_time;
   $('cfgSkip').value = String(c.skip_weekends);
-  $('cfgStart').value = String(c.start_from_today);
   $('cfgRule').value = c.duty_rule;
   renderOptions('areaList', c.area_names);
   renderOptions('tplList', c.notification_templates);
 }
 
 function syncConfigFromForm() {
+  const inputApiKey = $('cfgApi').value;
+  const keepCurrentMasks = new Set([API_KEY_MASK, LEGACY_API_KEY_MASK, HOST_API_KEY_MASK]);
+  const apiKey = keepCurrentMasks.has(inputApiKey)
+    ? (String(store.config.api_key || '').trim() || HOST_API_KEY_MASK)
+    : inputApiKey;
   store.config = normalizeConfig({
     python_path: $('cfgPython').value,
-    api_key: $('cfgApi').value,
+    api_key: apiKey,
     base_url: $('cfgBase').value,
     model: $('cfgModel').value,
     enable_auto_run: $('cfgAuto').value,
@@ -629,7 +808,6 @@ function syncConfigFromForm() {
     per_day: $('cfgPer').value,
     skip_weekends: $('cfgSkip').value,
     duty_rule: $('cfgRule').value,
-    start_from_today: $('cfgStart').value,
     component_refresh_time: $('cfgRefresh').value,
     area_names: Array.from($('areaList').options).map((x) => x.value),
     notification_templates: Array.from($('tplList').options).map((x) => x.value)
@@ -742,14 +920,16 @@ function renderAll() {
   $('runtimeTag').textContent = runtimeMode === 'bridge' ? '运行模式：宿主模式' : '运行模式：本地模拟';
 }
 
-function startDateFromConfig() {
-  if (store.config.start_from_today) return today();
+function startDateFromConfig(applyMode) {
   const pool = [...store.state.schedule_pool].sort((a, b) => a.date.localeCompare(b.date));
-  if (pool.length) {
-    const last = parseIso(pool[pool.length - 1].date);
-    if (last) return addDays(last, 1);
+  if (applyMode === 'append') {
+    if (pool.length) {
+      const last = parseIso(pool[pool.length - 1].date);
+      if (last) return addDays(last, 1);
+    }
+    return today();
   }
-  return addDays(today(), 1);
+  return today();
 }
 
 function targetDates(start, days, skipWeekends) {
@@ -777,17 +957,27 @@ function lastAssignedName(pool, areas, applyMode, startDate) {
   return null;
 }
 
+function dedupeByDate(items) {
+  const map = new Map();
+  for (const item of items) {
+    const key = String(item?.date ?? '').trim();
+    if (!key) continue;
+    map.set(key, item);
+  }
+  return [...map.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([, v]) => v);
+}
+
 function mergeSchedule(existing, generated, applyMode, startDate) {
   const cur = [...existing].sort((a, b) => a.date.localeCompare(b.date));
   const start = dateIso(startDate);
   const td = dateIso(today());
-  if (applyMode === 'replace_all') return [...generated];
-  if (applyMode === 'replace_future') return [...cur.filter((x) => x.date <= td), ...generated].sort((a, b) => a.date.localeCompare(b.date));
+  if (applyMode === 'replace_all') return dedupeByDate([...generated]);
+  if (applyMode === 'replace_future') return dedupeByDate([...cur.filter((x) => x.date <= td), ...generated]);
   if (applyMode === 'replace_overlap') {
     const end = generated.length ? generated[generated.length - 1].date : start;
-    return [...cur.filter((x) => x.date < start || x.date > end), ...generated].sort((a, b) => a.date.localeCompare(b.date));
+    return dedupeByDate([...cur.filter((x) => x.date < start || x.date > end), ...generated]);
   }
-  return [...cur, ...generated];
+  return dedupeByDate([...cur, ...generated]);
 }
 
 function runMockInternal(daysToGenerate, applyMode, instruction, detailText) {
@@ -802,7 +992,7 @@ function runMockInternal(daysToGenerate, applyMode, instruction, detailText) {
     return;
   }
 
-  const start = startDateFromConfig();
+  const start = startDateFromConfig(applyMode);
   const dates = targetDates(start, days, store.config.skip_weekends);
   const anchor = lastAssignedName(store.state.schedule_pool, areas, applyMode, start);
   let idx = active.length - 1;
@@ -886,10 +1076,97 @@ function runMock() {
   runMockInternal(days, applyMode, instruction, $('runDetail').value.trim() || '模拟执行成功');
 }
 
-function mockPlusOneDay() {
-  const instruction = $('instruction').value.trim() || '模拟 +1 天';
-  log('INFO', '开始执行模拟 +1 天。');
-  runMockInternal(1, 'append', instruction, $('runDetail').value.trim() || '模拟 +1 天');
+function buildOverwriteApiPayload(instruction) {
+  syncConfigFromForm();
+  return {
+    instruction,
+    config: {
+      api_key: store.config.api_key,
+      base_url: store.config.base_url,
+      model: store.config.model,
+      auto_run_coverage_days: store.config.auto_run_coverage_days,
+      per_day: store.config.per_day,
+      skip_weekends: store.config.skip_weekends,
+      duty_rule: store.config.duty_rule,
+      start_from_today: store.config.start_from_today,
+      python_path: store.config.python_path,
+      area_names: store.config.area_names
+    }
+  };
+}
+
+async function runOverwriteByApi() {
+  const instruction = String($('apiInstruction').value || '').trim() || String($('instruction').value || '').trim();
+  if (!instruction) {
+    setStatus('err', '请输入覆盖排班指令。');
+    $('apiStatus').value = '失败';
+    log('ERROR', '本地接口覆盖排班失败：排班指令为空。');
+    return;
+  }
+
+  const endpoint = resolveOverwriteApiEndpoint();
+  if (!endpoint) {
+    setStatus('err', '未能解析覆盖排班 API 地址。');
+    $('apiStatus').value = '失败';
+    log('ERROR', '本地接口覆盖排班失败：API 地址不可用。');
+    return;
+  }
+
+  const payload = buildOverwriteApiPayload(instruction);
+  const button = $('apiOverwriteBtn');
+  button.disabled = true;
+  $('apiStatus').value = '请求中...';
+  try {
+    log('INFO', '开始请求本地覆盖排班 API。', { endpoint, instruction_length: instruction.length });
+    const response = await fetch(endpoint, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify(payload)
+    });
+    const text = await response.text();
+    let data = null;
+    try {
+      data = JSON.parse(text);
+    } catch {
+    }
+
+    $('apiResponse').value = data ? JSON.stringify(data, null, 2) : text;
+    if (!response.ok || !data || data.success !== true) {
+      const message = (data && data.message) ? String(data.message) : `HTTP ${response.status}`;
+      $('apiStatus').value = `失败(${response.status})`;
+      setStatus('err', `接口覆盖排班失败：${message}`);
+      log('ERROR', '本地接口覆盖排班失败。', { status: response.status, response: data ?? text });
+      return;
+    }
+
+    $('apiStatus').value = '成功';
+    if (data.state) {
+      store.state = normalizeState(data.state);
+      renderAll();
+    }
+    if (typeof data.preview_url === 'string') {
+      setLocalPreviewUrl(data.preview_url);
+    }
+    if (typeof data.api_overwrite_url === 'string') {
+      setApiOverwriteUrl(data.api_overwrite_url);
+    }
+
+    setStatus('ok', '接口覆盖排班成功。');
+    log('OK', '本地接口覆盖排班成功。', {
+      code: data.code || 'ok',
+      message: data.message || '',
+      duration_ms: data.duration_ms || 0
+    });
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e);
+    $('apiStatus').value = '失败';
+    setStatus('err', `接口覆盖排班失败：${message}`);
+    log('ERROR', '本地接口覆盖排班异常。', { message, endpoint });
+  } finally {
+    button.disabled = false;
+  }
 }
 
 function renderTpl(tpl, tokens) {
@@ -936,7 +1213,61 @@ function notifyByTemplates(scene, success, detail, instruction, applyMode, durat
   log('INFO', `通知模板渲染完成 (${msgs.length} 条)。`, { scene, success, tokens: tok });
 }
 
+function triggerRunCompletionNotification() {
+  const payload = {
+    instruction: $('instruction').value.trim(),
+    apply_mode: $('applyMode').value,
+    message: $('runDetail').value.trim() || $('nMsg').value.trim()
+  };
+  const ok = bridgePost('trigger_run_completion_notification', payload);
+  if (ok) {
+    setStatus('warn', '已触发完成排班通知。');
+    log('OK', '已请求宿主触发完成排班通知。', payload);
+  } else {
+    setStatus('err', '宿主不可用，无法触发完成排班通知。');
+    log('ERROR', '触发完成排班通知失败：宿主不可用。');
+  }
+}
+
+function triggerDutyReminderNotification() {
+  const nowDate = dateIso(today());
+  const nowTime = new Date().toTimeString().slice(0, 5);
+  const payload = { date: nowDate, time: nowTime };
+  const ok = bridgePost('trigger_duty_reminder_notification', payload);
+  if (ok) {
+    setStatus('warn', '已触发值日提醒通知。');
+    log('OK', '已请求宿主触发值日提醒通知。', payload);
+  } else {
+    setStatus('err', '宿主不可用，无法触发值日提醒通知。');
+    log('ERROR', '触发值日提醒通知失败：宿主不可用。');
+  }
+}
+
+function openTestInBrowser() {
+  if (runtimeMode === 'bridge') {
+    const ok = bridgePost('open_test_in_browser', {});
+    if (ok) {
+      setStatus('warn', '已请求宿主在本地浏览器打开 test.html。');
+      log('OK', '已请求宿主在本地浏览器打开 test.html。');
+    } else {
+      setStatus('err', '宿主不可用，无法请求打开。');
+      log('ERROR', '请求宿主打开浏览器失败：宿主不可用。');
+    }
+    return;
+  }
+
+  const target = localPreviewUrl || window.location.href;
+  window.open(target, '_blank');
+  setStatus('ok', '已在浏览器打开 test.html。');
+  log('OK', '已在浏览器打开 test.html。', { target });
+}
+
 function runBridge() {
+  if (runInProgress) {
+    setStatus('warn', '已有排班任务在执行中，请稍候。');
+    log('WARN', '忽略重复执行请求：已有任务进行中。');
+    return;
+  }
   syncConfigFromForm();
   const instruction = $('instruction').value.trim();
   const applyMode = $('applyMode').value;
@@ -946,9 +1277,11 @@ function runBridge() {
     return;
   }
   log('INFO', '开始请求宿主执行排班。', { mode: applyMode });
+  setRunInProgress(true, '正在执行排班，请稍候...');
   const ok = bridgePost('run_core', { instruction, apply_mode: applyMode, config: store.config });
   setStatus(ok ? 'warn' : 'err', ok ? '已发送排班请求到宿主。' : '宿主不可用，无法发送排班请求。');
   if (!ok) {
+    setRunInProgress(false);
     log('ERROR', '宿主排班失败：宿主不可用。');
   }
 }
@@ -1034,19 +1367,23 @@ function delTpl() {
 }
 
 function addStudent() {
-  const name = $('newStudent').value.trim();
-  if (!name) {
+  const baseName = $('newStudent').value.trim();
+  if (!baseName) {
     setStatus('err', '学生姓名不能为空。');
     log('ERROR', '新增学生失败：姓名为空。');
     return;
   }
+  const name = toUniqueStudentName(baseName);
   const nextId = store.roster.length ? Math.max(...store.roster.map((x) => x.id)) + 1 : 1;
   store.roster.push({ id: nextId, name, active: true });
   $('newStudent').value = '';
   selectedRosterId = nextId;
   renderRoster();
-  setStatus('ok', `已添加学生：${name} (ID ${nextId})`);
-  log('OK', '已添加学生。', { id: nextId, name });
+  const renamed = name !== baseName;
+  setStatus('ok', renamed
+    ? `检测到同名，已自动命名为：${name} (ID ${nextId})`
+    : `已添加学生：${name} (ID ${nextId})`);
+  log('OK', renamed ? '已添加学生（同名自动重命名）。' : '已添加学生。', { id: nextId, requested: baseName, final: name });
 }
 
 function delStudent() {
@@ -1088,7 +1425,7 @@ function importSnapshot() {
     const parsed = JSON.parse(txt);
     const oldKey = store.config.api_key;
     const cfg = normalizeConfig(parsed.config);
-    if (cfg.api_key === API_KEY_MASK || cfg.api_key === LEGACY_API_KEY_MASK) cfg.api_key = oldKey;
+    if (cfg.api_key === API_KEY_MASK || cfg.api_key === LEGACY_API_KEY_MASK || cfg.api_key === HOST_API_KEY_MASK) cfg.api_key = oldKey;
     store = {
       config: cfg,
       roster: normalizeRoster(parsed.roster),
@@ -1131,14 +1468,35 @@ function applyHost(data) {
   if ('config' in data) { store.config = normalizeConfig(data.config); changed = true; }
   if ('roster' in data) { store.roster = normalizeRoster(data.roster); changed = true; }
   if ('state' in data) { store.state = normalizeState(data.state); changed = true; }
+  if (data.type === 'host_theme' && data.payload) {
+    applyHostTheme(data.payload);
+  }
+  if (data.type === 'run_status') {
+    const phase = String(data.phase || '').trim().toLowerCase();
+    const message = String(data.message || '').trim();
+    if (phase === 'started' || phase === 'running') {
+      setRunInProgress(true, message || '正在执行排班，请稍候...');
+    } else if (phase === 'completed' || phase === 'failed' || phase === 'error') {
+      setRunInProgress(false);
+    }
+    log('INFO', '宿主执行状态更新。', { phase, message });
+  }
   if (data.type === 'run_result') {
+    setRunInProgress(false);
     const ok = !!data.success;
     const message = data.message || '未知错误';
     setStatus(ok ? 'ok' : 'err', ok ? '宿主排班成功。' : `宿主排班失败：${message}`);
     if (data.message) $('nMsg').value = String(data.message);
     log(ok ? 'OK' : 'ERROR', ok ? '宿主排班成功。' : '宿主排班失败。', { message });
+    const aiResponse = String(data.ai_response || '').trim();
+    if (aiResponse) {
+      log('INFO', 'AI 返回内容。', { ai_response: aiResponse });
+    }
   }
   if (data.type === 'error') {
+    if (String(data.action || '').trim().toLowerCase() === 'run_core') {
+      setRunInProgress(false);
+    }
     log('ERROR', `宿主返回错误：${data.code || '未知错误'}`, data);
   }
   if (changed) {
@@ -1146,19 +1504,19 @@ function applyHost(data) {
     renderAll();
     log('INFO', '已应用宿主返回的最新数据。');
   }
+
+  if (typeof data.local_preview_url === 'string') {
+    setLocalPreviewUrl(data.local_preview_url);
+  }
+  if (typeof data.api_overwrite_url === 'string') {
+    setApiOverwriteUrl(data.api_overwrite_url);
+  }
 }
 
 function bind() {
   $('mode').addEventListener('change', () => setMode($('mode').value));
   $('runBtn').addEventListener('click', () => runtimeMode === 'bridge' ? runBridge() : runMock());
-  $('mockPlusOneBtn').addEventListener('click', () => {
-    if (runtimeMode !== 'mock') {
-      setStatus('warn', '模拟 +1 天仅在本地模拟模式可用。');
-      log('WARN', '模拟 +1 天被拒绝：当前不是本地模拟模式。');
-      return;
-    }
-    mockPlusOneDay();
-  });
+  $('apiOverwriteBtn').addEventListener('click', () => { void runOverwriteByApi(); });
   $('loadBtn').addEventListener('click', () => {
     log('INFO', '触发加载数据。', { mode: runtimeMode });
     if (runtimeMode === 'bridge') {
@@ -1219,6 +1577,9 @@ function bind() {
     if (runtimeMode === 'bridge' && hasBridge) setStatus('warn', '通知已发送到宿主。');
     else setStatus('ok', '宿主不可用，仅本地预览。');
   });
+  $('triggerRunCompletionNotice').addEventListener('click', triggerRunCompletionNotification);
+  $('triggerDutyReminderNotice').addEventListener('click', triggerDutyReminderNotification);
+  $('openInBrowserBtn').addEventListener('click', openTestInBrowser);
 
   $('exportBtn').addEventListener('click', exportSnapshot);
   $('importBtn').addEventListener('click', importSnapshot);
@@ -1240,6 +1601,11 @@ function bind() {
 bind();
 setMode(hasBridge ? 'bridge' : 'mock');
 renderAll();
+requestAnimationFrame(() => document.body.classList.add('page-ready'));
+if (window.location.protocol.startsWith('http')) {
+  setLocalPreviewUrl(window.location.href);
+  setApiOverwriteUrl(`${window.location.origin}/api/v1/schedule/overwrite`);
+}
 setStatus('warn', '测试控制台已就绪。');
 log('INFO', '页面初始化完成。');
 </script>

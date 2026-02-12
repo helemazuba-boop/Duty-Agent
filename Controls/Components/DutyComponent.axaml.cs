@@ -60,7 +60,7 @@ public partial class DutyComponent : ComponentBase<DutyComponentSettings>
             }
 
             var today = DateTime.Now.ToString("yyyy-MM-dd");
-            var item = state.SchedulePool.Find(x => x.Date == today);
+            var item = state.SchedulePool.LastOrDefault(x => x.Date == today);
             if (item == null)
             {
                 DutyText.Text = "\u4ECA\u65E5\u6682\u65E0\u503C\u65E5\u5B89\u6392";

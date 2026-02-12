@@ -9,7 +9,16 @@
                      d:DesignHeight="780">
     <Grid>
         <Border x:Name="WebViewHostContainer"
+                Opacity="0"
+                ClipToBounds="True"
+                Background="#F6F9FF"
                 HorizontalAlignment="Stretch"
-                VerticalAlignment="Stretch" />
+                VerticalAlignment="Stretch">
+            <Border.Transitions>
+                <Transitions>
+                    <DoubleTransition Property="Opacity" Duration="0:0:0.2" />
+                </Transitions>
+            </Border.Transitions>
+        </Border>
     </Grid>
 </ci:SettingsPageBase>
