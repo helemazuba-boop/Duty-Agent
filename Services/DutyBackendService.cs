@@ -207,7 +207,9 @@ public class DutyBackendService : IDisposable
         IEnumerable<string>? notificationTemplates = null,
         bool? dutyReminderEnabled = null,
         IEnumerable<string>? dutyReminderTimes = null,
-        IEnumerable<string>? dutyReminderTemplates = null)
+        IEnumerable<string>? dutyReminderTemplates = null,
+        bool? enableMcp = null,
+        bool? enableWebViewDebugLayer = null)
     {
         lock (_configLock)
         {
@@ -215,6 +217,8 @@ public class DutyBackendService : IDisposable
             Config.BaseUrl = baseUrl;
             Config.Model = model;
             Config.EnableAutoRun = enableAutoRun;
+            Config.EnableMcp = enableMcp ?? Config.EnableMcp;
+            Config.EnableWebViewDebugLayer = enableWebViewDebugLayer ?? Config.EnableWebViewDebugLayer;
             Config.AutoRunDay = NormalizeAutoRunDay(autoRunDay);
             Config.AutoRunTime = NormalizeTimeOrThrow(autoRunTime);
             Config.PerDay = Math.Clamp(perDay, 1, 30);
@@ -318,10 +322,10 @@ public class DutyBackendService : IDisposable
             Arguments = $"\"{scriptPath}\" --data-dir \"{_dataDir}\"",
             UseShellExecute = false,
             CreateNoWindow = true,
+            RedirectStandardInput = true,
             RedirectStandardOutput = true,
             RedirectStandardError = true
         };
-        startInfo.EnvironmentVariables["DUTY_AGENT_API_KEY"] = apiKeyPlain;
 
         using var process = new Process { StartInfo = startInfo };
         var stdout = new StringBuilder();
@@ -340,6 +344,8 @@ public class DutyBackendService : IDisposable
 
             processStarted = true;
             PythonProcessTracker.Register(process);
+            process.StandardInput.WriteLine(apiKeyPlain);
+            process.StandardInput.Close();
             process.BeginOutputReadLine();
             process.BeginErrorReadLine();
             progress?.Invoke(BuildProgress("wait_response", "Waiting for model response."));
@@ -705,8 +711,14 @@ public class DutyBackendService : IDisposable
             if (!IsAutoRunDayMatched(Config.AutoRunDay, now.DayOfWeek)) return;
             if (!TimeSpan.TryParse(Config.AutoRunTime, out var targetTime) || now.TimeOfDay < targetTime) return;
 
+            var result = RunCoreAgentWithMessage(AutoRunInstruction);
+            if (string.Equals(result.Code, "busy", StringComparison.Ordinal))
+            {
+                return;
+            }
+
             _lastAutoRunAttempt = now;
-            if (RunCoreAgent(AutoRunInstruction))
+            if (result.Success)
             {
                 Config.LastAutoRunDate = now.ToString("yyyy-MM-dd");
                 Config.AiConsecutiveFailures = 0;

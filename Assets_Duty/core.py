@@ -14,7 +14,7 @@ import urllib.error
 import urllib.request
 from datetime import datetime, timedelta, date
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 
 DEFAULT_DAYS = 5
 DEFAULT_PER_DAY = 2
@@ -44,7 +44,15 @@ def save_json_atomic(path: Path, data: dict):
         json.dump(data, f, ensure_ascii=False, indent=2)
         f.flush()
         os.fsync(f.fileno())
-    os.replace(str(tmp_path), str(path))
+    for attempt in range(3):
+        try:
+            os.replace(str(tmp_path), str(path))
+            return
+        except PermissionError:
+            if attempt < 2:
+                time.sleep(0.1 * (attempt + 1))
+            else:
+                raise
 
 
 def write_result(path: Path, status: str, message: str = "", extra: Optional[dict] = None):
@@ -72,9 +80,23 @@ def load_config(ctx: Context) -> dict:
 
 
 def load_api_key_from_env() -> str:
+    """Load API key from stdin pipe (preferred) or environment variable (fallback).
+
+    The C# host writes the key to stdin then immediately closes the pipe,
+    so readline() returns promptly.  When run interactively (isatty), stdin
+    is skipped entirely to avoid blocking.
+    """
+    if not sys.stdin.isatty():
+        try:
+            line = sys.stdin.readline()
+            api_key = line.strip() if line else ""
+            if api_key:
+                return api_key
+        except Exception:
+            pass
     api_key = os.environ.get("DUTY_AGENT_API_KEY", "").strip()
     if not api_key:
-        raise ValueError("Missing API key: DUTY_AGENT_API_KEY environment variable is empty.")
+        raise ValueError("Missing API key: not provided via stdin or DUTY_AGENT_API_KEY.")
     return api_key
 
 
@@ -90,13 +112,19 @@ def to_unique_name(raw_name: str, seen_counts: Dict[str, int]) -> str:
     return f"{base_name}{next_count}"
 
 
-def load_roster(csv_path: Path) -> Tuple[Dict[str, int], Dict[int, str], List[int]]:
+def load_roster(csv_path: Path) -> Tuple[Dict[str, int], Dict[int, str], List[int], List[int]]:
+    """Load roster from CSV.
+
+    Returns:
+        name_to_id, id_to_name, active_ids, all_ids
+    """
     if not csv_path.exists():
         raise FileNotFoundError(f"roster.csv not found: {csv_path}")
 
     name_to_id: Dict[str, int] = {}
     id_to_name: Dict[int, str] = {}
     active_ids: List[int] = []
+    all_ids: List[int] = []
     seen_name_counts: Dict[str, int] = {}
 
     with open(csv_path, "r", encoding="utf-8-sig", newline="") as f:
@@ -126,13 +154,15 @@ def load_roster(csv_path: Path) -> Tuple[Dict[str, int], Dict[int, str], List[in
 
             name_to_id[unique_name] = pid
             id_to_name[pid] = unique_name
+            all_ids.append(pid)
             if active == 1:
                 active_ids.append(pid)
 
+    all_ids = sorted(set(all_ids))
     active_ids = sorted(set(active_ids))
     if not active_ids:
         raise ValueError("No active people in roster.csv.")
-    return name_to_id, id_to_name, active_ids
+    return name_to_id, id_to_name, active_ids, all_ids
 
 
 def load_state(path: Path) -> dict:
@@ -260,57 +290,68 @@ def anonymize_instruction(text: str, name_to_id: Dict[str, int]) -> str:
     if not text:
         return text
     result = text
-    for name in sorted(name_to_id.keys(), key=len, reverse=True):
-        result = re.sub(re.escape(name), str(name_to_id[name]), result)
+    placeholder_map: Dict[str, str] = {}
+    for idx, name in enumerate(sorted(name_to_id.keys(), key=len, reverse=True)):
+        placeholder = f"\x00PLACEHOLDER_{idx}\x00"
+        placeholder_map[placeholder] = str(name_to_id[name])
+        result = re.sub(re.escape(name), placeholder, result)
+    for placeholder, pid_str in placeholder_map.items():
+        result = result.replace(placeholder, pid_str)
     return result
 
 
-def build_prompts(
-    active_ids: List[int],
+def build_prompt_messages(
+    id_range: Tuple[int, int],
+    disabled_ids: List[int],
     last_id: int,
+    current_time: str,
     instruction: str,
-    days: int,
-    per_day: int,
-    area_names: List[str],
-    area_per_day_counts: Dict[str, int],
     duty_rule: str,
-    start_date: date,
-    skip_weekends: bool,
-) -> Tuple[str, str]:
-    area_schema = ", ".join([f'"{name}": [101, 102]' for name in area_names])
-    area_count_lines = [f"{name} students per day: {area_per_day_counts.get(name, per_day)}" for name in area_names]
-    system_prompt = (
-        "You are a scheduling engine.\n"
-        "Only process numeric IDs and output strict JSON.\n"
-        "Do not output extra explanations.\n"
-        "Output schema:\n"
-        "{\n"
-        '  "schedule": [\n'
-        f'    {{"day": "Mon", "area_ids": {{{area_schema}}}}},\n'
-        f'    {{"day": "Tue", "area_ids": {{{area_schema}}}}}\n'
-        "  ]\n"
-        "}\n"
-        "The day field must use: Mon, Tue, Wed, Thu, Fri, Sat, Sun.\n"
-        "For each day, area_ids must be an object where each area name maps to an array of IDs.\n"
-        "Legacy keys such as classroom_ids and cleaning_area_ids are accepted for compatibility."
-    )
+    area_names: List[str],
+) -> List[dict]:
+    """Build the 3-part prompt messages for the LLM.
 
-    prompt_parts = [
-        f"Candidate IDs: {active_ids}",
-        f"Last ID: {last_id}",
-        f"Start Date: {start_date}",
-        f"Skip Weekends: {skip_weekends}",
-        f"Areas: {area_names}",
-        f"Days to generate: {days}",
-        f'Instruction: "{instruction}"',
+    Structure:
+        - System: base engine rules + output schema + long-term rules
+        - User: parameters + single-use instruction
+    """
+    area_schema = ", ".join([f'"{name}": [101, 102]' for name in area_names])
+    system_parts = [
+        "You are a scheduling engine.",
+        "Only process numeric IDs and output strict JSON.",
+        "Do not output extra explanations.",
+        "Output schema:",
+        "{",
+        '  "schedule": [',
+        f'    {{"day": "Mon", "area_ids": {{{area_schema}}}}},',
+        f'    {{"day": "Tue", "area_ids": {{{area_schema}}}}}',
+        "  ]",
+        "}",
+        "The day field must use: Mon, Tue, Wed, Thu, Fri, Sat, Sun.",
+        "For each day, area_ids must be an object where each area name maps to an array of IDs.",
+        "Legacy keys such as classroom_ids and cleaning_area_ids are accepted for compatibility.",
     ]
-    prompt_parts.extend(area_count_lines)
     duty_rule = (duty_rule or "").strip()
     if duty_rule:
-        prompt_parts.append(f"Rules:\n{duty_rule}")
-    prompt_parts.append("Task: Generate schedule for all listed areas using area_ids.")
-    user_prompt = "\n".join(prompt_parts)
-    return system_prompt, user_prompt
+        system_parts.append("")
+        system_parts.append("--- Rules ---")
+        system_parts.append(duty_rule)
+    system_prompt = "\n".join(system_parts)
+
+    user_parts = [
+        f"ID Range: {id_range[0]}-{id_range[1]}",
+    ]
+    if disabled_ids:
+        user_parts.append(f"Disabled IDs: {disabled_ids}")
+    user_parts.append(f"Last ID: {last_id}")
+    user_parts.append(f"Current Time: {current_time}")
+    user_parts.append(f'Instruction: "{instruction}"')
+    user_prompt = "\n".join(user_parts)
+
+    return [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_prompt},
+    ]
 
 
 def clean_json_response(text: str) -> str:
@@ -330,15 +371,13 @@ def is_timeout_error(ex: Exception) -> bool:
     return "timed out" in str(ex).lower()
 
 
-def call_llm(system_prompt: str, user_prompt: str, config: dict) -> Tuple[dict, str]:
+def call_llm(messages: List[dict], config: dict) -> Tuple[dict, str]:
+    """Send prompt messages to the LLM and return parsed JSON + raw text."""
     base_url = str(config["base_url"]).rstrip("/")
     url = f"{base_url}/chat/completions"
     payload = {
         "model": config["model"],
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt},
-        ],
+        "messages": messages,
         "temperature": 0.1,
     }
     data = json.dumps(payload).encode("utf-8")
@@ -367,7 +406,7 @@ def call_llm(system_prompt: str, user_prompt: str, config: dict) -> Tuple[dict, 
             raise RuntimeError(f"HTTP 错误 {ex.code}: {detail}") from ex
         except (urllib.error.URLError, TimeoutError, socket.timeout) as ex:
             last_error = ex
-            if attempt < LLM_MAX_RETRIES and is_timeout_error(ex):
+            if attempt < LLM_MAX_RETRIES:
                 time.sleep(LLM_RETRY_BACKOFF_SECONDS * (attempt + 1))
                 continue
             if is_timeout_error(ex):
@@ -407,7 +446,7 @@ def fill_rotation_ids(
     active_ids: List[int],
     last_index: int,
     per_day: int,
-    avoid_ids: set = None,
+    avoid_ids: Optional[Set[int]] = None,
 ) -> Tuple[List[int], int]:
     result = []
     for pid in initial_ids:
@@ -425,6 +464,19 @@ def fill_rotation_ids(
         curr_idx = (curr_idx + 1) % len(active_ids)
         if curr_idx == start_idx:
             break
+
+    # Fallback: if avoid_ids blocked everyone, ignore avoid_ids and retry
+    if not result and avoid_ids:
+        curr_idx = (last_index + 1) % len(active_ids)
+        start_idx = curr_idx
+        while len(result) < per_day:
+            pid = active_ids[curr_idx]
+            if pid not in result:
+                result.append(pid)
+            curr_idx = (curr_idx + 1) % len(active_ids)
+            if curr_idx == start_idx:
+                break
+
     return result, (curr_idx - 1 + len(active_ids)) % len(active_ids)
 
 
@@ -598,8 +650,8 @@ def merge_schedule_pool(state_data: dict, restored: List[dict], apply_mode: str,
         return dedupe_pool_by_date(restored)
 
     if apply_mode == "replace_future":
-        today_str = datetime.now().strftime("%Y-%m-%d")
-        kept = [x for x in pool if x.get("date", "") <= today_str]
+        start_str = start_date.strftime("%Y-%m-%d")
+        kept = [x for x in pool if x.get("date", "") < start_str]
         return dedupe_pool_by_date(kept + restored)
 
     if apply_mode == "replace_overlap":
@@ -609,6 +661,21 @@ def merge_schedule_pool(state_data: dict, restored: List[dict], apply_mode: str,
         return dedupe_pool_by_date(kept + restored)
 
     return dedupe_pool_by_date(pool + restored)
+
+def merge_input_config(input_data: dict) -> dict:
+    if not isinstance(input_data, dict):
+        return {}
+    if "config" in input_data and isinstance(input_data["config"], dict):
+        # Merge config into root, preserving root keys if they exist (though typically they won't)
+        # We want config overrides to apply, so we merge config INTO root.
+        # But wait, if root has "instruction" and config has others, we want union.
+        merged = input_data.copy()
+        merged.update(input_data["config"])
+        # Ensure instruction is preserved if it was in root (it usually is)
+        if "instruction" in input_data:
+            merged["instruction"] = input_data["instruction"]
+        return merged
+    return input_data
 
 
 def main():
@@ -622,7 +689,7 @@ def main():
 
     try:
         ctx.config = load_config(ctx)
-        name_to_id, id_to_name, active_ids = load_roster(ctx.paths["roster"])
+        name_to_id, id_to_name, active_ids, all_ids = load_roster(ctx.paths["roster"])
         state_data = load_state(ctx.paths["state"])
 
         input_data = {}
@@ -630,7 +697,11 @@ def main():
             with open(ctx.paths["input"], "r", encoding="utf-8-sig") as f:
                 input_data = json.load(f)
 
-        instruction = str(input_data.get("instruction", ""))
+        input_data = merge_input_config(input_data)
+
+        instruction = str(input_data.get("instruction", "")).strip()
+        if not instruction:
+            instruction = "按照要求排班"
         base_url = str(input_data.get("base_url", ctx.config.get("base_url", ""))).strip()
         model = str(input_data.get("model", ctx.config.get("model", ""))).strip()
         if not base_url or not model:
@@ -682,20 +753,22 @@ def main():
 
         anchor_id = get_anchor_id(state_data, name_to_id, active_ids, start_date, apply_mode)
         sanitized_instruction = anonymize_instruction(instruction, name_to_id)
-        system_prompt, user_prompt = build_prompts(
-            active_ids,
+
+        # Build prompt with ID range + disabled IDs
+        id_range = (min(all_ids), max(all_ids))
+        disabled_ids = sorted(set(all_ids) - set(active_ids))
+        current_time = datetime.now().strftime("%Y-%m-%d %H:%M")
+        messages = build_prompt_messages(
+            id_range,
+            disabled_ids,
             anchor_id,
+            current_time,
             sanitized_instruction,
-            days_to_generate,
-            per_day,
-            area_names,
-            area_per_day_counts,
             duty_rule,
-            start_date,
-            skip_weekends,
+            area_names,
         )
 
-        llm_result, llm_response_text = call_llm(system_prompt, user_prompt, ctx.config)
+        llm_result, llm_response_text = call_llm(messages, ctx.config)
         schedule_raw = llm_result.get("schedule", [])
         target_dates = generate_target_dates(start_date, days_to_generate, skip_weekends)
         normalized_ids = normalize_multi_area_schedule_ids(

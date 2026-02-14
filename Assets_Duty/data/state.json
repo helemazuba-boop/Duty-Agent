@@ -2,39 +2,72 @@
   "nothing": "",
   "schedule_pool": [
     {
-      "date": "2026-02-08",
-      "day": "Sun",
-      "students": [
-        "李四"
-      ]
-    },
-    {
       "date": "2026-02-09",
       "day": "Mon",
       "students": [
         "王五"
-      ]
+      ],
+      "classroom_students": [
+        "王五"
+      ],
+      "cleaning_area_students": [],
+      "area_assignments": {
+        "教室": [
+          "王五"
+        ],
+        "清洁区": []
+      }
     },
     {
       "date": "2026-02-10",
       "day": "Tue",
       "students": [
         "赵六"
-      ]
+      ],
+      "classroom_students": [
+        "赵六"
+      ],
+      "cleaning_area_students": [],
+      "area_assignments": {
+        "教室": [
+          "赵六"
+        ],
+        "清洁区": []
+      }
     },
     {
       "date": "2026-02-11",
       "day": "Wed",
       "students": [
         "张三"
-      ]
+      ],
+      "classroom_students": [
+        "张三"
+      ],
+      "cleaning_area_students": [],
+      "area_assignments": {
+        "教室": [
+          "张三"
+        ],
+        "清洁区": []
+      }
     },
     {
       "date": "2026-02-12",
       "day": "Thu",
       "students": [
         "李四"
-      ]
+      ],
+      "classroom_students": [
+        "李四"
+      ],
+      "cleaning_area_students": [],
+      "area_assignments": {
+        "教室": [
+          "李四"
+        ],
+        "清洁区": []
+      }
     }
   ]
 }

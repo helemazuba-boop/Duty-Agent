@@ -204,18 +204,26 @@ public sealed class DutyLocalPreviewHostedService : IHostedService, IDisposable
 
             if (path.Equals("/health", StringComparison.OrdinalIgnoreCase))
             {
+                var mcpEnabled = IsMcpEnabled();
                 WriteJson(context.Response, new
                 {
                     status = "ok",
                     preview_url = PreviewUrl,
                     api_overwrite_url = ApiOverwriteUrl,
-                    mcp_url = McpUrl
+                    mcp_url = mcpEnabled ? McpUrl : string.Empty,
+                    mcp_enabled = mcpEnabled
                 }, 200);
                 return;
             }
 
             if (path.Equals("/mcp", StringComparison.OrdinalIgnoreCase))
             {
+                if (!IsMcpEnabled())
+                {
+                    WriteApiError(context.Response, 403, "mcp_disabled", "MCP endpoint is disabled by configuration.");
+                    return;
+                }
+
                 HandleStreamableMcp(context);
                 return;
             }
@@ -411,36 +419,41 @@ public sealed class DutyLocalPreviewHostedService : IHostedService, IDisposable
             return;
         }
 
-        JsonDocument rpcDoc;
-        try
+        var sessionId = ResolveMcpSessionId(context.Request, allowGenerate: false);
+        if (string.IsNullOrWhiteSpace(sessionId))
         {
-            rpcDoc = JsonDocument.Parse(jsonBody);
-        }
-        catch (Exception ex)
-        {
-            WriteApiError(context.Response, 400, "invalid_json", $"Failed to parse JSON body: {ex.Message}");
+            WriteApiError(
+                context.Response,
+                400,
+                "missing_session",
+                "POST /mcp requires `Mcp-Session-Id` header or `sessionId` query parameter.");
             return;
         }
 
-        using (rpcDoc)
+        context.Response.Headers["Mcp-Session-Id"] = sessionId;
+        if (!_mcpSessions.ContainsKey(sessionId))
         {
-            var sessionId = ResolveMcpSessionId(context.Request, allowGenerate: false);
-            if (string.IsNullOrWhiteSpace(sessionId))
-            {
-                sessionId = Guid.NewGuid().ToString("N");
-            }
-
-            context.Response.Headers["Mcp-Session-Id"] = sessionId;
-            var responses = ProcessJsonRpcRootForHttp(rpcDoc.RootElement);
-            if (responses.Count == 0)
-            {
-                WriteText(context.Response, string.Empty, "text/plain; charset=utf-8", 202);
-                return;
-            }
-
-            var payload = responses.Count == 1 ? responses[0] : responses;
-            WriteJson(context.Response, payload, 200);
+            WriteApiError(
+                context.Response,
+                404,
+                "session_not_found",
+                "No active MCP SSE session for the provided session ID.");
+            return;
         }
+
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await ProcessMcpJsonRpcAsync(sessionId, jsonBody);
+            }
+            catch (Exception ex)
+            {
+                DutyDiagnosticsLogger.Error("MCP", "Failed to process JSON-RPC message.", ex,
+                    new { sessionId });
+            }
+        });
+        WriteText(context.Response, string.Empty, "text/plain; charset=utf-8", 202);
     }
 
     private bool ContainsInitializeRequest(JsonElement root)
@@ -903,12 +916,13 @@ public sealed class DutyLocalPreviewHostedService : IHostedService, IDisposable
                 new
                 {
                     type = "text",
-                    text = $"Imported {importedNames.Count} students; skipped {skippedNames.Count} duplicates."
+                    text = $"Imported {importedNames.Count} students; skipped {skippedNames.Count} duplicates. Applied immediately without confirmation."
                 }
             },
             isError = false,
             structuredContent = new
             {
+                applied_immediately = true,
                 imported_count = importedNames.Count,
                 skipped_count = skippedNames.Count,
                 imported_names = importedNames,
@@ -945,6 +959,7 @@ public sealed class DutyLocalPreviewHostedService : IHostedService, IDisposable
             "model",
             "python_path",
             "enable_auto_run",
+            "enable_mcp",
             "auto_run_day",
             "auto_run_time",
             "auto_run_coverage_days",
@@ -987,6 +1002,11 @@ public sealed class DutyLocalPreviewHostedService : IHostedService, IDisposable
             return false;
         }
         if (!TryReadOptionalBooleanArgument(argumentsElement, "enable_auto_run", out var enableAutoRun, out parseError))
+        {
+            errorMessage = parseError ?? "Invalid params.";
+            return false;
+        }
+        if (!TryReadOptionalBooleanArgument(argumentsElement, "enable_mcp", out var enableMcp, out parseError))
         {
             errorMessage = parseError ?? "Invalid params.";
             return false;
@@ -1093,7 +1113,8 @@ public sealed class DutyLocalPreviewHostedService : IHostedService, IDisposable
                 notificationTemplates: notificationTemplates ?? current.NotificationTemplates,
                 dutyReminderEnabled: dutyReminderEnabled ?? current.DutyReminderEnabled,
                 dutyReminderTimes: dutyReminderTimes ?? current.DutyReminderTimes,
-                dutyReminderTemplates: dutyReminderTemplates ?? current.DutyReminderTemplates);
+                dutyReminderTemplates: dutyReminderTemplates ?? current.DutyReminderTemplates,
+                enableMcp: enableMcp);
         }
         catch (Exception ex)
         {
@@ -1110,13 +1131,15 @@ public sealed class DutyLocalPreviewHostedService : IHostedService, IDisposable
                 new
                 {
                     type = "text",
-                    text = "Duty settings updated."
+                    text = "Duty settings updated and applied immediately without confirmation."
                 }
             },
             isError = false,
             structuredContent = new
             {
+                applied_immediately = true,
                 enable_auto_run = saved.EnableAutoRun,
+                enable_mcp = saved.EnableMcp,
                 auto_run_day = saved.AutoRunDay,
                 auto_run_time = saved.AutoRunTime,
                 auto_run_coverage_days = saved.AutoRunCoverageDays,
@@ -1476,7 +1499,7 @@ public sealed class DutyLocalPreviewHostedService : IHostedService, IDisposable
                 new
                 {
                     name = McpToolRosterImportStudents,
-                    description = "Bulk import students from names and auto-assign normalized IDs.",
+                    description = "Bulk import students from names and auto-assign normalized IDs. Changes are applied immediately without confirmation.",
                     inputSchema = new
                     {
                         type = "object",
@@ -1512,13 +1535,14 @@ public sealed class DutyLocalPreviewHostedService : IHostedService, IDisposable
                 new
                 {
                     name = McpToolConfigUpdateSettings,
-                    description = "Update duty settings including auto run, refresh time, area names/counts, and reminder rules.",
+                    description = "Update duty settings including auto run, refresh time, area names/counts, and reminder rules. Changes are applied immediately without confirmation.",
                     inputSchema = new
                     {
                         type = "object",
                         properties = new
                         {
                             enable_auto_run = new { type = "boolean" },
+                            enable_mcp = new { type = "boolean" },
                             auto_run_day = new { type = "string" },
                             auto_run_time = new { type = "string" },
                             auto_run_coverage_days = new { type = "integer" },
@@ -1879,7 +1903,21 @@ public sealed class DutyLocalPreviewHostedService : IHostedService, IDisposable
             notificationTemplates: current.NotificationTemplates,
             dutyReminderEnabled: current.DutyReminderEnabled,
             dutyReminderTimes: current.DutyReminderTimes,
-            dutyReminderTemplates: current.DutyReminderTemplates);
+            dutyReminderTemplates: current.DutyReminderTemplates,
+            enableMcp: current.EnableMcp);
+    }
+
+    private bool IsMcpEnabled()
+    {
+        try
+        {
+            _backendService.LoadConfig();
+            return _backendService.Config.EnableMcp;
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     private static string ReadRequestBody(HttpListenerRequest request)

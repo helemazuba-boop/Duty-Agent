@@ -21,7 +21,7 @@ namespace DutyIsland.Views.SettingPages;
 
 [FullWidthPage]
 [HidePageTitle]
-[SettingsPageInfo("duty.settings", "Duty-Agent", "\uE31E", "\uE31E")]
+[SettingsPageInfo("duty.settings.debug", "Duty-Agent 调试层", "\uE7BA", "\uE7BA")]
 public partial class DutyWebSettingsPage : SettingsPageBase
 {
     private static readonly JsonSerializerOptions JsonOptions = new()
@@ -395,6 +395,8 @@ public partial class DutyWebSettingsPage : SettingsPageBase
         var baseUrl = config.BaseUrl ?? current.BaseUrl;
         var model = config.Model ?? current.Model;
         var enableAutoRun = config.EnableAutoRun ?? current.EnableAutoRun;
+        var enableMcp = config.EnableMcp ?? current.EnableMcp;
+        var enableWebViewDebugLayer = config.EnableWebViewDebugLayer ?? current.EnableWebViewDebugLayer;
         var autoRunDay = config.AutoRunDay ?? current.AutoRunDay;
         var autoRunTime = config.AutoRunTime ?? current.AutoRunTime;
         var perDay = config.PerDay ?? current.PerDay;
@@ -430,7 +432,9 @@ public partial class DutyWebSettingsPage : SettingsPageBase
             notificationTemplates: notificationTemplates,
             dutyReminderEnabled: dutyReminderEnabled,
             dutyReminderTimes: dutyReminderTimes,
-            dutyReminderTemplates: dutyReminderTemplates);
+            dutyReminderTemplates: dutyReminderTemplates,
+            enableMcp: enableMcp,
+            enableWebViewDebugLayer: enableWebViewDebugLayer);
     }
 
     private async Task SendSnapshotAsync()
@@ -450,6 +454,8 @@ public partial class DutyWebSettingsPage : SettingsPageBase
                 BaseUrl = config.BaseUrl,
                 Model = config.Model,
                 EnableAutoRun = config.EnableAutoRun,
+                EnableMcp = config.EnableMcp,
+                EnableWebViewDebugLayer = config.EnableWebViewDebugLayer,
                 AutoRunDay = config.AutoRunDay,
                 AutoRunTime = config.AutoRunTime,
                 AutoRunCoverageDays = config.AutoRunCoverageDays,
@@ -629,13 +635,13 @@ public partial class DutyWebSettingsPage : SettingsPageBase
     private static string ResolveWebEntryPath()
     {
         var baseDir = Path.GetDirectoryName(typeof(DutyWebSettingsPage).Assembly.Location) ?? AppContext.BaseDirectory;
-        var testPath = Path.Combine(baseDir, "Assets_Duty", "web", "test.html");
-        if (File.Exists(testPath))
+        var releasePath = Path.Combine(baseDir, "Assets_Duty", "web", "index.html");
+        if (File.Exists(releasePath))
         {
-            return testPath;
+            return releasePath;
         }
 
-        return Path.Combine(baseDir, "Assets_Duty", "web", "index.html");
+        return Path.Combine(baseDir, "Assets_Duty", "web", "test.html");
     }
 
     private static string TruncateForLog(string value, int maxLength)
@@ -828,6 +834,12 @@ public partial class DutyWebSettingsPage : SettingsPageBase
 
         [JsonPropertyName("enable_auto_run")]
         public bool? EnableAutoRun { get; set; }
+
+        [JsonPropertyName("enable_mcp")]
+        public bool? EnableMcp { get; set; }
+
+        [JsonPropertyName("enable_webview_debug_layer")]
+        public bool? EnableWebViewDebugLayer { get; set; }
 
         [JsonPropertyName("auto_run_day")]
         public string? AutoRunDay { get; set; }

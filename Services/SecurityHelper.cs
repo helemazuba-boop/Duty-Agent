@@ -31,7 +31,8 @@ public static class SecurityHelper
         }
 
         var salt = RandomNumberGenerator.GetBytes(SaltBytes);
-        var (aesKey, hmacKey) = DeriveKeysForCurrentMachine(salt);
+        var macAddress = GetBestMacAddress(); // Use the most stable MAC for new encryption
+        var (aesKey, hmacKey) = DeriveKeysForCurrentMachine(salt, macAddress);
 
         try
         {
@@ -104,41 +105,58 @@ public static class SecurityHelper
             throw new FormatException("Invalid encrypted payload.");
         }
 
-        var (aesKey, hmacKey) = DeriveKeysForCurrentMachine(salt);
-        try
+        // 核心变更：遍历所有物理 MAC 尝试解密
+        var candidates = GetCandidateMacAddresses();
+        Exception? lastEx = null;
+
+        foreach (var macAddress in candidates)
         {
-            var actualMac = HMACSHA256.HashData(hmacKey, payloadBytes);
-            if (!CryptographicOperations.FixedTimeEquals(actualMac, expectedMac))
+            try
             {
-                throw new CryptographicException("API key is bound to a different network adapter environment.");
+                var (aesKey, hmacKey) = DeriveKeysForCurrentMachine(salt, macAddress);
+                try
+                {
+                    var actualMac = HMACSHA256.HashData(hmacKey, payloadBytes);
+                    if (!CryptographicOperations.FixedTimeEquals(actualMac, expectedMac))
+                    {
+                        continue; // HMAC mismatch, try next MAC
+                    }
+
+                    // HMAC verified, decrypt now
+                    var iv = new byte[IvBytes];
+                    var cipherBytes = new byte[cipherBytesLength];
+                    Buffer.BlockCopy(payloadBytes, SaltBytes, iv, 0, iv.Length);
+                    Buffer.BlockCopy(payloadBytes, SaltBytes + IvBytes, cipherBytes, 0, cipherBytes.Length);
+
+                    using var aes = Aes.Create();
+                    aes.KeySize = 256;
+                    aes.Mode = CipherMode.CBC;
+                    aes.Padding = PaddingMode.PKCS7;
+                    aes.Key = aesKey;
+                    aes.IV = iv;
+
+                    using var decryptor = aes.CreateDecryptor(aes.Key, aes.IV);
+                    var plainBytes = decryptor.TransformFinalBlock(cipherBytes, 0, cipherBytes.Length);
+                    return Encoding.UTF8.GetString(plainBytes);
+                }
+                finally
+                {
+                    CryptographicOperations.ZeroMemory(aesKey);
+                    CryptographicOperations.ZeroMemory(hmacKey);
+                }
             }
-
-            var iv = new byte[IvBytes];
-            var cipherBytes = new byte[cipherBytesLength];
-            Buffer.BlockCopy(payloadBytes, SaltBytes, iv, 0, iv.Length);
-            Buffer.BlockCopy(payloadBytes, SaltBytes + IvBytes, cipherBytes, 0, cipherBytes.Length);
-
-            using var aes = Aes.Create();
-            aes.KeySize = 256;
-            aes.Mode = CipherMode.CBC;
-            aes.Padding = PaddingMode.PKCS7;
-            aes.Key = aesKey;
-            aes.IV = iv;
-
-            using var decryptor = aes.CreateDecryptor(aes.Key, aes.IV);
-            var plainBytes = decryptor.TransformFinalBlock(cipherBytes, 0, cipherBytes.Length);
-            return Encoding.UTF8.GetString(plainBytes);
+            catch (Exception ex)
+            {
+                lastEx = ex;
+            }
         }
-        finally
-        {
-            CryptographicOperations.ZeroMemory(aesKey);
-            CryptographicOperations.ZeroMemory(hmacKey);
-        }
+
+        throw new CryptographicException("API key decryption failed. No matching network adapter found.", lastEx);
     }
 
-    private static (byte[] AesKey, byte[] HmacKey) DeriveKeysForCurrentMachine(byte[] salt)
+    private static (byte[] AesKey, byte[] HmacKey) DeriveKeysForCurrentMachine(byte[] salt, string macAddress)
     {
-        var bindingMaterial = GetCurrentMachineBindingMaterial();
+        var bindingMaterial = SHA256.HashData(Encoding.UTF8.GetBytes($"mac:{macAddress}"));
         var seed = new byte[bindingMaterial.Length + AppBindingEntropy.Length];
         Buffer.BlockCopy(bindingMaterial, 0, seed, 0, bindingMaterial.Length);
         Buffer.BlockCopy(AppBindingEntropy, 0, seed, bindingMaterial.Length, AppBindingEntropy.Length);
@@ -157,46 +175,44 @@ public static class SecurityHelper
         return (aesKey, hmacKey);
     }
 
-    private static byte[] GetCurrentMachineBindingMaterial()
+    // 获取用于加密的最佳 MAC 地址（优先选择最稳定的，如 Ethernet）
+    private static string GetBestMacAddress()
     {
-        var mac = GetPreferredMacAddress();
-        if (string.IsNullOrWhiteSpace(mac))
+        var candidates = GetCandidateMacAddresses();
+        if (candidates.Count == 0)
         {
-            throw new InvalidOperationException("No usable physical MAC address found for API key encryption.");
+             throw new InvalidOperationException("No usable physical MAC address found for API key encryption.");
         }
-
-        return SHA256.HashData(Encoding.UTF8.GetBytes($"mac:{mac}"));
+        return candidates[0];
     }
 
-    private static string GetPreferredMacAddress()
+    // 获取所有候选物理 MAC 地址
+    private static List<string> GetCandidateMacAddresses()
     {
         var adapters = NetworkInterface.GetAllNetworkInterfaces()
             .Where(nic => !IsIgnoredAdapter(nic))
             .Select(nic => new
             {
                 Mac = NormalizeMac(nic.GetPhysicalAddress()),
-                IsUp = nic.OperationalStatus == OperationalStatus.Up
+                IsUp = nic.OperationalStatus == OperationalStatus.Up,
+                Type = nic.NetworkInterfaceType
             })
             .Where(x => !string.IsNullOrWhiteSpace(x.Mac))
             .ToList();
 
-        var fromUp = adapters
-            .Where(x => x.IsUp)
+        // 排序逻辑：
+        // 1. Ethernet 优先 (通常是板载有线网卡，最稳定)
+        // 2. Wireless 其次 (通常是板载无线网卡)
+        // 3. Up 状态优先
+        // 4. 字母序
+        return adapters
+            .OrderByDescending(x => x.Type == NetworkInterfaceType.Ethernet)
+            .ThenByDescending(x => x.Type == NetworkInterfaceType.Wireless80211)
+            .ThenByDescending(x => x.IsUp)
+            .ThenBy(x => x.Mac, StringComparer.Ordinal)
             .Select(x => x.Mac)
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .OrderBy(x => x, StringComparer.OrdinalIgnoreCase)
-            .FirstOrDefault();
-        if (!string.IsNullOrWhiteSpace(fromUp))
-        {
-            return fromUp;
-        }
-
-        var fromAny = adapters
-            .Select(x => x.Mac)
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .OrderBy(x => x, StringComparer.OrdinalIgnoreCase)
-            .FirstOrDefault();
-        return fromAny ?? string.Empty;
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
     }
 
     private static string NormalizeMac(PhysicalAddress? mac)

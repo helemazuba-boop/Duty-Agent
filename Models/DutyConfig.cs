@@ -57,6 +57,12 @@ public class DutyConfig
     [JsonPropertyName("enable_auto_run")]
     public bool EnableAutoRun { get; set; }
 
+    [JsonPropertyName("enable_mcp")]
+    public bool EnableMcp { get; set; } = false;
+
+    [JsonPropertyName("enable_webview_debug_layer")]
+    public bool EnableWebViewDebugLayer { get; set; } = false;
+
     [JsonPropertyName("auto_run_day")]
     public string AutoRunDay { get; set; } = "Monday";
 
