@@ -1,4 +1,4 @@
-namespace DutyIsland.Models;
+namespace DutyAgent.Models;
 
 public class StudentDutyStat
 {

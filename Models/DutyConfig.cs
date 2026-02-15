@@ -1,7 +1,7 @@
 using System.Text.Json.Serialization;
-using DutyIsland.Services;
+using DutyAgent.Services;
 
-namespace DutyIsland.Models;
+namespace DutyAgent.Models;
 
 public class DutyConfig
 {

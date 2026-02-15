@@ -269,19 +269,16 @@ def get_anchor_id(
         candidates = [x for x in entries if x[1] < start_date]
 
     for entry, _ in reversed(candidates):
-        classroom_students = entry.get("classroom_students", [])
-        cleaning_area_students = entry.get("cleaning_area_students", [])
-        legacy_students = entry.get("students", [])
         area_assignments = entry.get("area_assignments", {})
-        area_assignment_lists = area_assignments.values() if isinstance(area_assignments, dict) else []
-        for name_list in list(area_assignment_lists) + [cleaning_area_students, classroom_students, legacy_students]:
-            if not isinstance(name_list, list) or not name_list:
-                continue
-            last_name = str(name_list[-1]).strip()
-            if last_name in name_to_id:
-                anchor_id = name_to_id[last_name]
-                if anchor_id in active_ids:
-                    return anchor_id
+        if isinstance(area_assignments, dict):
+            for name_list in area_assignments.values():
+                if not isinstance(name_list, list) or not name_list:
+                    continue
+                last_name = str(name_list[-1]).strip()
+                if last_name in name_to_id:
+                    anchor_id = name_to_id[last_name]
+                    if anchor_id in active_ids:
+                        return anchor_id
 
     return active_ids[-1]
 
@@ -518,32 +515,13 @@ def extract_area_ids(
             if len(result) >= per_area_count:
                 break
 
+    # Primary: read from area_ids / area_assignments dict keyed by area name
     for key in ("area_ids", "areas", "area_assignments"):
         area_map = entry.get(key)
         if not isinstance(area_map, dict):
             continue
         append_ids(area_map.get(area_name))
         append_ids(area_map.get(str(area_index)))
-        append_ids(area_map.get(str(area_index + 1)))
-
-    normalized_name_key = re.sub(r"\s+", "_", area_name.strip().lower())
-    append_ids(entry.get(area_name))
-    append_ids(entry.get(f"{area_name}_ids"))
-    append_ids(entry.get(normalized_name_key))
-    append_ids(entry.get(f"{normalized_name_key}_ids"))
-
-    if area_index == 0:
-        for key in ("classroom_ids", "ids"):
-            append_ids(entry.get(key))
-    elif area_index == 1:
-        for key in ("cleaning_area_ids", "cleaning_ids", "area_ids", "zone_ids"):
-            value = entry.get(key)
-            if key == "area_ids" and isinstance(value, dict):
-                continue
-            append_ids(value)
-    else:
-        append_ids(entry.get(f"area_{area_index + 1}_ids"))
-        append_ids(entry.get(f"zone_{area_index + 1}_ids"))
 
     return result
 
@@ -596,9 +574,6 @@ def restore_schedule(
     area_names: List[str],
 ) -> List[dict]:
     restored = []
-    fallback_first_area = area_names[0] if area_names else DEFAULT_AREA_NAMES[0]
-    fallback_second_area = area_names[1] if len(area_names) > 1 else fallback_first_area
-
     for idx, day_entry in enumerate(normalized_ids):
         d = target_dates[idx]
         area_ids_map = day_entry.get("area_ids", {})
@@ -611,15 +586,10 @@ def restore_schedule(
             students = [id_to_name[pid] for pid in area_ids if pid in id_to_name]
             area_assignments[area_name] = students
 
-        classroom_students = area_assignments.get(fallback_first_area, [])
-        cleaning_area_students = area_assignments.get(fallback_second_area, [])
         restored.append(
             {
                 "date": d.strftime("%Y-%m-%d"),
                 "day": DAY_NAMES[d.weekday()],
-                "students": classroom_students,
-                "classroom_students": classroom_students,
-                "cleaning_area_students": cleaning_area_students,
                 "area_assignments": area_assignments,
             }
         )

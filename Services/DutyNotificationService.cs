@@ -1,6 +1,6 @@
 using System.Text.RegularExpressions;
 
-namespace DutyIsland.Services;
+namespace DutyAgent.Services;
 
 public sealed class DutyNotificationService
 {

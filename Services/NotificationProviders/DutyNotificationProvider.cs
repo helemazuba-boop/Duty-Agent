@@ -8,7 +8,7 @@ using ClassIsland.Core.Attributes;
 using ClassIsland.Core.Models.Notification;
 using NotificationRequest = ClassIsland.Core.Models.Notification.NotificationRequest;
 
-namespace DutyIsland.Services.NotificationProviders;
+namespace DutyAgent.Services.NotificationProviders;
 
 [NotificationProviderInfo("9DF601E1-EC34-4B37-8A5B-EA933E3C580A", "Duty-Agent 通知", "\uE7F4", "显示 Duty-Agent 的排班通知")]
 public sealed class DutyNotificationProvider : NotificationProviderBase

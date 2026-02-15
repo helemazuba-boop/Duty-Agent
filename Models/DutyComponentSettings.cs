@@ -1,6 +1,6 @@
 ﻿using ClassIsland.Core.Attributes;
 
-namespace DutyIsland.Models;
+namespace DutyAgent.Models;
 
 public class DutyComponentSettings
 {

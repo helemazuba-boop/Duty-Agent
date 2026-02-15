@@ -2,7 +2,7 @@ using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
 
-namespace DutyIsland.Services;
+namespace DutyAgent.Services;
 
 internal static class DutyDiagnosticsLogger
 {

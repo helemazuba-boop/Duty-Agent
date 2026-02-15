@@ -2,7 +2,7 @@ using System.Net.NetworkInformation;
 using System.Security.Cryptography;
 using System.Text;
 
-namespace DutyIsland.Services;
+namespace DutyAgent.Services;
 
 public static class SecurityHelper
 {

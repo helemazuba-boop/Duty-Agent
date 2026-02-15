@@ -1,9 +1,9 @@
 using System.IO.Compression;
 using System.Text;
 using System.Xml.Linq;
-using DutyIsland.Models;
+using DutyAgent.Models;
 
-namespace DutyIsland.Services;
+namespace DutyAgent.Services;
 
 internal static class RosterWorkbookHelper
 {

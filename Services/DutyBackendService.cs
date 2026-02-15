@@ -2,10 +2,10 @@ using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
 using Avalonia.Threading;
-using DutyIsland.Models;
+using DutyAgent.Models;
 using Timer = System.Timers.Timer;
 
-namespace DutyIsland.Services;
+namespace DutyAgent.Services;
 
 public class DutyBackendService : IDisposable
 {
@@ -77,6 +77,12 @@ public class DutyBackendService : IDisposable
     private readonly HashSet<string> _sentDutyReminderSlots = new(StringComparer.Ordinal);
     private DateTime _lastAutoRunAttempt = DateTime.MinValue;
     private static readonly UTF8Encoding Utf8NoBom = new(encoderShouldEmitUTF8Identifier: false);
+
+    /// <summary>Raised after <see cref="SaveUserConfig"/> writes config to disk.</summary>
+    public event Action? ConfigChanged;
+
+    /// <summary>Raised after <see cref="SaveRosterEntries"/> writes roster to disk.</summary>
+    public event Action? RosterChanged;
 
     public event EventHandler? ScheduleUpdated;
 
@@ -188,59 +194,40 @@ public class DutyBackendService : IDisposable
         }
     }
 
-    public void SaveUserConfig(
-        string apiKey,
-        string baseUrl,
-        string model,
-        bool enableAutoRun,
-        string autoRunDay,
-        string autoRunTime,
-        int perDay,
-        bool skipWeekends,
-        string dutyRule,
-        bool startFromToday,
-        int autoRunCoverageDays,
-        string componentRefreshTime,
-        string pythonPath,
-        IEnumerable<string>? areaNames = null,
-        IEnumerable<KeyValuePair<string, int>>? areaPerDayCounts = null,
-        IEnumerable<string>? notificationTemplates = null,
-        bool? dutyReminderEnabled = null,
-        IEnumerable<string>? dutyReminderTimes = null,
-        IEnumerable<string>? dutyReminderTemplates = null,
-        bool? enableMcp = null,
-        bool? enableWebViewDebugLayer = null)
+    public void SaveUserConfig(SaveConfigRequest request)
     {
         lock (_configLock)
         {
-            Config.DecryptedApiKey = ResolveApiKeyInput(apiKey, Config.DecryptedApiKey);
-            Config.BaseUrl = baseUrl;
-            Config.Model = model;
-            Config.EnableAutoRun = enableAutoRun;
-            Config.EnableMcp = enableMcp ?? Config.EnableMcp;
-            Config.EnableWebViewDebugLayer = enableWebViewDebugLayer ?? Config.EnableWebViewDebugLayer;
-            Config.AutoRunDay = NormalizeAutoRunDay(autoRunDay);
-            Config.AutoRunTime = NormalizeTimeOrThrow(autoRunTime);
-            Config.PerDay = Math.Clamp(perDay, 1, 30);
-            Config.SkipWeekends = skipWeekends;
-            Config.DutyRule = dutyRule;
-            Config.StartFromToday = startFromToday;
-            Config.AutoRunCoverageDays = Math.Clamp(autoRunCoverageDays, 1, 30);
-            Config.ComponentRefreshTime = NormalizeTimeOrThrow(componentRefreshTime);
-            Config.PythonPath = string.IsNullOrWhiteSpace(pythonPath) ? Config.PythonPath : pythonPath.Trim();
-            Config.AreaNames = NormalizeAreaNames(areaNames ?? Config.AreaNames);
+            Config.DecryptedApiKey = ResolveApiKeyInput(request.ApiKey, Config.DecryptedApiKey);
+            Config.BaseUrl = request.BaseUrl ?? Config.BaseUrl;
+            Config.Model = request.Model ?? Config.Model;
+            Config.EnableAutoRun = request.EnableAutoRun ?? Config.EnableAutoRun;
+            Config.EnableMcp = request.EnableMcp ?? Config.EnableMcp;
+            Config.EnableWebViewDebugLayer = request.EnableWebViewDebugLayer ?? Config.EnableWebViewDebugLayer;
+            Config.AutoRunDay = NormalizeAutoRunDay(request.AutoRunDay ?? Config.AutoRunDay);
+            Config.AutoRunTime = NormalizeTimeOrThrow(request.AutoRunTime ?? Config.AutoRunTime);
+            Config.PerDay = Math.Clamp(request.PerDay ?? Config.PerDay, 1, 30);
+            Config.SkipWeekends = request.SkipWeekends ?? Config.SkipWeekends;
+            Config.DutyRule = request.DutyRule ?? Config.DutyRule;
+            Config.StartFromToday = request.StartFromToday ?? Config.StartFromToday;
+            Config.AutoRunCoverageDays = Math.Clamp(request.AutoRunCoverageDays ?? Config.AutoRunCoverageDays, 1, 30);
+            Config.ComponentRefreshTime = NormalizeTimeOrThrow(request.ComponentRefreshTime ?? Config.ComponentRefreshTime);
+            Config.PythonPath = string.IsNullOrWhiteSpace(request.PythonPath) ? Config.PythonPath : request.PythonPath.Trim();
+            Config.AreaNames = NormalizeAreaNames(request.AreaNames ?? Config.AreaNames);
             Config.AreaPerDayCounts = NormalizeAreaPerDayCounts(
                 Config.AreaNames,
-                areaPerDayCounts ?? Config.AreaPerDayCounts,
+                request.AreaPerDayCounts ?? Config.AreaPerDayCounts,
                 Config.PerDay);
             Config.NotificationTemplates =
-                NormalizeNotificationTemplates(notificationTemplates ?? Config.NotificationTemplates);
-            Config.DutyReminderEnabled = dutyReminderEnabled ?? Config.DutyReminderEnabled;
-            Config.DutyReminderTimes = NormalizeDutyReminderTimes(dutyReminderTimes ?? Config.DutyReminderTimes);
+                NormalizeNotificationTemplates(request.NotificationTemplates ?? Config.NotificationTemplates);
+            Config.DutyReminderEnabled = request.DutyReminderEnabled ?? Config.DutyReminderEnabled;
+            Config.DutyReminderTimes = NormalizeDutyReminderTimes(request.DutyReminderTimes ?? Config.DutyReminderTimes);
             Config.DutyReminderTemplates =
-                NormalizeDutyReminderTemplates(dutyReminderTemplates ?? Config.DutyReminderTemplates);
+                NormalizeDutyReminderTemplates(request.DutyReminderTemplates ?? Config.DutyReminderTemplates);
             SaveConfig();
         }
+
+        ConfigChanged?.Invoke();
     }
 
     public bool RunCoreAgent(string instruction, string applyMode = "append", string? overrideModel = null)
@@ -661,6 +648,7 @@ public class DutyBackendService : IDisposable
         }
 
         File.WriteAllText(path, builder.ToString(), new UTF8Encoding(encoderShouldEmitUTF8Identifier: true));
+        RosterChanged?.Invoke();
     }
 
     public DutyState LoadState()
@@ -670,9 +658,7 @@ public class DutyBackendService : IDisposable
         try
         {
             var json = File.ReadAllText(path);
-            var state = JsonSerializer.Deserialize<DutyState>(json) ?? new DutyState();
-            NormalizeLegacyState(state);
-            return state;
+            return JsonSerializer.Deserialize<DutyState>(json) ?? new DutyState();
         }
         catch
         {
@@ -801,25 +787,7 @@ public class DutyBackendService : IDisposable
             : DayOfWeek.Monday.ToString();
     }
 
-    private void NormalizeLegacyState(DutyState state)
-    {
-        var areaNames = GetAreaNames();
-        foreach (var item in state.SchedulePool)
-        {
-            var assignments = BuildAreaAssignments(item, areaNames);
-            item.AreaAssignments = assignments;
 
-            var firstArea = areaNames[0];
-            var secondArea = areaNames.Count > 1 ? areaNames[1] : firstArea;
-            item.ClassroomStudents = assignments.TryGetValue(firstArea, out var firstStudents) ? [.. firstStudents] : [];
-            item.CleaningAreaStudents = assignments.TryGetValue(secondArea, out var secondStudents) ? [.. secondStudents] : [];
-
-            if (item.Students.Count == 0 && item.ClassroomStudents.Count > 0)
-            {
-                item.Students = [.. item.ClassroomStudents];
-            }
-        }
-    }
 
     private static Dictionary<string, List<string>> BuildAreaAssignments(
         SchedulePoolItem item,
@@ -827,44 +795,19 @@ public class DutyBackendService : IDisposable
     {
         var assignments = new Dictionary<string, List<string>>(StringComparer.Ordinal);
 
-        if (item.AreaAssignments.Count > 0)
+        foreach (var (area, students) in item.AreaAssignments)
         {
-            foreach (var (area, students) in item.AreaAssignments)
+            var areaName = (area ?? string.Empty).Trim();
+            if (areaName.Length == 0)
             {
-                var areaName = (area ?? string.Empty).Trim();
-                if (areaName.Length == 0)
-                {
-                    continue;
-                }
-
-                var normalizedStudents = NormalizeStudents(students);
-                if (normalizedStudents.Count > 0)
-                {
-                    assignments[areaName] = normalizedStudents;
-                }
+                continue;
             }
-        }
 
-        var firstArea = areaNames[0];
-        var secondArea = areaNames.Count > 1 ? areaNames[1] : firstArea;
-
-        var classroomStudents = NormalizeStudents(item.ClassroomStudents);
-        var cleaningStudents = NormalizeStudents(item.CleaningAreaStudents);
-        var legacyStudents = NormalizeStudents(item.Students);
-
-        if (classroomStudents.Count > 0 && !assignments.ContainsKey(firstArea))
-        {
-            assignments[firstArea] = classroomStudents;
-        }
-
-        if (cleaningStudents.Count > 0 && !assignments.ContainsKey(secondArea))
-        {
-            assignments[secondArea] = cleaningStudents;
-        }
-
-        if (assignments.Count == 0 && legacyStudents.Count > 0)
-        {
-            assignments[firstArea] = legacyStudents;
+            var normalizedStudents = NormalizeStudents(students);
+            if (normalizedStudents.Count > 0)
+            {
+                assignments[areaName] = normalizedStudents;
+            }
         }
 
         return assignments;

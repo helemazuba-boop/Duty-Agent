@@ -1,6 +1,6 @@
 using System.Text.Json.Serialization;
 
-namespace DutyIsland.Models;
+namespace DutyAgent.Models;
 
 public class DutyState
 {
@@ -18,15 +18,6 @@ public class SchedulePoolItem
 
     [JsonPropertyName("day")]
     public string Day { get; set; } = string.Empty;
-
-    [JsonPropertyName("students")]
-    public List<string> Students { get; set; } = [];
-
-    [JsonPropertyName("classroom_students")]
-    public List<string> ClassroomStudents { get; set; } = [];
-
-    [JsonPropertyName("cleaning_area_students")]
-    public List<string> CleaningAreaStudents { get; set; } = [];
 
     [JsonPropertyName("area_assignments")]
     public Dictionary<string, List<string>> AreaAssignments { get; set; } = new(StringComparer.Ordinal);

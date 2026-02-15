@@ -7,17 +7,18 @@ using Avalonia.Media;
 using ClassIsland.Core.Abstractions.Controls;
 using ClassIsland.Core.Attributes;
 using ClassIsland.Shared;
-using DutyIsland.Models;
-using DutyIsland.Services;
+using DutyAgent.Models;
+using DutyAgent.Services;
 
-namespace DutyIsland.Views.SettingPages;
+namespace DutyAgent.Views.SettingPages;
 
 [FullWidthPage]
 [HidePageTitle]
-[SettingsPageInfo("duty.settings", "Duty-Agent", "\uE31E", "\uE31E")]
+[SettingsPageInfo("duty-agent.settings", "Duty-Agent", "\uE31E", "\uE31E")]
 public partial class DutyMainSettingsPage : SettingsPageBase
 {
     private DutyBackendService Service { get; } = IAppHost.GetService<DutyBackendService>();
+    private DutyLocalPreviewHostedService PreviewService { get; } = IAppHost.GetService<DutyLocalPreviewHostedService>();
     private bool _isLoadingConfig;
     private bool _isApplyingConfig;
     private string _lastConfigState = "未应用";
@@ -28,6 +29,7 @@ public partial class DutyMainSettingsPage : SettingsPageBase
     private DateTime? _lastDataAt;
 
     private readonly List<AreaSettingItem> _areaSettings = [];
+    private CancellationTokenSource? _debounceCts;
 
     public DutyMainSettingsPage()
     {
@@ -38,6 +40,28 @@ public partial class DutyMainSettingsPage : SettingsPageBase
         UpdateConfigTracking("已加载");
         UpdateRunTracking("待命");
         LoadData("页面初始化");
+
+        Service.ConfigChanged += OnExternalConfigChanged;
+        Service.RosterChanged += OnExternalRosterChanged;
+    }
+
+    private void OnExternalConfigChanged()
+    {
+        if (_isApplyingConfig) return;
+        Avalonia.Threading.Dispatcher.UIThread.Post(() =>
+        {
+            if (_isApplyingConfig) return;
+            LoadConfigForm();
+            UpdateConfigTracking("外部更新");
+        });
+    }
+
+    private void OnExternalRosterChanged()
+    {
+        Avalonia.Threading.Dispatcher.UIThread.Post(() =>
+        {
+            LoadData("外部更新");
+        });
     }
 
     private void InitializeAreaCountOptions()
@@ -96,7 +120,7 @@ public partial class DutyMainSettingsPage : SettingsPageBase
 
     private void OnConfigInputLostFocus(object? sender, RoutedEventArgs e)
     {
-        _ = ApplyConfigFromControls("输入框失焦");
+        ScheduleApplyConfig("输入框失焦");
     }
 
     private void OnConfigInputKeyDown(object? sender, KeyEventArgs e)
@@ -107,17 +131,33 @@ public partial class DutyMainSettingsPage : SettingsPageBase
         }
 
         e.Handled = true;
-        _ = ApplyConfigFromControls("按下 Enter");
+        ScheduleApplyConfig("按下 Enter");
     }
 
     private void OnConfigSelectionChanged(object? sender, SelectionChangedEventArgs e)
     {
-        _ = ApplyConfigFromControls("选项变更");
+        ScheduleApplyConfig("选项变更");
     }
 
     private void OnConfigToggleChanged(object? sender, RoutedEventArgs e)
     {
-        _ = ApplyConfigFromControls("开关切换");
+        ScheduleApplyConfig("开关切换");
+    }
+
+    private void ScheduleApplyConfig(string trigger)
+    {
+        if (_isLoadingConfig || _isApplyingConfig)
+        {
+            return;
+        }
+
+        _debounceCts?.Cancel();
+        _debounceCts = new CancellationTokenSource();
+        var token = _debounceCts.Token;
+        _ = Task.Delay(300, token).ContinueWith(_ =>
+        {
+            Avalonia.Threading.Dispatcher.UIThread.Post(() => ApplyConfigFromControls(trigger));
+        }, token, TaskContinuationOptions.OnlyOnRanToCompletion, TaskScheduler.Default);
     }
 
     private bool ApplyConfigFromControls(string trigger)
@@ -127,7 +167,6 @@ public partial class DutyMainSettingsPage : SettingsPageBase
             return false;
         }
 
-        Service.LoadConfig();
         var current = Service.Config;
         var requestedEnableMcp = EnableMcpSwitch.IsChecked == true;
         var requestedEnableWebDebugLayer = EnableWebDebugLayerSwitch.IsChecked == true;
@@ -161,25 +200,26 @@ public partial class DutyMainSettingsPage : SettingsPageBase
         try
         {
             _isApplyingConfig = true;
-            Service.SaveUserConfig(
-                apiKey: ApiKeyBox.Text ?? string.Empty,
-                baseUrl: BaseUrlBox.Text?.Trim() ?? string.Empty,
-                model: ModelBox.Text?.Trim() ?? string.Empty,
-                enableAutoRun: EnableAutoRunSwitch.IsChecked == true,
-                autoRunDay: GetSelectedAutoRunDay(),
-                autoRunTime: autoRunTime,
-                perDay: perDay,
-                skipWeekends: SkipWeekendsSwitch.IsChecked == true,
-                dutyRule: DutyRuleBox.Text ?? string.Empty,
-                startFromToday: StartFromTodaySwitch.IsChecked == true,
-                autoRunCoverageDays: coverageDays,
-                componentRefreshTime: componentRefreshTime,
-                // 普通用户页不提供 Python 路径编辑。
-                pythonPath: current.PythonPath,
-                areaNames: areaNames,
-                areaPerDayCounts: areaPerDayCounts,
-                enableMcp: requestedEnableMcp,
-                enableWebViewDebugLayer: requestedEnableWebDebugLayer);
+            Service.SaveUserConfig(new SaveConfigRequest
+            {
+                ApiKey = ApiKeyBox.Text ?? string.Empty,
+                BaseUrl = BaseUrlBox.Text?.Trim() ?? string.Empty,
+                Model = ModelBox.Text?.Trim() ?? string.Empty,
+                EnableAutoRun = EnableAutoRunSwitch.IsChecked == true,
+                AutoRunDay = GetSelectedAutoRunDay(),
+                AutoRunTime = autoRunTime,
+                PerDay = perDay,
+                SkipWeekends = SkipWeekendsSwitch.IsChecked == true,
+                DutyRule = DutyRuleBox.Text ?? string.Empty,
+                StartFromToday = StartFromTodaySwitch.IsChecked == true,
+                AutoRunCoverageDays = coverageDays,
+                ComponentRefreshTime = componentRefreshTime,
+                PythonPath = current.PythonPath,
+                AreaNames = areaNames,
+                AreaPerDayCounts = areaPerDayCounts,
+                EnableMcp = requestedEnableMcp,
+                EnableWebViewDebugLayer = requestedEnableWebDebugLayer
+            });
 
             var restartRequired = current.EnableMcp != requestedEnableMcp ||
                                   current.EnableWebViewDebugLayer != requestedEnableWebDebugLayer;
@@ -292,13 +332,12 @@ public partial class DutyMainSettingsPage : SettingsPageBase
         }
 
         var count = GetSelectedCount(NewAreaCountComboBox, 2);
-        _areaSettings.Add(new AreaSettingItem { Name = name, Count = count });
-        RenderAreaSettingsList(name);
-
-        if (!ApplyConfigFromControls("新增区域"))
+        if (!TryApplyAreaChange(() =>
+            {
+                _areaSettings.Add(new AreaSettingItem { Name = name, Count = count });
+                RenderAreaSettingsList(name);
+            }, "新增区域"))
         {
-            LoadConfigForm();
-            LoadData("配置回滚");
             return;
         }
 
@@ -344,13 +383,12 @@ public partial class DutyMainSettingsPage : SettingsPageBase
             return;
         }
 
-        _areaSettings[selectedIndex] = new AreaSettingItem { Name = name, Count = count };
-        RenderAreaSettingsList(name);
-
-        if (!ApplyConfigFromControls("修改区域"))
+        if (!TryApplyAreaChange(() =>
+            {
+                _areaSettings[selectedIndex] = new AreaSettingItem { Name = name, Count = count };
+                RenderAreaSettingsList(name);
+            }, "修改区域"))
         {
-            LoadConfigForm();
-            LoadData("配置回滚");
             return;
         }
 
@@ -434,13 +472,12 @@ public partial class DutyMainSettingsPage : SettingsPageBase
             return;
         }
 
-        item.Count = newCount;
-        RenderAreaSettingsList(item.Name);
-
-        if (!ApplyConfigFromControls("区域人数修改"))
+        if (!TryApplyAreaChange(() =>
+            {
+                item.Count = newCount;
+                RenderAreaSettingsList(item.Name);
+            }, "区域人数修改"))
         {
-            LoadConfigForm();
-            LoadData("配置回滚");
             return;
         }
 
@@ -485,16 +522,25 @@ public partial class DutyMainSettingsPage : SettingsPageBase
             return;
         }
 
-        RenderAreaSettingsList();
-
-        if (!ApplyConfigFromControls("删除区域"))
+        if (!TryApplyAreaChange(() => RenderAreaSettingsList(), "删除区域"))
         {
-            LoadConfigForm();
-            LoadData("配置回滚");
             return;
         }
 
         SetStatus($"已删除区域：{selected.Name}。", Brushes.Green);
+    }
+
+    private bool TryApplyAreaChange(Action mutation, string trigger)
+    {
+        mutation();
+        if (ApplyConfigFromControls(trigger))
+        {
+            return true;
+        }
+
+        LoadConfigForm();
+        LoadData("配置回滚");
+        return false;
     }
 
     private void RenderAreaSettingsList(string? selectName = null)
@@ -621,6 +667,57 @@ public partial class DutyMainSettingsPage : SettingsPageBase
         Service.SaveRosterEntries(roster);
         LoadData("名单变更");
         SetStatus($"已删除学生：{selected.Name}", Brushes.Green);
+    }
+
+    private void OnBulkImportClick(object? sender, RoutedEventArgs e)
+    {
+        var text = (BulkImportBox.Text ?? string.Empty).Trim();
+        if (text.Length == 0)
+        {
+            SetStatus("请先输入或粘贴学生姓名列表。", Brushes.Orange);
+            return;
+        }
+
+        var replace = BulkImportReplaceCheckBox.IsChecked == true;
+        var names = DutyLocalPreviewHostedService.SplitAndDeduplicateText(text);
+        
+        if (names.Count == 0)
+        {
+             SetStatus("未能解析出有效的学生姓名。", Brushes.Orange);
+             return;
+        }
+
+        var roster = replace ? [] : Service.LoadRosterEntries();
+        var addedCount = 0;
+        var nextId = roster.Count == 0 ? 1 : roster.Max(x => x.Id) + 1;
+
+        foreach (var name in names)
+        {
+            if (roster.Any(x => string.Equals((x.Name ?? string.Empty).Trim(), name, StringComparison.OrdinalIgnoreCase)))
+            {
+                continue;
+            }
+
+            roster.Add(new RosterEntry
+            {
+                Id = nextId++,
+                Name = name,
+                Active = true
+            });
+            addedCount++;
+        }
+
+        if (addedCount > 0 || replace)
+        {
+            Service.SaveRosterEntries(roster);
+            LoadData("批量导入");
+            BulkImportBox.Text = string.Empty;
+            SetStatus($"批量导入完成：新增 {addedCount} 人" + (replace ? " (已替换旧名单)" : ""), Brushes.Green);
+        }
+        else
+        {
+            SetStatus("所有学生均已存在，未新增。", Brushes.Orange);
+        }
     }
 
     private void OnRefreshDataClick(object? sender, RoutedEventArgs e)
@@ -895,8 +992,15 @@ public partial class DutyMainSettingsPage : SettingsPageBase
     private void RefreshTrackingMeta()
     {
         StatusMetaText.Text = FormatTrackingSegment("配置状态", _lastConfigState, _lastConfigAt);
-        RuntimeMetaText.Text =
-            $"{FormatTrackingSegment("运行状态", _lastRunState, _lastRunAt)} | {FormatTrackingSegment("数据状态", _lastDataState, _lastDataAt)}";
+        var dataState = _lastDataAt.HasValue ? $"{_lastDataAt:HH:mm:ss}" : "未刷新";
+        RuntimeMetaText.Text = $"运行状态：{_lastRunState} | 数据状态：{dataState}";
+
+        var mcpEnabled = Service.Config.EnableMcp;
+        var mcpPort = PreviewService.McpUrl; // Usually empty if not running, but helps debugging
+        var mcpClients = PreviewService.McpSessionCount;
+        McpStatusText.Text = mcpEnabled
+            ? $"MCP：已启用 · {mcpClients} 个活动客户端"
+            : "MCP：未启用";
     }
 
     private static string FormatTrackingSegment(string label, string state, DateTime? timestamp)

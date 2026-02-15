@@ -1,7 +1,7 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
 
-namespace DutyIsland.Services;
+namespace DutyAgent.Services;
 
 internal static class PythonProcessTracker
 {

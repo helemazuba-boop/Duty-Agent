@@ -4,7 +4,7 @@
         <Nullable>enable</Nullable>
         <ImplicitUsings>enable</ImplicitUsings>
         <EnableDynamicLoading>True</EnableDynamicLoading>
-        <RootNamespace>DutyIsland</RootNamespace>
+        <RootNamespace>DutyAgent</RootNamespace>
 		<AssemblyName>Duty-Agent</AssemblyName>
 		<Product>Duty-Agent</Product>
 		<Version>0.2.3.0</Version>

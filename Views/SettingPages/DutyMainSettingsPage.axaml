@@ -1,20 +1,26 @@
-﻿<ci:SettingsPageBase x:Class="DutyIsland.Views.SettingPages.DutyMainSettingsPage"
+﻿<ci:SettingsPageBase x:Class="DutyAgent.Views.SettingPages.DutyMainSettingsPage"
                      xmlns="https://github.com/avaloniaui"
                      xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
                      xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
                      xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
                      xmlns:ci="http://classisland.tech/schemas/xaml/core"
-                     xmlns:local="clr-namespace:DutyIsland.Views.SettingPages"
+                     xmlns:local="clr-namespace:DutyAgent.Views.SettingPages"
                      x:DataType="local:DutyMainSettingsPage"
                      d:DataContext="{d:DesignInstance local:DutyMainSettingsPage}"
                      mc:Ignorable="d">
+    <ci:SettingsPageBase.Styles>
+        <Style Selector="Border.settings-card">
+            <Setter Property="Background" Value="#14FFFFFF"/>
+            <Setter Property="BorderBrush" Value="#22000000"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="CornerRadius" Value="12"/>
+            <Setter Property="Padding" Value="16"/>
+        </Style>
+    </ci:SettingsPageBase.Styles>
     <ScrollViewer>
         <StackPanel Margin="24,18,24,26" Spacing="14">
-            <Border Background="#14FFFFFF"
-                    BorderBrush="#22000000"
-                    BorderThickness="1"
-                    CornerRadius="12"
-                    Padding="16">
+            <!-- ① 状态 -->
+            <Border Classes="settings-card">
                 <StackPanel Spacing="10">
                     <StackPanel Orientation="Horizontal" Spacing="8">
                         <TextBlock FontFamily="Segoe Fluent Icons" Text="&#xE713;" FontSize="18" />
@@ -35,49 +41,15 @@
                                Text="运行状态：待命 | 数据状态：未刷新"
                                Opacity="0.75"
                                TextWrapping="Wrap" />
+                    <TextBlock x:Name="McpStatusText"
+                               Text="MCP：未启用"
+                               Opacity="0.75"
+                               TextWrapping="Wrap" />
                 </StackPanel>
             </Border>
 
-            <Border Background="#14FFFFFF"
-                    BorderBrush="#22000000"
-                    BorderThickness="1"
-                    CornerRadius="12"
-                    Padding="16">
-                <StackPanel Spacing="10">
-                    <StackPanel Orientation="Horizontal" Spacing="8">
-                        <TextBlock FontFamily="Segoe Fluent Icons" Text="&#xE7C3;" FontSize="16" />
-                        <TextBlock Text="执行排班" FontSize="16" FontWeight="SemiBold" />
-                    </StackPanel>
-                    <TextBlock Text="排班指令" />
-                    <TextBox x:Name="InstructionBox"
-                             Height="76"
-                             AcceptsReturn="True"
-                             TextWrapping="Wrap"
-                             Watermark="例如：从今天开始排5天，每个区域每天2人，周末跳过。" />
-                    <Grid ColumnDefinitions="2*,*" ColumnSpacing="10">
-                        <StackPanel Grid.Column="0" Spacing="6">
-                            <TextBlock Text="应用模式" />
-                            <ComboBox x:Name="ApplyModeComboBox" HorizontalAlignment="Stretch">
-                                <ComboBoxItem Content="追加（推荐）" />
-                                <ComboBoxItem Content="替换未来" />
-                                <ComboBoxItem Content="替换重叠区间" />
-                                <ComboBoxItem Content="全部替换" />
-                            </ComboBox>
-                        </StackPanel>
-                        <Button Grid.Column="1"
-                                x:Name="RunAgentBtn"
-                                VerticalAlignment="Bottom"
-                                Content="开始排班"
-                                Click="OnRunAgentClick" />
-                    </Grid>
-                </StackPanel>
-            </Border>
-
-            <Border Background="#14FFFFFF"
-                    BorderBrush="#22000000"
-                    BorderThickness="1"
-                    CornerRadius="12"
-                    Padding="16">
+            <!-- ② 连接与模型 -->
+            <Border Classes="settings-card">
                 <StackPanel Spacing="10">
                     <StackPanel Orientation="Horizontal" Spacing="8">
                         <TextBlock FontFamily="Segoe Fluent Icons" Text="&#xE8D2;" FontSize="16" />
@@ -107,34 +79,8 @@
                 </StackPanel>
             </Border>
 
-            <Border Background="#14FFFFFF"
-                    BorderBrush="#22000000"
-                    BorderThickness="1"
-                    CornerRadius="12"
-                    Padding="16">
-                <StackPanel Spacing="10">
-                    <StackPanel Orientation="Horizontal" Spacing="8">
-                        <TextBlock FontFamily="Segoe Fluent Icons" Text="&#xE945;" FontSize="16" />
-                        <TextBlock Text="AI 长期规则" FontSize="16" FontWeight="SemiBold" />
-                    </StackPanel>
-                    <TextBlock Text="以下内容会作为固定规则发送给 AI，每次排班都会生效。可包含排班逻辑、区域分配偏好、特殊安排等。"
-                               Opacity="0.65"
-                               TextWrapping="Wrap" />
-                    <TextBox x:Name="DutyRuleBox"
-                             Height="100"
-                             AcceptsReturn="True"
-                             TextWrapping="Wrap"
-                             Watermark="示例：&#10;每天排班2人，跳过周末&#10;区域：教室、清洁区&#10;教室每天2人，清洁区每天3人&#10;排班周期：5天&#10;男生优先排清洁区"
-                             LostFocus="OnConfigInputLostFocus"
-                             KeyDown="OnConfigInputKeyDown" />
-                </StackPanel>
-            </Border>
-
-            <Border Background="#14FFFFFF"
-                    BorderBrush="#22000000"
-                    BorderThickness="1"
-                    CornerRadius="12"
-                    Padding="16">
+            <!-- ③ 排班处理参数 -->
+            <Border Classes="settings-card">
                 <StackPanel Spacing="10">
                     <StackPanel Orientation="Horizontal" Spacing="8">
                         <TextBlock FontFamily="Segoe Fluent Icons" Text="&#xE823;" FontSize="16" />
@@ -212,11 +158,49 @@
                 </StackPanel>
             </Border>
 
-            <Border Background="#14FFFFFF"
-                    BorderBrush="#22000000"
-                    BorderThickness="1"
-                    CornerRadius="12"
-                    Padding="16">
+            <!-- ④ AI 长期规则 -->
+            <Border Classes="settings-card">
+                <StackPanel Spacing="10">
+                    <StackPanel Orientation="Horizontal" Spacing="8">
+                        <TextBlock FontFamily="Segoe Fluent Icons" Text="&#xE945;" FontSize="16" />
+                        <TextBlock Text="AI 长期规则" FontSize="16" FontWeight="SemiBold" />
+                    </StackPanel>
+                    <TextBlock Text="以下内容会作为固定规则发送给 AI，每次排班都会生效。可包含排班逻辑、区域分配偏好、特殊安排等。"
+                               Opacity="0.65"
+                               TextWrapping="Wrap" />
+                    <TextBox x:Name="DutyRuleBox"
+                             Height="100"
+                             AcceptsReturn="True"
+                             TextWrapping="Wrap"
+                             Watermark="示例：&#10;每天排班2人，跳过周末&#10;区域：教室、清洁区&#10;教室每天2人，清洁区每天3人&#10;排班周期：5天&#10;男生优先排清洁区"
+                             LostFocus="OnConfigInputLostFocus"
+                             KeyDown="OnConfigInputKeyDown" />
+                </StackPanel>
+            </Border>
+
+            <!-- ⑤ 调试与集成 -->
+            <Border Classes="settings-card">
+                <StackPanel Spacing="10">
+                    <StackPanel Orientation="Horizontal" Spacing="8">
+                        <TextBlock FontFamily="Segoe Fluent Icons" Text="&#xE943;" FontSize="16" />
+                        <TextBlock Text="调试与集成" FontSize="16" FontWeight="SemiBold" />
+                    </StackPanel>
+                    <ToggleSwitch x:Name="EnableMcpSwitch"
+                                  Content="启用 MCP 导入接口"
+                                  Checked="OnConfigToggleChanged"
+                                  Unchecked="OnConfigToggleChanged" />
+                    <ToggleSwitch x:Name="EnableWebDebugLayerSwitch"
+                                  Content="启用 WebView2 调试层"
+                                  Checked="OnConfigToggleChanged"
+                                  Unchecked="OnConfigToggleChanged" />
+                    <TextBlock Text="说明：启用"WebView2 调试层"后，重启 ClassIsland 才会显示调试页面并启动对应本地调试服务。"
+                               Opacity="0.75"
+                               TextWrapping="Wrap" />
+                </StackPanel>
+            </Border>
+
+            <!-- ⑥ 值日区域与人数 -->
+            <Border Classes="settings-card">
                 <StackPanel Spacing="10">
                     <StackPanel Orientation="Horizontal" Spacing="8">
                         <TextBlock FontFamily="Segoe Fluent Icons" Text="&#xE8FD;" FontSize="16" />
@@ -279,11 +263,8 @@
                 </StackPanel>
             </Border>
 
-            <Border Background="#14FFFFFF"
-                    BorderBrush="#22000000"
-                    BorderThickness="1"
-                    CornerRadius="12"
-                    Padding="16">
+            <!-- ⑦ 学生名单 -->
+            <Border Classes="settings-card">
                 <StackPanel Spacing="10">
                     <StackPanel Orientation="Horizontal" Spacing="8">
                         <TextBlock FontFamily="Segoe Fluent Icons" Text="&#xE716;" FontSize="16" />
@@ -304,6 +285,29 @@
                                 Content="打开名单文件"
                                 Click="OnOpenRosterClick" />
                     </StackPanel>
+
+                    <!-- 批量导入面板 -->
+                    <Border BorderBrush="#22000000" BorderThickness="1" CornerRadius="8" Padding="12">
+                        <StackPanel Spacing="8">
+                            <TextBlock Text="批量导入学生" FontWeight="SemiBold" />
+                            <TextBlock Text="粘贴学生姓名，支持逗号、分号或换行分隔。"
+                                       Opacity="0.65"
+                                       TextWrapping="Wrap" />
+                            <TextBox x:Name="BulkImportBox"
+                                     Height="80"
+                                     AcceptsReturn="True"
+                                     TextWrapping="Wrap"
+                                     Watermark="张三, 李四, 王五&#10;或每行一个名字" />
+                            <StackPanel Orientation="Horizontal" Spacing="10">
+                                <Button x:Name="BulkImportBtn"
+                                        Content="导入"
+                                        Click="OnBulkImportClick" />
+                                <CheckBox x:Name="BulkImportReplaceCheckBox"
+                                          Content="替换现有名单"
+                                          IsChecked="False" />
+                            </StackPanel>
+                        </StackPanel>
+                    </Border>
 
                     <Border BorderBrush="#22000000" BorderThickness="1" CornerRadius="8">
                         <Grid RowDefinitions="Auto,*">
@@ -356,35 +360,40 @@
                 </StackPanel>
             </Border>
 
-            <Border Background="#14FFFFFF"
-                    BorderBrush="#22000000"
-                    BorderThickness="1"
-                    CornerRadius="12"
-                    Padding="16">
+            <!-- ⑧ 执行排班 -->
+            <Border Classes="settings-card">
                 <StackPanel Spacing="10">
                     <StackPanel Orientation="Horizontal" Spacing="8">
-                        <TextBlock FontFamily="Segoe Fluent Icons" Text="&#xE943;" FontSize="16" />
-                        <TextBlock Text="调试与集成" FontSize="16" FontWeight="SemiBold" />
+                        <TextBlock FontFamily="Segoe Fluent Icons" Text="&#xE7C3;" FontSize="16" />
+                        <TextBlock Text="执行排班" FontSize="16" FontWeight="SemiBold" />
                     </StackPanel>
-                    <ToggleSwitch x:Name="EnableMcpSwitch"
-                                  Content="启用 MCP 导入接口"
-                                  Checked="OnConfigToggleChanged"
-                                  Unchecked="OnConfigToggleChanged" />
-                    <ToggleSwitch x:Name="EnableWebDebugLayerSwitch"
-                                  Content="启用 WebView2 调试层"
-                                  Checked="OnConfigToggleChanged"
-                                  Unchecked="OnConfigToggleChanged" />
-                    <TextBlock Text="说明：启用“WebView2 调试层”后，重启 ClassIsland 才会显示调试页面并启动对应本地调试服务。"
-                               Opacity="0.75"
-                               TextWrapping="Wrap" />
+                    <TextBlock Text="排班指令" />
+                    <TextBox x:Name="InstructionBox"
+                             Height="76"
+                             AcceptsReturn="True"
+                             TextWrapping="Wrap"
+                             Watermark="例如：从今天开始排5天，每个区域每天2人，周末跳过。" />
+                    <Grid ColumnDefinitions="2*,*" ColumnSpacing="10">
+                        <StackPanel Grid.Column="0" Spacing="6">
+                            <TextBlock Text="应用模式" />
+                            <ComboBox x:Name="ApplyModeComboBox" HorizontalAlignment="Stretch">
+                                <ComboBoxItem Content="追加（推荐）" />
+                                <ComboBoxItem Content="替换未来" />
+                                <ComboBoxItem Content="替换重叠区间" />
+                                <ComboBoxItem Content="全部替换" />
+                            </ComboBox>
+                        </StackPanel>
+                        <Button Grid.Column="1"
+                                x:Name="RunAgentBtn"
+                                VerticalAlignment="Bottom"
+                                Content="开始排班"
+                                Click="OnRunAgentClick" />
+                    </Grid>
                 </StackPanel>
             </Border>
 
-            <Border Background="#14FFFFFF"
-                    BorderBrush="#22000000"
-                    BorderThickness="1"
-                    CornerRadius="12"
-                    Padding="16">
+            <!-- ⑨ 排班预览 -->
+            <Border Classes="settings-card">
                 <StackPanel Spacing="10">
                     <StackPanel Orientation="Horizontal" Spacing="8">
                         <TextBlock FontFamily="Segoe Fluent Icons" Text="&#xE8A5;" FontSize="16" />

@@ -5,10 +5,10 @@ using Avalonia.Threading;
 using ClassIsland.Core.Abstractions.Controls;
 using ClassIsland.Core.Attributes;
 using ClassIsland.Shared;
-using DutyIsland.Models;
-using DutyIsland.Services;
+using DutyAgent.Models;
+using DutyAgent.Services;
 
-namespace DutyIsland.Controls.Components;
+namespace DutyAgent.Controls.Components;
 
 [ComponentInfo("00318064-DACC-419F-8228-79F3413CAB54", "\u503C\u65E5\u4EBA\u5458", "\uE31E", "\u663E\u793A\u4ECA\u65E5\u503C\u65E5\u5B89\u6392\u3002")]
 public partial class DutyComponent : ComponentBase<DutyComponentSettings>

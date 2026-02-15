@@ -1,16 +1,16 @@
 using ClassIsland.Core.Abstractions;
 using ClassIsland.Core.Attributes;
 using ClassIsland.Core.Extensions.Registry;
-using DutyIsland.Controls.Components;
-using DutyIsland.Models;
-using DutyIsland.Services;
-using DutyIsland.Services.NotificationProviders;
-using DutyIsland.Views.SettingPages;
+using DutyAgent.Controls.Components;
+using DutyAgent.Models;
+using DutyAgent.Services;
+using DutyAgent.Services.NotificationProviders;
+using DutyAgent.Views.SettingPages;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using System.Text.Json;
 
-namespace DutyIsland;
+namespace DutyAgent;
 
 [PluginEntrance]
 public class Plugin : PluginBase
