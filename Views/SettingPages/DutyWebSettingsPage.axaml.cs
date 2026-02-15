@@ -185,7 +185,7 @@ public partial class DutyWebSettingsPage : SettingsPageBase
 
     private async Task HandleSaveConfigAsync(JsonElement payload)
     {
-        var request = payload.Deserialize<BridgeSaveConfigRequest>(JsonOptions);
+        var request = payload.Deserialize<SaveConfigRequest>(JsonOptions);
         if (request?.Config == null)
         {
             await SendErrorAsync("invalid_payload", "save_config requires payload.config.", "save_config");
@@ -386,35 +386,55 @@ public partial class DutyWebSettingsPage : SettingsPageBase
         await Task.CompletedTask;
     }
 
-    private void ApplyConfig(SaveConfigRequest config)
+    private void ApplyConfig(WebConfigDto config)
     {
         _backendService.LoadConfig();
         var current = _backendService.Config;
 
-        _backendService.SaveUserConfig(new SaveConfigRequest
-        {
-            ApiKey = DutyBackendService.ResolveApiKeyInput(config.ApiKey, current.DecryptedApiKey),
-            BaseUrl = config.BaseUrl ?? current.BaseUrl,
-            Model = config.Model ?? current.Model,
-            EnableAutoRun = config.EnableAutoRun ?? current.EnableAutoRun,
-            EnableMcp = config.EnableMcp ?? current.EnableMcp,
-            EnableWebViewDebugLayer = config.EnableWebViewDebugLayer ?? current.EnableWebViewDebugLayer,
-            AutoRunDay = config.AutoRunDay ?? current.AutoRunDay,
-            AutoRunTime = config.AutoRunTime ?? current.AutoRunTime,
-            PerDay = config.PerDay ?? current.PerDay,
-            SkipWeekends = config.SkipWeekends ?? current.SkipWeekends,
-            DutyRule = config.DutyRule ?? current.DutyRule,
-            StartFromToday = config.StartFromToday ?? current.StartFromToday,
-            AutoRunCoverageDays = config.AutoRunCoverageDays ?? current.AutoRunCoverageDays,
-            ComponentRefreshTime = config.ComponentRefreshTime ?? current.ComponentRefreshTime,
-            PythonPath = config.PythonPath ?? current.PythonPath,
-            AreaNames = config.AreaNames ?? current.AreaNames,
-            AreaPerDayCounts = config.AreaPerDayCounts ?? current.AreaPerDayCounts,
-            NotificationTemplates = config.NotificationTemplates ?? current.NotificationTemplates,
-            DutyReminderEnabled = config.DutyReminderEnabled ?? current.DutyReminderEnabled,
-            DutyReminderTimes = config.DutyReminderTimes ?? current.DutyReminderTimes,
-            DutyReminderTemplates = config.DutyReminderTemplates ?? current.DutyReminderTemplates
-        });
+        var apiKey = DutyBackendService.ResolveApiKeyInput(config.ApiKey, current.DecryptedApiKey);
+        var baseUrl = config.BaseUrl ?? current.BaseUrl;
+        var model = config.Model ?? current.Model;
+        var enableAutoRun = config.EnableAutoRun ?? current.EnableAutoRun;
+        var enableMcp = config.EnableMcp ?? current.EnableMcp;
+        var enableWebViewDebugLayer = config.EnableWebViewDebugLayer ?? current.EnableWebViewDebugLayer;
+        var autoRunDay = config.AutoRunDay ?? current.AutoRunDay;
+        var autoRunTime = config.AutoRunTime ?? current.AutoRunTime;
+        var perDay = config.PerDay ?? current.PerDay;
+        var skipWeekends = config.SkipWeekends ?? current.SkipWeekends;
+        var dutyRule = config.DutyRule ?? current.DutyRule;
+        var startFromToday = config.StartFromToday ?? current.StartFromToday;
+        var coverageDays = config.AutoRunCoverageDays ?? current.AutoRunCoverageDays;
+        var componentRefreshTime = config.ComponentRefreshTime ?? current.ComponentRefreshTime;
+        var pythonPath = config.PythonPath ?? current.PythonPath;
+        var areaNames = config.AreaNames ?? current.AreaNames;
+        var areaPerDayCounts = config.AreaPerDayCounts ?? current.AreaPerDayCounts;
+        var notificationTemplates = config.NotificationTemplates ?? current.NotificationTemplates;
+        var dutyReminderEnabled = config.DutyReminderEnabled ?? current.DutyReminderEnabled;
+        var dutyReminderTimes = config.DutyReminderTimes ?? current.DutyReminderTimes;
+        var dutyReminderTemplates = config.DutyReminderTemplates ?? current.DutyReminderTemplates;
+
+        _backendService.SaveUserConfig(
+            apiKey: apiKey,
+            baseUrl: baseUrl,
+            model: model,
+            enableAutoRun: enableAutoRun,
+            autoRunDay: autoRunDay,
+            autoRunTime: autoRunTime,
+            perDay: perDay,
+            skipWeekends: skipWeekends,
+            dutyRule: dutyRule,
+            startFromToday: startFromToday,
+            autoRunCoverageDays: coverageDays,
+            componentRefreshTime: componentRefreshTime,
+            pythonPath: pythonPath,
+            areaNames: areaNames,
+            areaPerDayCounts: areaPerDayCounts,
+            notificationTemplates: notificationTemplates,
+            dutyReminderEnabled: dutyReminderEnabled,
+            dutyReminderTimes: dutyReminderTimes,
+            dutyReminderTemplates: dutyReminderTemplates,
+            enableMcp: enableMcp,
+            enableWebViewDebugLayer: enableWebViewDebugLayer);
     }
 
     private async Task SendSnapshotAsync()
@@ -427,7 +447,7 @@ public partial class DutyWebSettingsPage : SettingsPageBase
             LocalPreviewUrl = _localPreviewHostedService.PreviewUrl,
             ApiOverwriteUrl = _localPreviewHostedService.ApiOverwriteUrl,
             McpUrl = _localPreviewHostedService.McpUrl,
-            Config = new SaveConfigRequest
+            Config = new WebConfigDto
             {
                 PythonPath = config.PythonPath,
                 ApiKey = _backendService.GetApiKeyMaskForUi(),
@@ -639,10 +659,10 @@ public partial class DutyWebSettingsPage : SettingsPageBase
         public JsonElement Payload { get; set; }
     }
 
-    private sealed class BridgeSaveConfigRequest
+    private sealed class SaveConfigRequest
     {
         [JsonPropertyName("config")]
-        public SaveConfigRequest? Config { get; set; }
+        public WebConfigDto? Config { get; set; }
     }
 
     private sealed class SaveRosterRequest
@@ -660,7 +680,7 @@ public partial class DutyWebSettingsPage : SettingsPageBase
         public string? ApplyMode { get; set; }
 
         [JsonPropertyName("config")]
-        public SaveConfigRequest? Config { get; set; }
+        public WebConfigDto? Config { get; set; }
     }
 
     private sealed class PublishNotificationRequest
@@ -705,7 +725,7 @@ public partial class DutyWebSettingsPage : SettingsPageBase
         public string McpUrl { get; set; } = string.Empty;
 
         [JsonPropertyName("config")]
-        public SaveConfigRequest Config { get; set; } = new();
+        public WebConfigDto Config { get; set; } = new();
 
         [JsonPropertyName("roster")]
         public List<WebRosterEntryDto> Roster { get; set; } = [];
@@ -798,7 +818,71 @@ public partial class DutyWebSettingsPage : SettingsPageBase
         public string TableHead { get; set; } = "rgba(248, 250, 252, 0.80)";
     }
 
-    // WebConfigDto removed — replaced by shared SaveConfigRequest from Models.
+    private sealed class WebConfigDto
+    {
+        [JsonPropertyName("python_path")]
+        public string? PythonPath { get; set; }
+
+        [JsonPropertyName("api_key")]
+        public string? ApiKey { get; set; }
+
+        [JsonPropertyName("base_url")]
+        public string? BaseUrl { get; set; }
+
+        [JsonPropertyName("model")]
+        public string? Model { get; set; }
+
+        [JsonPropertyName("enable_auto_run")]
+        public bool? EnableAutoRun { get; set; }
+
+        [JsonPropertyName("enable_mcp")]
+        public bool? EnableMcp { get; set; }
+
+        [JsonPropertyName("enable_webview_debug_layer")]
+        public bool? EnableWebViewDebugLayer { get; set; }
+
+        [JsonPropertyName("auto_run_day")]
+        public string? AutoRunDay { get; set; }
+
+        [JsonPropertyName("auto_run_time")]
+        public string? AutoRunTime { get; set; }
+
+        [JsonPropertyName("auto_run_coverage_days")]
+        public int? AutoRunCoverageDays { get; set; }
+
+        [JsonPropertyName("per_day")]
+        public int? PerDay { get; set; }
+
+        [JsonPropertyName("skip_weekends")]
+        public bool? SkipWeekends { get; set; }
+
+        [JsonPropertyName("duty_rule")]
+        public string? DutyRule { get; set; }
+
+        [JsonPropertyName("start_from_today")]
+        public bool? StartFromToday { get; set; }
+
+        [JsonPropertyName("component_refresh_time")]
+        public string? ComponentRefreshTime { get; set; }
+
+        [JsonPropertyName("area_names")]
+        public List<string>? AreaNames { get; set; }
+
+        [JsonPropertyName("area_per_day_counts")]
+        public Dictionary<string, int>? AreaPerDayCounts { get; set; }
+
+        [JsonPropertyName("notification_templates")]
+        public List<string>? NotificationTemplates { get; set; }
+
+        [JsonPropertyName("duty_reminder_enabled")]
+        public bool? DutyReminderEnabled { get; set; }
+
+        [JsonPropertyName("duty_reminder_times")]
+        public List<string>? DutyReminderTimes { get; set; }
+
+        [JsonPropertyName("duty_reminder_templates")]
+        public List<string>? DutyReminderTemplates { get; set; }
+    }
 
     private sealed class WebRosterEntryDto
     {

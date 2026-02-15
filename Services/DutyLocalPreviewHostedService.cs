@@ -57,9 +57,6 @@ public sealed class DutyLocalPreviewHostedService : IHostedService, IDisposable
         }
     }
 
-    /// <summary>Number of currently active MCP SSE sessions.</summary>
-    public int McpSessionCount => _mcpSessions.Count;
-
     public DutyLocalPreviewHostedService(DutyBackendService backendService)
     {
         _backendService = backendService;
@@ -1097,29 +1094,27 @@ public sealed class DutyLocalPreviewHostedService : IHostedService, IDisposable
         var current = _backendService.Config;
         try
         {
-            _backendService.SaveUserConfig(new SaveConfigRequest
-            {
-                ApiKey = DutyBackendService.ResolveApiKeyInput(apiKey, current.DecryptedApiKey),
-                BaseUrl = baseUrl ?? current.BaseUrl,
-                Model = model ?? current.Model,
-                EnableAutoRun = enableAutoRun ?? current.EnableAutoRun,
-                AutoRunDay = autoRunDay ?? current.AutoRunDay,
-                AutoRunTime = autoRunTime ?? current.AutoRunTime,
-                PerDay = perDay ?? current.PerDay,
-                SkipWeekends = skipWeekends ?? current.SkipWeekends,
-                DutyRule = dutyRule ?? current.DutyRule,
-                StartFromToday = startFromToday ?? current.StartFromToday,
-                AutoRunCoverageDays = autoRunCoverageDays ?? current.AutoRunCoverageDays,
-                ComponentRefreshTime = componentRefreshTime ?? current.ComponentRefreshTime,
-                PythonPath = pythonPath ?? current.PythonPath,
-                AreaNames = areaNames ?? current.AreaNames,
-                AreaPerDayCounts = areaPerDayCounts ?? current.AreaPerDayCounts,
-                NotificationTemplates = notificationTemplates ?? current.NotificationTemplates,
-                DutyReminderEnabled = dutyReminderEnabled ?? current.DutyReminderEnabled,
-                DutyReminderTimes = dutyReminderTimes ?? current.DutyReminderTimes,
-                DutyReminderTemplates = dutyReminderTemplates ?? current.DutyReminderTemplates,
-                EnableMcp = enableMcp
-            });
+            _backendService.SaveUserConfig(
+                apiKey: DutyBackendService.ResolveApiKeyInput(apiKey, current.DecryptedApiKey),
+                baseUrl: baseUrl ?? current.BaseUrl,
+                model: model ?? current.Model,
+                enableAutoRun: enableAutoRun ?? current.EnableAutoRun,
+                autoRunDay: autoRunDay ?? current.AutoRunDay,
+                autoRunTime: autoRunTime ?? current.AutoRunTime,
+                perDay: perDay ?? current.PerDay,
+                skipWeekends: skipWeekends ?? current.SkipWeekends,
+                dutyRule: dutyRule ?? current.DutyRule,
+                startFromToday: startFromToday ?? current.StartFromToday,
+                autoRunCoverageDays: autoRunCoverageDays ?? current.AutoRunCoverageDays,
+                componentRefreshTime: componentRefreshTime ?? current.ComponentRefreshTime,
+                pythonPath: pythonPath ?? current.PythonPath,
+                areaNames: areaNames ?? current.AreaNames,
+                areaPerDayCounts: areaPerDayCounts ?? current.AreaPerDayCounts,
+                notificationTemplates: notificationTemplates ?? current.NotificationTemplates,
+                dutyReminderEnabled: dutyReminderEnabled ?? current.DutyReminderEnabled,
+                dutyReminderTimes: dutyReminderTimes ?? current.DutyReminderTimes,
+                dutyReminderTemplates: dutyReminderTemplates ?? current.DutyReminderTemplates,
+                enableMcp: enableMcp);
         }
         catch (Exception ex)
         {
@@ -1422,7 +1417,7 @@ public sealed class DutyLocalPreviewHostedService : IHostedService, IDisposable
         }
     }
 
-    public static List<string> SplitAndDeduplicateText(string raw)
+    private static List<string> SplitAndDeduplicateText(string raw)
     {
         if (string.IsNullOrWhiteSpace(raw))
         {
@@ -1889,29 +1884,27 @@ public sealed class DutyLocalPreviewHostedService : IHostedService, IDisposable
         var areaNames = config.AreaNames ?? current.AreaNames;
         var areaPerDayCounts = config.AreaPerDayCounts ?? current.AreaPerDayCounts;
 
-        _backendService.SaveUserConfig(new SaveConfigRequest
-        {
-            ApiKey = apiKey,
-            BaseUrl = baseUrl,
-            Model = model,
-            EnableAutoRun = current.EnableAutoRun,
-            AutoRunDay = current.AutoRunDay,
-            AutoRunTime = current.AutoRunTime,
-            PerDay = perDay,
-            SkipWeekends = skipWeekends,
-            DutyRule = dutyRule,
-            StartFromToday = startFromToday,
-            AutoRunCoverageDays = autoRunCoverageDays,
-            ComponentRefreshTime = current.ComponentRefreshTime,
-            PythonPath = pythonPath,
-            AreaNames = areaNames,
-            AreaPerDayCounts = areaPerDayCounts,
-            NotificationTemplates = current.NotificationTemplates,
-            DutyReminderEnabled = current.DutyReminderEnabled,
-            DutyReminderTimes = current.DutyReminderTimes,
-            DutyReminderTemplates = current.DutyReminderTemplates,
-            EnableMcp = current.EnableMcp
-        });
+        _backendService.SaveUserConfig(
+            apiKey: apiKey,
+            baseUrl: baseUrl,
+            model: model,
+            enableAutoRun: current.EnableAutoRun,
+            autoRunDay: current.AutoRunDay,
+            autoRunTime: current.AutoRunTime,
+            perDay: perDay,
+            skipWeekends: skipWeekends,
+            dutyRule: dutyRule,
+            startFromToday: startFromToday,
+            autoRunCoverageDays: autoRunCoverageDays,
+            componentRefreshTime: current.ComponentRefreshTime,
+            pythonPath: pythonPath,
+            areaNames: areaNames,
+            areaPerDayCounts: areaPerDayCounts,
+            notificationTemplates: current.NotificationTemplates,
+            dutyReminderEnabled: current.DutyReminderEnabled,
+            dutyReminderTimes: current.DutyReminderTimes,
+            dutyReminderTemplates: current.DutyReminderTemplates,
+            enableMcp: current.EnableMcp);
     }
 
     private bool IsMcpEnabled()

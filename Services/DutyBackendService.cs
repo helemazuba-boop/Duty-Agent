@@ -78,12 +78,6 @@ public class DutyBackendService : IDisposable
     private DateTime _lastAutoRunAttempt = DateTime.MinValue;
     private static readonly UTF8Encoding Utf8NoBom = new(encoderShouldEmitUTF8Identifier: false);
 
-    /// <summary>Raised after <see cref="SaveUserConfig"/> writes config to disk.</summary>
-    public event Action? ConfigChanged;
-
-    /// <summary>Raised after <see cref="SaveRosterEntries"/> writes roster to disk.</summary>
-    public event Action? RosterChanged;
-
     public event EventHandler? ScheduleUpdated;
 
     public DutyConfig Config { get; private set; } = new();
@@ -194,40 +188,59 @@ public class DutyBackendService : IDisposable
         }
     }
 
-    public void SaveUserConfig(SaveConfigRequest request)
+    public void SaveUserConfig(
+        string apiKey,
+        string baseUrl,
+        string model,
+        bool enableAutoRun,
+        string autoRunDay,
+        string autoRunTime,
+        int perDay,
+        bool skipWeekends,
+        string dutyRule,
+        bool startFromToday,
+        int autoRunCoverageDays,
+        string componentRefreshTime,
+        string pythonPath,
+        IEnumerable<string>? areaNames = null,
+        IEnumerable<KeyValuePair<string, int>>? areaPerDayCounts = null,
+        IEnumerable<string>? notificationTemplates = null,
+        bool? dutyReminderEnabled = null,
+        IEnumerable<string>? dutyReminderTimes = null,
+        IEnumerable<string>? dutyReminderTemplates = null,
+        bool? enableMcp = null,
+        bool? enableWebViewDebugLayer = null)
     {
         lock (_configLock)
         {
-            Config.DecryptedApiKey = ResolveApiKeyInput(request.ApiKey, Config.DecryptedApiKey);
-            Config.BaseUrl = request.BaseUrl ?? Config.BaseUrl;
-            Config.Model = request.Model ?? Config.Model;
-            Config.EnableAutoRun = request.EnableAutoRun ?? Config.EnableAutoRun;
-            Config.EnableMcp = request.EnableMcp ?? Config.EnableMcp;
-            Config.EnableWebViewDebugLayer = request.EnableWebViewDebugLayer ?? Config.EnableWebViewDebugLayer;
-            Config.AutoRunDay = NormalizeAutoRunDay(request.AutoRunDay ?? Config.AutoRunDay);
-            Config.AutoRunTime = NormalizeTimeOrThrow(request.AutoRunTime ?? Config.AutoRunTime);
-            Config.PerDay = Math.Clamp(request.PerDay ?? Config.PerDay, 1, 30);
-            Config.SkipWeekends = request.SkipWeekends ?? Config.SkipWeekends;
-            Config.DutyRule = request.DutyRule ?? Config.DutyRule;
-            Config.StartFromToday = request.StartFromToday ?? Config.StartFromToday;
-            Config.AutoRunCoverageDays = Math.Clamp(request.AutoRunCoverageDays ?? Config.AutoRunCoverageDays, 1, 30);
-            Config.ComponentRefreshTime = NormalizeTimeOrThrow(request.ComponentRefreshTime ?? Config.ComponentRefreshTime);
-            Config.PythonPath = string.IsNullOrWhiteSpace(request.PythonPath) ? Config.PythonPath : request.PythonPath.Trim();
-            Config.AreaNames = NormalizeAreaNames(request.AreaNames ?? Config.AreaNames);
+            Config.DecryptedApiKey = ResolveApiKeyInput(apiKey, Config.DecryptedApiKey);
+            Config.BaseUrl = baseUrl;
+            Config.Model = model;
+            Config.EnableAutoRun = enableAutoRun;
+            Config.EnableMcp = enableMcp ?? Config.EnableMcp;
+            Config.EnableWebViewDebugLayer = enableWebViewDebugLayer ?? Config.EnableWebViewDebugLayer;
+            Config.AutoRunDay = NormalizeAutoRunDay(autoRunDay);
+            Config.AutoRunTime = NormalizeTimeOrThrow(autoRunTime);
+            Config.PerDay = Math.Clamp(perDay, 1, 30);
+            Config.SkipWeekends = skipWeekends;
+            Config.DutyRule = dutyRule;
+            Config.StartFromToday = startFromToday;
+            Config.AutoRunCoverageDays = Math.Clamp(autoRunCoverageDays, 1, 30);
+            Config.ComponentRefreshTime = NormalizeTimeOrThrow(componentRefreshTime);
+            Config.PythonPath = string.IsNullOrWhiteSpace(pythonPath) ? Config.PythonPath : pythonPath.Trim();
+            Config.AreaNames = NormalizeAreaNames(areaNames ?? Config.AreaNames);
             Config.AreaPerDayCounts = NormalizeAreaPerDayCounts(
                 Config.AreaNames,
-                request.AreaPerDayCounts ?? Config.AreaPerDayCounts,
+                areaPerDayCounts ?? Config.AreaPerDayCounts,
                 Config.PerDay);
             Config.NotificationTemplates =
-                NormalizeNotificationTemplates(request.NotificationTemplates ?? Config.NotificationTemplates);
-            Config.DutyReminderEnabled = request.DutyReminderEnabled ?? Config.DutyReminderEnabled;
-            Config.DutyReminderTimes = NormalizeDutyReminderTimes(request.DutyReminderTimes ?? Config.DutyReminderTimes);
+                NormalizeNotificationTemplates(notificationTemplates ?? Config.NotificationTemplates);
+            Config.DutyReminderEnabled = dutyReminderEnabled ?? Config.DutyReminderEnabled;
+            Config.DutyReminderTimes = NormalizeDutyReminderTimes(dutyReminderTimes ?? Config.DutyReminderTimes);
             Config.DutyReminderTemplates =
-                NormalizeDutyReminderTemplates(request.DutyReminderTemplates ?? Config.DutyReminderTemplates);
+                NormalizeDutyReminderTemplates(dutyReminderTemplates ?? Config.DutyReminderTemplates);
             SaveConfig();
         }
-
-        ConfigChanged?.Invoke();
     }
 
     public bool RunCoreAgent(string instruction, string applyMode = "append", string? overrideModel = null)
@@ -648,7 +661,6 @@ public class DutyBackendService : IDisposable
         }
 
         File.WriteAllText(path, builder.ToString(), new UTF8Encoding(encoderShouldEmitUTF8Identifier: true));
-        RosterChanged?.Invoke();
     }
 
     public DutyState LoadState()
