@@ -20,5 +20,32 @@
                 </Transitions>
             </Border.Transitions>
         </Border>
+
+        <Border x:Name="WebLoadErrorPanel"
+                IsVisible="False"
+                Background="#FDF4F4"
+                BorderBrush="#F3B7B7"
+                BorderThickness="1"
+                CornerRadius="12"
+                Padding="16"
+                Margin="16"
+                HorizontalAlignment="Stretch"
+                VerticalAlignment="Top">
+            <StackPanel Spacing="10">
+                <TextBlock Text="调试页面加载失败"
+                           FontSize="16"
+                           FontWeight="SemiBold" />
+                <TextBlock x:Name="WebLoadErrorText"
+                           Text="WebView2 初始化失败。"
+                           TextWrapping="Wrap"
+                           Opacity="0.85" />
+                <StackPanel Orientation="Horizontal" Spacing="8">
+                    <Button Content="重试加载"
+                            Click="OnRetryWebViewClick" />
+                    <Button Content="打开本地测试页"
+                            Click="OnOpenTestInBrowserClick" />
+                </StackPanel>
+            </StackPanel>
+        </Border>
     </Grid>
 </ci:SettingsPageBase>

@@ -10,7 +10,7 @@ using DutyAgent.Services;
 
 namespace DutyAgent.Controls.Components;
 
-[ComponentInfo("00318064-DACC-419F-8228-79F3413CAB54", "\u503C\u65E5\u4EBA\u5458", "\uE31E", "\u663E\u793A\u4ECA\u65E5\u503C\u65E5\u5B89\u6392\u3002")]
+[ComponentInfo("F364E328-6702-4C20-8A94-BA04FC0F2815", "\u503C\u65E5\u4EBA\u5458", "\uE31E", "\u663E\u793A\u4ECA\u65E5\u503C\u65E5\u5B89\u6392\u3002")]
 public partial class DutyComponent : ComponentBase<DutyComponentSettings>
 {
     private readonly DispatcherTimer _timer;

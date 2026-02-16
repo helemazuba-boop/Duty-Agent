@@ -27,41 +27,41 @@ public class DutyBackendService : IDisposable
         ["mon"] = DayOfWeek.Monday,
         ["monday"] = DayOfWeek.Monday,
         ["1"] = DayOfWeek.Monday,
-        ["周一"] = DayOfWeek.Monday,
-        ["星期一"] = DayOfWeek.Monday,
+        ["\u5468\u4E00"] = DayOfWeek.Monday,
+        ["\u661F\u671F\u4E00"] = DayOfWeek.Monday,
         ["tue"] = DayOfWeek.Tuesday,
         ["tuesday"] = DayOfWeek.Tuesday,
         ["2"] = DayOfWeek.Tuesday,
-        ["周二"] = DayOfWeek.Tuesday,
-        ["星期二"] = DayOfWeek.Tuesday,
+        ["\u5468\u4E8C"] = DayOfWeek.Tuesday,
+        ["\u661F\u671F\u4E8C"] = DayOfWeek.Tuesday,
         ["wed"] = DayOfWeek.Wednesday,
         ["wednesday"] = DayOfWeek.Wednesday,
         ["3"] = DayOfWeek.Wednesday,
-        ["周三"] = DayOfWeek.Wednesday,
-        ["星期三"] = DayOfWeek.Wednesday,
+        ["\u5468\u4E09"] = DayOfWeek.Wednesday,
+        ["\u661F\u671F\u4E09"] = DayOfWeek.Wednesday,
         ["thu"] = DayOfWeek.Thursday,
         ["thursday"] = DayOfWeek.Thursday,
         ["4"] = DayOfWeek.Thursday,
-        ["周四"] = DayOfWeek.Thursday,
-        ["星期四"] = DayOfWeek.Thursday,
+        ["\u5468\u56DB"] = DayOfWeek.Thursday,
+        ["\u661F\u671F\u56DB"] = DayOfWeek.Thursday,
         ["fri"] = DayOfWeek.Friday,
         ["friday"] = DayOfWeek.Friday,
         ["5"] = DayOfWeek.Friday,
-        ["周五"] = DayOfWeek.Friday,
-        ["星期五"] = DayOfWeek.Friday,
+        ["\u5468\u4E94"] = DayOfWeek.Friday,
+        ["\u661F\u671F\u4E94"] = DayOfWeek.Friday,
         ["sat"] = DayOfWeek.Saturday,
         ["saturday"] = DayOfWeek.Saturday,
         ["6"] = DayOfWeek.Saturday,
-        ["周六"] = DayOfWeek.Saturday,
-        ["星期六"] = DayOfWeek.Saturday,
+        ["\u5468\u516D"] = DayOfWeek.Saturday,
+        ["\u661F\u671F\u516D"] = DayOfWeek.Saturday,
         ["sun"] = DayOfWeek.Sunday,
         ["sunday"] = DayOfWeek.Sunday,
         ["7"] = DayOfWeek.Sunday,
         ["0"] = DayOfWeek.Sunday,
-        ["周日"] = DayOfWeek.Sunday,
-        ["周天"] = DayOfWeek.Sunday,
-        ["星期日"] = DayOfWeek.Sunday,
-        ["星期天"] = DayOfWeek.Sunday
+        ["\u5468\u65E5"] = DayOfWeek.Sunday,
+        ["\u5468\u5929"] = DayOfWeek.Sunday,
+        ["\u661F\u671F\u65E5"] = DayOfWeek.Sunday,
+        ["\u661F\u671F\u5929"] = DayOfWeek.Sunday
     };
 
     private readonly string _basePath = Path.Combine(PluginBaseDirectory, "Assets_Duty");
@@ -117,11 +117,6 @@ public class DutyBackendService : IDisposable
             if (!File.Exists(_configPath))
             {
                 Config = new DutyConfig();
-                Config.AreaNames = NormalizeAreaNames(Config.AreaNames);
-                Config.AreaPerDayCounts = NormalizeAreaPerDayCounts(
-                    Config.AreaNames,
-                    Config.AreaPerDayCounts,
-                    Config.PerDay);
                 Config.NotificationTemplates = NormalizeNotificationTemplates(Config.NotificationTemplates);
                 Config.DutyReminderTimes = NormalizeDutyReminderTimes(Config.DutyReminderTimes);
                 Config.DutyReminderTemplates = NormalizeDutyReminderTemplates(Config.DutyReminderTemplates);
@@ -133,11 +128,6 @@ public class DutyBackendService : IDisposable
             {
                 var json = File.ReadAllText(_configPath, Encoding.UTF8);
                 var config = JsonSerializer.Deserialize<DutyConfig>(json) ?? new DutyConfig();
-                config.AreaNames = NormalizeAreaNames(config.AreaNames);
-                config.AreaPerDayCounts = NormalizeAreaPerDayCounts(
-                    config.AreaNames,
-                    config.AreaPerDayCounts,
-                    config.PerDay);
                 config.NotificationTemplates = NormalizeNotificationTemplates(config.NotificationTemplates);
                 config.DutyReminderTimes = NormalizeDutyReminderTimes(config.DutyReminderTimes);
                 config.DutyReminderTemplates = NormalizeDutyReminderTemplates(config.DutyReminderTemplates);
@@ -162,11 +152,6 @@ public class DutyBackendService : IDisposable
             {
                 Debug.WriteLine($"LoadConfig Error: {ex.Message}");
                 Config = new DutyConfig();
-                Config.AreaNames = NormalizeAreaNames(Config.AreaNames);
-                Config.AreaPerDayCounts = NormalizeAreaPerDayCounts(
-                    Config.AreaNames,
-                    Config.AreaPerDayCounts,
-                    Config.PerDay);
                 Config.NotificationTemplates = NormalizeNotificationTemplates(Config.NotificationTemplates);
                 Config.DutyReminderTimes = NormalizeDutyReminderTimes(Config.DutyReminderTimes);
                 Config.DutyReminderTemplates = NormalizeDutyReminderTemplates(Config.DutyReminderTemplates);
@@ -202,8 +187,6 @@ public class DutyBackendService : IDisposable
         int autoRunCoverageDays,
         string componentRefreshTime,
         string pythonPath,
-        IEnumerable<string>? areaNames = null,
-        IEnumerable<KeyValuePair<string, int>>? areaPerDayCounts = null,
         IEnumerable<string>? notificationTemplates = null,
         bool? dutyReminderEnabled = null,
         IEnumerable<string>? dutyReminderTimes = null,
@@ -228,11 +211,6 @@ public class DutyBackendService : IDisposable
             Config.AutoRunCoverageDays = Math.Clamp(autoRunCoverageDays, 1, 30);
             Config.ComponentRefreshTime = NormalizeTimeOrThrow(componentRefreshTime);
             Config.PythonPath = string.IsNullOrWhiteSpace(pythonPath) ? Config.PythonPath : pythonPath.Trim();
-            Config.AreaNames = NormalizeAreaNames(areaNames ?? Config.AreaNames);
-            Config.AreaPerDayCounts = NormalizeAreaPerDayCounts(
-                Config.AreaNames,
-                areaPerDayCounts ?? Config.AreaPerDayCounts,
-                Config.PerDay);
             Config.NotificationTemplates =
                 NormalizeNotificationTemplates(notificationTemplates ?? Config.NotificationTemplates);
             Config.DutyReminderEnabled = dutyReminderEnabled ?? Config.DutyReminderEnabled;
@@ -262,10 +240,9 @@ public class DutyBackendService : IDisposable
     {
         static CoreRunProgress BuildProgress(string phase, string message) => new(phase, message);
 
-        if (string.IsNullOrWhiteSpace(instruction))
-        {
-            return CoreRunResult.Fail("Instruction cannot be empty.", code: "validation");
-        }
+        var effectiveInstruction = string.IsNullOrWhiteSpace(instruction)
+            ? AutoRunInstruction
+            : instruction.Trim();
 
         if (!_runCoreGate.Wait(0))
         {
@@ -282,8 +259,6 @@ public class DutyBackendService : IDisposable
             return CoreRunResult.Fail("API key is empty or unavailable on this device.", code: "config");
         }
 
-        var areaNames = GetAreaNames();
-        var areaPerDayCounts = GetAreaPerDayCounts();
         var pythonPath = ValidatePythonPath(Config.PythonPath, PluginBaseDirectory, _basePath);
         var inputPath = Path.Combine(_dataDir, "ipc_input.json");
         var resultPath = Path.Combine(_dataDir, "ipc_result.json");
@@ -302,7 +277,7 @@ public class DutyBackendService : IDisposable
         progress?.Invoke(BuildProgress("build_prompt", "Building prompt and payload."));
         var inputData = new
         {
-            instruction,
+            instruction = effectiveInstruction,
             apply_mode = applyMode,
             start_from_today = Config.StartFromToday,
             days_to_generate = Config.AutoRunCoverageDays,
@@ -310,9 +285,7 @@ public class DutyBackendService : IDisposable
             skip_weekends = Config.SkipWeekends,
             duty_rule = Config.DutyRule,
             base_url = Config.BaseUrl,
-            model = overrideModel ?? Config.Model,
-            area_names = areaNames,
-            area_per_day_counts = areaPerDayCounts
+            model = overrideModel ?? Config.Model
         };
         File.WriteAllText(inputPath, JsonSerializer.Serialize(inputData), Utf8NoBom);
 
@@ -552,19 +525,8 @@ public class DutyBackendService : IDisposable
 
     public List<string> GetAreaNames()
     {
-        lock (_configLock)
-        {
-            return NormalizeAreaNames(Config.AreaNames);
-        }
-    }
-
-    public Dictionary<string, int> GetAreaPerDayCounts()
-    {
-        lock (_configLock)
-        {
-            var areaNames = NormalizeAreaNames(Config.AreaNames);
-            return NormalizeAreaPerDayCounts(areaNames, Config.AreaPerDayCounts, Config.PerDay);
-        }
+        var state = LoadState();
+        return InferAreaNamesFromState(state);
     }
 
     public List<string> GetNotificationTemplates()
@@ -593,8 +555,13 @@ public class DutyBackendService : IDisposable
 
     public Dictionary<string, List<string>> GetAreaAssignments(SchedulePoolItem item)
     {
-        var areaNames = GetAreaNames();
-        var assignments = BuildAreaAssignments(item, areaNames);
+        var assignments = BuildAreaAssignments(item);
+        var areaNames = NormalizeAreaNames(item.AreaAssignments.Keys);
+        if (areaNames.Count == 0)
+        {
+            areaNames = GetAreaNames();
+        }
+
         foreach (var area in areaNames)
         {
             assignments.TryAdd(area, []);
@@ -632,6 +599,8 @@ public class DutyBackendService : IDisposable
 
         var normalized = new List<RosterEntry>();
         var nameCounts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        var usedIds = new HashSet<int>();
+        var nextGeneratedId = 1;
         foreach (var entry in rosterEntries ?? [])
         {
             var baseName = (entry.Name ?? string.Empty).Trim();
@@ -640,14 +609,35 @@ public class DutyBackendService : IDisposable
                 continue;
             }
 
+            var id = entry.Id;
+            if (id <= 0 || !usedIds.Add(id))
+            {
+                while (usedIds.Contains(nextGeneratedId))
+                {
+                    nextGeneratedId++;
+                }
+
+                id = nextGeneratedId;
+                usedIds.Add(id);
+            }
+
+            if (id >= nextGeneratedId)
+            {
+                nextGeneratedId = id + 1;
+            }
+
             var uniqueName = ToUniqueRosterName(baseName, nameCounts);
             normalized.Add(new RosterEntry
             {
-                Id = normalized.Count + 1,
+                Id = id,
                 Name = uniqueName,
                 Active = entry.Active
             });
         }
+
+        normalized = normalized
+            .OrderBy(x => x.Id)
+            .ToList();
 
         var builder = new StringBuilder();
         builder.AppendLine("id,name,active");
@@ -801,9 +791,7 @@ public class DutyBackendService : IDisposable
 
 
 
-    private static Dictionary<string, List<string>> BuildAreaAssignments(
-        SchedulePoolItem item,
-        IReadOnlyList<string> areaNames)
+    private static Dictionary<string, List<string>> BuildAreaAssignments(SchedulePoolItem item)
     {
         var assignments = new Dictionary<string, List<string>>(StringComparer.Ordinal);
 
@@ -823,6 +811,39 @@ public class DutyBackendService : IDisposable
         }
 
         return assignments;
+    }
+
+    private static List<string> InferAreaNamesFromState(DutyState state)
+    {
+        var areas = new List<string>();
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+
+        foreach (var item in state.SchedulePool)
+        {
+            if (item.AreaAssignments == null)
+            {
+                continue;
+            }
+
+            foreach (var area in item.AreaAssignments.Keys)
+            {
+                var name = (area ?? string.Empty).Trim();
+                if (name.Length == 0 || !seen.Add(name))
+                {
+                    continue;
+                }
+
+                areas.Add(name);
+            }
+        }
+
+        if (areas.Count == 0)
+        {
+            areas.Add(DefaultAreaClassroom);
+            areas.Add(DefaultAreaCleaning);
+        }
+
+        return areas;
     }
 
     private static List<string> NormalizeStudents(IEnumerable<string>? rawStudents)
@@ -873,51 +894,6 @@ public class DutyBackendService : IDisposable
         }
 
         return areas;
-    }
-
-    private static Dictionary<string, int> NormalizeAreaPerDayCounts(
-        IReadOnlyList<string> areaNames,
-        IEnumerable<KeyValuePair<string, int>>? rawCounts,
-        int fallbackPerDay)
-    {
-        var fallback = Math.Clamp(fallbackPerDay, 1, 30);
-        var source = new Dictionary<string, int>(StringComparer.Ordinal);
-
-        if (rawCounts != null)
-        {
-            foreach (var pair in rawCounts)
-            {
-                var area = (pair.Key ?? string.Empty).Trim();
-                if (area.Length == 0)
-                {
-                    continue;
-                }
-
-                source[area] = Math.Clamp(pair.Value, 1, 30);
-            }
-        }
-
-        var normalized = new Dictionary<string, int>(StringComparer.Ordinal);
-        foreach (var area in areaNames)
-        {
-            var key = (area ?? string.Empty).Trim();
-            if (key.Length == 0)
-            {
-                continue;
-            }
-
-            normalized[key] = source.TryGetValue(key, out var count)
-                ? Math.Clamp(count, 1, 30)
-                : fallback;
-        }
-
-        if (normalized.Count == 0)
-        {
-            normalized[DefaultAreaClassroom] = fallback;
-            normalized[DefaultAreaCleaning] = fallback;
-        }
-
-        return normalized;
     }
 
     private static List<string> NormalizeNotificationTemplates(IEnumerable<string>? rawTemplates)
@@ -1016,7 +992,6 @@ public class DutyBackendService : IDisposable
     {
         var state = LoadState();
         var areaNames = GetAreaNames();
-        var areaPerDayCounts = GetAreaPerDayCounts();
         var item = state.SchedulePool.LastOrDefault(x => string.Equals(x.Date, dateText, StringComparison.Ordinal));
         var assignments = item is null
             ? new Dictionary<string, List<string>>(StringComparer.Ordinal)

@@ -863,9 +863,15 @@ public sealed class DutyLocalPreviewHostedService : IHostedService, IDisposable
         errorMessage = "Invalid params.";
         errorData = null;
 
-        if (!TryReadStringListArgument(argumentsElement, "students", required: true, out var students, out var studentError))
+        if (!TryReadStringListAllowDuplicatesArgument(argumentsElement, "students", required: false, out var students,
+                out var studentError))
         {
             errorMessage = studentError;
+            return false;
+        }
+        if (!TryReadOptionalStringArgument(argumentsElement, "students_file_path", out var studentsFilePath, out var filePathError))
+        {
+            errorMessage = filePathError ?? "Invalid params: `students_file_path` must be a string.";
             return false;
         }
 
@@ -882,23 +888,48 @@ public sealed class DutyLocalPreviewHostedService : IHostedService, IDisposable
             return false;
         }
 
+        var importedFromFile = false;
+        var sourceFileName = string.Empty;
+        var sourceFileCount = 0;
+        var allStudents = new List<string>();
+        if (students != null)
+        {
+            allStudents.AddRange(students);
+        }
+
+        if (!string.IsNullOrWhiteSpace(studentsFilePath))
+        {
+            try
+            {
+                var fromFile = RosterImportFileHelper.LoadStudentNames(studentsFilePath);
+                sourceFileCount = fromFile.Count;
+                allStudents.AddRange(fromFile);
+                importedFromFile = true;
+                sourceFileName = Path.GetFileName(studentsFilePath);
+            }
+            catch (Exception ex)
+            {
+                errorMessage = $"Invalid params: failed to load `students_file_path`: {ex.Message}";
+                return false;
+            }
+        }
+
+        var effectiveStudents = allStudents
+            .Select(x => (x ?? string.Empty).Trim())
+            .Where(x => x.Length > 0)
+            .ToList();
+        if (effectiveStudents.Count == 0)
+        {
+            errorMessage = "Invalid params: provide non-empty `students` or valid `students_file_path`.";
+            return false;
+        }
+
         var active = activeValue ?? true;
         var replaceExisting = replaceExistingValue ?? false;
         var roster = replaceExisting ? new List<RosterEntry>() : _backendService.LoadRosterEntries();
-        var existingNames = new HashSet<string>(
-            roster.Select(x => (x.Name ?? string.Empty).Trim()).Where(x => x.Length > 0),
-            StringComparer.OrdinalIgnoreCase);
-
         var importedNames = new List<string>();
-        var skippedNames = new List<string>();
-        foreach (var student in students!)
+        foreach (var student in effectiveStudents)
         {
-            if (!existingNames.Add(student))
-            {
-                skippedNames.Add(student);
-                continue;
-            }
-
             roster.Add(new RosterEntry
             {
                 Name = student,
@@ -916,7 +947,7 @@ public sealed class DutyLocalPreviewHostedService : IHostedService, IDisposable
                 new
                 {
                     type = "text",
-                    text = $"Imported {importedNames.Count} students; skipped {skippedNames.Count} duplicates. Applied immediately without confirmation."
+                    text = $"Imported {importedNames.Count} students. Duplicate names are preserved and assigned distinct IDs. Applied immediately without confirmation."
                 }
             },
             isError = false,
@@ -924,10 +955,13 @@ public sealed class DutyLocalPreviewHostedService : IHostedService, IDisposable
             {
                 applied_immediately = true,
                 imported_count = importedNames.Count,
-                skipped_count = skippedNames.Count,
+                skipped_count = 0,
                 imported_names = importedNames,
-                skipped_names = skippedNames,
+                skipped_names = Array.Empty<string>(),
                 replace_existing = replaceExisting,
+                imported_from_file = importedFromFile,
+                source_file_name = sourceFileName,
+                source_file_count = sourceFileCount,
                 total_count = updatedRoster.Count,
                 roster = updatedRoster.Select(x => new
                 {
@@ -960,6 +994,7 @@ public sealed class DutyLocalPreviewHostedService : IHostedService, IDisposable
             "python_path",
             "enable_auto_run",
             "enable_mcp",
+            "enable_webview_debug_layer",
             "auto_run_day",
             "auto_run_time",
             "auto_run_coverage_days",
@@ -968,8 +1003,6 @@ public sealed class DutyLocalPreviewHostedService : IHostedService, IDisposable
             "duty_rule",
             "start_from_today",
             "component_refresh_time",
-            "area_names",
-            "area_per_day_counts",
             "notification_templates",
             "duty_reminder_enabled",
             "duty_reminder_times",
@@ -1007,6 +1040,12 @@ public sealed class DutyLocalPreviewHostedService : IHostedService, IDisposable
             return false;
         }
         if (!TryReadOptionalBooleanArgument(argumentsElement, "enable_mcp", out var enableMcp, out parseError))
+        {
+            errorMessage = parseError ?? "Invalid params.";
+            return false;
+        }
+        if (!TryReadOptionalBooleanArgument(argumentsElement, "enable_webview_debug_layer",
+                out var enableWebViewDebugLayer, out parseError))
         {
             errorMessage = parseError ?? "Invalid params.";
             return false;
@@ -1053,20 +1092,8 @@ public sealed class DutyLocalPreviewHostedService : IHostedService, IDisposable
             errorMessage = parseError ?? "Invalid params.";
             return false;
         }
-        if (!TryReadStringListArgument(argumentsElement, "area_names", required: false, out var areaNames,
-                out var listParseError))
-        {
-            errorMessage = listParseError;
-            return false;
-        }
-        if (!TryReadStringIntMapArgument(argumentsElement, "area_per_day_counts", out var areaPerDayCounts,
-                out listParseError))
-        {
-            errorMessage = listParseError;
-            return false;
-        }
         if (!TryReadStringListArgument(argumentsElement, "notification_templates", required: false,
-                out var notificationTemplates, out listParseError))
+                out var notificationTemplates, out var listParseError))
         {
             errorMessage = listParseError;
             return false;
@@ -1108,13 +1135,12 @@ public sealed class DutyLocalPreviewHostedService : IHostedService, IDisposable
                 autoRunCoverageDays: autoRunCoverageDays ?? current.AutoRunCoverageDays,
                 componentRefreshTime: componentRefreshTime ?? current.ComponentRefreshTime,
                 pythonPath: pythonPath ?? current.PythonPath,
-                areaNames: areaNames ?? current.AreaNames,
-                areaPerDayCounts: areaPerDayCounts ?? current.AreaPerDayCounts,
                 notificationTemplates: notificationTemplates ?? current.NotificationTemplates,
                 dutyReminderEnabled: dutyReminderEnabled ?? current.DutyReminderEnabled,
                 dutyReminderTimes: dutyReminderTimes ?? current.DutyReminderTimes,
                 dutyReminderTemplates: dutyReminderTemplates ?? current.DutyReminderTemplates,
-                enableMcp: enableMcp);
+                enableMcp: enableMcp,
+                enableWebViewDebugLayer: enableWebViewDebugLayer);
         }
         catch (Exception ex)
         {
@@ -1140,6 +1166,7 @@ public sealed class DutyLocalPreviewHostedService : IHostedService, IDisposable
                 applied_immediately = true,
                 enable_auto_run = saved.EnableAutoRun,
                 enable_mcp = saved.EnableMcp,
+                enable_webview_debug_layer = saved.EnableWebViewDebugLayer,
                 auto_run_day = saved.AutoRunDay,
                 auto_run_time = saved.AutoRunTime,
                 auto_run_coverage_days = saved.AutoRunCoverageDays,
@@ -1148,8 +1175,6 @@ public sealed class DutyLocalPreviewHostedService : IHostedService, IDisposable
                 duty_rule = saved.DutyRule,
                 start_from_today = saved.StartFromToday,
                 component_refresh_time = saved.ComponentRefreshTime,
-                area_names = _backendService.GetAreaNames(),
-                area_per_day_counts = _backendService.GetAreaPerDayCounts(),
                 notification_templates = _backendService.GetNotificationTemplates(),
                 duty_reminder_enabled = saved.DutyReminderEnabled,
                 duty_reminder_times = _backendService.GetDutyReminderTimes(),
@@ -1282,44 +1307,57 @@ public sealed class DutyLocalPreviewHostedService : IHostedService, IDisposable
         return true;
     }
 
-    private static bool TryReadStringIntMapArgument(
+    private static bool TryReadStringListAllowDuplicatesArgument(
         JsonElement argumentsElement,
         string propertyName,
-        out Dictionary<string, int>? values,
+        bool required,
+        out List<string>? values,
         out string error)
     {
         values = null;
         error = string.Empty;
         if (!TryGetToolArgument(argumentsElement, propertyName, out var element) || element.ValueKind == JsonValueKind.Null)
         {
-            return true;
-        }
-
-        if (element.ValueKind != JsonValueKind.Object)
-        {
-            error = $"Invalid params: `{propertyName}` must be an object.";
-            return false;
-        }
-
-        var parsed = new Dictionary<string, int>(StringComparer.Ordinal);
-        foreach (var property in element.EnumerateObject())
-        {
-            var areaName = (property.Name ?? string.Empty).Trim();
-            if (areaName.Length == 0)
+            if (required)
             {
-                continue;
-            }
-
-            if (!TryParseIntLike(property.Value, out var count))
-            {
-                error = $"Invalid params: `{propertyName}.{areaName}` must be an integer.";
+                error = $"Invalid params: `{propertyName}` is required.";
                 return false;
             }
 
-            parsed[areaName] = Math.Clamp(count, 1, 30);
+            return true;
+        }
+
+        var parsed = new List<string>();
+        if (element.ValueKind == JsonValueKind.String)
+        {
+            parsed.AddRange(SplitTextItems(element.GetString() ?? string.Empty));
+        }
+        else if (element.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var item in element.EnumerateArray())
+            {
+                if (item.ValueKind != JsonValueKind.String)
+                {
+                    error = $"Invalid params: `{propertyName}` array must only contain strings.";
+                    return false;
+                }
+
+                parsed.AddRange(SplitTextItems(item.GetString() ?? string.Empty));
+            }
+        }
+        else
+        {
+            error = $"Invalid params: `{propertyName}` must be a string or string array.";
+            return false;
         }
 
         values = parsed;
+        if (required && values.Count == 0)
+        {
+            error = $"Invalid params: `{propertyName}` cannot be empty.";
+            return false;
+        }
+
         return true;
     }
 
@@ -1419,17 +1457,22 @@ public sealed class DutyLocalPreviewHostedService : IHostedService, IDisposable
 
     private static List<string> SplitAndDeduplicateText(string raw)
     {
+        var tokens = SplitTextItems(raw);
+        return DeduplicateTextItems(tokens);
+    }
+
+    private static List<string> SplitTextItems(string raw)
+    {
         if (string.IsNullOrWhiteSpace(raw))
         {
             return [];
         }
 
-        var tokens = raw
+        return raw
             .Split([',', ';', '，', '；', '、', '\r', '\n', '\t', '|'], StringSplitOptions.RemoveEmptyEntries)
             .Select(x => x.Trim())
             .Where(x => x.Length > 0)
             .ToList();
-        return DeduplicateTextItems(tokens);
     }
 
     private static List<string> DeduplicateTextItems(IEnumerable<string> values)
@@ -1499,7 +1542,7 @@ public sealed class DutyLocalPreviewHostedService : IHostedService, IDisposable
                 new
                 {
                     name = McpToolRosterImportStudents,
-                    description = "Bulk import students from names and auto-assign normalized IDs. Changes are applied immediately without confirmation.",
+                    description = "Bulk import students from inline names or a local .txt/.xlsx file path and auto-assign normalized IDs. Changes are applied immediately without confirmation.",
                     inputSchema = new
                     {
                         type = "object",
@@ -1516,7 +1559,12 @@ public sealed class DutyLocalPreviewHostedService : IHostedService, IDisposable
                                         items = new { type = "string" }
                                     }
                                 },
-                                description = "Student names. Supports comma/newline/semicolon separated string, or a string array."
+                                description = "Student names. Supports comma/newline/semicolon separated string, or a string array. Duplicate names are preserved."
+                            },
+                            students_file_path = new
+                            {
+                                type = "string",
+                                description = "Local path to a .txt or .xlsx file. Use this to avoid sending student names in MCP payload."
                             },
                             active = new
                             {
@@ -1529,26 +1577,38 @@ public sealed class DutyLocalPreviewHostedService : IHostedService, IDisposable
                                 description = "If true, replace existing roster before importing."
                             }
                         },
-                        required = new[] { "students" }
+                        anyOf = new object[]
+                        {
+                            new { required = new[] { "students" } },
+                            new { required = new[] { "students_file_path" } }
+                        }
                     }
                 },
                 new
                 {
                     name = McpToolConfigUpdateSettings,
-                    description = "Update duty settings including auto run, refresh time, area names/counts, and reminder rules. Changes are applied immediately without confirmation.",
+                    description = "Update duty settings including auto run, refresh time, and reminder rules. Changes are applied immediately without confirmation.",
                     inputSchema = new
                     {
                         type = "object",
                         properties = new
                         {
+                            api_key = new { type = "string" },
+                            base_url = new { type = "string" },
+                            model = new { type = "string" },
+                            python_path = new { type = "string" },
                             enable_auto_run = new { type = "boolean" },
                             enable_mcp = new { type = "boolean" },
+                            enable_webview_debug_layer = new { type = "boolean" },
                             auto_run_day = new { type = "string" },
                             auto_run_time = new { type = "string" },
                             auto_run_coverage_days = new { type = "integer" },
                             per_day = new { type = "integer" },
+                            skip_weekends = new { type = "boolean" },
+                            duty_rule = new { type = "string" },
+                            start_from_today = new { type = "boolean" },
                             component_refresh_time = new { type = "string" },
-                            area_names = new
+                            notification_templates = new
                             {
                                 oneOf = new object[]
                                 {
@@ -1559,11 +1619,6 @@ public sealed class DutyLocalPreviewHostedService : IHostedService, IDisposable
                                         items = new { type = "string" }
                                     }
                                 }
-                            },
-                            area_per_day_counts = new
-                            {
-                                type = "object",
-                                additionalProperties = new { type = "integer" }
                             },
                             duty_reminder_enabled = new { type = "boolean" },
                             duty_reminder_times = new
@@ -1881,8 +1936,6 @@ public sealed class DutyLocalPreviewHostedService : IHostedService, IDisposable
         var startFromToday = config.StartFromToday ?? current.StartFromToday;
         var autoRunCoverageDays = config.AutoRunCoverageDays ?? current.AutoRunCoverageDays;
         var pythonPath = config.PythonPath ?? current.PythonPath;
-        var areaNames = config.AreaNames ?? current.AreaNames;
-        var areaPerDayCounts = config.AreaPerDayCounts ?? current.AreaPerDayCounts;
 
         _backendService.SaveUserConfig(
             apiKey: apiKey,
@@ -1898,8 +1951,6 @@ public sealed class DutyLocalPreviewHostedService : IHostedService, IDisposable
             autoRunCoverageDays: autoRunCoverageDays,
             componentRefreshTime: current.ComponentRefreshTime,
             pythonPath: pythonPath,
-            areaNames: areaNames,
-            areaPerDayCounts: areaPerDayCounts,
             notificationTemplates: current.NotificationTemplates,
             dutyReminderEnabled: current.DutyReminderEnabled,
             dutyReminderTimes: current.DutyReminderTimes,
@@ -2037,12 +2088,6 @@ public sealed class DutyLocalPreviewHostedService : IHostedService, IDisposable
 
         [JsonPropertyName("python_path")]
         public string? PythonPath { get; set; }
-
-        [JsonPropertyName("area_names")]
-        public List<string>? AreaNames { get; set; }
-
-        [JsonPropertyName("area_per_day_counts")]
-        public Dictionary<string, int>? AreaPerDayCounts { get; set; }
     }
 
     private sealed class OverwriteScheduleResponse

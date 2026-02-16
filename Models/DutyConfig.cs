@@ -96,16 +96,6 @@ public class DutyConfig
     [JsonPropertyName("component_refresh_time")]
     public string ComponentRefreshTime { get; set; } = "08:00";
 
-    [JsonPropertyName("area_names")]
-    public List<string> AreaNames { get; set; } = ["\u6559\u5BA4", "\u6E05\u6D01\u533A"];
-
-    [JsonPropertyName("area_per_day_counts")]
-    public Dictionary<string, int> AreaPerDayCounts { get; set; } = new(StringComparer.Ordinal)
-    {
-        ["\u6559\u5BA4"] = 2,
-        ["\u6E05\u6D01\u533A"] = 2
-    };
-
     [JsonPropertyName("notification_templates")]
     public List<string> NotificationTemplates { get; set; } =
         ["{scene}{status}\uFF0C\u65E5\u671F\uFF1A{date}\uFF0C\u533A\u57DF\uFF1A{areas}"];

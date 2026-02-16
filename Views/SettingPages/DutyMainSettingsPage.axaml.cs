@@ -4,6 +4,8 @@ using Avalonia.Controls;
 using Avalonia.Input;
 using Avalonia.Interactivity;
 using Avalonia.Media;
+using Avalonia.Platform.Storage;
+using Avalonia.Threading;
 using ClassIsland.Core.Abstractions.Controls;
 using ClassIsland.Core.Attributes;
 using ClassIsland.Shared;
@@ -26,56 +28,72 @@ public partial class DutyMainSettingsPage : SettingsPageBase
     private DateTime? _lastRunAt;
     private string _lastDataState = "未刷新";
     private DateTime? _lastDataAt;
-
-    private readonly List<AreaSettingItem> _areaSettings = [];
+    private readonly DispatcherTimer _configApplyDebounceTimer;
+    private bool _hasPendingConfigApply;
 
     public DutyMainSettingsPage()
     {
         InitializeComponent();
-        InitializeAreaCountOptions();
-        ApplyModeComboBox.SelectedIndex = 0;
+        _configApplyDebounceTimer = new DispatcherTimer
+        {
+            Interval = TimeSpan.FromMilliseconds(500)
+        };
+        _configApplyDebounceTimer.Tick += OnConfigApplyDebounceTick;
+        Unloaded += (_, _) => _configApplyDebounceTimer.Stop();
+        InitializeAutoRunTimeOptions();
+        InitializeComponentRefreshTimeOptions();
         LoadConfigForm();
         UpdateConfigTracking("已加载");
         UpdateRunTracking("待命");
         LoadData("页面初始化");
     }
 
-    private void InitializeAreaCountOptions()
+    private void InitializeAutoRunTimeOptions()
     {
-        var options = Enumerable.Range(1, 30).ToList();
-        NewAreaCountComboBox.ItemsSource = options;
-        NewAreaCountComboBox.SelectedItem = 2;
+        AutoRunHourComboBox.ItemsSource = Enumerable.Range(0, 24).Select(x => x.ToString("D2")).ToList();
+        AutoRunMinuteComboBox.ItemsSource = Enumerable.Range(0, 60).Select(x => x.ToString("D2")).ToList();
+        AutoRunHourComboBox.SelectedItem = "08";
+        AutoRunMinuteComboBox.SelectedItem = "00";
+    }
+
+    private void InitializeComponentRefreshTimeOptions()
+    {
+        ComponentRefreshHourComboBox.ItemsSource = Enumerable.Range(0, 24).Select(x => x.ToString("D2")).ToList();
+        ComponentRefreshMinuteComboBox.ItemsSource = Enumerable.Range(0, 60).Select(x => x.ToString("D2")).ToList();
+        ComponentRefreshHourComboBox.SelectedItem = "08";
+        ComponentRefreshMinuteComboBox.SelectedItem = "00";
     }
 
     private async void OnRunAgentClick(object? sender, RoutedEventArgs e)
     {
         var instruction = (InstructionBox.Text ?? string.Empty).Trim();
-        if (instruction.Length == 0)
-        {
-            SetStatus("请输入排班指令。", Brushes.Orange);
-            return;
-        }
+        var useDefaultInstruction = instruction.Length == 0;
 
-        var applyMode = ApplyModeComboBox.SelectedIndex switch
-        {
-            1 => "replace_future",
-            2 => "replace_overlap",
-            3 => "replace_all",
-            _ => "append"
-        };
+        _configApplyDebounceTimer.Stop();
+        FlushPendingConfigApply();
+
+        const string applyMode = "replace_all";
 
         try
         {
             RunAgentBtn.IsEnabled = false;
             UpdateRunTracking("执行中");
-            SetStatus("正在执行排班...", Brushes.Gray);
+            SetStatus(
+                useDefaultInstruction
+                    ? "正在执行默认排班（覆盖模式）..."
+                    : "正在执行排班（覆盖模式）...",
+                Brushes.Gray);
 
             var success = await Task.Run(() => Service.RunCoreAgent(instruction, applyMode));
             if (success)
             {
                 LoadData("排班完成");
                 UpdateRunTracking("执行成功");
-                SetStatus("排班执行成功。", Brushes.Green);
+                SetStatus(
+                    useDefaultInstruction
+                        ? "默认排班执行成功（覆盖模式）。"
+                        : "排班执行成功（覆盖模式）。",
+                    Brushes.Green);
             }
             else
             {
@@ -96,7 +114,7 @@ public partial class DutyMainSettingsPage : SettingsPageBase
 
     private void OnConfigInputLostFocus(object? sender, RoutedEventArgs e)
     {
-        _ = ApplyConfigFromControls("输入框失焦");
+        QueueConfigApply();
     }
 
     private void OnConfigInputKeyDown(object? sender, KeyEventArgs e)
@@ -107,20 +125,56 @@ public partial class DutyMainSettingsPage : SettingsPageBase
         }
 
         e.Handled = true;
-        _ = ApplyConfigFromControls("按下 Enter");
+        QueueConfigApply(immediate: true);
     }
 
     private void OnConfigSelectionChanged(object? sender, SelectionChangedEventArgs e)
     {
-        _ = ApplyConfigFromControls("选项变更");
+        QueueConfigApply();
     }
 
     private void OnConfigToggleChanged(object? sender, RoutedEventArgs e)
     {
-        _ = ApplyConfigFromControls("开关切换");
+        QueueConfigApply();
     }
 
-    private bool ApplyConfigFromControls(string trigger)
+    private void QueueConfigApply(bool immediate = false)
+    {
+        if (_isLoadingConfig || _isApplyingConfig)
+        {
+            return;
+        }
+
+        _hasPendingConfigApply = true;
+
+        _configApplyDebounceTimer.Stop();
+        if (immediate)
+        {
+            FlushPendingConfigApply();
+            return;
+        }
+
+        _configApplyDebounceTimer.Start();
+    }
+
+    private void OnConfigApplyDebounceTick(object? sender, EventArgs e)
+    {
+        _configApplyDebounceTimer.Stop();
+        FlushPendingConfigApply();
+    }
+
+    private void FlushPendingConfigApply()
+    {
+        if (!_hasPendingConfigApply)
+        {
+            return;
+        }
+
+        _hasPendingConfigApply = false;
+        _ = ApplyConfigFromControls();
+    }
+
+    private bool ApplyConfigFromControls()
     {
         if (_isLoadingConfig || _isApplyingConfig)
         {
@@ -131,38 +185,27 @@ public partial class DutyMainSettingsPage : SettingsPageBase
         var current = Service.Config;
         var requestedEnableMcp = EnableMcpSwitch.IsChecked == true;
         var requestedEnableWebDebugLayer = EnableWebDebugLayerSwitch.IsChecked == true;
+        var previousEnableMcp = current.EnableMcp;
+        var previousEnableWebDebugLayer = current.EnableWebViewDebugLayer;
 
         if (!TryParseBoundedInt(CoverageDaysBox.Text, 1, 30, out var coverageDays))
         {
-            UpdateConfigTracking($"校验失败（{trigger}）");
+            UpdateConfigTracking("校验失败");
             SetStatus("生成天数必须是 1-30 的整数。", Brushes.Orange);
             return false;
         }
 
-        if (!TryParseBoundedInt(PerDayBox.Text, 1, 30, out var perDay))
-        {
-            UpdateConfigTracking($"校验失败（{trigger}）");
-            SetStatus("默认每区域每日人数必须是 1-30 的整数。", Brushes.Orange);
-            return false;
-        }
+        var perDay = Math.Clamp(current.PerDay, 1, 30);
 
-        if (!BuildAreaConfigFromList(perDay, out var areaNames, out var areaPerDayCounts, out var areaError))
-        {
-            UpdateConfigTracking($"校验失败（{trigger}）");
-            SetStatus(areaError, Brushes.Orange);
-            return false;
-        }
-
-        var autoRunTime = string.IsNullOrWhiteSpace(AutoRunTimeBox.Text) ? "08:00" : AutoRunTimeBox.Text.Trim();
-        var componentRefreshTime = string.IsNullOrWhiteSpace(ComponentRefreshTimeBox.Text)
-            ? "08:00"
-            : ComponentRefreshTimeBox.Text.Trim();
+        var autoRunTime = GetSelectedAutoRunTime();
+        var componentRefreshTime = GetSelectedComponentRefreshTime();
 
         try
         {
             _isApplyingConfig = true;
+            var resolvedApiKey = DutyBackendService.ResolveApiKeyInput(ApiKeyBox.Text, current.DecryptedApiKey);
             Service.SaveUserConfig(
-                apiKey: ApiKeyBox.Text ?? string.Empty,
+                apiKey: resolvedApiKey,
                 baseUrl: BaseUrlBox.Text?.Trim() ?? string.Empty,
                 model: ModelBox.Text?.Trim() ?? string.Empty,
                 enableAutoRun: EnableAutoRunSwitch.IsChecked == true,
@@ -176,23 +219,21 @@ public partial class DutyMainSettingsPage : SettingsPageBase
                 componentRefreshTime: componentRefreshTime,
                 // 普通用户页不提供 Python 路径编辑。
                 pythonPath: current.PythonPath,
-                areaNames: areaNames,
-                areaPerDayCounts: areaPerDayCounts,
                 enableMcp: requestedEnableMcp,
                 enableWebViewDebugLayer: requestedEnableWebDebugLayer);
 
-            var restartRequired = current.EnableMcp != requestedEnableMcp ||
-                                  current.EnableWebViewDebugLayer != requestedEnableWebDebugLayer;
+            var restartRequired = previousEnableMcp != requestedEnableMcp ||
+                                  previousEnableWebDebugLayer != requestedEnableWebDebugLayer;
             SetStatus(
                 restartRequired
-                    ? $"设置已应用（{trigger}）。调试层/MCP 服务变更将在重启 ClassIsland 后生效。"
-                    : $"设置已应用（{trigger}）。",
+                    ? "设置已应用。调试层/MCP 服务变更将在重启 ClassIsland 后生效。"
+                    : "设置已应用。",
                 Brushes.Green);
 
             UpdateConfigTracking(
                 restartRequired
-                    ? $"已应用（{trigger}，重启后调试层/MCP生效）"
-                    : $"已应用（{trigger}）");
+                    ? "已应用（重启后调试层/MCP生效）"
+                    : "已应用");
 
             return true;
         }
@@ -210,368 +251,6 @@ public partial class DutyMainSettingsPage : SettingsPageBase
         }
     }
 
-    private bool BuildAreaConfigFromList(
-        int fallbackPerDay,
-        out List<string> areaNames,
-        out Dictionary<string, int> areaPerDayCounts,
-        out string error)
-    {
-        areaNames = [];
-        areaPerDayCounts = new Dictionary<string, int>(StringComparer.Ordinal);
-        error = string.Empty;
-
-        foreach (var item in _areaSettings)
-        {
-            var name = NormalizeAreaName(item.Name);
-            if (name.Length == 0)
-            {
-                continue;
-            }
-
-            if (areaPerDayCounts.ContainsKey(name))
-            {
-                error = $"区域名称重复：{name}";
-                return false;
-            }
-
-            var count = Math.Clamp(item.Count, 1, 30);
-            areaNames.Add(name);
-            areaPerDayCounts[name] = count;
-        }
-
-        if (areaNames.Count == 0)
-        {
-            error = "至少需要保留一个值日区域。";
-            return false;
-        }
-
-        var fallback = Math.Clamp(fallbackPerDay, 1, 30);
-        foreach (var area in areaNames)
-        {
-            if (!areaPerDayCounts.TryGetValue(area, out var count))
-            {
-                areaPerDayCounts[area] = fallback;
-            }
-            else
-            {
-                areaPerDayCounts[area] = Math.Clamp(count, 1, 30);
-            }
-        }
-
-        return true;
-    }
-
-    private void OnAreaSelectionChanged(object? sender, SelectionChangedEventArgs e)
-    {
-        if (AreaSettingsListBox.SelectedItem is AreaSettingItem selected)
-        {
-            SelectedAreaNameBox.Text = selected.Name;
-            UpdateAreaBtn.IsEnabled = true;
-            DeleteAreaBtn.IsEnabled = true;
-            return;
-        }
-
-        SelectedAreaNameBox.Text = string.Empty;
-        UpdateAreaBtn.IsEnabled = false;
-        DeleteAreaBtn.IsEnabled = false;
-    }
-
-    private void OnAddAreaClick(object? sender, RoutedEventArgs e)
-    {
-        var name = NormalizeAreaName(NewAreaNameBox.Text);
-        if (name.Length == 0)
-        {
-            SetStatus("新增区域名不能为空。", Brushes.Orange);
-            return;
-        }
-
-        if (_areaSettings.Any(x => string.Equals(x.Name, name, StringComparison.Ordinal)))
-        {
-            SetStatus("区域已存在，请勿重复添加。", Brushes.Orange);
-            return;
-        }
-
-        var count = GetSelectedCount(NewAreaCountComboBox, 2);
-        _areaSettings.Add(new AreaSettingItem { Name = name, Count = count });
-        RenderAreaSettingsList(name);
-
-        if (!ApplyConfigFromControls("新增区域"))
-        {
-            LoadConfigForm();
-            LoadData("配置回滚");
-            return;
-        }
-
-        NewAreaNameBox.Text = string.Empty;
-        NewAreaCountComboBox.SelectedItem = 2;
-        SetStatus($"已新增区域：{name}（{count} 人/天）。", Brushes.Green);
-    }
-
-    private void OnUpdateAreaClick(object? sender, RoutedEventArgs e)
-    {
-        if (AreaSettingsListBox.SelectedItem is not AreaSettingItem selected)
-        {
-            SetStatus("请先选择要修改的区域。", Brushes.Orange);
-            return;
-        }
-
-        var name = NormalizeAreaName(SelectedAreaNameBox.Text);
-        if (name.Length == 0)
-        {
-            SetStatus("区域名称不能为空。", Brushes.Orange);
-            return;
-        }
-
-        var count = Math.Clamp(selected.Count, 1, 30);
-        var selectedIndex = _areaSettings.IndexOf(selected);
-        if (selectedIndex < 0)
-        {
-            selectedIndex = _areaSettings.FindIndex(x => string.Equals(x.Name, selected.Name, StringComparison.Ordinal));
-        }
-
-        if (selectedIndex < 0)
-        {
-            SetStatus("未找到选中的区域记录，请重试。", Brushes.Orange);
-            return;
-        }
-
-        var duplicate = _areaSettings
-            .Where((_, i) => i != selectedIndex)
-            .Any(x => string.Equals(x.Name, name, StringComparison.Ordinal));
-        if (duplicate)
-        {
-            SetStatus($"区域名称冲突：{name}。", Brushes.Orange);
-            return;
-        }
-
-        _areaSettings[selectedIndex] = new AreaSettingItem { Name = name, Count = count };
-        RenderAreaSettingsList(name);
-
-        if (!ApplyConfigFromControls("修改区域"))
-        {
-            LoadConfigForm();
-            LoadData("配置回滚");
-            return;
-        }
-
-        SetStatus($"已更新区域：{name}（{count} 人/天）。", Brushes.Green);
-    }
-
-    private void OnAreaCountTextPointerPressed(object? sender, PointerPressedEventArgs e)
-    {
-        if (sender is not TextBlock countText ||
-            countText.DataContext is not AreaSettingItem item ||
-            countText.Parent is not Panel parentPanel)
-        {
-            return;
-        }
-
-        var editor = parentPanel.Children.OfType<TextBox>().FirstOrDefault();
-        if (editor is null)
-        {
-            return;
-        }
-
-        AreaSettingsListBox.SelectedItem = item;
-        editor.Text = Math.Clamp(item.Count, 1, 30).ToString(CultureInfo.InvariantCulture);
-        editor.Tag = item;
-        countText.IsVisible = false;
-        editor.IsVisible = true;
-        editor.Focus();
-        editor.SelectAll();
-        e.Handled = true;
-    }
-
-    private void OnAreaCountEditorKeyDown(object? sender, KeyEventArgs e)
-    {
-        if (sender is not TextBox editor)
-        {
-            return;
-        }
-
-        if (e.Key == Key.Enter)
-        {
-            e.Handled = true;
-            CommitInlineAreaCountEdit(editor);
-            return;
-        }
-
-        if (e.Key == Key.Escape)
-        {
-            e.Handled = true;
-            CloseInlineAreaCountEditor(editor);
-        }
-    }
-
-    private void OnAreaCountEditorLostFocus(object? sender, RoutedEventArgs e)
-    {
-        if (sender is TextBox editor)
-        {
-            CommitInlineAreaCountEdit(editor);
-        }
-    }
-
-    private void CommitInlineAreaCountEdit(TextBox editor)
-    {
-        if (editor.Tag is not AreaSettingItem item)
-        {
-            CloseInlineAreaCountEditor(editor);
-            return;
-        }
-
-        editor.Tag = null;
-        var rawText = (editor.Text ?? string.Empty).Trim();
-        if (!TryParseBoundedInt(rawText, 1, 30, out var newCount))
-        {
-            CloseInlineAreaCountEditor(editor);
-            SetStatus("区域人数必须是 1-30 的整数。", Brushes.Orange);
-            return;
-        }
-
-        CloseInlineAreaCountEditor(editor);
-        if (Math.Clamp(item.Count, 1, 30) == newCount)
-        {
-            return;
-        }
-
-        item.Count = newCount;
-        RenderAreaSettingsList(item.Name);
-
-        if (!ApplyConfigFromControls("区域人数修改"))
-        {
-            LoadConfigForm();
-            LoadData("配置回滚");
-            return;
-        }
-
-        SetStatus($"已更新区域人数：{item.Name}（{newCount} 人/天）。", Brushes.Green);
-    }
-
-    private static void CloseInlineAreaCountEditor(TextBox editor)
-    {
-        editor.IsVisible = false;
-        editor.Tag = null;
-
-        if (editor.Parent is not Panel parentPanel)
-        {
-            return;
-        }
-
-        var countText = parentPanel.Children.OfType<TextBlock>().FirstOrDefault();
-        if (countText is not null)
-        {
-            countText.IsVisible = true;
-        }
-    }
-
-    private void OnDeleteAreaClick(object? sender, RoutedEventArgs e)
-    {
-        if (AreaSettingsListBox.SelectedItem is not AreaSettingItem selected)
-        {
-            SetStatus("请先选择要删除的区域。", Brushes.Orange);
-            return;
-        }
-
-        if (_areaSettings.Count <= 1)
-        {
-            SetStatus("至少需要保留一个值日区域。", Brushes.Orange);
-            return;
-        }
-
-        var removed = _areaSettings.Remove(selected);
-        if (!removed)
-        {
-            SetStatus("未找到选中的区域记录。", Brushes.Orange);
-            return;
-        }
-
-        RenderAreaSettingsList();
-
-        if (!ApplyConfigFromControls("删除区域"))
-        {
-            LoadConfigForm();
-            LoadData("配置回滚");
-            return;
-        }
-
-        SetStatus($"已删除区域：{selected.Name}。", Brushes.Green);
-    }
-
-    private void RenderAreaSettingsList(string? selectName = null)
-    {
-        AreaSettingsListBox.ItemsSource = null;
-        AreaSettingsListBox.ItemsSource = _areaSettings;
-
-        if (!string.IsNullOrWhiteSpace(selectName))
-        {
-            AreaSettingsListBox.SelectedItem = _areaSettings.FirstOrDefault(x =>
-                string.Equals(x.Name, selectName.Trim(), StringComparison.Ordinal));
-        }
-        else if (_areaSettings.Count > 0)
-        {
-            AreaSettingsListBox.SelectedIndex = 0;
-        }
-
-        var totalPerDay = _areaSettings.Sum(x => Math.Clamp(x.Count, 1, 30));
-        AreaSummaryText.Text = _areaSettings.Count == 0
-            ? "共 0 个值日区域。"
-            : $"共 {_areaSettings.Count} 个值日区域，合计每日 {totalPerDay} 人。";
-    }
-
-    private void BuildAreaSettingsFromConfig(DutyConfig config)
-    {
-        _areaSettings.Clear();
-
-        var names = (config.AreaNames ?? [])
-            .Select(NormalizeAreaName)
-            .Where(x => x.Length > 0)
-            .Distinct(StringComparer.Ordinal)
-            .ToList();
-
-        if (names.Count == 0)
-        {
-            names.AddRange(["教室", "清洁区"]);
-        }
-
-        var fallback = Math.Clamp(config.PerDay, 1, 30);
-        var counts = config.AreaPerDayCounts ?? new Dictionary<string, int>(StringComparer.Ordinal);
-
-        foreach (var name in names)
-        {
-            var count = counts.TryGetValue(name, out var rawCount)
-                ? Math.Clamp(rawCount, 1, 30)
-                : fallback;
-
-            _areaSettings.Add(new AreaSettingItem
-            {
-                Name = name,
-                Count = count
-            });
-        }
-    }
-
-    private static string NormalizeAreaName(string? rawName)
-    {
-        return (rawName ?? string.Empty).Trim();
-    }
-
-    private static int GetSelectedCount(ComboBox comboBox, int fallback)
-    {
-        var normalizedFallback = Math.Clamp(fallback, 1, 30);
-
-        if (comboBox.SelectedItem is int selectedInt)
-        {
-            return Math.Clamp(selectedInt, 1, 30);
-        }
-
-        if (comboBox.SelectedItem is string selectedText && int.TryParse(selectedText, out var parsed))
-        {
-            return Math.Clamp(parsed, 1, 30);
-        }
-
-        return normalizedFallback;
-    }
-
     private void OnAddStudentClick(object? sender, RoutedEventArgs e)
     {
         var name = (NewStudentNameBox.Text ?? string.Empty).Trim();
@@ -582,12 +261,6 @@ public partial class DutyMainSettingsPage : SettingsPageBase
         }
 
         var roster = Service.LoadRosterEntries();
-        if (roster.Any(x => string.Equals((x.Name ?? string.Empty).Trim(), name, StringComparison.OrdinalIgnoreCase)))
-        {
-            SetStatus("学生已存在，请勿重复添加。", Brushes.Orange);
-            return;
-        }
-
         var nextId = roster.Count == 0 ? 1 : roster.Max(x => x.Id) + 1;
         roster.Add(new RosterEntry
         {
@@ -600,6 +273,29 @@ public partial class DutyMainSettingsPage : SettingsPageBase
         NewStudentNameBox.Text = string.Empty;
         LoadData("名单变更");
         SetStatus($"已添加学生：{name}", Brushes.Green);
+    }
+
+    private void OnToggleStudentActiveClick(object? sender, RoutedEventArgs e)
+    {
+        if (RosterListBox.SelectedItem is not RosterListItem selected)
+        {
+            SetStatus("请先选择要操作的学生。", Brushes.Orange);
+            return;
+        }
+
+        var roster = Service.LoadRosterEntries();
+        var index = roster.FindIndex(x => x.Id == selected.Id);
+        if (index < 0)
+        {
+            SetStatus("未找到选中的学生记录。", Brushes.Orange);
+            return;
+        }
+
+        roster[index].Active = !roster[index].Active;
+        Service.SaveRosterEntries(roster);
+        LoadData("名单变更");
+        var statusText = roster[index].Active ? "启用" : "停用";
+        SetStatus($"已{statusText}学生：{roster[index].Name}", Brushes.Green);
     }
 
     private void OnDeleteStudentClick(object? sender, RoutedEventArgs e)
@@ -621,6 +317,75 @@ public partial class DutyMainSettingsPage : SettingsPageBase
         Service.SaveRosterEntries(roster);
         LoadData("名单变更");
         SetStatus($"已删除学生：{selected.Name}", Brushes.Green);
+    }
+
+    private async void OnImportRosterFromFileClick(object? sender, RoutedEventArgs e)
+    {
+        try
+        {
+            var topLevel = TopLevel.GetTopLevel(this);
+            if (topLevel?.StorageProvider == null)
+            {
+                SetStatus("当前环境不支持文件选择。", Brushes.Orange);
+                return;
+            }
+
+            var files = await topLevel.StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions
+            {
+                Title = "选择学生名单文件",
+                AllowMultiple = false,
+                FileTypeFilter =
+                [
+                    new FilePickerFileType("名单文本 (*.txt)") { Patterns = ["*.txt"] },
+                    new FilePickerFileType("Excel 名单 (*.xlsx)") { Patterns = ["*.xlsx"] }
+                ]
+            });
+            var file = files.FirstOrDefault();
+            if (file == null)
+            {
+                SetStatus("已取消导入。", Brushes.Gray);
+                return;
+            }
+
+            var localPath = file.TryGetLocalPath();
+            if (string.IsNullOrWhiteSpace(localPath))
+            {
+                SetStatus("仅支持导入本地文件。", Brushes.Orange);
+                return;
+            }
+
+            var parsedNames = RosterImportFileHelper.LoadStudentNames(localPath);
+            if (parsedNames.Count == 0)
+            {
+                SetStatus("文件中未解析到有效姓名。", Brushes.Orange);
+                return;
+            }
+
+            var roster = Service.LoadRosterEntries();
+            var nextId = roster.Count == 0 ? 1 : roster.Max(x => x.Id) + 1;
+            foreach (var name in parsedNames)
+            {
+                roster.Add(new RosterEntry
+                {
+                    Id = nextId++,
+                    Name = name,
+                    Active = true
+                });
+            }
+
+            Service.SaveRosterEntries(roster);
+            LoadData("名单导入");
+            SetStatus($"导入完成：新增 {parsedNames.Count} 名（同名将保留并分配不同 ID）。", Brushes.Green);
+        }
+        catch (Exception ex)
+        {
+            SetStatus($"导入失败：{ex.Message}", Brushes.Red);
+        }
+    }
+
+    private void OnRosterSelectionChanged(object? sender, SelectionChangedEventArgs e)
+    {
+        UpdateStudentActionButtons();
     }
 
     private void OnRefreshDataClick(object? sender, RoutedEventArgs e)
@@ -645,25 +410,19 @@ public partial class DutyMainSettingsPage : SettingsPageBase
             Service.LoadConfig();
             var config = Service.Config;
 
-            ApiKeyBox.Text = config.DecryptedApiKey;
+            ApiKeyBox.Text = Service.GetApiKeyMaskForUi();
             BaseUrlBox.Text = config.BaseUrl;
             ModelBox.Text = config.Model;
             EnableAutoRunSwitch.IsChecked = config.EnableAutoRun;
             AutoRunDayComboBox.SelectedIndex = GetAutoRunDayIndex(config.AutoRunDay);
-            AutoRunTimeBox.Text = config.AutoRunTime;
+            SetAutoRunTimeSelection(config.AutoRunTime);
             CoverageDaysBox.Text = config.AutoRunCoverageDays.ToString(CultureInfo.InvariantCulture);
-            PerDayBox.Text = config.PerDay.ToString(CultureInfo.InvariantCulture);
             SkipWeekendsSwitch.IsChecked = config.SkipWeekends;
             StartFromTodaySwitch.IsChecked = config.StartFromToday;
             EnableMcpSwitch.IsChecked = config.EnableMcp;
             EnableWebDebugLayerSwitch.IsChecked = config.EnableWebViewDebugLayer;
-            ComponentRefreshTimeBox.Text = config.ComponentRefreshTime;
+            SetComponentRefreshTimeSelection(config.ComponentRefreshTime);
             DutyRuleBox.Text = config.DutyRule;
-
-            BuildAreaSettingsFromConfig(config);
-            RenderAreaSettingsList();
-            NewAreaNameBox.Text = string.Empty;
-            NewAreaCountComboBox.SelectedItem = Math.Clamp(config.PerDay, 1, 30);
         }
         finally
         {
@@ -677,7 +436,21 @@ public partial class DutyMainSettingsPage : SettingsPageBase
         var roster = Service.LoadRosterEntries();
         BuildRosterList(roster, state);
         BuildSchedulePreview(state);
+        UpdateStudentActionButtons();
         UpdateDataTracking(reason);
+    }
+
+    private void UpdateStudentActionButtons()
+    {
+        if (RosterListBox.SelectedItem is RosterListItem selected)
+        {
+            ToggleStudentActiveBtn.IsEnabled = true;
+            ToggleStudentActiveBtn.Content = selected.Active ? "停用选中" : "启用选中";
+            return;
+        }
+
+        ToggleStudentActiveBtn.IsEnabled = false;
+        ToggleStudentActiveBtn.Content = "启用/停用选中";
     }
 
     private void BuildRosterList(List<RosterEntry> roster, DutyState state)
@@ -735,6 +508,7 @@ public partial class DutyMainSettingsPage : SettingsPageBase
                     NextDutyDate = hasNext ? nextDate : null,
                     NextDutyDisplay = hasNext ? FormatDutyDate(nextDate) : "未安排",
                     DutyCount = dutyCount,
+                    Active = r.Active,
                     ActiveDisplay = r.Active ? "启用" : "停用"
                 };
             })
@@ -750,7 +524,8 @@ public partial class DutyMainSettingsPage : SettingsPageBase
         }
 
         var scheduledCount = rows.Count(x => x.NextDutyDate.HasValue);
-        RosterSummaryText.Text = $"共 {rows.Count} 名学生，已安排下一次值日 {scheduledCount} 名。";
+        var activeCount = rows.Count(x => x.Active);
+        RosterSummaryText.Text = $"共 {rows.Count} 名学生（启用 {activeCount} 名），已安排下一次值日 {scheduledCount} 名。";
     }
 
     private void BuildSchedulePreview(DutyState state)
@@ -841,6 +616,42 @@ public partial class DutyMainSettingsPage : SettingsPageBase
         return false;
     }
 
+    private string GetSelectedAutoRunTime()
+    {
+        var hour = AutoRunHourComboBox.SelectedItem as string ?? "08";
+        var minute = AutoRunMinuteComboBox.SelectedItem as string ?? "00";
+        return $"{hour}:{minute}";
+    }
+
+    private string GetSelectedComponentRefreshTime()
+    {
+        var hour = ComponentRefreshHourComboBox.SelectedItem as string ?? "08";
+        var minute = ComponentRefreshMinuteComboBox.SelectedItem as string ?? "00";
+        return $"{hour}:{minute}";
+    }
+
+    private void SetAutoRunTimeSelection(string? autoRunTime)
+    {
+        if (!TimeSpan.TryParse(autoRunTime, out var parsed))
+        {
+            parsed = new TimeSpan(8, 0, 0);
+        }
+
+        AutoRunHourComboBox.SelectedItem = parsed.Hours.ToString("D2");
+        AutoRunMinuteComboBox.SelectedItem = parsed.Minutes.ToString("D2");
+    }
+
+    private void SetComponentRefreshTimeSelection(string? refreshTime)
+    {
+        if (!TimeSpan.TryParse(refreshTime, out var parsed))
+        {
+            parsed = new TimeSpan(8, 0, 0);
+        }
+
+        ComponentRefreshHourComboBox.SelectedItem = parsed.Hours.ToString("D2");
+        ComponentRefreshMinuteComboBox.SelectedItem = parsed.Minutes.ToString("D2");
+    }
+
     private string GetSelectedAutoRunDay()
     {
         return AutoRunDayComboBox.SelectedIndex switch
@@ -913,13 +724,6 @@ public partial class DutyMainSettingsPage : SettingsPageBase
         StatusText.Foreground = brush;
     }
 
-    public sealed class AreaSettingItem
-    {
-        public string Name { get; set; } = string.Empty;
-        public int Count { get; set; }
-        public string CountDisplay => $"{Math.Clamp(Count, 1, 30)} 人/天";
-    }
-
     public sealed class RosterListItem
     {
         public int Id { get; init; }
@@ -927,6 +731,7 @@ public partial class DutyMainSettingsPage : SettingsPageBase
         public DateTime? NextDutyDate { get; init; }
         public string NextDutyDisplay { get; init; } = "未安排";
         public int DutyCount { get; init; }
+        public bool Active { get; init; }
         public string ActiveDisplay { get; init; } = "启用";
     }
 

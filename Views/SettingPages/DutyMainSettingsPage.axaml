@@ -53,23 +53,11 @@
                              Height="76"
                              AcceptsReturn="True"
                              TextWrapping="Wrap"
-                             Watermark="例如：从今天开始排5天，每个区域每天2人，周末跳过。" />
-                    <Grid ColumnDefinitions="2*,*" ColumnSpacing="10">
-                        <StackPanel Grid.Column="0" Spacing="6">
-                            <TextBlock Text="应用模式" />
-                            <ComboBox x:Name="ApplyModeComboBox" HorizontalAlignment="Stretch">
-                                <ComboBoxItem Content="追加（推荐）" />
-                                <ComboBoxItem Content="替换未来" />
-                                <ComboBoxItem Content="替换重叠区间" />
-                                <ComboBoxItem Content="全部替换" />
-                            </ComboBox>
-                        </StackPanel>
-                        <Button Grid.Column="1"
-                                x:Name="RunAgentBtn"
-                                VerticalAlignment="Bottom"
-                                Content="开始排班"
-                                Click="OnRunAgentClick" />
-                    </Grid>
+                             Watermark="请输入本次排班指令；留空将按当前配置执行默认排班。" />
+                    <Button x:Name="RunAgentBtn"
+                            HorizontalAlignment="Right"
+                            Content="开始排班（覆盖）"
+                            Click="OnRunAgentClick" />
                 </StackPanel>
             </Border>
 
@@ -124,7 +112,7 @@
                              Height="100"
                              AcceptsReturn="True"
                              TextWrapping="Wrap"
-                             Watermark="示例：&#10;每天排班2人，跳过周末&#10;区域：教室、清洁区&#10;教室每天2人，清洁区每天3人&#10;排班周期：5天&#10;男生优先排清洁区"
+                             Watermark="示例：&#10;每天排班2人，跳过周末&#10;区域：教室、清洁区&#10;教室每天2人，清洁区每天3人&#10;排班周期：5天"
                              LostFocus="OnConfigInputLostFocus"
                              KeyDown="OnConfigInputKeyDown" />
                 </StackPanel>
@@ -160,34 +148,40 @@
                             </ComboBox>
                         </StackPanel>
                         <StackPanel Grid.Column="1" Spacing="6">
-                            <TextBlock Text="自动排班时间 (HH:mm)" />
-                            <TextBox x:Name="AutoRunTimeBox"
-                                     Watermark="08:00"
-                                     LostFocus="OnConfigInputLostFocus"
-                                     KeyDown="OnConfigInputKeyDown" />
+                            <TextBlock Text="自动排班时间" />
+                            <StackPanel Orientation="Horizontal" Spacing="6">
+                                <ComboBox x:Name="AutoRunHourComboBox"
+                                          Width="88"
+                                          HorizontalAlignment="Left"
+                                          SelectionChanged="OnConfigSelectionChanged" />
+                                <TextBlock VerticalAlignment="Center" Text="时" />
+                                <ComboBox x:Name="AutoRunMinuteComboBox"
+                                          Width="88"
+                                          HorizontalAlignment="Left"
+                                          SelectionChanged="OnConfigSelectionChanged" />
+                                <TextBlock VerticalAlignment="Center" Text="分" />
+                            </StackPanel>
                         </StackPanel>
                     </Grid>
 
-                    <Grid ColumnDefinitions="*,*" ColumnSpacing="10">
-                        <StackPanel Grid.Column="0" Spacing="6">
-                            <TextBlock Text="生成天数 (1-30)" />
-                            <TextBox x:Name="CoverageDaysBox"
-                                     LostFocus="OnConfigInputLostFocus"
-                                     KeyDown="OnConfigInputKeyDown" />
-                        </StackPanel>
-                        <StackPanel Grid.Column="1" Spacing="6">
-                            <TextBlock Text="默认每区域每日人数 (1-30)" />
-                            <TextBox x:Name="PerDayBox"
-                                     LostFocus="OnConfigInputLostFocus"
-                                     KeyDown="OnConfigInputKeyDown" />
-                        </StackPanel>
-                    </Grid>
-
-                    <TextBlock Text="组件刷新时间 (HH:mm)" />
-                    <TextBox x:Name="ComponentRefreshTimeBox"
-                             Watermark="08:00"
+                    <TextBlock Text="生成天数 (1-30)" />
+                    <TextBox x:Name="CoverageDaysBox"
                              LostFocus="OnConfigInputLostFocus"
                              KeyDown="OnConfigInputKeyDown" />
+
+                    <TextBlock Text="组件刷新时间" />
+                    <StackPanel Orientation="Horizontal" Spacing="6">
+                        <ComboBox x:Name="ComponentRefreshHourComboBox"
+                                  Width="88"
+                                  HorizontalAlignment="Left"
+                                  SelectionChanged="OnConfigSelectionChanged" />
+                        <TextBlock VerticalAlignment="Center" Text="时" />
+                        <ComboBox x:Name="ComponentRefreshMinuteComboBox"
+                                  Width="88"
+                                  HorizontalAlignment="Left"
+                                  SelectionChanged="OnConfigSelectionChanged" />
+                        <TextBlock VerticalAlignment="Center" Text="分" />
+                    </StackPanel>
 
                     <Grid ColumnDefinitions="*,*" RowDefinitions="Auto,Auto" ColumnSpacing="10" RowSpacing="8">
                         <ToggleSwitch x:Name="EnableAutoRunSwitch"
@@ -219,73 +213,6 @@
                     Padding="16">
                 <StackPanel Spacing="10">
                     <StackPanel Orientation="Horizontal" Spacing="8">
-                        <TextBlock FontFamily="Segoe Fluent Icons" Text="&#xE8FD;" FontSize="16" />
-                        <TextBlock Text="值日区域与人数" FontSize="16" FontWeight="SemiBold" />
-                    </StackPanel>
-
-                    <TextBlock x:Name="AreaSummaryText"
-                               Text="共 0 个值日区域。"
-                               Opacity="0.75" />
-
-                    <Border BorderBrush="#22000000" BorderThickness="1" CornerRadius="8">
-                        <Grid RowDefinitions="Auto,*">
-                            <Border BorderBrush="#22000000" BorderThickness="0,0,0,1" Padding="10,8">
-                                <Grid ColumnDefinitions="2*,120" ColumnSpacing="8">
-                                    <TextBlock Grid.Column="0" Text="区域" FontWeight="SemiBold" />
-                                    <TextBlock Grid.Column="1" Text="人数" FontWeight="SemiBold" HorizontalAlignment="Right" />
-                                </Grid>
-                            </Border>
-                            <ListBox x:Name="AreaSettingsListBox"
-                                     Grid.Row="1"
-                                     MinHeight="160"
-                                     MaxHeight="220"
-                                     SelectionChanged="OnAreaSelectionChanged">
-                                <ListBox.ItemTemplate>
-                                    <DataTemplate>
-                                        <Border Padding="10,8" BorderBrush="#14000000" BorderThickness="0,0,0,1">
-                                            <Grid ColumnDefinitions="2*,120" ColumnSpacing="8">
-                                                <TextBlock Grid.Column="0" Text="{Binding Name}" VerticalAlignment="Center" />
-                                                <StackPanel Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Right">
-                                                    <TextBlock Text="{Binding CountDisplay}"
-                                                               VerticalAlignment="Center"
-                                                               Cursor="Hand"
-                                                               PointerPressed="OnAreaCountTextPointerPressed" />
-                                                    <TextBox Width="84"
-                                                             IsVisible="False"
-                                                             VerticalAlignment="Center"
-                                                             HorizontalContentAlignment="Center"
-                                                             KeyDown="OnAreaCountEditorKeyDown"
-                                                             LostFocus="OnAreaCountEditorLostFocus" />
-                                                </StackPanel>
-                                            </Grid>
-                                        </Border>
-                                    </DataTemplate>
-                                </ListBox.ItemTemplate>
-                            </ListBox>
-                        </Grid>
-                    </Border>
-
-                    <Grid ColumnDefinitions="2*,120,Auto" ColumnSpacing="10">
-                        <TextBox x:Name="NewAreaNameBox" Grid.Column="0" Watermark="新增区域名（如：走廊）" />
-                        <ComboBox x:Name="NewAreaCountComboBox" Grid.Column="1" />
-                        <Button x:Name="AddAreaBtn" Grid.Column="2" Content="新增区域" Click="OnAddAreaClick" />
-                    </Grid>
-
-                    <Grid ColumnDefinitions="2*,Auto,Auto" ColumnSpacing="10">
-                        <TextBox x:Name="SelectedAreaNameBox" Grid.Column="0" Watermark="修改选中区域名" />
-                        <Button x:Name="UpdateAreaBtn" Grid.Column="1" Content="更新选中名称" Click="OnUpdateAreaClick" IsEnabled="False" />
-                        <Button x:Name="DeleteAreaBtn" Grid.Column="2" Content="删除选中" Click="OnDeleteAreaClick" IsEnabled="False" />
-                    </Grid>
-                </StackPanel>
-            </Border>
-
-            <Border Background="#14FFFFFF"
-                    BorderBrush="#22000000"
-                    BorderThickness="1"
-                    CornerRadius="12"
-                    Padding="16">
-                <StackPanel Spacing="10">
-                    <StackPanel Orientation="Horizontal" Spacing="8">
                         <TextBlock FontFamily="Segoe Fluent Icons" Text="&#xE716;" FontSize="16" />
                         <TextBlock Text="学生名单" FontSize="16" FontWeight="SemiBold" />
                     </StackPanel>
@@ -297,9 +224,16 @@
                         <Button x:Name="AddStudentBtn"
                                 Content="添加学生"
                                 Click="OnAddStudentClick" />
+                        <Button x:Name="ToggleStudentActiveBtn"
+                                Content="启用/停用选中"
+                                IsEnabled="False"
+                                Click="OnToggleStudentActiveClick" />
                         <Button x:Name="DeleteStudentBtn"
                                 Content="删除选中"
                                 Click="OnDeleteStudentClick" />
+                        <Button x:Name="ImportRosterFromFileBtn"
+                                Content="导入 txt/xlsx"
+                                Click="OnImportRosterFromFileClick" />
                         <Button x:Name="OpenRosterBtn"
                                 Content="打开名单文件"
                                 Click="OnOpenRosterClick" />
@@ -317,9 +251,10 @@
                                 </Grid>
                             </Border>
                             <ListBox x:Name="RosterListBox"
-                                     Grid.Row="1"
-                                     MinHeight="220"
-                                     MaxHeight="300">
+                                      Grid.Row="1"
+                                      MinHeight="220"
+                                      MaxHeight="300"
+                                      SelectionChanged="OnRosterSelectionChanged">
                                 <ListBox.ItemTemplate>
                                     <DataTemplate>
                                         <Border Padding="10,8" BorderBrush="#14000000" BorderThickness="0,0,0,1">

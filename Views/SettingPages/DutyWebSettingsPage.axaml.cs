@@ -58,6 +58,7 @@ public partial class DutyWebSettingsPage : SettingsPageBase
         _webViewHost = new DutyWebViewHost(entryPath);
         _webViewHost.WebMessageReceived += OnWebMessageReceived;
         _webViewHost.ContentReady += OnWebContentReady;
+        _webViewHost.LoadFailed += OnWebLoadFailed;
         WebViewHostContainer.Child = _webViewHost;
         WebViewHostContainer.SizeChanged += OnWebViewHostContainerSizeChanged;
 
@@ -87,7 +88,14 @@ public partial class DutyWebSettingsPage : SettingsPageBase
         _webViewHost.RequestResizeSync();
         await SendThemeAsync();
         WebViewHostContainer.Opacity = 1;
+        HideWebLoadError();
         DutyDiagnosticsLogger.Info("SettingsPage", "Web content reported ready.");
+    }
+
+    private void OnWebLoadFailed(object? sender, string message)
+    {
+        var errorText = string.IsNullOrWhiteSpace(message) ? "WebView2 初始化失败。" : message.Trim();
+        ShowWebLoadError(errorText);
     }
 
     private void OnWebViewHostContainerSizeChanged(object? sender, SizeChangedEventArgs e)
@@ -386,6 +394,38 @@ public partial class DutyWebSettingsPage : SettingsPageBase
         await Task.CompletedTask;
     }
 
+    private void OnRetryWebViewClick(object? sender, RoutedEventArgs e)
+    {
+        WebLoadErrorPanel.IsVisible = false;
+        WebLoadErrorText.Text = string.Empty;
+        WebViewHostContainer.Opacity = 0;
+        _webViewHost.Reload();
+    }
+
+    private async void OnOpenTestInBrowserClick(object? sender, RoutedEventArgs e)
+    {
+        await HandleOpenTestInBrowserAsync();
+    }
+
+    private void ShowWebLoadError(string message)
+    {
+        Dispatcher.UIThread.Post(() =>
+        {
+            WebLoadErrorText.Text = message;
+            WebLoadErrorPanel.IsVisible = true;
+            WebViewHostContainer.Opacity = 0;
+        });
+    }
+
+    private void HideWebLoadError()
+    {
+        Dispatcher.UIThread.Post(() =>
+        {
+            WebLoadErrorPanel.IsVisible = false;
+            WebLoadErrorText.Text = string.Empty;
+        });
+    }
+
     private void ApplyConfig(WebConfigDto config)
     {
         _backendService.LoadConfig();
@@ -406,8 +446,6 @@ public partial class DutyWebSettingsPage : SettingsPageBase
         var coverageDays = config.AutoRunCoverageDays ?? current.AutoRunCoverageDays;
         var componentRefreshTime = config.ComponentRefreshTime ?? current.ComponentRefreshTime;
         var pythonPath = config.PythonPath ?? current.PythonPath;
-        var areaNames = config.AreaNames ?? current.AreaNames;
-        var areaPerDayCounts = config.AreaPerDayCounts ?? current.AreaPerDayCounts;
         var notificationTemplates = config.NotificationTemplates ?? current.NotificationTemplates;
         var dutyReminderEnabled = config.DutyReminderEnabled ?? current.DutyReminderEnabled;
         var dutyReminderTimes = config.DutyReminderTimes ?? current.DutyReminderTimes;
@@ -427,8 +465,6 @@ public partial class DutyWebSettingsPage : SettingsPageBase
             autoRunCoverageDays: coverageDays,
             componentRefreshTime: componentRefreshTime,
             pythonPath: pythonPath,
-            areaNames: areaNames,
-            areaPerDayCounts: areaPerDayCounts,
             notificationTemplates: notificationTemplates,
             dutyReminderEnabled: dutyReminderEnabled,
             dutyReminderTimes: dutyReminderTimes,
@@ -464,8 +500,6 @@ public partial class DutyWebSettingsPage : SettingsPageBase
                 DutyRule = config.DutyRule,
                 StartFromToday = config.StartFromToday,
                 ComponentRefreshTime = config.ComponentRefreshTime,
-                AreaNames = _backendService.GetAreaNames(),
-                AreaPerDayCounts = _backendService.GetAreaPerDayCounts(),
                 NotificationTemplates = _backendService.GetNotificationTemplates(),
                 DutyReminderEnabled = config.DutyReminderEnabled,
                 DutyReminderTimes = _backendService.GetDutyReminderTimes(),
@@ -865,12 +899,6 @@ public partial class DutyWebSettingsPage : SettingsPageBase
         [JsonPropertyName("component_refresh_time")]
         public string? ComponentRefreshTime { get; set; }
 
-        [JsonPropertyName("area_names")]
-        public List<string>? AreaNames { get; set; }
-
-        [JsonPropertyName("area_per_day_counts")]
-        public Dictionary<string, int>? AreaPerDayCounts { get; set; }
-
         [JsonPropertyName("notification_templates")]
         public List<string>? NotificationTemplates { get; set; }
 
@@ -1020,6 +1048,7 @@ internal sealed class DutyWebViewHost : NativeControlHost, IDisposable
 
     public event EventHandler<string>? WebMessageReceived;
     public event EventHandler? ContentReady;
+    public event EventHandler<string>? LoadFailed;
 
     public DutyWebViewHost(string entryPath)
     {
@@ -1137,12 +1166,40 @@ internal sealed class DutyWebViewHost : NativeControlHost, IDisposable
         QueueResizeSync(2);
     }
 
+    public void Reload()
+    {
+        Dispatcher.UIThread.Post(() =>
+        {
+            if (_isDisposed)
+            {
+                return;
+            }
+
+            try
+            {
+                if (_controller?.CoreWebView2 != null)
+                {
+                    _controller.CoreWebView2.Reload();
+                    return;
+                }
+            }
+            catch (Exception ex)
+            {
+                DutyDiagnosticsLogger.Warn("WebViewHost", "CoreWebView2.Reload failed, fallback to re-init.",
+                    new { message = ex.Message });
+            }
+
+            _ = InitializeWebView2Async();
+        });
+    }
+
     private async Task InitializeWebView2Async()
     {
         if (!File.Exists(_entryPath))
         {
             DutyDiagnosticsLogger.Error("WebViewHost", "Entry page not found.", null,
                 new { entryPath = _entryPath });
+            ReportLoadFailed($"调试页面文件不存在：{_entryPath}");
             return;
         }
 
@@ -1163,6 +1220,7 @@ internal sealed class DutyWebViewHost : NativeControlHost, IDisposable
             if (_controller == null)
             {
                 DutyDiagnosticsLogger.Warn("WebViewHost", "CreateCoreWebView2ControllerAsync returned null.");
+                ReportLoadFailed("WebView2 控制器创建失败。");
                 return;
             }
 
@@ -1187,6 +1245,7 @@ internal sealed class DutyWebViewHost : NativeControlHost, IDisposable
         catch (Exception ex)
         {
             DutyDiagnosticsLogger.Error("WebViewHost", "InitializeWebView2Async failed.", ex);
+            ReportLoadFailed($"WebView2 初始化失败：{ex.Message}");
         }
     }
 
@@ -1205,6 +1264,12 @@ internal sealed class DutyWebViewHost : NativeControlHost, IDisposable
                 return;
             }
 
+            if (!e.IsSuccess)
+            {
+                ReportLoadFailed($"WebView2 页面加载失败：{e.WebErrorStatus}");
+                return;
+            }
+
             ResizeNativeHost(Bounds.Size);
             if (_childHandle != IntPtr.Zero)
             {
@@ -1217,6 +1282,12 @@ internal sealed class DutyWebViewHost : NativeControlHost, IDisposable
             var pulseSessionId = Interlocked.Increment(ref _navigationPulseSessionId);
             _ = RunDelayedResizePulseLoopAsync(pulseSessionId);
         }, DispatcherPriority.Render);
+    }
+
+    private void ReportLoadFailed(string message)
+    {
+        var error = string.IsNullOrWhiteSpace(message) ? "WebView2 初始化失败。" : message.Trim();
+        Dispatcher.UIThread.Post(() => LoadFailed?.Invoke(this, error));
     }
 
     private void OnCoreWebMessageReceived(object? sender, CoreWebView2WebMessageReceivedEventArgs e)
