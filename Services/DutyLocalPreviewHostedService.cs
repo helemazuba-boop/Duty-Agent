@@ -195,30 +195,39 @@ public sealed class DutyLocalPreviewHostedService : IHostedService, IDisposable
             }
 
             var path = context.Request.Url?.AbsolutePath ?? "/";
+            var mcpEnabled = IsMcpEnabled();
+            var webViewDebugLayerEnabled = IsWebViewDebugLayerEnabled();
             if (path.Equals("/", StringComparison.OrdinalIgnoreCase) ||
                 path.Equals("/test.html", StringComparison.OrdinalIgnoreCase))
             {
+                if (!webViewDebugLayerEnabled)
+                {
+                    WriteApiError(context.Response, 403, "debug_layer_disabled",
+                        "WebView debug layer is disabled by configuration.");
+                    return;
+                }
+
                 WriteFile(context.Response, _testFilePath, "text/html; charset=utf-8");
                 return;
             }
 
             if (path.Equals("/health", StringComparison.OrdinalIgnoreCase))
             {
-                var mcpEnabled = IsMcpEnabled();
                 WriteJson(context.Response, new
                 {
                     status = "ok",
-                    preview_url = PreviewUrl,
-                    api_overwrite_url = ApiOverwriteUrl,
+                    preview_url = webViewDebugLayerEnabled ? PreviewUrl : string.Empty,
+                    api_overwrite_url = webViewDebugLayerEnabled ? ApiOverwriteUrl : string.Empty,
                     mcp_url = mcpEnabled ? McpUrl : string.Empty,
-                    mcp_enabled = mcpEnabled
+                    mcp_enabled = mcpEnabled,
+                    webview_debug_layer_enabled = webViewDebugLayerEnabled
                 }, 200);
                 return;
             }
 
             if (path.Equals("/mcp", StringComparison.OrdinalIgnoreCase))
             {
-                if (!IsMcpEnabled())
+                if (!mcpEnabled)
                 {
                     WriteApiError(context.Response, 403, "mcp_disabled", "MCP endpoint is disabled by configuration.");
                     return;
@@ -230,6 +239,13 @@ public sealed class DutyLocalPreviewHostedService : IHostedService, IDisposable
 
             if (path.Equals("/api/v1/schedule/overwrite", StringComparison.OrdinalIgnoreCase))
             {
+                if (!webViewDebugLayerEnabled)
+                {
+                    WriteApiError(context.Response, 403, "debug_layer_disabled",
+                        "Schedule overwrite endpoint is disabled when WebView debug layer is off.");
+                    return;
+                }
+
                 HandleOverwriteScheduleRequest(context);
                 return;
             }
@@ -1964,6 +1980,19 @@ public sealed class DutyLocalPreviewHostedService : IHostedService, IDisposable
         {
             _backendService.LoadConfig();
             return _backendService.Config.EnableMcp;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private bool IsWebViewDebugLayerEnabled()
+    {
+        try
+        {
+            _backendService.LoadConfig();
+            return _backendService.Config.EnableWebViewDebugLayer;
         }
         catch
         {

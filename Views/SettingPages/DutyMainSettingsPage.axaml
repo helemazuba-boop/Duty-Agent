@@ -183,12 +183,12 @@
                         <TextBlock VerticalAlignment="Center" Text="分" />
                     </StackPanel>
 
-                    <Grid ColumnDefinitions="*,*" RowDefinitions="Auto,Auto" ColumnSpacing="10" RowSpacing="8">
+                    <Grid ColumnDefinitions="*,*" RowDefinitions="Auto,Auto,Auto" ColumnSpacing="10" RowSpacing="8">
                         <ToggleSwitch x:Name="EnableAutoRunSwitch"
-                                      Grid.Row="0"
-                                      Grid.Column="0"
-                                      Content="自动排班"
-                                      Checked="OnConfigToggleChanged"
+                                       Grid.Row="0"
+                                       Grid.Column="0"
+                                       Content="自动排班"
+                                       Checked="OnConfigToggleChanged"
                                       Unchecked="OnConfigToggleChanged" />
                         <ToggleSwitch x:Name="SkipWeekendsSwitch"
                                       Grid.Row="0"
@@ -197,12 +197,40 @@
                                       Checked="OnConfigToggleChanged"
                                       Unchecked="OnConfigToggleChanged" />
                         <ToggleSwitch x:Name="StartFromTodaySwitch"
-                                      Grid.Row="1"
-                                      Grid.ColumnSpan="2"
-                                      Content="从今天开始"
-                                      Checked="OnConfigToggleChanged"
-                                      Unchecked="OnConfigToggleChanged" />
+                                       Grid.Row="1"
+                                       Grid.ColumnSpan="2"
+                                       Content="从今天开始"
+                                       Checked="OnConfigToggleChanged"
+                                       Unchecked="OnConfigToggleChanged" />
+                        <ToggleSwitch x:Name="AutoRunTriggerNotificationSwitch"
+                                       Grid.Row="2"
+                                       Grid.Column="0"
+                                       Content="自动排班触发通知"
+                                       Checked="OnConfigToggleChanged"
+                                       Unchecked="OnConfigToggleChanged" />
+                        <ToggleSwitch x:Name="DutyReminderEnabledSwitch"
+                                       Grid.Row="2"
+                                       Grid.Column="1"
+                                       Content="启用值日定时通知"
+                                       Checked="OnConfigToggleChanged"
+                                       Unchecked="OnConfigToggleChanged" />
                     </Grid>
+                    <TextBlock Text="值日通知时间" />
+                    <StackPanel Orientation="Horizontal" Spacing="6">
+                        <ComboBox x:Name="DutyReminderHourComboBox"
+                                  Width="88"
+                                  HorizontalAlignment="Left"
+                                  SelectionChanged="OnConfigSelectionChanged" />
+                        <TextBlock VerticalAlignment="Center" Text="时" />
+                        <ComboBox x:Name="DutyReminderMinuteComboBox"
+                                  Width="88"
+                                  HorizontalAlignment="Left"
+                                  SelectionChanged="OnConfigSelectionChanged" />
+                        <TextBlock VerticalAlignment="Center" Text="分" />
+                    </StackPanel>
+                    <TextBlock Text="启用后会在设定时刻触发值日提醒通知。"
+                               Opacity="0.65"
+                               TextWrapping="Wrap" />
                 </StackPanel>
             </Border>
 
@@ -333,20 +361,22 @@
                     <Border BorderBrush="#22000000" BorderThickness="1" CornerRadius="8">
                         <Grid RowDefinitions="Auto,*">
                             <Border BorderBrush="#22000000" BorderThickness="0,0,0,1" Padding="10,8">
-                                <Grid ColumnDefinitions="120,80,*" ColumnSpacing="8">
+                                <Grid ColumnDefinitions="120,80,2.4*,1.4*" ColumnSpacing="8">
                                     <TextBlock Grid.Column="0" Text="日期" FontWeight="SemiBold" />
                                     <TextBlock Grid.Column="1" Text="星期" FontWeight="SemiBold" />
                                     <TextBlock Grid.Column="2" Text="值日安排" FontWeight="SemiBold" />
+                                    <TextBlock Grid.Column="3" Text="备注" FontWeight="SemiBold" />
                                 </Grid>
                             </Border>
                             <ListBox x:Name="ScheduleListBox"
-                                     Grid.Row="1"
-                                     MinHeight="220"
-                                     MaxHeight="320">
+                                      Grid.Row="1"
+                                      MinHeight="220"
+                                      MaxHeight="320"
+                                      SelectionChanged="OnScheduleSelectionChanged">
                                 <ListBox.ItemTemplate>
                                     <DataTemplate>
                                         <Border Padding="10,8" BorderBrush="#14000000" BorderThickness="0,0,0,1">
-                                            <Grid ColumnDefinitions="120,80,*" ColumnSpacing="8">
+                                            <Grid ColumnDefinitions="120,80,2.4*,1.4*" ColumnSpacing="8">
                                                 <TextBlock Grid.Column="0"
                                                            Text="{Binding Date}"
                                                            VerticalAlignment="Center" />
@@ -356,6 +386,10 @@
                                                 <TextBlock Grid.Column="2"
                                                            Text="{Binding AssignmentSummary}"
                                                            VerticalAlignment="Center"
+                                                            TextWrapping="Wrap" />
+                                                <TextBlock Grid.Column="3"
+                                                           Text="{Binding Note}"
+                                                           VerticalAlignment="Center"
                                                            TextWrapping="Wrap" />
                                             </Grid>
                                         </Border>
@@ -363,6 +397,49 @@
                                 </ListBox.ItemTemplate>
                             </ListBox>
                         </Grid>
+                    </Border>
+                    <Border BorderBrush="#22000000" BorderThickness="1" CornerRadius="8" Padding="12" Margin="0,2,0,0">
+                        <StackPanel Spacing="8">
+                            <TextBlock Text="手动编辑选中日期值日安排" FontWeight="SemiBold" />
+                            <TextBlock x:Name="SelectedScheduleMetaText"
+                                       Text="请先在上方列表选择一条排班记录。"
+                                       Opacity="0.75"
+                                       TextWrapping="Wrap" />
+                            <Grid ColumnDefinitions="2*,1*" ColumnSpacing="8">
+                                <StackPanel Grid.Column="0" Spacing="4">
+                                    <TextBlock Text="日期（yyyy-MM-dd）" />
+                                    <TextBox x:Name="ScheduleDateEditorBox"
+                                             Watermark="2026-02-17" />
+                                </StackPanel>
+                                <StackPanel Grid.Column="1" Spacing="4">
+                                    <TextBlock Text="星期" />
+                                    <ComboBox x:Name="ScheduleDayEditorComboBox"
+                                              HorizontalAlignment="Stretch" />
+                                </StackPanel>
+                            </Grid>
+                            <TextBlock Text="值日安排（每行一个区域，格式：区域: 姓名1, 姓名2）" />
+                            <TextBox x:Name="ScheduleAssignmentsEditorBox"
+                                     Height="96"
+                                     AcceptsReturn="True"
+                                     TextWrapping="Wrap"
+                                     Watermark="示例：&#10;教室: 张三, 李四&#10;清洁区: 王五" />
+                            <TextBlock Text="备注（将拼接在值日通知句尾，使用英文逗号连接）" />
+                            <TextBox x:Name="ScheduleNoteEditorBox"
+                                     TextWrapping="Wrap"
+                                     Watermark="示例：记得带抹布" />
+                            <StackPanel Orientation="Horizontal" Spacing="8">
+                                <Button x:Name="SaveScheduleEditBtn"
+                                        Content="保存当前排班编辑"
+                                        IsEnabled="False"
+                                        Click="OnSaveScheduleEditClick" />
+                                <Button x:Name="ReloadScheduleEditBtn"
+                                        Content="重新载入选中项"
+                                        Click="OnReloadScheduleEditClick" />
+                                <Button x:Name="CreateScheduleEditBtn"
+                                        Content="新建值日"
+                                        Click="OnCreateScheduleEditClick" />
+                            </StackPanel>
+                        </StackPanel>
                     </Border>
                     <TextBlock x:Name="ScheduleSummaryText"
                                Text="暂无排班数据。"

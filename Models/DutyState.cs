@@ -21,4 +21,7 @@ public class SchedulePoolItem
 
     [JsonPropertyName("area_assignments")]
     public Dictionary<string, List<string>> AreaAssignments { get; set; } = new(StringComparer.Ordinal);
+
+    [JsonPropertyName("note")]
+    public string Note { get; set; } = string.Empty;
 }

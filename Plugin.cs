@@ -15,6 +15,9 @@ namespace DutyAgent;
 [PluginEntrance]
 public class Plugin : PluginBase
 {
+    private static readonly string PluginBaseDirectory =
+        Path.GetDirectoryName(typeof(Plugin).Assembly.Location) ?? AppContext.BaseDirectory;
+
     public override void Initialize(HostBuilderContext context, IServiceCollection services)
     {
         services.AddSingleton<DutyBackendService>();
@@ -42,7 +45,7 @@ public class Plugin : PluginBase
     {
         try
         {
-            var configPath = Path.Combine(AppContext.BaseDirectory, "Assets_Duty", "data", "config.json");
+            var configPath = Path.Combine(PluginBaseDirectory, "Assets_Duty", "data", "config.json");
             if (!File.Exists(configPath))
             {
                 return BootstrapFlags.Disabled;

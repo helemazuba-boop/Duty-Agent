@@ -54,8 +54,10 @@ public partial class DutyWebSettingsPage : SettingsPageBase
 
         InitializeComponent();
 
+        _backendService.LoadConfig();
+        var enableWebViewDebugLayer = _backendService.Config.EnableWebViewDebugLayer;
         var entryPath = ResolveWebEntryPath();
-        _webViewHost = new DutyWebViewHost(entryPath);
+        _webViewHost = new DutyWebViewHost(entryPath, enableWebViewDebugLayer);
         _webViewHost.WebMessageReceived += OnWebMessageReceived;
         _webViewHost.ContentReady += OnWebContentReady;
         _webViewHost.LoadFailed += OnWebLoadFailed;
@@ -67,6 +69,7 @@ public partial class DutyWebSettingsPage : SettingsPageBase
             new
             {
                 entryPath,
+                enableWebViewDebugLayer,
                 logPath = DutyDiagnosticsLogger.CurrentLogPath
             });
     }
@@ -444,6 +447,8 @@ public partial class DutyWebSettingsPage : SettingsPageBase
         var dutyRule = config.DutyRule ?? current.DutyRule;
         var startFromToday = config.StartFromToday ?? current.StartFromToday;
         var coverageDays = config.AutoRunCoverageDays ?? current.AutoRunCoverageDays;
+        var autoRunTriggerNotificationEnabled =
+            config.AutoRunTriggerNotificationEnabled ?? current.AutoRunTriggerNotificationEnabled;
         var componentRefreshTime = config.ComponentRefreshTime ?? current.ComponentRefreshTime;
         var pythonPath = config.PythonPath ?? current.PythonPath;
         var notificationTemplates = config.NotificationTemplates ?? current.NotificationTemplates;
@@ -470,7 +475,8 @@ public partial class DutyWebSettingsPage : SettingsPageBase
             dutyReminderTimes: dutyReminderTimes,
             dutyReminderTemplates: dutyReminderTemplates,
             enableMcp: enableMcp,
-            enableWebViewDebugLayer: enableWebViewDebugLayer);
+            enableWebViewDebugLayer: enableWebViewDebugLayer,
+            autoRunTriggerNotificationEnabled: autoRunTriggerNotificationEnabled);
     }
 
     private async Task SendSnapshotAsync()
@@ -499,6 +505,7 @@ public partial class DutyWebSettingsPage : SettingsPageBase
                 SkipWeekends = config.SkipWeekends,
                 DutyRule = config.DutyRule,
                 StartFromToday = config.StartFromToday,
+                AutoRunTriggerNotificationEnabled = config.AutoRunTriggerNotificationEnabled,
                 ComponentRefreshTime = config.ComponentRefreshTime,
                 NotificationTemplates = _backendService.GetNotificationTemplates(),
                 DutyReminderEnabled = config.DutyReminderEnabled,
@@ -538,53 +545,12 @@ public partial class DutyWebSettingsPage : SettingsPageBase
 
     private void TryPublishRunCompletionNotification(string instruction, string applyMode, string resultMessage)
     {
-        try
-        {
-            _backendService.LoadConfig();
-            var config = _backendService.Config;
-            var today = DateTime.Now.ToString("yyyy-MM-dd");
-            var areaNames = _backendService.GetAreaNames();
-            var state = _backendService.LoadState();
-            var item = state.SchedulePool.LastOrDefault(x => string.Equals(x.Date, today, StringComparison.Ordinal));
-            var assignments = item is null
-                ? new Dictionary<string, List<string>>(StringComparer.Ordinal)
-                : _backendService.GetAreaAssignments(item);
-
-            var segments = areaNames
-                .Select(area =>
-                {
-                    var students = assignments.TryGetValue(area, out var names) ? names : [];
-                    var peopleText = students.Count > 0 ? string.Join("\u3001", students) : "None";
-                    return $"{area}: {peopleText}";
-                })
-                .ToList();
-
-            var placeholders = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
-            {
-                ["scene"] = "Duty Schedule",
-                ["status"] = "Completed",
-                ["date"] = today,
-                ["areas"] = string.Join("\u3001", areaNames),
-                ["days"] = config.AutoRunCoverageDays.ToString(),
-                ["per_day"] = config.PerDay.ToString(),
-                ["mode"] = applyMode,
-                ["instruction"] = instruction,
-                ["message"] = resultMessage,
-                ["time"] = DateTime.Now.ToString("HH:mm"),
-                ["assignments"] = segments.Count > 0 ? string.Join("\uFF1B", segments) : "No assignments"
-            };
-
-            var fallback = $"Duty schedule completed ({applyMode}). {resultMessage}";
-            _notificationService.PublishFromTemplates(
-                _backendService.GetNotificationTemplates(),
-                placeholders,
-                fallback,
-                durationSeconds: 8);
-        }
-        catch (Exception ex)
-        {
-            DutyDiagnosticsLogger.Error("Notification", "Run completion notification failed.", ex);
-        }
+        _backendService.PublishRunCompletionNotification(
+            instruction: instruction,
+            applyMode: applyMode,
+            resultMessage: resultMessage,
+            success: true,
+            isAutoRun: false);
     }
 
     private static ThemePayload BuildThemePayload()
@@ -896,6 +862,9 @@ public partial class DutyWebSettingsPage : SettingsPageBase
         [JsonPropertyName("start_from_today")]
         public bool? StartFromToday { get; set; }
 
+        [JsonPropertyName("auto_run_trigger_notification_enabled")]
+        public bool? AutoRunTriggerNotificationEnabled { get; set; }
+
         [JsonPropertyName("component_refresh_time")]
         public string? ComponentRefreshTime { get; set; }
 
@@ -971,6 +940,7 @@ internal sealed class DutyWebViewHost : NativeControlHost, IDisposable
     private static extern IntPtr GetModuleHandle(string? moduleName);
 
     private readonly string _entryPath;
+    private readonly bool _enableWebViewDebugLayer;
     private IntPtr _parentHandle = IntPtr.Zero;
     private IntPtr _childHandle = IntPtr.Zero;
     private CoreWebView2Environment? _environment;
@@ -1050,13 +1020,15 @@ internal sealed class DutyWebViewHost : NativeControlHost, IDisposable
     public event EventHandler? ContentReady;
     public event EventHandler<string>? LoadFailed;
 
-    public DutyWebViewHost(string entryPath)
+    public DutyWebViewHost(string entryPath, bool enableWebViewDebugLayer)
     {
         _entryPath = entryPath;
+        _enableWebViewDebugLayer = enableWebViewDebugLayer;
         DutyDiagnosticsLogger.Info("WebViewHost", "Host created.",
             new
             {
                 entryPath,
+                enableWebViewDebugLayer,
                 logPath = DutyDiagnosticsLogger.CurrentLogPath
             });
     }
@@ -1212,6 +1184,7 @@ internal sealed class DutyWebViewHost : NativeControlHost, IDisposable
                 {
                     entryPath = _entryPath,
                     userDataPath,
+                    enableWebViewDebugLayer = _enableWebViewDebugLayer,
                     childHandle = FormatHandle(_childHandle)
                 });
 
@@ -1226,7 +1199,8 @@ internal sealed class DutyWebViewHost : NativeControlHost, IDisposable
 
             _controller.DefaultBackgroundColor = System.Drawing.Color.FromArgb(246, 249, 255);
             _controller.CoreWebView2.Settings.IsWebMessageEnabled = true;
-            _controller.CoreWebView2.Settings.AreDefaultContextMenusEnabled = false;
+            _controller.CoreWebView2.Settings.AreDevToolsEnabled = _enableWebViewDebugLayer;
+            _controller.CoreWebView2.Settings.AreDefaultContextMenusEnabled = _enableWebViewDebugLayer;
             _controller.CoreWebView2.WebMessageReceived += OnCoreWebMessageReceived;
             _controller.CoreWebView2.NavigationCompleted += OnNavigationCompleted;
             _controller.IsVisible = false;

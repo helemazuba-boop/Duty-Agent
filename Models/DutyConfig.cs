@@ -69,6 +69,9 @@ public class DutyConfig
     [JsonPropertyName("auto_run_time")]
     public string AutoRunTime { get; set; } = "08:00";
 
+    [JsonPropertyName("auto_run_trigger_notification_enabled")]
+    public bool AutoRunTriggerNotificationEnabled { get; set; } = true;
+
     [JsonPropertyName("auto_run_coverage_days")]
     public int AutoRunCoverageDays { get; set; } = 5;
 

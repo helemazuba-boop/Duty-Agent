@@ -30,6 +30,7 @@ public partial class DutyMainSettingsPage : SettingsPageBase
     private DateTime? _lastDataAt;
     private readonly DispatcherTimer _configApplyDebounceTimer;
     private bool _hasPendingConfigApply;
+    private string _pendingScheduleSelectionDate = string.Empty;
 
     public DutyMainSettingsPage()
     {
@@ -42,6 +43,8 @@ public partial class DutyMainSettingsPage : SettingsPageBase
         Unloaded += (_, _) => _configApplyDebounceTimer.Stop();
         InitializeAutoRunTimeOptions();
         InitializeComponentRefreshTimeOptions();
+        InitializeDutyReminderTimeOptions();
+        InitializeScheduleDayOptions();
         LoadConfigForm();
         UpdateConfigTracking("已加载");
         UpdateRunTracking("待命");
@@ -62,6 +65,29 @@ public partial class DutyMainSettingsPage : SettingsPageBase
         ComponentRefreshMinuteComboBox.ItemsSource = Enumerable.Range(0, 60).Select(x => x.ToString("D2")).ToList();
         ComponentRefreshHourComboBox.SelectedItem = "08";
         ComponentRefreshMinuteComboBox.SelectedItem = "00";
+    }
+
+    private void InitializeDutyReminderTimeOptions()
+    {
+        DutyReminderHourComboBox.ItemsSource = Enumerable.Range(0, 24).Select(x => x.ToString("D2")).ToList();
+        DutyReminderMinuteComboBox.ItemsSource = Enumerable.Range(0, 60).Select(x => x.ToString("D2")).ToList();
+        DutyReminderHourComboBox.SelectedItem = "07";
+        DutyReminderMinuteComboBox.SelectedItem = "40";
+    }
+
+    private void InitializeScheduleDayOptions()
+    {
+        ScheduleDayEditorComboBox.ItemsSource = new List<string>
+        {
+            "周一",
+            "周二",
+            "周三",
+            "周四",
+            "周五",
+            "周六",
+            "周日"
+        };
+        ScheduleDayEditorComboBox.SelectedItem = "周一";
     }
 
     private async void OnRunAgentClick(object? sender, RoutedEventArgs e)
@@ -195,6 +221,9 @@ public partial class DutyMainSettingsPage : SettingsPageBase
             return false;
         }
 
+        var dutyReminderEnabled = DutyReminderEnabledSwitch.IsChecked == true;
+        var dutyReminderTimes = new List<string> { GetSelectedDutyReminderTime() };
+
         var perDay = Math.Clamp(current.PerDay, 1, 30);
 
         var autoRunTime = GetSelectedAutoRunTime();
@@ -219,8 +248,11 @@ public partial class DutyMainSettingsPage : SettingsPageBase
                 componentRefreshTime: componentRefreshTime,
                 // 普通用户页不提供 Python 路径编辑。
                 pythonPath: current.PythonPath,
+                dutyReminderEnabled: dutyReminderEnabled,
+                dutyReminderTimes: dutyReminderTimes,
                 enableMcp: requestedEnableMcp,
-                enableWebViewDebugLayer: requestedEnableWebDebugLayer);
+                enableWebViewDebugLayer: requestedEnableWebDebugLayer,
+                autoRunTriggerNotificationEnabled: AutoRunTriggerNotificationSwitch.IsChecked == true);
 
             var restartRequired = previousEnableMcp != requestedEnableMcp ||
                                   previousEnableWebDebugLayer != requestedEnableWebDebugLayer;
@@ -419,6 +451,9 @@ public partial class DutyMainSettingsPage : SettingsPageBase
             CoverageDaysBox.Text = config.AutoRunCoverageDays.ToString(CultureInfo.InvariantCulture);
             SkipWeekendsSwitch.IsChecked = config.SkipWeekends;
             StartFromTodaySwitch.IsChecked = config.StartFromToday;
+            AutoRunTriggerNotificationSwitch.IsChecked = config.AutoRunTriggerNotificationEnabled;
+            DutyReminderEnabledSwitch.IsChecked = config.DutyReminderEnabled;
+            SetDutyReminderTimeSelection(Service.GetDutyReminderTimes().FirstOrDefault());
             EnableMcpSwitch.IsChecked = config.EnableMcp;
             EnableWebDebugLayerSwitch.IsChecked = config.EnableWebViewDebugLayer;
             SetComponentRefreshTimeSelection(config.ComponentRefreshTime);
@@ -530,6 +565,9 @@ public partial class DutyMainSettingsPage : SettingsPageBase
 
     private void BuildSchedulePreview(DutyState state)
     {
+        var previousSelectedDate = string.IsNullOrWhiteSpace(_pendingScheduleSelectionDate)
+            ? (ScheduleListBox.SelectedItem as ScheduleRowItem)?.Date
+            : _pendingScheduleSelectionDate;
         var rows = state.SchedulePool
             .OrderBy(x => x.Date, StringComparer.Ordinal)
             .Select(item =>
@@ -550,15 +588,157 @@ public partial class DutyMainSettingsPage : SettingsPageBase
                 {
                     Date = item.Date,
                     Day = item.Day,
-                    AssignmentSummary = summary
+                    AssignmentSummary = summary,
+                    Note = (item.Note ?? string.Empty).Trim()
                 };
             })
             .ToList();
 
         ScheduleListBox.ItemsSource = rows;
+        if (!string.IsNullOrWhiteSpace(previousSelectedDate))
+        {
+            ScheduleListBox.SelectedItem = rows.LastOrDefault(x =>
+                string.Equals(x.Date, previousSelectedDate, StringComparison.Ordinal));
+        }
+        _pendingScheduleSelectionDate = string.Empty;
+
+        PopulateScheduleEditorFromSelection();
         ScheduleSummaryText.Text = rows.Count == 0
             ? "暂无排班数据。"
             : $"共 {rows.Count} 条排班记录。";
+    }
+
+    private void OnScheduleSelectionChanged(object? sender, SelectionChangedEventArgs e)
+    {
+        PopulateScheduleEditorFromSelection();
+    }
+
+    private void OnReloadScheduleEditClick(object? sender, RoutedEventArgs e)
+    {
+        PopulateScheduleEditorFromSelection();
+    }
+
+    private void OnSaveScheduleEditClick(object? sender, RoutedEventArgs e)
+    {
+        if (ScheduleListBox.SelectedItem is not ScheduleRowItem selected)
+        {
+            SetStatus("请先选择要编辑的排班记录。", Brushes.Orange);
+            return;
+        }
+
+        if (!TryParseAreaAssignmentsEditorText(
+                ScheduleAssignmentsEditorBox.Text,
+                out var areaAssignments,
+                out var invalidLine))
+        {
+            SetStatus($"值日安排格式错误：{invalidLine}（请使用“区域: 姓名1, 姓名2”）。", Brushes.Orange);
+            return;
+        }
+
+        if (!TryNormalizeScheduleDate(ScheduleDateEditorBox.Text, out var targetDate, out var targetDateValue))
+        {
+            SetStatus("日期格式错误，请使用 yyyy-MM-dd。", Brushes.Orange);
+            return;
+        }
+
+        var selectedDay = ScheduleDayEditorComboBox.SelectedItem as string;
+        var targetDay = string.IsNullOrWhiteSpace(selectedDay)
+            ? ToChineseWeekday(targetDateValue.DayOfWeek)
+            : selectedDay.Trim();
+
+        var note = (ScheduleNoteEditorBox.Text ?? string.Empty).Trim();
+        if (!Service.TrySaveScheduleEntry(
+                sourceDate: selected.Date,
+                targetDate: targetDate,
+                day: targetDay,
+                areaAssignments: areaAssignments,
+                note: note,
+                createIfMissing: false,
+                out var message))
+        {
+            SetStatus($"保存失败：{message}", Brushes.Red);
+            return;
+        }
+
+        _pendingScheduleSelectionDate = targetDate;
+        LoadData("手动编辑排班");
+        SetStatus("排班编辑已保存。", Brushes.Green);
+    }
+
+    private void OnCreateScheduleEditClick(object? sender, RoutedEventArgs e)
+    {
+        if (!TryParseAreaAssignmentsEditorText(
+                ScheduleAssignmentsEditorBox.Text,
+                out var areaAssignments,
+                out var invalidLine))
+        {
+            SetStatus($"值日安排格式错误：{invalidLine}（请使用“区域: 姓名1, 姓名2”）。", Brushes.Orange);
+            return;
+        }
+
+        if (!TryNormalizeScheduleDate(ScheduleDateEditorBox.Text, out var targetDate, out var targetDateValue))
+        {
+            SetStatus("日期格式错误，请使用 yyyy-MM-dd。", Brushes.Orange);
+            return;
+        }
+
+        var selectedDay = ScheduleDayEditorComboBox.SelectedItem as string;
+        var targetDay = string.IsNullOrWhiteSpace(selectedDay)
+            ? ToChineseWeekday(targetDateValue.DayOfWeek)
+            : selectedDay.Trim();
+        var note = (ScheduleNoteEditorBox.Text ?? string.Empty).Trim();
+
+        if (!Service.TrySaveScheduleEntry(
+                sourceDate: null,
+                targetDate: targetDate,
+                day: targetDay,
+                areaAssignments: areaAssignments,
+                note: note,
+                createIfMissing: true,
+                out var message))
+        {
+            SetStatus($"新建失败：{message}", Brushes.Red);
+            return;
+        }
+
+        _pendingScheduleSelectionDate = targetDate;
+        LoadData("手动新建排班");
+        SetStatus("已新建值日安排。", Brushes.Green);
+    }
+
+    private void PopulateScheduleEditorFromSelection()
+    {
+        if (ScheduleListBox.SelectedItem is not ScheduleRowItem selected)
+        {
+            SelectedScheduleMetaText.Text = "请先在上方列表选择一条排班记录。";
+            ScheduleDateEditorBox.Text = DateTime.Today.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+            ScheduleDayEditorComboBox.SelectedItem = ToChineseWeekday(DateTime.Today.DayOfWeek);
+            ScheduleAssignmentsEditorBox.Text = string.Empty;
+            ScheduleNoteEditorBox.Text = string.Empty;
+            SaveScheduleEditBtn.IsEnabled = false;
+            return;
+        }
+
+        var state = Service.LoadState();
+        var item = state.SchedulePool.LastOrDefault(x => string.Equals(x.Date, selected.Date, StringComparison.Ordinal));
+        if (item == null)
+        {
+            SelectedScheduleMetaText.Text = "当前记录不存在，可能已被刷新。";
+            ScheduleDateEditorBox.Text = string.Empty;
+            ScheduleDayEditorComboBox.SelectedItem = null;
+            ScheduleAssignmentsEditorBox.Text = string.Empty;
+            ScheduleNoteEditorBox.Text = string.Empty;
+            SaveScheduleEditBtn.IsEnabled = false;
+            return;
+        }
+
+        var assignments = Service.GetAreaAssignments(item);
+        ScheduleDateEditorBox.Text = (item.Date ?? string.Empty).Trim();
+        ScheduleDayEditorComboBox.SelectedItem = ResolveScheduleDaySelection(item.Day, item.Date);
+        ScheduleAssignmentsEditorBox.Text = FormatAreaAssignmentsForEditor(assignments);
+        ScheduleNoteEditorBox.Text = (item.Note ?? string.Empty).Trim();
+        SelectedScheduleMetaText.Text = $"当前编辑：{selected.Date} {selected.Day}";
+        SaveScheduleEditBtn.IsEnabled = true;
     }
 
     private static bool TryParseScheduleDate(string? rawDate, out DateTime date)
@@ -614,6 +794,129 @@ public partial class DutyMainSettingsPage : SettingsPageBase
 
         value = min;
         return false;
+    }
+
+    private string GetSelectedDutyReminderTime()
+    {
+        var hour = DutyReminderHourComboBox.SelectedItem as string ?? "07";
+        var minute = DutyReminderMinuteComboBox.SelectedItem as string ?? "40";
+        return $"{hour}:{minute}";
+    }
+
+    private void SetDutyReminderTimeSelection(string? dutyReminderTime)
+    {
+        if (!TimeSpan.TryParse(dutyReminderTime, out var parsed))
+        {
+            parsed = new TimeSpan(7, 40, 0);
+        }
+
+        DutyReminderHourComboBox.SelectedItem = parsed.Hours.ToString("D2");
+        DutyReminderMinuteComboBox.SelectedItem = parsed.Minutes.ToString("D2");
+    }
+
+    private static bool TryNormalizeScheduleDate(string? rawDate, out string normalizedDate, out DateTime parsedDate)
+    {
+        normalizedDate = string.Empty;
+        parsedDate = default;
+        var text = (rawDate ?? string.Empty).Trim();
+        if (text.Length == 0)
+        {
+            return false;
+        }
+
+        if (DateTime.TryParseExact(text, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out parsedDate) ||
+            DateTime.TryParse(text, out parsedDate))
+        {
+            normalizedDate = parsedDate.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+            return true;
+        }
+
+        return false;
+    }
+
+    private static string ResolveScheduleDaySelection(string? day, string? date)
+    {
+        var normalizedDay = (day ?? string.Empty).Trim();
+        if (normalizedDay.Length > 0)
+        {
+            return normalizedDay;
+        }
+
+        if (TryNormalizeScheduleDate(date, out _, out var parsedDate))
+        {
+            return ToChineseWeekday(parsedDate.DayOfWeek);
+        }
+
+        return "周一";
+    }
+
+    private static string FormatAreaAssignmentsForEditor(IDictionary<string, List<string>> assignments)
+    {
+        var lines = assignments
+            .Where(x => !string.IsNullOrWhiteSpace(x.Key))
+            .Select(x =>
+            {
+                var names = (x.Value ?? [])
+                    .Select(v => (v ?? string.Empty).Trim())
+                    .Where(v => v.Length > 0)
+                    .Distinct(StringComparer.Ordinal)
+                    .ToList();
+                var nameText = names.Count > 0 ? string.Join(", ", names) : string.Empty;
+                return $"{x.Key}: {nameText}".TrimEnd();
+            })
+            .ToList();
+
+        return string.Join(Environment.NewLine, lines);
+    }
+
+    private static bool TryParseAreaAssignmentsEditorText(
+        string? text,
+        out Dictionary<string, List<string>> assignments,
+        out string invalidLine)
+    {
+        assignments = new Dictionary<string, List<string>>(StringComparer.Ordinal);
+        invalidLine = string.Empty;
+
+        var rawText = text ?? string.Empty;
+        foreach (var rawLine in rawText.Split(['\r', '\n', ';', '\uFF1B'], StringSplitOptions.RemoveEmptyEntries))
+        {
+            var line = rawLine.Trim();
+            if (line.Length == 0)
+            {
+                continue;
+            }
+
+            var colonIndex = line.IndexOf(':');
+            var cnColonIndex = line.IndexOf('\uFF1A');
+            if (colonIndex < 0 || (cnColonIndex >= 0 && cnColonIndex < colonIndex))
+            {
+                colonIndex = cnColonIndex;
+            }
+
+            if (colonIndex <= 0)
+            {
+                invalidLine = line;
+                return false;
+            }
+
+            var area = line[..colonIndex].Trim();
+            if (area.Length == 0)
+            {
+                invalidLine = line;
+                return false;
+            }
+
+            var studentsText = line[(colonIndex + 1)..].Trim();
+            var students = studentsText.Split([',', '\uFF0C', '\u3001', '/', '|'], StringSplitOptions.RemoveEmptyEntries)
+                .Select(x => x.Trim())
+                .Where(x => x.Length > 0)
+                .Distinct(StringComparer.Ordinal)
+                .ToList();
+
+            assignments[area] = students;
+        }
+
+        return true;
     }
 
     private string GetSelectedAutoRunTime()
@@ -740,5 +1043,6 @@ public partial class DutyMainSettingsPage : SettingsPageBase
         public string Date { get; init; } = string.Empty;
         public string Day { get; init; } = string.Empty;
         public string AssignmentSummary { get; init; } = "无安排";
+        public string Note { get; init; } = string.Empty;
     }
 }
