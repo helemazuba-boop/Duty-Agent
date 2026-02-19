@@ -1,6 +1,6 @@
 # Duty-Agent (v2.4)
 
-> **"Fairness is King."** — The Humanity Protocol
+> 项目理论上的逻辑已经通过，正在真实环境下测试以验证稳定性和优化细节。如果您需要在生产环境中应用，请稍等正式版
 
 `Duty-Agent` 是一个面向 **[ClassIsland](https://github.com/ClassIsland/ClassIsland)** 的下一代智能排班插件。
 
