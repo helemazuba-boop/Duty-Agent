@@ -14,9 +14,8 @@ import urllib.error
 import urllib.request
 from datetime import datetime, timedelta, date
 from pathlib import Path
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Dict, List, Optional, Tuple
 
-DEFAULT_DAYS = 5
 DEFAULT_PER_DAY = 2
 DEFAULT_AREA_NAMES = ["教室", "清洁区"]
 DAY_NAMES = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
@@ -305,50 +304,119 @@ def build_prompt_messages(
     instruction: str,
     duty_rule: str,
     area_names: List[str],
+    debt_list: List[int],
+    previous_context: str = "",
 ) -> List[dict]:
-    """Build the 3-part prompt messages for the LLM.
+    """Build the 3-part prompt messages for the LLM."""
+    
+    area_schema_items = [f'"{name}": [101, 102]' for name in area_names]
+    area_schema = ", ".join(area_schema_items)
 
-    Structure:
-        - System: base engine rules + output schema + long-term rules
-        - User: parameters + single-use instruction
-    """
-    area_schema = ", ".join([f'"{name}": [101, 102]' for name in area_names])
-    system_parts = [
-        "You are a scheduling engine.",
-        "Only process numeric IDs and output strict JSON.",
-        "Do not output extra explanations.",
-        "Output schema:",
-        "{",
-        '  "schedule": [',
-        f'    {{"day": "Mon", "area_ids": {{{area_schema}}}}},',
-        f'    {{"day": "Tue", "area_ids": {{{area_schema}}}}}',
-        "  ]",
-        "}",
-        "The day field must use: Mon, Tue, Wed, Thu, Fri, Sat, Sun.",
-        "For each day, area_ids must be an object where each area name maps to an array of IDs.",
-        "Legacy keys such as classroom_ids and cleaning_area_ids are accepted for compatibility.",
-    ]
+    system_content = f"""# Role
+You are the Duty-Agent, an intelligent scheduling assistant.
+Your goal is to generate a schedule that balances **Hard Constraints** (Sick leave), **Soft Constraints** (Team training), and **Fairness** (Debt repayment).
+
+# Input Context
+- IDs are a continuous sequence (e.g., 1, 2, 3...).
+- You have a `Main_Pointer` starting at `Last ID`.
+
+# The "Two-Queue" Protocol
+1. **Debt Queue**: Stores IDs skipped temporarily due to soft conflicts (e.g. Training). These MUST be cleared first.
+2. **Main Pointer**: Tracks the highest ID accessed in the roster. It **ONLY increments**. It never resets or goes back.
+
+# Process (Chain of Thought)
+For each day, perform these steps in your `thinking_trace`:
+1. **Date & Conflict**: Calculate the date. Identify who is blocked (Sick or Team).
+2. **Check Debt**: Is anyone in `Debt Queue` available today?
+   - YES: Schedule them first (Backfill).
+   - NO: Proceed to step 3.
+3. **Advance Pointer**: If more slots are needed, increment `Main_Pointer`.
+   - If New ID is Sick -> Skip permanently (do not add to Debt).
+   - If New ID is Team/Soft Conflict -> Skip for today, ADD to `Debt Queue`, and increment Pointer again.
+   - If Valid -> Schedule them.
+4. **Flow Control**: Do not exceed daily capacity by too much. Spread debt repayment over multiple days if the queue is large ("Debt Avalanche" prevention).
+
+# Output Schema (Strict JSON)
+```json
+{{
+  "thinking_trace": {{
+    "step_1_analysis": "Date is 2026-02-18. IDs 5,6 are Team (blocked).",
+    "step_2_pointer_logic": "Debt Queue is empty. Main Pointer moved from 10 to 12.",
+    "step_3_action": "Scheduled 11. 12 is Team, added to Debt. Scheduled 13."
+  }},
+  "schedule": [
+    {{
+      "date": "YYYY-MM-DD",
+      "area_ids": {{ {area_schema} }},
+      "note": "Brief reason (e.g., 'Backfilled ID 6')"
+    }}
+  ],
+  "next_run_note": "CRITICAL: Debt List [12] must be handled next run. Current Pointer at 13.",
+  "new_debt_ids": [12]
+}}
+```
+**Important**:
+1. The `next_run_note` is your "Memory" for the next time you run. You MUST strictly record any remaining Debt List or important context here.
+2. `new_debt_ids`: If you added anyone to the Debt Queue (or if anyone remains in it), you MUST output their IDs here as a list of integers.
+"""
+
     duty_rule = (duty_rule or "").strip()
     if duty_rule:
-        system_parts.append("")
-        system_parts.append("--- Rules ---")
-        system_parts.append(duty_rule)
-    system_prompt = "\n".join(system_parts)
+        system_content += f"\n\n--- User Defined Rules ---\n{duty_rule}"
 
     user_parts = [
         f"ID Range: {id_range[0]}-{id_range[1]}",
+        f"Disabled IDs: {disabled_ids}",
+        f"Last ID: {last_id}",
     ]
-    if disabled_ids:
-        user_parts.append(f"Disabled IDs: {disabled_ids}")
-    user_parts.append(f"Last ID: {last_id}")
+
+    if previous_context:
+        user_parts.append(f"PREVIOUS RUN MEMORY (IMPORTANT): {previous_context}")
+
+    if debt_list:
+        user_parts.append(f"CURRENT DEBT LIST (PRIORITY HIGH): {debt_list}. You MUST schedule these IDs first.")
+
     user_parts.append(f"Current Time: {current_time}")
     user_parts.append(f'Instruction: "{instruction}"')
+    
     user_prompt = "\n".join(user_parts)
 
     return [
-        {"role": "system", "content": system_prompt},
+        {"role": "system", "content": system_content},
         {"role": "user", "content": user_prompt},
     ]
+
+
+def force_insert_debts(schedule_raw: List[dict], debt_list: List[int], area_names: List[str]) -> None:
+    """Force insert debt IDs into the first day's schedule if not present."""
+    if not debt_list or not schedule_raw or not area_names:
+        return
+
+    # 1. Identify who is arguably already scheduled?
+    # Actually, we can just prepend them to the first slot and let normalization dedupe.
+    # But wait, we want to ensure they are *first* in the list.
+    
+    target_day = schedule_raw[0]
+    if "area_ids" not in target_day or not isinstance(target_day["area_ids"], dict):
+        target_day["area_ids"] = {}
+    
+    first_area = area_names[0]
+    existing = target_day["area_ids"].get(first_area, [])
+    if not isinstance(existing, list):
+        existing = []
+    
+    # Prepend debts to the first area of the first day
+    # Filter out duplicates that might already be in existing to avoid double-adding?
+    # Normalization handles deduplication, but we want debts at the FRONT.
+    
+    # We only prepend debts that are NOT already in the list to avoid duplication if LLM did its job.
+    # Actually, if LLM did its job, they are somewhere. If we prepend, they are at the front.
+    # If LLM put them at the end, prepending moves them to front (and dupes are removed later).
+    # So prepending is safe.
+    
+    new_list = list(debt_list) + existing
+    target_day["area_ids"][first_area] = new_list
+
 
 
 def clean_json_response(text: str) -> str:
@@ -357,6 +425,32 @@ def clean_json_response(text: str) -> str:
     text = re.sub(r"\s*```$", "", text)
     m = re.search(r"\{.*\}", text, re.DOTALL)
     return m.group(0) if m else text
+
+
+def validate_llm_schedule_entries(schedule_raw) -> None:
+    if not isinstance(schedule_raw, list):
+        raise ValueError("LLM returned invalid schedule: `schedule` must be a list.")
+
+    previous_date: Optional[date] = None
+    for idx, entry in enumerate(schedule_raw):
+        if not isinstance(entry, dict):
+            raise ValueError(f"LLM schedule entry at index {idx} must be an object.")
+
+        raw_date = str(entry.get("date", "")).strip()
+        if not raw_date:
+            raise ValueError(f"LLM schedule entry at index {idx} is missing `date`.")
+
+        try:
+            current_date = datetime.strptime(raw_date, "%Y-%m-%d").date()
+        except ValueError:
+            raise ValueError(
+                f"LLM schedule entry at index {idx} has invalid date `{raw_date}`. Expected YYYY-MM-DD."
+            )
+
+        if previous_date is not None and current_date < previous_date:
+            raise ValueError("LLM schedule dates must be sorted in ascending order.")
+
+        previous_date = current_date
 
 
 def is_timeout_error(ex: Exception) -> bool:
@@ -426,55 +520,7 @@ def call_llm(messages: List[dict], config: dict) -> Tuple[dict, str]:
     return json.loads(clean_json_response(content)), content
 
 
-def generate_target_dates(start_date: date, days: int, skip_weekends: bool) -> List[date]:
-    target_dates = []
-    curr = start_date
-    while len(target_dates) < days:
-        if skip_weekends and curr.weekday() >= 5:
-            curr += timedelta(days=1)
-            continue
-        target_dates.append(curr)
-        curr += timedelta(days=1)
-    return target_dates
 
-
-def fill_rotation_ids(
-    initial_ids: List[int],
-    active_ids: List[int],
-    last_index: int,
-    per_day: int,
-    avoid_ids: Optional[Set[int]] = None,
-) -> Tuple[List[int], int]:
-    result = []
-    for pid in initial_ids:
-        if pid in active_ids and (avoid_ids is None or pid not in avoid_ids):
-            result.append(pid)
-            if len(result) >= per_day:
-                break
-
-    curr_idx = (last_index + 1) % len(active_ids)
-    start_idx = curr_idx
-    while len(result) < per_day:
-        pid = active_ids[curr_idx]
-        if pid not in result and (avoid_ids is None or pid not in avoid_ids):
-            result.append(pid)
-        curr_idx = (curr_idx + 1) % len(active_ids)
-        if curr_idx == start_idx:
-            break
-
-    # Fallback: if avoid_ids blocked everyone, ignore avoid_ids and retry
-    if not result and avoid_ids:
-        curr_idx = (last_index + 1) % len(active_ids)
-        start_idx = curr_idx
-        while len(result) < per_day:
-            pid = active_ids[curr_idx]
-            if pid not in result:
-                result.append(pid)
-            curr_idx = (curr_idx + 1) % len(active_ids)
-            if curr_idx == start_idx:
-                break
-
-    return result, (curr_idx - 1 + len(active_ids)) % len(active_ids)
 
 
 def extract_ids_from_value(value, active_set: set, limit: int) -> List[int]:
@@ -531,38 +577,42 @@ def normalize_multi_area_schedule_ids(
     active_ids: List[int],
     area_names: List[str],
     area_per_day_counts: Dict[str, int],
-    days: int,
-    anchor_id: int,
 ) -> List[dict]:
     active_set = set(active_ids)
-    anchor_index = active_ids.index(anchor_id) if anchor_id in active_set else len(active_ids) - 1
-    area_indexes: Dict[str, int] = {name: anchor_index for name in area_names}
     normalized: List[dict] = []
 
-    for day_idx in range(days):
+    if not isinstance(schedule_raw, list):
+        return []
+
+    for entry in schedule_raw:
+        if not isinstance(entry, dict):
+            continue
+
+        raw_date = str(entry.get("date", "")).strip()
+        # Basic validation: must look like a date
+        if len(raw_date) < 8:
+            continue
+
         day_assignments: Dict[str, List[int]] = {}
         used_ids: set = set()
-        entry = schedule_raw[day_idx] if day_idx < len(schedule_raw) else {}
-        if not isinstance(entry, dict):
-            entry = {}
 
         for area_index, area_name in enumerate(area_names):
             per_area_count = area_per_day_counts.get(area_name, DEFAULT_PER_DAY)
-            initial_ids = extract_area_ids(entry, area_name, area_index, active_set, per_area_count)
-            initial_ids = [pid for pid in initial_ids if pid not in used_ids]
+            
+            # Extract IDs directly (no force fill)
+            extracted_ids = extract_area_ids(entry, area_name, area_index, active_set, per_area_count)
+            # Filter duplicates within the day
+            final_ids = [pid for pid in extracted_ids if pid not in used_ids]
+            
+            day_assignments[area_name] = final_ids
+            used_ids.update(final_ids)
 
-            filled_ids, area_indexes[area_name] = fill_rotation_ids(
-                initial_ids,
-                active_ids,
-                area_indexes[area_name],
-                per_area_count,
-                avoid_ids=used_ids,
-            )
-
-            day_assignments[area_name] = filled_ids
-            used_ids.update(filled_ids)
-
-        normalized.append({"area_ids": day_assignments})
+        note = str(entry.get("note", "")).strip()
+        normalized.append({
+            "date": raw_date,
+            "area_ids": day_assignments,
+            "note": note
+        })
 
     return normalized
 
@@ -570,12 +620,21 @@ def normalize_multi_area_schedule_ids(
 def restore_schedule(
     normalized_ids: List[dict],
     id_to_name: Dict[int, str],
-    target_dates: List[date],
     area_names: List[str],
+    existing_notes: Optional[Dict[str, str]] = None,
 ) -> List[dict]:
     restored = []
-    for idx, day_entry in enumerate(normalized_ids):
-        d = target_dates[idx]
+    if existing_notes is None:
+        existing_notes = {}
+
+    for day_entry in normalized_ids:
+        date_str = day_entry.get("date", "")
+        # Parse date to get day name
+        try:
+            d = datetime.strptime(date_str, "%Y-%m-%d").date()
+        except ValueError:
+            continue # Skip invalid dates
+            
         area_ids_map = day_entry.get("area_ids", {})
         if not isinstance(area_ids_map, dict):
             area_ids_map = {}
@@ -586,11 +645,17 @@ def restore_schedule(
             students = [id_to_name[pid] for pid in area_ids if pid in id_to_name]
             area_assignments[area_name] = students
 
+        # Note logic: Use new note from AI if present, else fallback to existing note
+        note = str(day_entry.get("note", "")).strip()
+        if not note:
+            note = existing_notes.get(date_str, "")
+
         restored.append(
             {
-                "date": d.strftime("%Y-%m-%d"),
+                "date": date_str,
                 "day": DAY_NAMES[d.weekday()],
                 "area_assignments": area_assignments,
+                "note": note,
             }
         )
     return restored
@@ -625,6 +690,8 @@ def merge_schedule_pool(state_data: dict, restored: List[dict], apply_mode: str,
         return dedupe_pool_by_date(kept + restored)
 
     if apply_mode == "replace_overlap":
+        if not restored:
+            return dedupe_pool_by_date(pool)
         start_str = start_date.strftime("%Y-%m-%d")
         end_str = restored[-1]["date"]
         kept = [x for x in pool if x.get("date", "") < start_str or x.get("date", "") > end_str]
@@ -679,12 +746,6 @@ def main():
         ctx.config["base_url"] = base_url
         ctx.config["model"] = model
         ctx.config["api_key"] = load_api_key_from_env()
-        days_to_generate = parse_int(
-            input_data.get("days_to_generate", ctx.config.get("auto_run_coverage_days", DEFAULT_DAYS)),
-            DEFAULT_DAYS,
-            1,
-            30,
-        )
         per_day = parse_int(
             input_data.get("per_day", ctx.config.get("per_day", DEFAULT_PER_DAY)),
             DEFAULT_PER_DAY,
@@ -697,16 +758,15 @@ def main():
             input_data.get("area_per_day_counts", ctx.config.get("area_per_day_counts", {})),
             per_day,
         )
-        skip_weekends = parse_bool(
-            input_data.get("skip_weekends", ctx.config.get("skip_weekends", True)),
-            True,
-        )
         duty_rule = str(input_data.get("duty_rule", ctx.config.get("duty_rule", ""))).strip()
         apply_mode = str(input_data.get("apply_mode", "append")).strip().lower()
         start_from_today = parse_bool(
             input_data.get("start_from_today", ctx.config.get("start_from_today", False)),
             False,
         )
+        existing_notes = input_data.get("existing_notes", {})
+        if not isinstance(existing_notes, dict):
+            existing_notes = {}
 
         # Start date
         today_date = datetime.now().date()
@@ -728,6 +788,11 @@ def main():
         id_range = (min(all_ids), max(all_ids))
         disabled_ids = sorted(set(all_ids) - set(active_ids))
         current_time = datetime.now().strftime("%Y-%m-%d %H:%M")
+        
+        # Load previous context (AI Memory)
+        previous_context = str(state_data.get("next_run_note", "")).strip()
+        debt_list = extract_ids_from_value(state_data.get("debt_list", []), set(active_ids), 9999)
+        
         messages = build_prompt_messages(
             id_range,
             disabled_ids,
@@ -736,20 +801,78 @@ def main():
             sanitized_instruction,
             duty_rule,
             area_names,
+            previous_context=previous_context,
+            debt_list=debt_list,
         )
 
         llm_result, llm_response_text = call_llm(messages, ctx.config)
         schedule_raw = llm_result.get("schedule", [])
-        target_dates = generate_target_dates(start_date, days_to_generate, skip_weekends)
+        validate_llm_schedule_entries(schedule_raw)
+        
+        # Persist next_run_note for future runs
+        next_run_note = str(llm_result.get("next_run_note", "")).strip()
+        state_data["next_run_note"] = next_run_note
+        
+        # --- SCHEME 1: Structured Debt Enforcement ---
+        # 1. Force insert existing debts
+        force_insert_debts(schedule_raw, debt_list, area_names)
+        
+        # 2. Update debt list based on output `new_debt_ids`
+        # Note: We trust the LLM to tell us who is STILL in debt (or newly added).
+        # But we also should verify if our forced debts actually got scheduled?
+        # If we force insert, they WILL be scheduled (unless active_ids filter drops them, but we checked that).
+        
+        raw_new_debts = llm_result.get("new_debt_ids", [])
+        new_debt_list = extract_ids_from_value(raw_new_debts, set(active_ids), 9999)
+        state_data["debt_list"] = new_debt_list
+        # ---------------------------------------------
+        
         normalized_ids = normalize_multi_area_schedule_ids(
             schedule_raw,
             active_ids,
             area_names,
             area_per_day_counts,
-            days_to_generate,
-            anchor_id,
         )
-        restored = restore_schedule(normalized_ids, id_to_name, target_dates, area_names)
+        
+        # Verify if force insertion worked?
+        # If normalization dropped them (due to per_day limit), they should logically remain in debt.
+        # But `new_debt_list` comes from LLM. LLM might not know we force inserted.
+        # If we force insert, we are overriding LLM.
+        # So we should recalculate debt?
+        # logic: final_debt = (old_debt + new_debt) - scheduled_ids
+        
+        scheduled_set = set()
+        for entry in normalized_ids:
+            for ids in entry.get("area_ids", {}).values():
+                scheduled_set.update(ids)
+                
+        # Recalculate strict debt list
+        # Start with what LLM thinks is debt
+        final_debt_set = set(new_debt_list)
+        # Add original debts that failed to schedule (if any)
+        # We check against keys in normalized_ids to see who ACTUALLY got scheduled
+        scheduled_set = set()
+        for entry in normalized_ids:
+            for ids in entry.get("area_ids", {}).values():
+                scheduled_set.update(ids)
+
+        for old_pid in debt_list:
+            if old_pid not in scheduled_set:
+                final_debt_set.add(old_pid)
+        
+        # Remove anyone who IS scheduled (just in case LLM listed them as debt but also scheduled them)
+        final_debt_set = final_debt_set - scheduled_set
+        
+        state_data["debt_list"] = sorted(list(final_debt_set))
+
+        restored = restore_schedule(
+            normalized_ids,
+            id_to_name,
+            area_names,
+            existing_notes,
+        )
+        if not restored:
+            raise ValueError("LLM returned no valid schedule entries.")
         state_data["schedule_pool"] = merge_schedule_pool(state_data, restored, apply_mode, start_date)
 
         save_json_atomic(ctx.paths["state"], state_data)

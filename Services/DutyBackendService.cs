@@ -181,10 +181,8 @@ public class DutyBackendService : IDisposable
         string autoRunDay,
         string autoRunTime,
         int perDay,
-        bool skipWeekends,
         string dutyRule,
         bool startFromToday,
-        int autoRunCoverageDays,
         string componentRefreshTime,
         string pythonPath,
         IEnumerable<string>? notificationTemplates = null,
@@ -206,10 +204,8 @@ public class DutyBackendService : IDisposable
             Config.AutoRunDay = NormalizeAutoRunDay(autoRunDay);
             Config.AutoRunTime = NormalizeTimeOrThrow(autoRunTime);
             Config.PerDay = Math.Clamp(perDay, 1, 30);
-            Config.SkipWeekends = skipWeekends;
             Config.DutyRule = dutyRule;
             Config.StartFromToday = startFromToday;
-            Config.AutoRunCoverageDays = Math.Clamp(autoRunCoverageDays, 1, 30);
             Config.ComponentRefreshTime = NormalizeTimeOrThrow(componentRefreshTime);
             Config.AutoRunTriggerNotificationEnabled =
                 autoRunTriggerNotificationEnabled ?? Config.AutoRunTriggerNotificationEnabled;
@@ -283,9 +279,7 @@ public class DutyBackendService : IDisposable
             instruction = effectiveInstruction,
             apply_mode = applyMode,
             start_from_today = Config.StartFromToday,
-            days_to_generate = Config.AutoRunCoverageDays,
             per_day = Config.PerDay,
-            skip_weekends = Config.SkipWeekends,
             duty_rule = Config.DutyRule,
             base_url = Config.BaseUrl,
             model = overrideModel ?? Config.Model
@@ -678,6 +672,7 @@ public class DutyBackendService : IDisposable
 
         var normalizedState = state ?? new DutyState();
         normalizedState.SeedAnchor = (normalizedState.SeedAnchor ?? string.Empty).Trim();
+        normalizedState.NextRunNote = (normalizedState.NextRunNote ?? string.Empty).Trim();
         normalizedState.SchedulePool = (normalizedState.SchedulePool ?? [])
             .Where(x => x != null)
             .Select(x => new SchedulePoolItem
@@ -1171,7 +1166,7 @@ public class DutyBackendService : IDisposable
                 ["status"] = status,
                 ["date"] = today,
                 ["areas"] = string.Join("\u3001", areaNames),
-                ["days"] = config.AutoRunCoverageDays.ToString(),
+
                 ["per_day"] = config.PerDay.ToString(),
                 ["mode"] = mode,
                 ["instruction"] = instructionText,
@@ -1215,7 +1210,7 @@ public class DutyBackendService : IDisposable
                 ["status"] = status,
                 ["date"] = dateText,
                 ["areas"] = string.Join("\u3001", areaNames),
-                ["days"] = Config.AutoRunCoverageDays.ToString(),
+
                 ["per_day"] = Config.PerDay.ToString(),
                 ["mode"] = "auto_run",
                 ["instruction"] = AutoRunInstruction,
@@ -1350,7 +1345,7 @@ public class DutyBackendService : IDisposable
             ["duty_students"] = dutyStudents.Count > 0 ? string.Join("\u3001", dutyStudents) : "\u6682\u65E0",
             ["assignments"] = $"{assignmentText}{noteSuffix}",
             ["note"] = note,
-            ["days"] = Config.AutoRunCoverageDays.ToString(),
+
             ["per_day"] = Config.PerDay.ToString(),
             ["mode"] = "duty_reminder",
             ["instruction"] = string.Empty,

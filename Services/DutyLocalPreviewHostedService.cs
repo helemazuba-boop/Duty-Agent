@@ -1013,9 +1013,7 @@ public sealed class DutyLocalPreviewHostedService : IHostedService, IDisposable
             "enable_webview_debug_layer",
             "auto_run_day",
             "auto_run_time",
-            "auto_run_coverage_days",
             "per_day",
-            "skip_weekends",
             "duty_rule",
             "start_from_today",
             "component_refresh_time",
@@ -1076,18 +1074,7 @@ public sealed class DutyLocalPreviewHostedService : IHostedService, IDisposable
             errorMessage = parseError ?? "Invalid params.";
             return false;
         }
-        if (!TryReadOptionalIntArgument(argumentsElement, "auto_run_coverage_days", out var autoRunCoverageDays,
-                out parseError))
-        {
-            errorMessage = parseError ?? "Invalid params.";
-            return false;
-        }
         if (!TryReadOptionalIntArgument(argumentsElement, "per_day", out var perDay, out parseError))
-        {
-            errorMessage = parseError ?? "Invalid params.";
-            return false;
-        }
-        if (!TryReadOptionalBooleanArgument(argumentsElement, "skip_weekends", out var skipWeekends, out parseError))
         {
             errorMessage = parseError ?? "Invalid params.";
             return false;
@@ -1145,10 +1132,8 @@ public sealed class DutyLocalPreviewHostedService : IHostedService, IDisposable
                 autoRunDay: autoRunDay ?? current.AutoRunDay,
                 autoRunTime: autoRunTime ?? current.AutoRunTime,
                 perDay: perDay ?? current.PerDay,
-                skipWeekends: skipWeekends ?? current.SkipWeekends,
                 dutyRule: dutyRule ?? current.DutyRule,
                 startFromToday: startFromToday ?? current.StartFromToday,
-                autoRunCoverageDays: autoRunCoverageDays ?? current.AutoRunCoverageDays,
                 componentRefreshTime: componentRefreshTime ?? current.ComponentRefreshTime,
                 pythonPath: pythonPath ?? current.PythonPath,
                 notificationTemplates: notificationTemplates ?? current.NotificationTemplates,
@@ -1185,9 +1170,7 @@ public sealed class DutyLocalPreviewHostedService : IHostedService, IDisposable
                 enable_webview_debug_layer = saved.EnableWebViewDebugLayer,
                 auto_run_day = saved.AutoRunDay,
                 auto_run_time = saved.AutoRunTime,
-                auto_run_coverage_days = saved.AutoRunCoverageDays,
                 per_day = saved.PerDay,
-                skip_weekends = saved.SkipWeekends,
                 duty_rule = saved.DutyRule,
                 start_from_today = saved.StartFromToday,
                 component_refresh_time = saved.ComponentRefreshTime,
@@ -1618,9 +1601,7 @@ public sealed class DutyLocalPreviewHostedService : IHostedService, IDisposable
                             enable_webview_debug_layer = new { type = "boolean" },
                             auto_run_day = new { type = "string" },
                             auto_run_time = new { type = "string" },
-                            auto_run_coverage_days = new { type = "integer" },
                             per_day = new { type = "integer" },
-                            skip_weekends = new { type = "boolean" },
                             duty_rule = new { type = "string" },
                             start_from_today = new { type = "boolean" },
                             component_refresh_time = new { type = "string" },
@@ -1947,10 +1928,8 @@ public sealed class DutyLocalPreviewHostedService : IHostedService, IDisposable
         var baseUrl = config.BaseUrl ?? current.BaseUrl;
         var model = config.Model ?? current.Model;
         var perDay = config.PerDay ?? current.PerDay;
-        var skipWeekends = config.SkipWeekends ?? current.SkipWeekends;
         var dutyRule = config.DutyRule ?? current.DutyRule;
         var startFromToday = config.StartFromToday ?? current.StartFromToday;
-        var autoRunCoverageDays = config.AutoRunCoverageDays ?? current.AutoRunCoverageDays;
         var pythonPath = config.PythonPath ?? current.PythonPath;
 
         _backendService.SaveUserConfig(
@@ -1961,10 +1940,8 @@ public sealed class DutyLocalPreviewHostedService : IHostedService, IDisposable
             autoRunDay: current.AutoRunDay,
             autoRunTime: current.AutoRunTime,
             perDay: perDay,
-            skipWeekends: skipWeekends,
             dutyRule: dutyRule,
             startFromToday: startFromToday,
-            autoRunCoverageDays: autoRunCoverageDays,
             componentRefreshTime: current.ComponentRefreshTime,
             pythonPath: pythonPath,
             notificationTemplates: current.NotificationTemplates,
@@ -2100,14 +2077,10 @@ public sealed class DutyLocalPreviewHostedService : IHostedService, IDisposable
         [JsonPropertyName("model")]
         public string? Model { get; set; }
 
-        [JsonPropertyName("auto_run_coverage_days")]
-        public int? AutoRunCoverageDays { get; set; }
+
 
         [JsonPropertyName("per_day")]
         public int? PerDay { get; set; }
-
-        [JsonPropertyName("skip_weekends")]
-        public bool? SkipWeekends { get; set; }
 
         [JsonPropertyName("duty_rule")]
         public string? DutyRule { get; set; }

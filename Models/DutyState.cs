@@ -7,6 +7,9 @@ public class DutyState
     [JsonPropertyName("seed_anchor")]
     public string SeedAnchor { get; set; } = string.Empty;
 
+    [JsonPropertyName("next_run_note")]
+    public string NextRunNote { get; set; } = string.Empty;
+
     [JsonPropertyName("schedule_pool")]
     public List<SchedulePoolItem> SchedulePool { get; set; } = [];
 }

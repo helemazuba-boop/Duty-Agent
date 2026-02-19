@@ -164,10 +164,7 @@
                         </StackPanel>
                     </Grid>
 
-                    <TextBlock Text="生成天数 (1-30)" />
-                    <TextBox x:Name="CoverageDaysBox"
-                             LostFocus="OnConfigInputLostFocus"
-                             KeyDown="OnConfigInputKeyDown" />
+
 
                     <TextBlock Text="组件刷新时间" />
                     <StackPanel Orientation="Horizontal" Spacing="6">
@@ -190,16 +187,10 @@
                                        Content="自动排班"
                                        Checked="OnConfigToggleChanged"
                                       Unchecked="OnConfigToggleChanged" />
-                        <ToggleSwitch x:Name="SkipWeekendsSwitch"
-                                      Grid.Row="0"
-                                      Grid.Column="1"
-                                      Content="跳过周末排班"
-                                      Checked="OnConfigToggleChanged"
-                                      Unchecked="OnConfigToggleChanged" />
                         <ToggleSwitch x:Name="StartFromTodaySwitch"
-                                       Grid.Row="1"
-                                       Grid.ColumnSpan="2"
-                                       Content="从今天开始"
+                                        Grid.Row="1"
+                                        Grid.ColumnSpan="2"
+                                        Content="从今天开始"
                                        Checked="OnConfigToggleChanged"
                                        Unchecked="OnConfigToggleChanged" />
                         <ToggleSwitch x:Name="AutoRunTriggerNotificationSwitch"

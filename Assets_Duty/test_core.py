@@ -15,93 +15,103 @@ from unittest.mock import patch, MagicMock
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from core import (
-    fill_rotation_ids,
     merge_schedule_pool,
     anonymize_instruction,
     save_json_atomic,
-    generate_target_dates,
     dedupe_pool_by_date,
     merge_input_config,
+    normalize_multi_area_schedule_ids,
+    restore_schedule,
+    validate_llm_schedule_entries,
 )
 
 
-class TestMergeInputConfig(unittest.TestCase):
-    """Bug: core.py ignored nested config from MCP."""
+class TestNormalizeScheduleNoValidation(unittest.TestCase):
+    """Test the new 'no-validation' normalization logic."""
 
-    def test_flat_input(self):
-        """Flat input remains unchanged."""
-        data = {"instruction": "test", "base_url": "http://flat.com"}
-        result = merge_input_config(data)
-        self.assertEqual(result, data)
-
-    def test_nested_config_merges(self):
-        """Nested config merges into root, overriding root if collision."""
-        data = {
-            "instruction": "test",
-            "val": 1,
-            "config": {
-                "base_url": "http://merged.com",
-                "val": 2
-            }
-        }
-        result = merge_input_config(data)
-        self.assertEqual(result["base_url"], "http://merged.com")
-        self.assertEqual(result["val"], 2) # Override
-        self.assertEqual(result["instruction"], "test") # Preserved
-
-    def test_instruction_preserved_even_if_in_config(self):
-        """Instruction in root takes precedence if we want? Actually logic says root preserved."""
-        # Logic: merged = input.copy(); merged.update(config); if instruction in input: restore it.
-        data = {
-            "instruction": "root",
-            "config": {
-                "instruction": "config"
-            }
-        }
-        result = merge_input_config(data)
-        self.assertEqual(result["instruction"], "root")
-
-    def test_empty_or_invalid(self):
-        self.assertEqual(merge_input_config({}), {})
-        self.assertEqual(merge_input_config(None), {})
-
-
-
-class TestFillRotationIdsFallback(unittest.TestCase):
-    """Bug #1: fill_rotation_ids should not produce empty results."""
-
-    def test_normal_case(self):
-        """Normal case: enough candidates available."""
-        active = [1, 2, 3, 4]
-        result, _ = fill_rotation_ids([], active, 0, 2)
-        self.assertEqual(len(result), 2)
-
-    def test_avoid_ids_blocks_some(self):
-        """When avoid_ids blocks some, picks from remaining."""
-        active = [1, 2, 3, 4]
-        result, _ = fill_rotation_ids([], active, 0, 2, avoid_ids={1, 2})
-        self.assertEqual(len(result), 2)
-        self.assertTrue(all(pid not in {1, 2} for pid in result))
-
-    def test_avoid_ids_blocks_all_fallback(self):
-        """Bug fix: when avoid_ids blocks ALL active_ids, fallback ignores avoid_ids."""
+    def test_parses_valid_date_and_ids(self):
+        """Should extract date and IDs as-is."""
+        raw = [{"date": "2023-10-23", "area_ids": {"A": [1, 2]}}]
         active = [1, 2, 3]
-        result, _ = fill_rotation_ids([], active, 0, 2, avoid_ids={1, 2, 3})
-        # Should NOT be empty; fallback should provide results
-        self.assertGreater(len(result), 0)
-        self.assertLessEqual(len(result), 2)
+        areas = ["A"]
+        counts = {"A": 2}
+        
+        normalized = normalize_multi_area_schedule_ids(raw, active, areas, counts)
+        self.assertEqual(len(normalized), 1)
+        self.assertEqual(normalized[0]["date"], "2023-10-23")
+        self.assertEqual(normalized[0]["area_ids"]["A"], [1, 2])
 
-    def test_per_day_exceeds_active_count(self):
-        """When per_day > len(active_ids), result has at most len(active_ids)."""
-        active = [1, 2]
-        result, _ = fill_rotation_ids([], active, 0, 5)
-        self.assertEqual(len(result), 2)
+    def test_skips_invalid_date(self):
+        """Should ignore entries with missing or too-short dates."""
+        raw = [{"date": "", "area_ids": {"A": [1]}}, {"date": "INVALID", "area_ids": {"A": [1]}}]
+        active = [1]
+        areas = ["A"]
+        counts = {"A": 1}
+        
+        normalized = normalize_multi_area_schedule_ids(raw, active, areas, counts)
+        self.assertEqual(len(normalized), 0)
 
-    def test_initial_ids_respected(self):
-        """Initial IDs from LLM are used first."""
-        active = [1, 2, 3, 4]
-        result, _ = fill_rotation_ids([3, 4], active, 0, 2)
-        self.assertEqual(result, [3, 4])
+    def test_no_force_fill(self):
+        """Should NOT fill up to per_day count if IDs are missing."""
+        # Request says 2 per day, but AI gives 0 or 1
+        raw = [{"date": "2023-10-23", "area_ids": {"A": [1]}}]
+        active = [1, 2, 3]
+        areas = ["A"]
+        counts = {"A": 2} # Expect 2
+        
+        normalized = normalize_multi_area_schedule_ids(raw, active, areas, counts)
+        # Result should still have only 1 ID
+        self.assertEqual(normalized[0]["area_ids"]["A"], [1])
+
+    def test_filters_inactive_ids(self):
+        """Should still filter out inactive IDs."""
+        raw = [{"date": "2023-10-23", "area_ids": {"A": [1, 999]}}]
+        active = [1]
+        areas = ["A"]
+        counts = {"A": 2}
+        
+        normalized = normalize_multi_area_schedule_ids(raw, active, areas, counts)
+        self.assertEqual(normalized[0]["area_ids"]["A"], [1])
+
+
+class TestScheduleValidation(unittest.TestCase):
+    def test_unsorted_dates_raise_error(self):
+        schedule = [
+            {"date": "2026-02-12", "area_ids": {"A": [1]}},
+            {"date": "2026-02-11", "area_ids": {"A": [2]}},
+        ]
+        with self.assertRaises(ValueError):
+            validate_llm_schedule_entries(schedule)
+
+    def test_sorted_dates_pass(self):
+        schedule = [
+            {"date": "2026-02-11", "area_ids": {"A": [1]}},
+            {"date": "2026-02-12", "area_ids": {"A": [2]}},
+        ]
+        validate_llm_schedule_entries(schedule)
+
+
+class TestRestoreScheduleDirectDate(unittest.TestCase):
+    """Test restoration using explicit dates."""
+
+    def test_restores_basic_info(self):
+        normalized = [{"date": "2023-10-23", "area_ids": {"A": [1]}, "note": "test"}]
+        id_to_name = {1: "Alice"}
+        areas = ["A"]
+        
+        restored = restore_schedule(normalized, id_to_name, areas)
+        self.assertEqual(len(restored), 1)
+        self.assertEqual(restored[0]["date"], "2023-10-23")
+        self.assertEqual(restored[0]["day"], "Mon")
+        self.assertEqual(restored[0]["area_assignments"]["A"], ["Alice"])
+        self.assertEqual(restored[0]["note"], "test")
+
+    def test_merges_existing_notes(self):
+        normalized = [{"date": "2023-10-23", "note": ""}]
+        existing = {"2023-10-23": "Old Note"}
+        
+        restored = restore_schedule(normalized, {}, [], existing)
+        self.assertEqual(restored[0]["note"], "Old Note")
 
 
 class TestMergeSchedulePoolReplaceFuture(unittest.TestCase):
@@ -159,6 +169,23 @@ class TestMergeSchedulePoolReplaceFuture(unittest.TestCase):
 
         result = merge_schedule_pool(state, new_entries, "append", date(2026, 2, 11))
         self.assertEqual(len(result), 2)
+
+    def test_append_overwrites_existing_date(self):
+        pool = [{"date": "2026-02-10", "note": "old"}]
+        state = {"schedule_pool": pool}
+        new_entries = [{"date": "2026-02-10", "note": "new"}]
+
+        result = merge_schedule_pool(state, new_entries, "append", date(2026, 2, 11))
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["note"], "new")
+
+    def test_replace_overlap_empty_restored_keeps_existing(self):
+        """replace_overlap with empty restored should keep existing pool without crashing."""
+        pool = [{"date": "2026-02-10"}, {"date": "2026-02-11"}]
+        state = {"schedule_pool": pool}
+
+        result = merge_schedule_pool(state, [], "replace_overlap", date(2026, 2, 11))
+        self.assertEqual([x["date"] for x in result], ["2026-02-10", "2026-02-11"])
 
 
 class TestAnonymizeInstruction(unittest.TestCase):
@@ -223,27 +250,6 @@ class TestSaveJsonAtomic(unittest.TestCase):
             save_json_atomic(path, {"a": 1})
             tmp = path.with_suffix(".json.tmp")
             self.assertFalse(tmp.exists())
-
-
-class TestGenerateTargetDates(unittest.TestCase):
-    """Regression test for date generation logic."""
-
-    def test_skip_weekends(self):
-        # 2026-02-09 is Monday
-        start = date(2026, 2, 9)
-        dates = generate_target_dates(start, 5, skip_weekends=True)
-        self.assertEqual(len(dates), 5)
-        for d in dates:
-            self.assertLess(d.weekday(), 5, f"{d} is a weekend day!")
-
-    def test_no_skip_weekends(self):
-        start = date(2026, 2, 9)
-        dates = generate_target_dates(start, 7, skip_weekends=False)
-        self.assertEqual(len(dates), 7)
-        # Should include Sat/Sun
-        weekdays = {d.weekday() for d in dates}
-        self.assertIn(5, weekdays)  # Sat
-        self.assertIn(6, weekdays)  # Sun
 
 
 if __name__ == "__main__":

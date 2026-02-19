@@ -214,13 +214,6 @@ public partial class DutyMainSettingsPage : SettingsPageBase
         var previousEnableMcp = current.EnableMcp;
         var previousEnableWebDebugLayer = current.EnableWebViewDebugLayer;
 
-        if (!TryParseBoundedInt(CoverageDaysBox.Text, 1, 30, out var coverageDays))
-        {
-            UpdateConfigTracking("校验失败");
-            SetStatus("生成天数必须是 1-30 的整数。", Brushes.Orange);
-            return false;
-        }
-
         var dutyReminderEnabled = DutyReminderEnabledSwitch.IsChecked == true;
         var dutyReminderTimes = new List<string> { GetSelectedDutyReminderTime() };
 
@@ -241,10 +234,8 @@ public partial class DutyMainSettingsPage : SettingsPageBase
                 autoRunDay: GetSelectedAutoRunDay(),
                 autoRunTime: autoRunTime,
                 perDay: perDay,
-                skipWeekends: SkipWeekendsSwitch.IsChecked == true,
                 dutyRule: DutyRuleBox.Text ?? string.Empty,
                 startFromToday: StartFromTodaySwitch.IsChecked == true,
-                autoRunCoverageDays: coverageDays,
                 componentRefreshTime: componentRefreshTime,
                 // 普通用户页不提供 Python 路径编辑。
                 pythonPath: current.PythonPath,
@@ -448,8 +439,6 @@ public partial class DutyMainSettingsPage : SettingsPageBase
             EnableAutoRunSwitch.IsChecked = config.EnableAutoRun;
             AutoRunDayComboBox.SelectedIndex = GetAutoRunDayIndex(config.AutoRunDay);
             SetAutoRunTimeSelection(config.AutoRunTime);
-            CoverageDaysBox.Text = config.AutoRunCoverageDays.ToString(CultureInfo.InvariantCulture);
-            SkipWeekendsSwitch.IsChecked = config.SkipWeekends;
             StartFromTodaySwitch.IsChecked = config.StartFromToday;
             AutoRunTriggerNotificationSwitch.IsChecked = config.AutoRunTriggerNotificationEnabled;
             DutyReminderEnabledSwitch.IsChecked = config.DutyReminderEnabled;

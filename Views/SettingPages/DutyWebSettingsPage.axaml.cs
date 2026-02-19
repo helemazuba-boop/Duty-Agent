@@ -443,10 +443,8 @@ public partial class DutyWebSettingsPage : SettingsPageBase
         var autoRunDay = config.AutoRunDay ?? current.AutoRunDay;
         var autoRunTime = config.AutoRunTime ?? current.AutoRunTime;
         var perDay = config.PerDay ?? current.PerDay;
-        var skipWeekends = config.SkipWeekends ?? current.SkipWeekends;
         var dutyRule = config.DutyRule ?? current.DutyRule;
         var startFromToday = config.StartFromToday ?? current.StartFromToday;
-        var coverageDays = config.AutoRunCoverageDays ?? current.AutoRunCoverageDays;
         var autoRunTriggerNotificationEnabled =
             config.AutoRunTriggerNotificationEnabled ?? current.AutoRunTriggerNotificationEnabled;
         var componentRefreshTime = config.ComponentRefreshTime ?? current.ComponentRefreshTime;
@@ -464,10 +462,8 @@ public partial class DutyWebSettingsPage : SettingsPageBase
             autoRunDay: autoRunDay,
             autoRunTime: autoRunTime,
             perDay: perDay,
-            skipWeekends: skipWeekends,
             dutyRule: dutyRule,
             startFromToday: startFromToday,
-            autoRunCoverageDays: coverageDays,
             componentRefreshTime: componentRefreshTime,
             pythonPath: pythonPath,
             notificationTemplates: notificationTemplates,
@@ -500,9 +496,7 @@ public partial class DutyWebSettingsPage : SettingsPageBase
                 EnableWebViewDebugLayer = config.EnableWebViewDebugLayer,
                 AutoRunDay = config.AutoRunDay,
                 AutoRunTime = config.AutoRunTime,
-                AutoRunCoverageDays = config.AutoRunCoverageDays,
                 PerDay = config.PerDay,
-                SkipWeekends = config.SkipWeekends,
                 DutyRule = config.DutyRule,
                 StartFromToday = config.StartFromToday,
                 AutoRunTriggerNotificationEnabled = config.AutoRunTriggerNotificationEnabled,
@@ -847,14 +841,8 @@ public partial class DutyWebSettingsPage : SettingsPageBase
         [JsonPropertyName("auto_run_time")]
         public string? AutoRunTime { get; set; }
 
-        [JsonPropertyName("auto_run_coverage_days")]
-        public int? AutoRunCoverageDays { get; set; }
-
         [JsonPropertyName("per_day")]
         public int? PerDay { get; set; }
-
-        [JsonPropertyName("skip_weekends")]
-        public bool? SkipWeekends { get; set; }
 
         [JsonPropertyName("duty_rule")]
         public string? DutyRule { get; set; }

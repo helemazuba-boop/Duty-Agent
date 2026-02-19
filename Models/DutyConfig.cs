@@ -72,14 +72,8 @@ public class DutyConfig
     [JsonPropertyName("auto_run_trigger_notification_enabled")]
     public bool AutoRunTriggerNotificationEnabled { get; set; } = true;
 
-    [JsonPropertyName("auto_run_coverage_days")]
-    public int AutoRunCoverageDays { get; set; } = 5;
-
     [JsonPropertyName("per_day")]
     public int PerDay { get; set; } = 2;
-
-    [JsonPropertyName("skip_weekends")]
-    public bool SkipWeekends { get; set; } = true;
 
     [JsonPropertyName("duty_rule")]
     public string DutyRule { get; set; } = string.Empty;

@@ -621,21 +621,12 @@
                 </select></div>
               <div class="row"><label for="cfgTime">自动排班时间</label><input id="cfgTime" type="time" step="60"></div>
             </div>
-            <div class="row three">
-              <div class="row"><label for="cfgDays">生成天数</label><input id="cfgDays" type="number" min="1" max="30">
-              </div>
+            <div class="row two">
               <div class="row"><label for="cfgPer">默认每区域每日人数</label><input id="cfgPer" type="number" min="1" max="30">
               </div>
               <div class="row"><label for="cfgRefresh">组件刷新时间</label><input id="cfgRefresh" type="time" step="60"></div>
             </div>
             <div class="row two">
-              <div class="row">
-                <label for="cfgSkip">跳过周末排班</label>
-                <select id="cfgSkip">
-                  <option value="true">是</option>
-                  <option value="false">否</option>
-                </select>
-              </div>
               <div class="row">
                 <label for="cfgEnableMcp">启用本地 MCP 接口</label>
                 <select id="cfgEnableMcp">
@@ -748,9 +739,7 @@
       enable_mcp: false,
       auto_run_day: 'Monday',
       auto_run_time: '08:00',
-      auto_run_coverage_days: 5,
       per_day: 2,
-      skip_weekends: true,
       duty_rule: '',
       component_refresh_time: '08:00',
       area_names: ['教室', '清洁区'],
@@ -770,6 +759,7 @@
 
     const DEFAULT_STATE = { seed_anchor: '', schedule_pool: [] };
     const DAY = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
+    const MOCK_GENERATION_DAYS = 5;
     const API_KEY_MASK = '***仅运行时***';
     const LEGACY_API_KEY_MASK = '***runtime-only***';
     const HOST_API_KEY_MASK = '********';
@@ -927,9 +917,7 @@
         enable_mcp: bool(raw.enable_mcp, false),
         auto_run_day: String(raw.auto_run_day ?? 'Monday').trim() || 'Monday',
         auto_run_time: String(raw.auto_run_time ?? '08:00').trim() || '08:00',
-        auto_run_coverage_days: clamp(int(raw.auto_run_coverage_days, 5), 1, 30),
         per_day: perDay,
-        skip_weekends: bool(raw.skip_weekends, true),
         duty_rule: String(raw.duty_rule ?? ''),
         component_refresh_time: String(raw.component_refresh_time ?? '08:00').trim() || '08:00',
         area_names: areaNames,
@@ -1260,10 +1248,8 @@
       $('cfgEnableMcp').value = String(c.enable_mcp);
       $('cfgDay').value = c.auto_run_day;
       $('cfgTime').value = c.auto_run_time;
-      $('cfgDays').value = c.auto_run_coverage_days;
       $('cfgPer').value = c.per_day;
       $('cfgRefresh').value = c.component_refresh_time;
-      $('cfgSkip').value = String(c.skip_weekends);
       $('cfgAreaCounts').value = areaCountsToText(c.area_names, c.area_per_day_counts, c.per_day);
       $('cfgRule').value = c.duty_rule;
       renderOptions('areaList', c.area_names);
@@ -1287,9 +1273,7 @@
         enable_mcp: $('cfgEnableMcp').value,
         auto_run_day: $('cfgDay').value,
         auto_run_time: $('cfgTime').value,
-        auto_run_coverage_days: $('cfgDays').value,
         per_day: $('cfgPer').value,
-        skip_weekends: $('cfgSkip').value,
         duty_rule: $('cfgRule').value,
         component_refresh_time: $('cfgRefresh').value,
         area_names: areaNames,
@@ -1431,12 +1415,11 @@
       return today();
     }
 
-    function targetDates(start, days, skipWeekends) {
+    function targetDates(start, days) {
       const out = [];
       let d = new Date(start);
       while (out.length < days) {
-        const w = d.getDay();
-        if (!(skipWeekends && (w === 0 || w === 6))) out.push(new Date(d));
+        out.push(new Date(d));
         d = addDays(d, 1);
       }
       return out;
@@ -1494,7 +1477,7 @@
       }
 
       const start = startDateFromConfig(applyMode);
-      const dates = targetDates(start, days, store.config.skip_weekends);
+      const dates = targetDates(start, days);
       const anchor = lastAssignedName(store.state.schedule_pool, areas, applyMode, start);
       let idx = active.length - 1;
       if (anchor) {
@@ -1574,7 +1557,7 @@
         return;
       }
 
-      const days = clamp(int($('cfgDays').value, store.config.auto_run_coverage_days), 1, 30);
+      const days = MOCK_GENERATION_DAYS;
       log('INFO', '开始执行模拟排班。', { mode: applyMode, days });
       runMockInternal(days, applyMode, instruction, $('runDetail').value.trim() || '模拟执行成功');
     }
@@ -1587,9 +1570,7 @@
           api_key: store.config.api_key,
           base_url: store.config.base_url,
           model: store.config.model,
-          auto_run_coverage_days: store.config.auto_run_coverage_days,
           per_day: store.config.per_day,
-          skip_weekends: store.config.skip_weekends,
           duty_rule: store.config.duty_rule,
           start_from_today: store.config.start_from_today,
           python_path: store.config.python_path,
@@ -1686,7 +1667,6 @@
         status: statusText,
         date: `${dateIso(today())} ${new Date().toTimeString().slice(0, 5)}`,
         areas: list(store.config.area_names, DEFAULT_CONFIG.area_names).join('、'),
-        days: String(store.config.auto_run_coverage_days),
         per_day: String(store.config.per_day),
         mode: applyMode || $('applyMode').value,
         instruction: String(instruction || '').trim().slice(0, 80),
@@ -2035,7 +2015,7 @@
       const configFieldIds = [
         'cfgApi', 'cfgBase', 'cfgModel',
         'cfgAuto', 'cfgEnableMcp', 'cfgDay', 'cfgTime',
-        'cfgDays', 'cfgPer', 'cfgRefresh', 'cfgSkip',
+        'cfgPer', 'cfgRefresh',
         'cfgAreaCounts', 'cfgRule'
       ];
 
