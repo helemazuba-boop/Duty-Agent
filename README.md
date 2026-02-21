@@ -1,26 +1,11 @@
-<<<<<<< HEAD
 <div align="center">
   <img src="icon.png" width="128" alt="Duty-Agent Logo" />
   <h1>🛡️ Duty-Agent</h1>
   <p><em>"Reasoning via LLM, Reliability via Code." —— 面向 ClassIsland 的下一代混合智能排班系统</em></p>
   <p><strong>当前版本: v0.30-Beta</strong></p>
 </div>
-=======
-# Duty-Agent (v2.4)
 
-> 项目理论上的逻辑已经通过，正在真实环境下测试以验证稳定性和优化细节。如果您需要在生产环境中应用，请稍等正式版
-
-`Duty-Agent` 是一个面向 **[ClassIsland](https://github.com/ClassIsland/ClassIsland)** 的下一代智能排班插件。
-
-**为什么选择 AI 排班？**
-
-传统的排班算法（如轮询、随机）是**冷冰冰的数学**——它们不懂“张三下周二要打篮球”，也不懂“李四昨天请假了，今天该补上”。管理员被迫在复杂的 Excel 表格和僵硬的规则配置中挣扎。
-
-**Duty-Agent 是不同的。** 它不仅仅能安排值日，更能像人类管理员一样，理解自然语言指令，处理复杂的请假、调休、补班逻辑，并确保长期的公平性。
->>>>>>> 842344e0f55ab5dca3a412b2a413f07b5e0c5bc3
-
----
-
+> **注意：项目理论上的逻辑已经通过，正在真实环境下测试以验证稳定性和优化细节。如果您需要在生产环境中应用，请稍等正式版。**
 
 `Duty-Agent` 是一个专为 **[ClassIsland](https://github.com/ClassIsland/ClassIsland)** 设计的下一代智能排班插件。它首创了 **“混合智能”** 架构——将大语言模型 (LLM) 的**灵活性**（理解自然语言指令）与 Python 代码的**确定性**（算法兜底、状态持久化）深度融合，彻底解决了传统排班算法（如轮询、随机）僵硬且无法处理复杂人事变动的痛点。
 
