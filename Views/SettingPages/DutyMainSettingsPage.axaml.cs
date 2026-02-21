@@ -31,6 +31,8 @@ public partial class DutyMainSettingsPage : SettingsPageBase
     private readonly DispatcherTimer _configApplyDebounceTimer;
     private bool _hasPendingConfigApply;
     private string _pendingScheduleSelectionDate = string.Empty;
+    private bool _isPopulatingEditor;
+    private bool _isEditorDirty;
 
     public DutyMainSettingsPage()
     {
@@ -249,14 +251,14 @@ public partial class DutyMainSettingsPage : SettingsPageBase
                                   previousEnableWebDebugLayer != requestedEnableWebDebugLayer;
             SetStatus(
                 restartRequired
-                    ? "设置已应用。调试层/MCP 服务变更将在重启 ClassIsland 后生效。"
-                    : "设置已应用。",
+                    ? "✓ 设置已自动保存。调试层/MCP 服务变更将在重启 ClassIsland 后生效。"
+                    : "✓ 设置已自动保存。",
                 Brushes.Green);
 
             UpdateConfigTracking(
                 restartRequired
-                    ? "已应用（重启后调试层/MCP生效）"
-                    : "已应用");
+                    ? "✓ 自动保存（重启后调试层/MCP生效）"
+                    : "✓ 自动保存");
 
             return true;
         }
@@ -285,6 +287,9 @@ public partial class DutyMainSettingsPage : SettingsPageBase
 
         var roster = Service.LoadRosterEntries();
         var nextId = roster.Count == 0 ? 1 : roster.Max(x => x.Id) + 1;
+        
+        var isDuplicate = roster.Any(x => string.Equals(x.Name, name, StringComparison.OrdinalIgnoreCase));
+        
         roster.Add(new RosterEntry
         {
             Id = nextId,
@@ -295,7 +300,15 @@ public partial class DutyMainSettingsPage : SettingsPageBase
 
         NewStudentNameBox.Text = string.Empty;
         LoadData("名单变更");
-        SetStatus($"已添加学生：{name}", Brushes.Green);
+        
+        if (isDuplicate)
+        {
+            SetStatus($"已添加学生：{name} (库中存在同名，已分配新ID)。", Brushes.Orange);
+        }
+        else
+        {
+            SetStatus($"已添加学生：{name}", Brushes.Green);
+        }
     }
 
     private void OnToggleStudentActiveClick(object? sender, RoutedEventArgs e)
@@ -550,6 +563,7 @@ public partial class DutyMainSettingsPage : SettingsPageBase
         var scheduledCount = rows.Count(x => x.NextDutyDate.HasValue);
         var activeCount = rows.Count(x => x.Active);
         RosterSummaryText.Text = $"共 {rows.Count} 名学生（启用 {activeCount} 名），已安排下一次值日 {scheduledCount} 名。";
+        RosterEmptyStatePanel.IsVisible = rows.Count == 0;
     }
 
     private void BuildSchedulePreview(DutyState state)
@@ -595,6 +609,7 @@ public partial class DutyMainSettingsPage : SettingsPageBase
         ScheduleSummaryText.Text = rows.Count == 0
             ? "暂无排班数据。"
             : $"共 {rows.Count} 条排班记录。";
+        ScheduleEmptyStatePanel.IsVisible = rows.Count == 0;
     }
 
     private void OnScheduleSelectionChanged(object? sender, SelectionChangedEventArgs e)
@@ -697,37 +712,65 @@ public partial class DutyMainSettingsPage : SettingsPageBase
 
     private void PopulateScheduleEditorFromSelection()
     {
-        if (ScheduleListBox.SelectedItem is not ScheduleRowItem selected)
+        _isPopulatingEditor = true;
+        try
         {
-            SelectedScheduleMetaText.Text = "请先在上方列表选择一条排班记录。";
-            ScheduleDateEditorBox.Text = DateTime.Today.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
-            ScheduleDayEditorComboBox.SelectedItem = ToChineseWeekday(DateTime.Today.DayOfWeek);
-            ScheduleAssignmentsEditorBox.Text = string.Empty;
-            ScheduleNoteEditorBox.Text = string.Empty;
-            SaveScheduleEditBtn.IsEnabled = false;
-            return;
-        }
+            if (ScheduleListBox.SelectedItem is not ScheduleRowItem selected)
+            {
+                SelectedScheduleMetaText.Text = "请先在上方列表选择一条排班记录。";
+                ScheduleDateEditorBox.Text = DateTime.Today.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+                ScheduleDayEditorComboBox.SelectedItem = ToChineseWeekday(DateTime.Today.DayOfWeek);
+                ScheduleAssignmentsEditorBox.Text = string.Empty;
+                ScheduleNoteEditorBox.Text = string.Empty;
+                SaveScheduleEditBtn.IsEnabled = false;
+                return;
+            }
 
-        var state = Service.LoadState();
-        var item = state.SchedulePool.LastOrDefault(x => string.Equals(x.Date, selected.Date, StringComparison.Ordinal));
-        if (item == null)
+            var state = Service.LoadState();
+            var item = state.SchedulePool.LastOrDefault(x => string.Equals(x.Date, selected.Date, StringComparison.Ordinal));
+            if (item == null)
+            {
+                SelectedScheduleMetaText.Text = "当前记录不存在，可能已被刷新。";
+                ScheduleDateEditorBox.Text = string.Empty;
+                ScheduleDayEditorComboBox.SelectedItem = null;
+                ScheduleAssignmentsEditorBox.Text = string.Empty;
+                ScheduleNoteEditorBox.Text = string.Empty;
+                SaveScheduleEditBtn.IsEnabled = false;
+                return;
+            }
+
+            var assignments = Service.GetAreaAssignments(item);
+            ScheduleDateEditorBox.Text = (item.Date ?? string.Empty).Trim();
+            ScheduleDayEditorComboBox.SelectedItem = ResolveScheduleDaySelection(item.Day, item.Date);
+            ScheduleAssignmentsEditorBox.Text = FormatAreaAssignmentsForEditor(assignments);
+            ScheduleNoteEditorBox.Text = (item.Note ?? string.Empty).Trim();
+            SelectedScheduleMetaText.Text = $"当前编辑：{selected.Date} {selected.Day}";
+            SaveScheduleEditBtn.IsEnabled = true;
+        }
+        finally
         {
-            SelectedScheduleMetaText.Text = "当前记录不存在，可能已被刷新。";
-            ScheduleDateEditorBox.Text = string.Empty;
-            ScheduleDayEditorComboBox.SelectedItem = null;
-            ScheduleAssignmentsEditorBox.Text = string.Empty;
-            ScheduleNoteEditorBox.Text = string.Empty;
-            SaveScheduleEditBtn.IsEnabled = false;
-            return;
+            _isEditorDirty = false;
+            ScheduleListBox.IsEnabled = true;
+            _isPopulatingEditor = false;
         }
+    }
 
-        var assignments = Service.GetAreaAssignments(item);
-        ScheduleDateEditorBox.Text = (item.Date ?? string.Empty).Trim();
-        ScheduleDayEditorComboBox.SelectedItem = ResolveScheduleDaySelection(item.Day, item.Date);
-        ScheduleAssignmentsEditorBox.Text = FormatAreaAssignmentsForEditor(assignments);
-        ScheduleNoteEditorBox.Text = (item.Note ?? string.Empty).Trim();
-        SelectedScheduleMetaText.Text = $"当前编辑：{selected.Date} {selected.Day}";
-        SaveScheduleEditBtn.IsEnabled = true;
+    private void OnScheduleEditorTextChanged(object? sender, Avalonia.Controls.TextChangedEventArgs e)
+    {
+        HandleScheduleEditorChanged();
+    }
+
+    private void OnScheduleEditorSelectionChanged(object? sender, Avalonia.Controls.SelectionChangedEventArgs e)
+    {
+        HandleScheduleEditorChanged();
+    }
+
+    private void HandleScheduleEditorChanged()
+    {
+        if (_isPopulatingEditor) return;
+        _isEditorDirty = true;
+        ScheduleListBox.IsEnabled = false;
+        SelectedScheduleMetaText.Text = "（您有未保存的修改。若想切换日期，请先保存或点击【重新载入】）";
     }
 
     private static bool TryParseScheduleDate(string? rawDate, out DateTime date)
@@ -896,7 +939,7 @@ public partial class DutyMainSettingsPage : SettingsPageBase
             }
 
             var studentsText = line[(colonIndex + 1)..].Trim();
-            var students = studentsText.Split([',', '\uFF0C', '\u3001', '/', '|'], StringSplitOptions.RemoveEmptyEntries)
+            var students = studentsText.Split([',', '\uFF0C', '\u3001', '/', '|', ' ', '\t', '\u200B'], StringSplitOptions.RemoveEmptyEntries)
                 .Select(x => x.Trim())
                 .Where(x => x.Length > 0)
                 .Distinct(StringComparer.Ordinal)

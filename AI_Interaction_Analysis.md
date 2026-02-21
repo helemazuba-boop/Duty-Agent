@@ -1,8 +1,7 @@
-# Duty-Agent 架构与 AI 交互深度分析报告
+# Duty-Agent 架构与 AI 交互分析报告
 
 > **文档版本**: v2.5
 > **最后更新**: 2026-02-19
-> **核心理念**: "Fairness is King" (公平至上)
 
 ---
 
@@ -16,23 +15,23 @@
 
 ```mermaid
 graph TD
-    User[用户/定时任务] -->|触发| Host[C# Host (WPF/ClassIsland)]
+    User["用户/定时任务"] -->|触发| Host["C# Host (WPF/ClassIsland)"]
     
     subgraph "C# Host Domain"
-        Host -->|IO 重定向| Stdin[标准输入管道]
-        Host -->|读取| Stdout[标准输出管道]
-        Host -->|UI 渲染| WebView2[设置页]
-        Host -->|加密存储| ConfigFile[config.json]
+        Host -->|IO 重定向| Stdin["标准输入管道"]
+        Host -->|读取| Stdout["标准输出管道"]
+        Host -->|UI 渲染| WebView2["设置页"]
+        Host -->|加密存储| ConfigFile["config.json"]
     end
 
     subgraph "Python Agent Domain"
-        Stdin -->|API Key| CorePy[core.py (The Brain)]
-        CorePy -->|构建| Prompt[Prompt Engineering]
-        Prompt -->|HTTPS| LLM[大语言模型 API]
+        Stdin -->|API Key| CorePy["core.py (The Brain)"]
+        CorePy -->|构建| Prompt["Prompt Engineering"]
+        Prompt -->|HTTPS| LLM["大语言模型 API"]
         LLM -->|JSON| CorePy
-        CorePy -->|兜底算法| Roster[roster.csv]
-        CorePy -->|持久化| State[state.json]
-        CorePy -->|结果| IpcResult[ipc_result.json]
+        CorePy -->|兜底算法| Roster["roster.csv"]
+        CorePy -->|持久化| State["state.json"]
+        CorePy -->|结果| IpcResult["ipc_result.json"]
     end
 
     IpcResult -->|读取| Host
@@ -64,54 +63,25 @@ Duty-Agent 并不试图取代 Excel，而是为了解决 Excel 无法解决的�
 *   **Duty-Agent 方案**: 拥有完整的记账系统。张三的缺席会被记录为 `Debt`（债务）。在下次排班时，系统会**强制**优先安排张三还债。即便软件重启，这份记忆也不会丢失。
 
 ### 2.2 自然语言驱动 (Natural Language Driven)
-*   **交互革命**: 抛弃复杂的 UI 表单。
+*   **交互革命**: 抛弃复杂的 UI 表单，解决传统算法完全无法解决的复杂情况。
 *   **指令示例**:
     > *"下周一只要 1 个人，因为大扫除。另外张三要训练，别排他。但如果是周五，就还是 2 个人。"*
     AI 能自动解析其中的：日期逻辑、人数变量、软冲突（Training -> Skip & Debt）。
 
 ### 2.3 隐私与安全 (Privacy & Security First)
 *   **匿名化 (Anonymization)**:
+    *   所有名字都会分配一个ID，在名单被发送到云端处理时，出现的只有毫无意义的ID区间，您的花名册绝对不会以明文形式出现在LLM服务端的日志中。
     *   发送前: `{"instruction": "ID 15 is sick"}` (隐去姓名)
     *   接收后: `ID 15` -> `张三` (本地还原)
-    *   **承诺**: 您的花名册永远不会以明文形式出现在 LLM 服务端的日志中。
 *   **企业级加密**:
-    API Key 使用 AES-256 加密，并与**物理网卡 MAC 地址**绑定。即使配置文件被拷贝到另一台电脑，也无法解密使用。
+    API Key 使用 AES-256 加密，并与**物理网卡 MAC 地址**绑定。即黑客把配置文件被拷贝到另一台电脑，也无法解密使用。
 
 ---
 
 ## 3. 关键特性与技术实现 (Technical Deep Dive)
 
-### 3.1 结构化债务追踪 (Structured Debt Enforcement) —— **v2.5**
 
-这是系统的“安全气囊”，彻底解决了 LLM “偶尔眼花”的问题。
-
-*   **Prompt 注入**: User Prompt 包含显式指令：
-    `CURRENT DEBT LIST (PRIORITY HIGH): [12, 15]`
-    告诉 AI：“这几个人是债主，必须先排。”
-*   **Force Insert (强制插入)**: Python 代码逻辑。
-    *   在获取 AI 结果后，Python 运行 `force_insert_debts`。
-    *   **逻辑**: 如果 AI 没有安排债主，Python 会**暴力**将债主 ID 插入到排班列表的最前端。
-*   **Self-Healing (自愈账本)**:
-    每次运行结束，Python 自动重新计算：
-    `state.debt_list = (旧债务 + 新增债务) - 实际排班人数`
-    确保账本永远是平的。
-
-### 3.2 双队列机制 (The Two-Queue Protocol)
-
-这是解决“连续 ID 排班”核心数学难题的 Prompt 算法：
-
-| 队列 | 定义 | 行为逻辑 |
-| :--- | :--- | :--- |
-| **Debt Queue** | 因故（请假/冲突）暂缓值日的人 | **Priority 0** (最高优先级)。必须先清空此队列。 |
-| **Main Pointer** | 全局轮询进度 | **Monotonic** (单调递增)。只进不退，永远指向“下一个新人”。 |
-
-**运行逻辑**:
-1.  **Check Debt**: 队列有人吗？有 -> **优先排**。
-2.  **Move Pointer**: 既然 Debt 处理完了（或空的），移动 Main Pointer 取新人。
-    *   新人请假？ -> **加入 Debt**，指针继续前移。
-    *   新人可用？ -> **排班**。
-
-### 3.3 提示词工程 (Prompt Engineering)
+### 3.1 提示词工程 (Prompt Engineering)
 
 我们精心设计了 3-Part Prompt 结构：
 
@@ -136,15 +106,49 @@ PREVIOUS MEMORY: "ID 2 skipped due to training."
 Instruction: "排明天"
 ```
 
-### 3.4 状态管理 (State Persistence)
+#### C. notes
+AI上一次留下的自然语言记忆将会被注入提示词，解决了长期运营的问题
+
+### 3.2 状态管理 (State Persistence)
 
 所有记忆存储在 `Assets_Duty/data/state.json`。
 
 *   `schedule_pool`: 历史排班记录（用于去重、回显）。
 *   `next_run_note`: AI 的自然语言记忆。
-*   `debt_list`: **Python 维护的债务列表** (v2.5)。
+*   `debt_list`: **Python 维护的债务列表** 。
 
-**原子写入 (Atomic Writes)**: 使用 `write -> fsync -> rename` 策略，防止断电导致记忆文件损坏。
+**原子写入**: 使用 `write -> fsync -> rename` 策略，防止断电导致记忆文件损坏。
+
+### 3.3 结构化债务追踪 (Structured Debt Enforcement) —— **v2.5**
+
+这是系统的“安全气囊”，彻底解决了 LLM “偶尔眼花”的问题。
+
+*   **Prompt 注入**: User Prompt 包含显式指令：
+    `CURRENT DEBT LIST (PRIORITY HIGH): [12, 15]`
+    告诉 AI：“这几个人是债主，必须先排。”
+*   **Force Insert (强制插入)**: Python 代码逻辑。
+    *   在获取 AI 结果后，Python 运行 `force_insert_debts`。
+    *   **逻辑**: 如果 AI 没有安排债主，Python 会**暴力**将债主 ID 插入到排班列表的最前端。
+*   **Self-Healing (自愈账本)**:
+    每次运行结束，Python 自动重新计算：
+    `state.debt_list = (旧债务 + 新增债务) - 实际排班人数`
+    确保账本永远是平的。
+
+### 3.4 双队列机制 (The Two-Queue Protocol)
+
+这是解决“连续 ID 排班”核心数学难题的 Prompt 算法：
+
+| 队列 | 定义 | 行为逻辑 |
+| :--- | :--- | :--- |
+| **Debt Queue** | 因故（请假/冲突）暂缓值日的人 | **Priority 0** (最高优先级)。必须先清空此队列。 |
+| **Main Pointer** | 全局轮询进度 | **Monotonic** (单调递增)。只进不退，永远指向“下一个新人”。 |
+
+**运行逻辑**:
+1.  **Check Debt**: 队列有人吗？有 -> **优先排**。
+2.  **Move Pointer**: 既然 Debt 处理完了（或空的），移动 Main Pointer 取新人。
+    *   新人请假？ -> **加入 Debt**，指针继续前移。
+    *   新人可用？ -> **排班**。
+
 
 ---
 
@@ -152,9 +156,9 @@ Instruction: "排明天"
 
 | 版本 | 核心变革 | 解决的问题 |
 | :--- | :--- | :--- |
-| **v1.0** | 传统填空 | C# 算死日期，Python 只负责填人名。僵硬，无法动态调整。 |
+| **v1.0** | 简易填空 | C# 算死日期，Python 只负责联系 AI 填人名。僵硬，无法动态调整。 |
 | **v2.0** | 显式日期驱动 | AI 自主决定排哪几天。支持了非连续排班 (e.g. "下周一三五")。 |
-| **v2.3** | Two-Queue | 发明双队列算法。解决了“插队会导致全班顺序乱套”的难题。 |
+| **v2.3** | Two-Queue | 引入双队列算法。解决了“插队会导致全班顺序乱套”的难题。 |
 | **v2.4** | AI Memory | 引入 `state.json`。重启软件不再导致 AI 失忆。 |
 | **v2.5** | **Structured Debt** | 引入 `Force Insert`。从“信任 AI”转向“AI 推理 + 代码保障”，实现了 100% 的公平性兜底。 |
 
