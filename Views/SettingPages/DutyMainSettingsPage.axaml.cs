@@ -105,6 +105,9 @@ public partial class DutyMainSettingsPage : SettingsPageBase
         try
         {
             RunAgentBtn.IsEnabled = false;
+            ReasoningBoardContainer.IsVisible = true;
+            ReasoningBoardText.Text = string.Empty;
+            ReasoningBoardContainer.BorderBrush = new Avalonia.Media.SolidColorBrush(Avalonia.Media.Color.Parse("#20000000")); // Subtle default border
             UpdateRunTracking("执行中");
             SetStatus(
                 useDefaultInstruction
@@ -112,9 +115,39 @@ public partial class DutyMainSettingsPage : SettingsPageBase
                     : "正在执行排班（覆盖模式）...",
                 Brushes.Gray);
 
-            var success = await Task.Run(() => Service.RunCoreAgent(instruction, applyMode));
-            if (success)
+            var result = await Task.Run(() => Service.RunCoreAgentWithMessage(
+                instruction,
+                applyMode,
+                progress: progress =>
+                {
+                    var phase = (progress.Phase ?? string.Empty).Trim().ToLowerInvariant();
+                    if (phase.Length == 0)
+                    {
+                        return;
+                    }
+
+                    if (phase == "stream_chunk")
+                    {
+                        Dispatcher.UIThread.Post(() => 
+                        {
+                            SetStatus("AI 正在流式返回中...", Brushes.Gray);
+                            ReasoningBoardText.Text += progress.StreamChunk;
+                            ReasoningBoardScrollViewer.ScrollToEnd();
+                        });
+                        return;
+                    }
+
+                    var message = (progress.Message ?? string.Empty).Trim();
+                    if (message.Length == 0)
+                    {
+                        return;
+                    }
+
+                    Dispatcher.UIThread.Post(() => SetStatus(message, Brushes.Gray));
+                }));
+            if (result.Success)
             {
+                ReasoningBoardContainer.BorderBrush = Brushes.Green;
                 LoadData("排班完成");
                 UpdateRunTracking("执行成功");
                 SetStatus(
@@ -125,12 +158,15 @@ public partial class DutyMainSettingsPage : SettingsPageBase
             }
             else
             {
+                ReasoningBoardContainer.BorderBrush = Brushes.Red;
                 UpdateRunTracking("执行失败");
-                SetStatus("排班执行失败。", Brushes.Red);
+                var message = string.IsNullOrWhiteSpace(result.Message) ? "排班执行失败。" : $"排班执行失败：{result.Message}";
+                SetStatus(message, Brushes.Red);
             }
         }
         catch (Exception ex)
         {
+            ReasoningBoardContainer.BorderBrush = Brushes.Red;
             UpdateRunTracking("执行异常");
             SetStatus($"执行失败：{ex.Message}", Brushes.Red);
         }

@@ -38,6 +38,7 @@
                 </StackPanel>
             </Border>
 
+
             <Border Background="{DynamicResource CardBackgroundFillColorDefaultBrush}"
                     BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}"
                     BorderThickness="1"
@@ -63,9 +64,254 @@
                             <TextBlock Text="开始排班（覆盖）" VerticalAlignment="Center" />
                         </StackPanel>
                     </Button>
+
+                    <!-- [新] AI 思考黑板 -->
+                    <Border x:Name="ReasoningBoardContainer" 
+                            IsVisible="False"
+                            Background="#08000000" 
+                            BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}"
+                            BorderThickness="1"
+                            CornerRadius="6"
+                            Margin="0,4,0,0">
+                        <ScrollViewer x:Name="ReasoningBoardScrollViewer" MaxHeight="250" Padding="12">
+                            <TextBlock x:Name="ReasoningBoardText"
+                                       TextWrapping="Wrap"
+                                       FontFamily="Consolas, Courier New, monospace"
+                                       FontSize="13"
+                                       Opacity="0.85" />
+                        </ScrollViewer>
+                    </Border>
                 </StackPanel>
             </Border>
 
+
+            <Border Background="{DynamicResource CardBackgroundFillColorDefaultBrush}"
+                    BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}"
+                    BorderThickness="1"
+                    CornerRadius="8"
+                    Padding="16">
+                <StackPanel Spacing="10">
+                    <StackPanel Orientation="Horizontal" Spacing="8">
+                        <TextBlock FontFamily="Segoe Fluent Icons" Text="&#xE8A5;" FontSize="16" />
+                        <TextBlock Text="排班预览" FontSize="16" FontWeight="SemiBold" />
+                    </StackPanel>
+                    <Button x:Name="RefreshDataBtn"
+                            Content="刷新预览"
+                            HorizontalAlignment="Left"
+                            Click="OnRefreshDataClick" />
+
+                    <Border BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}" BorderThickness="1" CornerRadius="8">
+                        <Grid RowDefinitions="Auto,*">
+                            <Border BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}" BorderThickness="0,0,0,1" Padding="10,8">
+                                <Grid ColumnDefinitions="120,80,2.4*,1.4*" ColumnSpacing="8">
+                                    <TextBlock Grid.Column="0" Text="日期" FontWeight="SemiBold" />
+                                    <TextBlock Grid.Column="1" Text="星期" FontWeight="SemiBold" />
+                                    <TextBlock Grid.Column="2" Text="值日安排" FontWeight="SemiBold" />
+                                    <TextBlock Grid.Column="3" Text="备注" FontWeight="SemiBold" />
+                                </Grid>
+                            </Border>
+                            <ListBox x:Name="ScheduleListBox"
+                                      Grid.Row="1"
+                                      MinHeight="220"
+                                      MaxHeight="320"
+                                      SelectionChanged="OnScheduleSelectionChanged">
+                                <ListBox.ItemTemplate>
+                                    <DataTemplate>
+                                        <Border Padding="10,8" BorderBrush="#14000000" BorderThickness="0,0,0,1">
+                                            <Grid ColumnDefinitions="120,80,2.4*,1.4*" ColumnSpacing="8">
+                                                <TextBlock Grid.Column="0"
+                                                           Text="{Binding Date}"
+                                                           VerticalAlignment="Center" />
+                                                <TextBlock Grid.Column="1"
+                                                           Text="{Binding Day}"
+                                                           VerticalAlignment="Center" />
+                                                <TextBlock Grid.Column="2"
+                                                           Text="{Binding AssignmentSummary}"
+                                                           VerticalAlignment="Center"
+                                                            TextWrapping="Wrap" />
+                                                <TextBlock Grid.Column="3"
+                                                           Text="{Binding Note}"
+                                                           VerticalAlignment="Center"
+                                                           TextWrapping="Wrap" />
+                                            </Grid>
+                                        </Border>
+                                    </DataTemplate>
+                                </ListBox.ItemTemplate>
+                            </ListBox>
+                            <StackPanel x:Name="ScheduleEmptyStatePanel" Grid.Row="1" VerticalAlignment="Center" HorizontalAlignment="Center" Spacing="8" IsVisible="False">
+                                <TextBlock FontFamily="Segoe Fluent Icons" Text="&#xE8A5;" FontSize="48" Opacity="0.4" HorizontalAlignment="Center" />
+                                <TextBlock Text="暂无排班预期数据" Opacity="0.6" FontSize="14" FontWeight="SemiBold" HorizontalAlignment="Center" />
+                                <TextBlock Text="点击上方【刷新预览】或【开始排班】生成" Opacity="0.5" FontSize="12" HorizontalAlignment="Center" />
+                            </StackPanel>
+                        </Grid>
+                    </Border>
+                    <!-- 极简排班编辑器 -->
+                    <Border Background="#08000000" CornerRadius="4" Padding="12,8" Margin="0,2,0,0">
+                        <StackPanel Spacing="8">
+                            <!-- 标题与状态行 -->
+                            <Grid ColumnDefinitions="Auto,*">
+                                <TextBlock Grid.Column="0" Text="编辑排班详情" FontWeight="SemiBold" VerticalAlignment="Center" />
+                                <TextBlock x:Name="SelectedScheduleMetaText" Grid.Column="1" Text="请先在上方列表选择记录" Opacity="0.6" FontSize="12" Margin="12,0,0,0" VerticalAlignment="Center" />
+                            </Grid>
+
+                            <!-- 日期与星期 -->
+                            <Grid ColumnDefinitions="Auto,150,Auto,100" ColumnSpacing="8">
+                                <TextBlock Grid.Column="0" Text="日期" VerticalAlignment="Center" Opacity="0.8" />
+                                <TextBox x:Name="ScheduleDateEditorBox" Grid.Column="1" TextChanged="OnScheduleEditorTextChanged" Watermark="yyyy-MM-dd" />
+                                <TextBlock Grid.Column="2" Text="星期" VerticalAlignment="Center" Opacity="0.8" />
+                                <ComboBox x:Name="ScheduleDayEditorComboBox" Grid.Column="3" SelectionChanged="OnScheduleEditorSelectionChanged" HorizontalAlignment="Stretch" />
+                            </Grid>
+
+                            <!-- 安排与备注 -->
+                            <Grid ColumnDefinitions="Auto,*" ColumnSpacing="8">
+                                <StackPanel Grid.Column="0" Spacing="4" Margin="0,6,0,0">
+                                    <TextBlock Text="安排" Opacity="0.8" />
+                                    <TextBlock Text="区域: 姓名" FontSize="12" Opacity="0.5" />
+                                </StackPanel>
+                                <TextBox x:Name="ScheduleAssignmentsEditorBox" Grid.Column="1" TextChanged="OnScheduleEditorTextChanged" Height="64" AcceptsReturn="True" TextWrapping="Wrap" />
+                            </Grid>
+
+                            <Grid ColumnDefinitions="Auto,*" ColumnSpacing="8">
+                                <TextBlock Grid.Column="0" Text="备注" VerticalAlignment="Center" Opacity="0.8" Margin="0,0,24,0" />
+                                <TextBox x:Name="ScheduleNoteEditorBox" Grid.Column="1" TextChanged="OnScheduleEditorTextChanged" TextWrapping="Wrap" Watermark="附加说明..." />
+                            </Grid>
+
+                            <!-- 操作按钮区 -->
+                            <StackPanel Orientation="Horizontal" Spacing="8" HorizontalAlignment="Right" Margin="0,4,0,0">
+                                <Button x:Name="CreateScheduleEditBtn" Content="新建记录" Click="OnCreateScheduleEditClick" />
+                                <Button x:Name="ReloadScheduleEditBtn" Content="放弃更改" Click="OnReloadScheduleEditClick" />
+                                <Button x:Name="SaveScheduleEditBtn" Content="保存编辑" Classes="accent" IsEnabled="False" Click="OnSaveScheduleEditClick" />
+                            </StackPanel>
+                        </StackPanel>
+                    </Border>
+                    <TextBlock x:Name="ScheduleSummaryText"
+                               Text="暂无排班数据。"
+                               Opacity="0.75" />
+                </StackPanel>
+            </Border>
+        
+            <Expander HorizontalAlignment="Stretch" Padding="16">
+                <Expander.Header>
+                    <StackPanel Orientation="Horizontal" Spacing="8">
+                        <TextBlock FontFamily="Segoe Fluent Icons" Text="&#xE125;" FontSize="16" VerticalAlignment="Center" />
+                        <TextBlock Text="花名册管理" FontSize="16" FontWeight="SemiBold" VerticalAlignment="Center" />
+                    </StackPanel>
+                </Expander.Header>
+                <Expander.Content>
+                    <StackPanel Spacing="10" Margin="0,8,0,0">
+            <Border Background="{DynamicResource CardBackgroundFillColorDefaultBrush}"
+                    BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}"
+                    BorderThickness="1"
+                    CornerRadius="8"
+                    Padding="16">
+                <StackPanel Spacing="10">
+                    <StackPanel Orientation="Horizontal" Spacing="8">
+                        <TextBlock FontFamily="Segoe Fluent Icons" Text="&#xE716;" FontSize="16" />
+                        <TextBlock Text="学生名单" FontSize="16" FontWeight="SemiBold" />
+                    </StackPanel>
+
+                    <Grid ColumnDefinitions="Auto,*,Auto">
+                        <StackPanel Grid.Column="0" Orientation="Horizontal" Spacing="8">
+                            <TextBox x:Name="NewStudentNameBox"
+                                     Width="200"
+                                     Watermark="输入学生姓名..." />
+                            <Button x:Name="AddStudentBtn"
+                                    Content="添加"
+                                    Classes="accent"
+                                    Click="OnAddStudentClick" />
+                        </StackPanel>
+                        <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="8">
+                            <Button x:Name="ToggleStudentActiveBtn"
+                                    Content="切换状态"
+                                    IsEnabled="False"
+                                    Click="OnToggleStudentActiveClick" />
+                            <Button x:Name="DeleteStudentBtn"
+                                    ToolTip.Tip="删除选中"
+                                    Click="OnDeleteStudentClick">
+                                <TextBlock FontFamily="Segoe Fluent Icons" Text="&#xE74D;" Foreground="#E81123" />
+                            </Button>
+                            <Button x:Name="ImportRosterFromFileBtn"
+                                    Content="导入..."
+                                    Click="OnImportRosterFromFileClick" />
+                            <Button x:Name="OpenRosterBtn"
+                                    ToolTip.Tip="打开源文件"
+                                    Click="OnOpenRosterClick">
+                                <TextBlock FontFamily="Segoe Fluent Icons" Text="&#xE8E5;" />
+                            </Button>
+                        </StackPanel>
+                    </Grid>
+
+                    <Border BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}" BorderThickness="1" CornerRadius="8">
+                        <Grid RowDefinitions="Auto,*">
+                            <Border BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}" BorderThickness="0,0,0,1" Padding="10,8">
+                                <Grid ColumnDefinitions="64,2*,1.8*,84,84" ColumnSpacing="8">
+                                    <TextBlock Grid.Column="0" Text="ID" FontWeight="SemiBold" />
+                                    <TextBlock Grid.Column="1" Text="姓名" FontWeight="SemiBold" />
+                                    <TextBlock Grid.Column="2" Text="下一次值日" FontWeight="SemiBold" />
+                                    <TextBlock Grid.Column="3" Text="次数" FontWeight="SemiBold" />
+                                    <TextBlock Grid.Column="4" Text="状态" FontWeight="SemiBold" />
+                                </Grid>
+                            </Border>
+                            <ListBox x:Name="RosterListBox"
+                                      Grid.Row="1"
+                                      MinHeight="220"
+                                      MaxHeight="300"
+                                      SelectionChanged="OnRosterSelectionChanged">
+                                <ListBox.ItemTemplate>
+                                    <DataTemplate>
+                                        <Border Padding="10,8" BorderBrush="#14000000" BorderThickness="0,0,0,1">
+                                            <Grid ColumnDefinitions="64,2*,1.8*,84,84" ColumnSpacing="8">
+                                                <TextBlock Grid.Column="0"
+                                                           Text="{Binding Id}"
+                                                           VerticalAlignment="Center"
+                                                           Opacity="0.75" />
+                                                <TextBlock Grid.Column="1"
+                                                           Text="{Binding Name}"
+                                                           VerticalAlignment="Center"
+                                                           TextTrimming="CharacterEllipsis" />
+                                                <TextBlock Grid.Column="2"
+                                                           Text="{Binding NextDutyDisplay}"
+                                                           VerticalAlignment="Center"
+                                                           TextTrimming="CharacterEllipsis" />
+                                                <TextBlock Grid.Column="3"
+                                                           Text="{Binding DutyCount}"
+                                                           VerticalAlignment="Center" />
+                                                <TextBlock Grid.Column="4"
+                                                           Text="{Binding ActiveDisplay}"
+                                                           VerticalAlignment="Center" />
+                                            </Grid>
+                                        </Border>
+                                    </DataTemplate>
+                                </ListBox.ItemTemplate>
+                            </ListBox>
+                            <StackPanel x:Name="RosterEmptyStatePanel" Grid.Row="1" VerticalAlignment="Center" HorizontalAlignment="Center" Spacing="8" IsVisible="False">
+                                <TextBlock FontFamily="Segoe Fluent Icons" Text="&#xE716;" FontSize="48" Opacity="0.4" HorizontalAlignment="Center" />
+                                <TextBlock Text="当前暂无学生名单数据" Opacity="0.6" FontSize="14" FontWeight="SemiBold" HorizontalAlignment="Center" />
+                                <TextBlock Text="请在上方添加或导入名单" Opacity="0.5" FontSize="12" HorizontalAlignment="Center" />
+                            </StackPanel>
+                        </Grid>
+                    </Border>
+
+                    <TextBlock x:Name="RosterSummaryText"
+                               Text="名单未加载。"
+                               Opacity="0.75" />
+                </StackPanel>
+            </Border>
+
+
+                    </StackPanel>
+                </Expander.Content>
+            </Expander>
+
+            <Expander HorizontalAlignment="Stretch" Padding="16">
+                <Expander.Header>
+                    <StackPanel Orientation="Horizontal" Spacing="8">
+                        <TextBlock FontFamily="Segoe Fluent Icons" Text="&#xE8D2;" FontSize="16" VerticalAlignment="Center" />
+                        <TextBlock Text="连接与模型" FontSize="16" FontWeight="SemiBold" VerticalAlignment="Center" />
+                    </StackPanel>
+                </Expander.Header>
+                <Expander.Content>
+                    <StackPanel Spacing="10" Margin="0,8,0,0">
             <Border Background="{DynamicResource CardBackgroundFillColorDefaultBrush}"
                     BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}"
                     BorderThickness="1"
@@ -101,6 +347,20 @@
                 </StackPanel>
             </Border>
 
+
+                    </StackPanel>
+                </Expander.Content>
+            </Expander>
+
+            <Expander HorizontalAlignment="Stretch" Padding="16">
+                <Expander.Header>
+                    <StackPanel Orientation="Horizontal" Spacing="8">
+                        <TextBlock FontFamily="Segoe Fluent Icons" Text="&#xE945;" FontSize="16" VerticalAlignment="Center" />
+                        <TextBlock Text="AI 长期规则" FontSize="16" FontWeight="SemiBold" VerticalAlignment="Center" />
+                    </StackPanel>
+                </Expander.Header>
+                <Expander.Content>
+                    <StackPanel Spacing="10" Margin="0,8,0,0">
             <Border Background="{DynamicResource CardBackgroundFillColorDefaultBrush}"
                     BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}"
                     BorderThickness="1"
@@ -124,6 +384,20 @@
                 </StackPanel>
             </Border>
 
+
+                    </StackPanel>
+                </Expander.Content>
+            </Expander>
+
+            <Expander HorizontalAlignment="Stretch" Padding="16">
+                <Expander.Header>
+                    <StackPanel Orientation="Horizontal" Spacing="8">
+                        <TextBlock FontFamily="Segoe Fluent Icons" Text="&#xE823;" FontSize="16" VerticalAlignment="Center" />
+                        <TextBlock Text="排班处理参数" FontSize="16" FontWeight="SemiBold" VerticalAlignment="Center" />
+                    </StackPanel>
+                </Expander.Header>
+                <Expander.Content>
+                    <StackPanel Spacing="10" Margin="0,8,0,0">
             <Border Background="{DynamicResource CardBackgroundFillColorDefaultBrush}"
                     BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}"
                     BorderThickness="1"
@@ -231,105 +505,20 @@
                 </StackPanel>
             </Border>
 
-            <Border Background="{DynamicResource CardBackgroundFillColorDefaultBrush}"
-                    BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}"
-                    BorderThickness="1"
-                    CornerRadius="8"
-                    Padding="16">
-                <StackPanel Spacing="10">
-                    <StackPanel Orientation="Horizontal" Spacing="8">
-                        <TextBlock FontFamily="Segoe Fluent Icons" Text="&#xE716;" FontSize="16" />
-                        <TextBlock Text="学生名单" FontSize="16" FontWeight="SemiBold" />
+
                     </StackPanel>
+                </Expander.Content>
+            </Expander>
 
-                    <Grid ColumnDefinitions="Auto,*,Auto">
-                        <StackPanel Grid.Column="0" Orientation="Horizontal" Spacing="8">
-                            <TextBox x:Name="NewStudentNameBox"
-                                     Width="200"
-                                     Watermark="输入学生姓名..." />
-                            <Button x:Name="AddStudentBtn"
-                                    Content="添加"
-                                    Classes="accent"
-                                    Click="OnAddStudentClick" />
-                        </StackPanel>
-                        <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="8">
-                            <Button x:Name="ToggleStudentActiveBtn"
-                                    Content="切换状态"
-                                    IsEnabled="False"
-                                    Click="OnToggleStudentActiveClick" />
-                            <Button x:Name="DeleteStudentBtn"
-                                    ToolTip.Tip="删除选中"
-                                    Click="OnDeleteStudentClick">
-                                <TextBlock FontFamily="Segoe Fluent Icons" Text="&#xE74D;" Foreground="#E81123" />
-                            </Button>
-                            <Button x:Name="ImportRosterFromFileBtn"
-                                    Content="导入..."
-                                    Click="OnImportRosterFromFileClick" />
-                            <Button x:Name="OpenRosterBtn"
-                                    ToolTip.Tip="打开源文件"
-                                    Click="OnOpenRosterClick">
-                                <TextBlock FontFamily="Segoe Fluent Icons" Text="&#xE8E5;" />
-                            </Button>
-                        </StackPanel>
-                    </Grid>
-
-                    <Border BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}" BorderThickness="1" CornerRadius="8">
-                        <Grid RowDefinitions="Auto,*">
-                            <Border BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}" BorderThickness="0,0,0,1" Padding="10,8">
-                                <Grid ColumnDefinitions="64,2*,1.8*,84,84" ColumnSpacing="8">
-                                    <TextBlock Grid.Column="0" Text="ID" FontWeight="SemiBold" />
-                                    <TextBlock Grid.Column="1" Text="姓名" FontWeight="SemiBold" />
-                                    <TextBlock Grid.Column="2" Text="下一次值日" FontWeight="SemiBold" />
-                                    <TextBlock Grid.Column="3" Text="次数" FontWeight="SemiBold" />
-                                    <TextBlock Grid.Column="4" Text="状态" FontWeight="SemiBold" />
-                                </Grid>
-                            </Border>
-                            <ListBox x:Name="RosterListBox"
-                                      Grid.Row="1"
-                                      MinHeight="220"
-                                      MaxHeight="300"
-                                      SelectionChanged="OnRosterSelectionChanged">
-                                <ListBox.ItemTemplate>
-                                    <DataTemplate>
-                                        <Border Padding="10,8" BorderBrush="#14000000" BorderThickness="0,0,0,1">
-                                            <Grid ColumnDefinitions="64,2*,1.8*,84,84" ColumnSpacing="8">
-                                                <TextBlock Grid.Column="0"
-                                                           Text="{Binding Id}"
-                                                           VerticalAlignment="Center"
-                                                           Opacity="0.75" />
-                                                <TextBlock Grid.Column="1"
-                                                           Text="{Binding Name}"
-                                                           VerticalAlignment="Center"
-                                                           TextTrimming="CharacterEllipsis" />
-                                                <TextBlock Grid.Column="2"
-                                                           Text="{Binding NextDutyDisplay}"
-                                                           VerticalAlignment="Center"
-                                                           TextTrimming="CharacterEllipsis" />
-                                                <TextBlock Grid.Column="3"
-                                                           Text="{Binding DutyCount}"
-                                                           VerticalAlignment="Center" />
-                                                <TextBlock Grid.Column="4"
-                                                           Text="{Binding ActiveDisplay}"
-                                                           VerticalAlignment="Center" />
-                                            </Grid>
-                                        </Border>
-                                    </DataTemplate>
-                                </ListBox.ItemTemplate>
-                            </ListBox>
-                            <StackPanel x:Name="RosterEmptyStatePanel" Grid.Row="1" VerticalAlignment="Center" HorizontalAlignment="Center" Spacing="8" IsVisible="False">
-                                <TextBlock FontFamily="Segoe Fluent Icons" Text="&#xE716;" FontSize="48" Opacity="0.4" HorizontalAlignment="Center" />
-                                <TextBlock Text="当前暂无学生名单数据" Opacity="0.6" FontSize="14" FontWeight="SemiBold" HorizontalAlignment="Center" />
-                                <TextBlock Text="请在上方添加或导入名单" Opacity="0.5" FontSize="12" HorizontalAlignment="Center" />
-                            </StackPanel>
-                        </Grid>
-                    </Border>
-
-                    <TextBlock x:Name="RosterSummaryText"
-                               Text="名单未加载。"
-                               Opacity="0.75" />
-                </StackPanel>
-            </Border>
-
+            <Expander HorizontalAlignment="Stretch" Padding="16">
+                <Expander.Header>
+                    <StackPanel Orientation="Horizontal" Spacing="8">
+                        <TextBlock FontFamily="Segoe Fluent Icons" Text="&#xE943;" FontSize="16" VerticalAlignment="Center" />
+                        <TextBlock Text="调试与集成" FontSize="16" FontWeight="SemiBold" VerticalAlignment="Center" />
+                    </StackPanel>
+                </Expander.Header>
+                <Expander.Content>
+                    <StackPanel Spacing="10" Margin="0,8,0,0">
             <Border Background="{DynamicResource CardBackgroundFillColorDefaultBrush}"
                     BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}"
                     BorderThickness="1"
@@ -354,110 +543,11 @@
                 </StackPanel>
             </Border>
 
-            <Border Background="{DynamicResource CardBackgroundFillColorDefaultBrush}"
-                    BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}"
-                    BorderThickness="1"
-                    CornerRadius="8"
-                    Padding="16">
-                <StackPanel Spacing="10">
-                    <StackPanel Orientation="Horizontal" Spacing="8">
-                        <TextBlock FontFamily="Segoe Fluent Icons" Text="&#xE8A5;" FontSize="16" />
-                        <TextBlock Text="排班预览" FontSize="16" FontWeight="SemiBold" />
+
                     </StackPanel>
-                    <Button x:Name="RefreshDataBtn"
-                            Content="刷新预览"
-                            HorizontalAlignment="Left"
-                            Click="OnRefreshDataClick" />
+                </Expander.Content>
+            </Expander>
 
-                    <Border BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}" BorderThickness="1" CornerRadius="8">
-                        <Grid RowDefinitions="Auto,*">
-                            <Border BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}" BorderThickness="0,0,0,1" Padding="10,8">
-                                <Grid ColumnDefinitions="120,80,2.4*,1.4*" ColumnSpacing="8">
-                                    <TextBlock Grid.Column="0" Text="日期" FontWeight="SemiBold" />
-                                    <TextBlock Grid.Column="1" Text="星期" FontWeight="SemiBold" />
-                                    <TextBlock Grid.Column="2" Text="值日安排" FontWeight="SemiBold" />
-                                    <TextBlock Grid.Column="3" Text="备注" FontWeight="SemiBold" />
-                                </Grid>
-                            </Border>
-                            <ListBox x:Name="ScheduleListBox"
-                                      Grid.Row="1"
-                                      MinHeight="220"
-                                      MaxHeight="320"
-                                      SelectionChanged="OnScheduleSelectionChanged">
-                                <ListBox.ItemTemplate>
-                                    <DataTemplate>
-                                        <Border Padding="10,8" BorderBrush="#14000000" BorderThickness="0,0,0,1">
-                                            <Grid ColumnDefinitions="120,80,2.4*,1.4*" ColumnSpacing="8">
-                                                <TextBlock Grid.Column="0"
-                                                           Text="{Binding Date}"
-                                                           VerticalAlignment="Center" />
-                                                <TextBlock Grid.Column="1"
-                                                           Text="{Binding Day}"
-                                                           VerticalAlignment="Center" />
-                                                <TextBlock Grid.Column="2"
-                                                           Text="{Binding AssignmentSummary}"
-                                                           VerticalAlignment="Center"
-                                                            TextWrapping="Wrap" />
-                                                <TextBlock Grid.Column="3"
-                                                           Text="{Binding Note}"
-                                                           VerticalAlignment="Center"
-                                                           TextWrapping="Wrap" />
-                                            </Grid>
-                                        </Border>
-                                    </DataTemplate>
-                                </ListBox.ItemTemplate>
-                            </ListBox>
-                            <StackPanel x:Name="ScheduleEmptyStatePanel" Grid.Row="1" VerticalAlignment="Center" HorizontalAlignment="Center" Spacing="8" IsVisible="False">
-                                <TextBlock FontFamily="Segoe Fluent Icons" Text="&#xE8A5;" FontSize="48" Opacity="0.4" HorizontalAlignment="Center" />
-                                <TextBlock Text="暂无排班预期数据" Opacity="0.6" FontSize="14" FontWeight="SemiBold" HorizontalAlignment="Center" />
-                                <TextBlock Text="点击上方【刷新预览】或【开始排班】生成" Opacity="0.5" FontSize="12" HorizontalAlignment="Center" />
-                            </StackPanel>
-                        </Grid>
-                    </Border>
-                    <!-- 极简排班编辑器 -->
-                    <Border Background="#08000000" CornerRadius="4" Padding="12,8" Margin="0,2,0,0">
-                        <StackPanel Spacing="8">
-                            <!-- 标题与状态行 -->
-                            <Grid ColumnDefinitions="Auto,*">
-                                <TextBlock Grid.Column="0" Text="编辑排班详情" FontWeight="SemiBold" VerticalAlignment="Center" />
-                                <TextBlock x:Name="SelectedScheduleMetaText" Grid.Column="1" Text="请先在上方列表选择记录" Opacity="0.6" FontSize="12" Margin="12,0,0,0" VerticalAlignment="Center" />
-                            </Grid>
-
-                            <!-- 日期与星期 -->
-                            <Grid ColumnDefinitions="Auto,150,Auto,100" ColumnSpacing="8">
-                                <TextBlock Grid.Column="0" Text="日期" VerticalAlignment="Center" Opacity="0.8" />
-                                <TextBox x:Name="ScheduleDateEditorBox" Grid.Column="1" TextChanged="OnScheduleEditorTextChanged" Watermark="yyyy-MM-dd" />
-                                <TextBlock Grid.Column="2" Text="星期" VerticalAlignment="Center" Opacity="0.8" />
-                                <ComboBox x:Name="ScheduleDayEditorComboBox" Grid.Column="3" SelectionChanged="OnScheduleEditorSelectionChanged" HorizontalAlignment="Stretch" />
-                            </Grid>
-
-                            <!-- 安排与备注 -->
-                            <Grid ColumnDefinitions="Auto,*" ColumnSpacing="8">
-                                <StackPanel Grid.Column="0" Spacing="4" Margin="0,6,0,0">
-                                    <TextBlock Text="安排" Opacity="0.8" />
-                                    <TextBlock Text="区域: 姓名" FontSize="12" Opacity="0.5" />
-                                </StackPanel>
-                                <TextBox x:Name="ScheduleAssignmentsEditorBox" Grid.Column="1" TextChanged="OnScheduleEditorTextChanged" Height="64" AcceptsReturn="True" TextWrapping="Wrap" />
-                            </Grid>
-
-                            <Grid ColumnDefinitions="Auto,*" ColumnSpacing="8">
-                                <TextBlock Grid.Column="0" Text="备注" VerticalAlignment="Center" Opacity="0.8" Margin="0,0,24,0" />
-                                <TextBox x:Name="ScheduleNoteEditorBox" Grid.Column="1" TextChanged="OnScheduleEditorTextChanged" TextWrapping="Wrap" Watermark="附加说明..." />
-                            </Grid>
-
-                            <!-- 操作按钮区 -->
-                            <StackPanel Orientation="Horizontal" Spacing="8" HorizontalAlignment="Right" Margin="0,4,0,0">
-                                <Button x:Name="CreateScheduleEditBtn" Content="新建记录" Click="OnCreateScheduleEditClick" />
-                                <Button x:Name="ReloadScheduleEditBtn" Content="放弃更改" Click="OnReloadScheduleEditClick" />
-                                <Button x:Name="SaveScheduleEditBtn" Content="保存编辑" Classes="accent" IsEnabled="False" Click="OnSaveScheduleEditClick" />
-                            </StackPanel>
-                        </StackPanel>
-                    </Border>
-                    <TextBlock x:Name="ScheduleSummaryText"
-                               Text="暂无排班数据。"
-                               Opacity="0.75" />
-                </StackPanel>
-            </Border>
-        </StackPanel>
+</StackPanel>
     </ScrollViewer>
 </ci:SettingsPageBase>
