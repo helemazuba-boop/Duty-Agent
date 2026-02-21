@@ -3,7 +3,7 @@
   <img src="icon.png" width="128" alt="Duty-Agent Logo" />
   <h1>🛡️ Duty-Agent</h1>
   <p><em>"Reasoning via LLM, Reliability via Code." —— 面向 ClassIsland 的下一代混合智能排班系统</em></p>
-  <p><strong>当前版本: v2.4</strong></p>
+  <p><strong>当前版本: v0.30-Beta</strong></p>
 </div>
 =======
 # Duty-Agent (v2.4)
@@ -102,7 +102,7 @@ graph TD
 *   **v2.1**: 引入显式日期驱动，AI 自主决定排班范围。
 *   **v2.2**: 引入 **Two-Queue** 双队列算法，解决复杂插队难题。
 *   **v2.3**: 引入 **AI Memory** 持久化，软件重启也能记住。
-*   **v2.4**: 引入 **Structured Debt Enforcement (结构化债务)** 与 **代码级强制兜底机制**，真正实现“利用大语言模型推理，利用代码保障可靠”。
+*   **v0.30-Beta**: 引入 **Structured Debt Enforcement (结构化债务)** 与 **代码级强制兜底机制**，真正实现“利用大语言模型推理，利用代码保障可靠”。
 
 ---
 
