@@ -54,17 +54,28 @@ public class DutyConfig
     [JsonPropertyName("model")]
     public string Model { get; set; } = "moonshotai/kimi-k2-thinking";
 
-    [JsonPropertyName("enable_auto_run")]
-    public bool EnableAutoRun { get; set; }
+    /// <summary>
+    /// Auto-run mode: "Off", "Weekly", "Monthly", "Custom".
+    /// Replaces the old EnableAutoRun (bool) + AutoRunDay (string) combo.
+    /// </summary>
+    [JsonPropertyName("auto_run_mode")]
+    public string AutoRunMode { get; set; } = "Off";
+
+    /// <summary>
+    /// Parameter for AutoRunMode:
+    ///   Weekly  -> DayOfWeek name (e.g. "Monday")
+    ///   Monthly -> day-of-month as string ("1".."31") or "L" for last day
+    ///   Custom  -> interval in days (e.g. "14")
+    ///   Off     -> ignored
+    /// </summary>
+    [JsonPropertyName("auto_run_parameter")]
+    public string AutoRunParameter { get; set; } = "Monday";
 
     [JsonPropertyName("enable_mcp")]
     public bool EnableMcp { get; set; } = false;
 
     [JsonPropertyName("enable_webview_debug_layer")]
     public bool EnableWebViewDebugLayer { get; set; } = false;
-
-    [JsonPropertyName("auto_run_day")]
-    public string AutoRunDay { get; set; } = "Monday";
 
     [JsonPropertyName("auto_run_time")]
     public string AutoRunTime { get; set; } = "08:00";

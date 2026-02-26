@@ -1048,7 +1048,7 @@ public sealed class DutyLocalPreviewHostedService : IHostedService, IDisposable
             errorMessage = parseError ?? "Invalid params.";
             return false;
         }
-        if (!TryReadOptionalBooleanArgument(argumentsElement, "enable_auto_run", out var enableAutoRun, out parseError))
+        if (!TryReadOptionalStringArgument(argumentsElement, "auto_run_mode", out var autoRunMode, out parseError))
         {
             errorMessage = parseError ?? "Invalid params.";
             return false;
@@ -1064,7 +1064,7 @@ public sealed class DutyLocalPreviewHostedService : IHostedService, IDisposable
             errorMessage = parseError ?? "Invalid params.";
             return false;
         }
-        if (!TryReadOptionalStringArgument(argumentsElement, "auto_run_day", out var autoRunDay, out parseError))
+        if (!TryReadOptionalStringArgument(argumentsElement, "auto_run_parameter", out var autoRunParameter, out parseError))
         {
             errorMessage = parseError ?? "Invalid params.";
             return false;
@@ -1128,8 +1128,8 @@ public sealed class DutyLocalPreviewHostedService : IHostedService, IDisposable
                 apiKey: DutyBackendService.ResolveApiKeyInput(apiKey, current.DecryptedApiKey),
                 baseUrl: baseUrl ?? current.BaseUrl,
                 model: model ?? current.Model,
-                enableAutoRun: enableAutoRun ?? current.EnableAutoRun,
-                autoRunDay: autoRunDay ?? current.AutoRunDay,
+                autoRunMode: autoRunMode ?? current.AutoRunMode,
+                autoRunParameter: autoRunParameter ?? current.AutoRunParameter,
                 autoRunTime: autoRunTime ?? current.AutoRunTime,
                 perDay: perDay ?? current.PerDay,
                 dutyRule: dutyRule ?? current.DutyRule,
@@ -1165,10 +1165,10 @@ public sealed class DutyLocalPreviewHostedService : IHostedService, IDisposable
             structuredContent = new
             {
                 applied_immediately = true,
-                enable_auto_run = saved.EnableAutoRun,
+                auto_run_mode = saved.AutoRunMode,
                 enable_mcp = saved.EnableMcp,
                 enable_webview_debug_layer = saved.EnableWebViewDebugLayer,
-                auto_run_day = saved.AutoRunDay,
+                auto_run_parameter = saved.AutoRunParameter,
                 auto_run_time = saved.AutoRunTime,
                 per_day = saved.PerDay,
                 duty_rule = saved.DutyRule,
@@ -1936,8 +1936,8 @@ public sealed class DutyLocalPreviewHostedService : IHostedService, IDisposable
             apiKey: apiKey,
             baseUrl: baseUrl,
             model: model,
-            enableAutoRun: current.EnableAutoRun,
-            autoRunDay: current.AutoRunDay,
+            autoRunMode: current.AutoRunMode,
+            autoRunParameter: current.AutoRunParameter,
             autoRunTime: current.AutoRunTime,
             perDay: perDay,
             dutyRule: dutyRule,

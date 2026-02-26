@@ -447,6 +447,7 @@ public partial class DutyWebSettingsPage : SettingsPageBase
         });
     }
 
+
     private void ApplyConfig(WebConfigDto config)
     {
         _backendService.LoadConfig();
@@ -455,10 +456,10 @@ public partial class DutyWebSettingsPage : SettingsPageBase
         var apiKey = DutyBackendService.ResolveApiKeyInput(config.ApiKey, current.DecryptedApiKey);
         var baseUrl = config.BaseUrl ?? current.BaseUrl;
         var model = config.Model ?? current.Model;
-        var enableAutoRun = config.EnableAutoRun ?? current.EnableAutoRun;
+        var autoRunMode = config.AutoRunMode ?? current.AutoRunMode;
         var enableMcp = config.EnableMcp ?? current.EnableMcp;
         var enableWebViewDebugLayer = config.EnableWebViewDebugLayer ?? current.EnableWebViewDebugLayer;
-        var autoRunDay = config.AutoRunDay ?? current.AutoRunDay;
+        var autoRunParameter = config.AutoRunParameter ?? current.AutoRunParameter;
         var autoRunTime = config.AutoRunTime ?? current.AutoRunTime;
         var perDay = config.PerDay ?? current.PerDay;
         var dutyRule = config.DutyRule ?? current.DutyRule;
@@ -476,8 +477,8 @@ public partial class DutyWebSettingsPage : SettingsPageBase
             apiKey: apiKey,
             baseUrl: baseUrl,
             model: model,
-            enableAutoRun: enableAutoRun,
-            autoRunDay: autoRunDay,
+            autoRunMode: autoRunMode,
+            autoRunParameter: autoRunParameter,
             autoRunTime: autoRunTime,
             perDay: perDay,
             dutyRule: dutyRule,
@@ -509,15 +510,14 @@ public partial class DutyWebSettingsPage : SettingsPageBase
                 ApiKey = _backendService.GetApiKeyMaskForUi(),
                 BaseUrl = config.BaseUrl,
                 Model = config.Model,
-                EnableAutoRun = config.EnableAutoRun,
+                AutoRunMode = config.AutoRunMode,
                 EnableMcp = config.EnableMcp,
                 EnableWebViewDebugLayer = config.EnableWebViewDebugLayer,
-                AutoRunDay = config.AutoRunDay,
+                AutoRunParameter = config.AutoRunParameter,
                 AutoRunTime = config.AutoRunTime,
                 PerDay = config.PerDay,
                 DutyRule = config.DutyRule,
                 StartFromToday = config.StartFromToday,
-                AutoRunTriggerNotificationEnabled = config.AutoRunTriggerNotificationEnabled,
                 ComponentRefreshTime = config.ComponentRefreshTime,
                 NotificationTemplates = _backendService.GetNotificationTemplates(),
                 DutyReminderEnabled = config.DutyReminderEnabled,
@@ -848,8 +848,8 @@ public partial class DutyWebSettingsPage : SettingsPageBase
         [JsonPropertyName("model")]
         public string? Model { get; set; }
 
-        [JsonPropertyName("enable_auto_run")]
-        public bool? EnableAutoRun { get; set; }
+        [JsonPropertyName("auto_run_mode")]
+        public string? AutoRunMode { get; set; }
 
         [JsonPropertyName("enable_mcp")]
         public bool? EnableMcp { get; set; }
@@ -857,8 +857,8 @@ public partial class DutyWebSettingsPage : SettingsPageBase
         [JsonPropertyName("enable_webview_debug_layer")]
         public bool? EnableWebViewDebugLayer { get; set; }
 
-        [JsonPropertyName("auto_run_day")]
-        public string? AutoRunDay { get; set; }
+        [JsonPropertyName("auto_run_parameter")]
+        public string? AutoRunParameter { get; set; }
 
         [JsonPropertyName("auto_run_time")]
         public string? AutoRunTime { get; set; }

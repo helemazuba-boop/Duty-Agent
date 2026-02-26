@@ -414,7 +414,16 @@
 
                     <Grid ColumnDefinitions="*,*" ColumnSpacing="10">
                         <StackPanel Grid.Column="0" Spacing="6">
-                            <TextBlock Text="自动排班日" />
+                            <TextBlock Text="自动排班策略" />
+                            <ComboBox x:Name="AutoRunModeComboBox"
+                                      HorizontalAlignment="Stretch"
+                                      SelectionChanged="OnConfigSelectionChanged">
+                                <ComboBoxItem Content="关闭" />
+                                <ComboBoxItem Content="每周" />
+                                <ComboBoxItem Content="每月" />
+                                <ComboBoxItem Content="自定义间隔" />
+                            </ComboBox>
+                            <!-- Secondary: Weekly day picker -->
                             <ComboBox x:Name="AutoRunDayComboBox"
                                       HorizontalAlignment="Stretch"
                                       SelectionChanged="OnConfigSelectionChanged">
@@ -426,6 +435,14 @@
                                 <ComboBoxItem Content="周六" />
                                 <ComboBoxItem Content="周日" />
                             </ComboBox>
+                            <!-- Secondary: Monthly day picker -->
+                            <ComboBox x:Name="AutoRunMonthDayComboBox"
+                                      HorizontalAlignment="Stretch"
+                                      SelectionChanged="OnConfigSelectionChanged" />
+                            <!-- Secondary: Custom interval input -->
+                            <TextBox x:Name="AutoRunIntervalBox"
+                                     Watermark="间隔天数（例如 14）"
+                                     HorizontalAlignment="Stretch" />
                         </StackPanel>
                         <StackPanel Grid.Column="1" Spacing="6">
                             <TextBlock Text="自动排班时间" />
@@ -461,12 +478,6 @@
                     </StackPanel>
 
                     <Grid ColumnDefinitions="*,*" RowDefinitions="Auto,Auto,Auto" ColumnSpacing="10" RowSpacing="8">
-                        <ToggleSwitch x:Name="EnableAutoRunSwitch"
-                                       Grid.Row="0"
-                                       Grid.Column="0"
-                                       Content="自动排班"
-                                       Checked="OnConfigToggleChanged"
-                                      Unchecked="OnConfigToggleChanged" />
                         <ToggleSwitch x:Name="StartFromTodaySwitch"
                                         Grid.Row="1"
                                         Grid.ColumnSpan="2"

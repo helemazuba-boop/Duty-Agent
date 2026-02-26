@@ -25,3 +25,5 @@ Assets_Duty/data/*.tmp
 .DS_Store
 Thumbs.db
 .gitnexus
+.claude/
+*.html

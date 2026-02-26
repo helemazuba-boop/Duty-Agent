@@ -2,6 +2,7 @@
 # -*- coding: utf-8 -*-
 
 import argparse
+import calendar
 import csv
 import json
 import os
@@ -298,6 +299,77 @@ def anonymize_instruction(text: str, name_to_id: Dict[str, int]) -> str:
         result = result.replace(placeholder, pid_str)
     return result
 
+WEEKDAY_CN = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+
+
+def build_calendar_anchor(
+    auto_run_mode: str,
+    auto_run_parameter: str,
+    per_day: int,
+    active_count: int,
+) -> str:
+    """Build a calendar anchor string that tells the AI exactly which date range to schedule.
+
+    Returns a multi-line string with:
+      - Start Date / End Date (with weekday)
+      - Cross-month boundaries if applicable
+      - Hard constraint: no dates outside this range
+    """
+    today = datetime.now().date()
+    mode = (auto_run_mode or "Off").strip().lower()
+
+    # Determine scheduling span in days
+    if mode == "weekly":
+        span_days = 7
+    elif mode == "monthly":
+        span_days = calendar.monthrange(today.year, today.month)[1]
+    elif mode == "custom":
+        try:
+            span_days = max(int(auto_run_parameter), 1)
+        except (ValueError, TypeError):
+            span_days = 14
+    else:
+        # For "Off" or unknown, estimate from roster size
+        if per_day > 0 and active_count > 0:
+            span_days = max((active_count // per_day) + 1, 7)
+        else:
+            span_days = 7
+
+    start_date = today
+    end_date = today + timedelta(days=span_days - 1)
+
+    lines = [
+        f"Schedule Start Date: {start_date.isoformat()} ({WEEKDAY_CN[start_date.weekday()]})",
+        f"Schedule End Date:   {end_date.isoformat()} ({WEEKDAY_CN[end_date.weekday()]})",
+        f"Total Days: {span_days}",
+    ]
+
+    # Cross-month boundary detection
+    if start_date.month != end_date.month:
+        # Find all month boundaries in the range
+        cursor = start_date.replace(day=1)
+        while cursor <= end_date:
+            last_day_of_month = cursor.replace(
+                day=calendar.monthrange(cursor.year, cursor.month)[1]
+            )
+            if start_date <= last_day_of_month <= end_date:
+                next_month_first = last_day_of_month + timedelta(days=1)
+                lines.append(
+                    f"Cross-Month Boundary: {last_day_of_month.isoformat()} ({WEEKDAY_CN[last_day_of_month.weekday()]}) "
+                    f"-> {next_month_first.isoformat()} ({WEEKDAY_CN[next_month_first.weekday()]})"
+                )
+            # Move to next month
+            if cursor.month == 12:
+                cursor = cursor.replace(year=cursor.year + 1, month=1)
+            else:
+                cursor = cursor.replace(month=cursor.month + 1)
+
+    lines.append(
+        "HARD CONSTRAINT: You MUST NOT generate any date outside this range. "
+        "Use the boundaries above to verify every date you produce."
+    )
+    return "\n".join(lines)
+
 
 def build_prompt_messages(
     id_range: Tuple[int, int],
@@ -309,6 +381,7 @@ def build_prompt_messages(
     area_names: List[str],
     debt_list: List[int],
     previous_context: str = "",
+    calendar_anchor: str = "",
 ) -> List[dict]:
     """Build the 3-part prompt messages for the LLM."""
     
@@ -380,6 +453,10 @@ For each day, perform these steps in your `thinking_trace`:
         user_parts.append(f"CURRENT DEBT LIST (PRIORITY HIGH): {debt_list}. You MUST schedule these IDs first.")
 
     user_parts.append(f"Current Time: {current_time}")
+
+    if calendar_anchor:
+        user_parts.append(f"\n--- Calendar Anchor (DO NOT VIOLATE) ---\n{calendar_anchor}")
+
     user_parts.append(f'Instruction: "{instruction}"')
     
     user_prompt = "\n".join(user_parts)
@@ -1074,6 +1151,11 @@ def main():
         previous_context = str(state_data.get("next_run_note", "")).strip()
         debt_list = extract_ids_from_value(state_data.get("debt_list", []), set(active_ids), 9999)
         
+        # Build calendar anchor for AI date context
+        auto_run_mode = str(input_data.get("auto_run_mode", ctx.config.get("auto_run_mode", "Off"))).strip()
+        auto_run_parameter = str(input_data.get("auto_run_parameter", ctx.config.get("auto_run_parameter", ""))).strip()
+        cal_anchor = build_calendar_anchor(auto_run_mode, auto_run_parameter, per_day, len(active_ids))
+
         messages = build_prompt_messages(
             id_range,
             disabled_ids,
@@ -1084,6 +1166,7 @@ def main():
             area_names,
             previous_context=previous_context,
             debt_list=debt_list,
+            calendar_anchor=cal_anchor,
         )
 
         llm_result, llm_response_text = call_llm(

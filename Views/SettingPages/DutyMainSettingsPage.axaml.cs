@@ -44,6 +44,7 @@ public partial class DutyMainSettingsPage : SettingsPageBase
         _configApplyDebounceTimer.Tick += OnConfigApplyDebounceTick;
         Unloaded += (_, _) => _configApplyDebounceTimer.Stop();
         InitializeAutoRunTimeOptions();
+        InitializeAutoRunModeOptions();
         InitializeComponentRefreshTimeOptions();
         InitializeDutyReminderTimeOptions();
         InitializeScheduleDayOptions();
@@ -59,6 +60,33 @@ public partial class DutyMainSettingsPage : SettingsPageBase
         AutoRunMinuteComboBox.ItemsSource = Enumerable.Range(0, 60).Select(x => x.ToString("D2")).ToList();
         AutoRunHourComboBox.SelectedItem = "08";
         AutoRunMinuteComboBox.SelectedItem = "00";
+    }
+
+    private void InitializeAutoRunModeOptions()
+    {
+        // Populate monthly dropdown with dynamic days + "L" option
+        PopulateMonthDayComboBox();
+        // Set initial visibility
+        UpdateAutoRunSecondaryVisibility();
+    }
+
+    private void PopulateMonthDayComboBox()
+    {
+        var now = DateTime.Now;
+        var daysInMonth = DateTime.DaysInMonth(now.Year, now.Month);
+        var items = new List<string> { "L" }; // "当月最后一天" always first
+        for (var d = 1; d <= daysInMonth; d++)
+            items.Add(d.ToString());
+        AutoRunMonthDayComboBox.ItemsSource = items;
+        AutoRunMonthDayComboBox.SelectedIndex = 0;
+    }
+
+    private void UpdateAutoRunSecondaryVisibility()
+    {
+        var mode = GetSelectedAutoRunMode();
+        AutoRunDayComboBox.IsVisible = mode == "Weekly";
+        AutoRunMonthDayComboBox.IsVisible = mode == "Monthly";
+        AutoRunIntervalBox.IsVisible = mode == "Custom";
     }
 
     private void InitializeComponentRefreshTimeOptions()
@@ -194,6 +222,10 @@ public partial class DutyMainSettingsPage : SettingsPageBase
 
     private void OnConfigSelectionChanged(object? sender, SelectionChangedEventArgs e)
     {
+        if (sender == AutoRunModeComboBox)
+        {
+            UpdateAutoRunSecondaryVisibility();
+        }
         QueueConfigApply();
     }
 
@@ -268,8 +300,8 @@ public partial class DutyMainSettingsPage : SettingsPageBase
                 apiKey: resolvedApiKey,
                 baseUrl: BaseUrlBox.Text?.Trim() ?? string.Empty,
                 model: ModelBox.Text?.Trim() ?? string.Empty,
-                enableAutoRun: EnableAutoRunSwitch.IsChecked == true,
-                autoRunDay: GetSelectedAutoRunDay(),
+                autoRunMode: GetSelectedAutoRunMode(),
+                autoRunParameter: GetSelectedAutoRunParameter(),
                 autoRunTime: autoRunTime,
                 perDay: perDay,
                 dutyRule: DutyRuleBox.Text ?? string.Empty,
@@ -485,8 +517,8 @@ public partial class DutyMainSettingsPage : SettingsPageBase
             ApiKeyBox.Text = Service.GetApiKeyMaskForUi();
             BaseUrlBox.Text = config.BaseUrl;
             ModelBox.Text = config.Model;
-            EnableAutoRunSwitch.IsChecked = config.EnableAutoRun;
-            AutoRunDayComboBox.SelectedIndex = GetAutoRunDayIndex(config.AutoRunDay);
+            SetAutoRunModeSelection(config.AutoRunMode);
+            SetAutoRunParameterSelection(config.AutoRunMode, config.AutoRunParameter);
             SetAutoRunTimeSelection(config.AutoRunTime);
             StartFromTodaySwitch.IsChecked = config.StartFromToday;
             AutoRunTriggerNotificationSwitch.IsChecked = config.AutoRunTriggerNotificationEnabled;
@@ -1023,34 +1055,83 @@ public partial class DutyMainSettingsPage : SettingsPageBase
         ComponentRefreshMinuteComboBox.SelectedItem = parsed.Minutes.ToString("D2");
     }
 
-    private string GetSelectedAutoRunDay()
+    private string GetSelectedAutoRunMode()
     {
-        return AutoRunDayComboBox.SelectedIndex switch
+        return AutoRunModeComboBox.SelectedIndex switch
         {
-            0 => "Monday",
-            1 => "Tuesday",
-            2 => "Wednesday",
-            3 => "Thursday",
-            4 => "Friday",
-            5 => "Saturday",
-            6 => "Sunday",
+            0 => "Off",
+            1 => "Weekly",
+            2 => "Monthly",
+            3 => "Custom",
+            _ => "Off"
+        };
+    }
+
+    private string GetSelectedAutoRunParameter()
+    {
+        return GetSelectedAutoRunMode() switch
+        {
+            "Weekly" => AutoRunDayComboBox.SelectedIndex switch
+            {
+                0 => "Monday",
+                1 => "Tuesday",
+                2 => "Wednesday",
+                3 => "Thursday",
+                4 => "Friday",
+                5 => "Saturday",
+                6 => "Sunday",
+                _ => "Monday"
+            },
+            "Monthly" => AutoRunMonthDayComboBox.SelectedItem as string ?? "L",
+            "Custom" => AutoRunIntervalBox.Text?.Trim() ?? "14",
             _ => "Monday"
         };
     }
 
-    private static int GetAutoRunDayIndex(string? day)
+    private void SetAutoRunModeSelection(string mode)
     {
-        var normalized = (day ?? string.Empty).Trim().ToLowerInvariant();
-        return normalized switch
+        AutoRunModeComboBox.SelectedIndex = (mode ?? "Off").Trim().ToLowerInvariant() switch
         {
-            "tue" or "tuesday" or "2" or "周二" or "星期二" => 1,
-            "wed" or "wednesday" or "3" or "周三" or "星期三" => 2,
-            "thu" or "thursday" or "4" or "周四" or "星期四" => 3,
-            "fri" or "friday" or "5" or "周五" or "星期五" => 4,
-            "sat" or "saturday" or "6" or "周六" or "星期六" => 5,
-            "sun" or "sunday" or "7" or "0" or "周日" or "周天" or "星期日" or "星期天" => 6,
+            "weekly" => 1,
+            "monthly" => 2,
+            "custom" => 3,
             _ => 0
         };
+    }
+
+    private void SetAutoRunParameterSelection(string mode, string parameter)
+    {
+        var param = (parameter ?? string.Empty).Trim();
+        switch ((mode ?? "Off").Trim().ToLowerInvariant())
+        {
+            case "weekly":
+            {
+                var normalized = param.ToLowerInvariant();
+                AutoRunDayComboBox.SelectedIndex = normalized switch
+                {
+                    "tue" or "tuesday" or "2" => 1,
+                    "wed" or "wednesday" or "3" => 2,
+                    "thu" or "thursday" or "4" => 3,
+                    "fri" or "friday" or "5" => 4,
+                    "sat" or "saturday" or "6" => 5,
+                    "sun" or "sunday" or "7" or "0" => 6,
+                    _ => 0
+                };
+                break;
+            }
+            case "monthly":
+            {
+                var items = AutoRunMonthDayComboBox.ItemsSource as IList<string>;
+                if (items != null && items.Contains(param))
+                    AutoRunMonthDayComboBox.SelectedItem = param;
+                else
+                    AutoRunMonthDayComboBox.SelectedIndex = 0; // "L"
+                break;
+            }
+            case "custom":
+                AutoRunIntervalBox.Text = int.TryParse(param, out var days) ? days.ToString() : "14";
+                break;
+        }
     }
 
     private void UpdateConfigTracking(string state)

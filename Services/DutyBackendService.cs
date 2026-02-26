@@ -178,8 +178,8 @@ public class DutyBackendService : IDisposable
         string apiKey,
         string baseUrl,
         string model,
-        bool enableAutoRun,
-        string autoRunDay,
+        string autoRunMode,
+        string autoRunParameter,
         string autoRunTime,
         int perDay,
         string dutyRule,
@@ -199,10 +199,10 @@ public class DutyBackendService : IDisposable
             Config.DecryptedApiKey = ResolveApiKeyInput(apiKey, Config.DecryptedApiKey);
             Config.BaseUrl = baseUrl;
             Config.Model = model;
-            Config.EnableAutoRun = enableAutoRun;
+            Config.AutoRunMode = NormalizeAutoRunMode(autoRunMode);
+            Config.AutoRunParameter = (autoRunParameter ?? Config.AutoRunParameter).Trim();
             Config.EnableMcp = enableMcp ?? Config.EnableMcp;
             Config.EnableWebViewDebugLayer = enableWebViewDebugLayer ?? Config.EnableWebViewDebugLayer;
-            Config.AutoRunDay = NormalizeAutoRunDay(autoRunDay);
             Config.AutoRunTime = NormalizeTimeOrThrow(autoRunTime);
             Config.PerDay = Math.Clamp(perDay, 1, 30);
             Config.DutyRule = dutyRule;
@@ -856,12 +856,13 @@ public class DutyBackendService : IDisposable
             var now = DateTime.Now;
             TryPublishDutyReminderNotifications(now);
 
-            if (!Config.EnableAutoRun) return;
+            var mode = (Config.AutoRunMode ?? "Off").Trim();
+            if (string.Equals(mode, "Off", StringComparison.OrdinalIgnoreCase)) return;
 
             if (Config.LastAutoRunDate == now.ToString("yyyy-MM-dd")) return;
             if ((now - _lastAutoRunAttempt).TotalMinutes < AutoRunRetryCooldownMinutes) return;
 
-            if (!IsAutoRunDayMatched(Config.AutoRunDay, now.DayOfWeek)) return;
+            if (!IsAutoRunTriggered(mode, Config.AutoRunParameter, Config.LastAutoRunDate, now)) return;
             if (!TimeSpan.TryParse(Config.AutoRunTime, out var targetTime) || now.TimeOfDay < targetTime) return;
             if (_runCoreGate.CurrentCount == 0) return;
 
@@ -938,28 +939,57 @@ public class DutyBackendService : IDisposable
         throw new ArgumentException("Invalid time format.");
     }
 
-    private static bool IsAutoRunDayMatched(string autoRunDay, DayOfWeek currentDay)
+    /// <summary>
+    /// Determines whether the auto-run should trigger right now, based on the
+    /// configured mode (Weekly / Monthly / Custom) and its parameter.
+    /// </summary>
+    private static bool IsAutoRunTriggered(string mode, string parameter, string lastAutoRunDate, DateTime now)
     {
-        if (string.IsNullOrWhiteSpace(autoRunDay)) return true;
-        return TryParseAutoRunDay(autoRunDay, out var parsedDay) && parsedDay == currentDay;
-    }
-
-    private static bool TryParseAutoRunDay(string autoRunDay, out DayOfWeek day)
-    {
-        var normalized = autoRunDay.Trim();
-        if (AutoRunDayAliases.TryGetValue(normalized, out day))
+        var param = (parameter ?? string.Empty).Trim();
+        switch (mode.ToLowerInvariant())
         {
-            return true;
-        }
+            case "weekly":
+                if (AutoRunDayAliases.TryGetValue(param, out var dow) || Enum.TryParse(param, true, out dow))
+                    return now.DayOfWeek == dow;
+                return false;
 
-        return Enum.TryParse(normalized, ignoreCase: true, out day);
+            case "monthly":
+            {
+                var daysInMonth = DateTime.DaysInMonth(now.Year, now.Month);
+                int targetDay;
+                if (string.Equals(param, "L", StringComparison.OrdinalIgnoreCase))
+                    targetDay = daysInMonth;
+                else if (int.TryParse(param, out var parsed))
+                    targetDay = Math.Clamp(parsed, 1, daysInMonth); // safe clamp for short months
+                else
+                    return false;
+                return now.Day == targetDay;
+            }
+
+            case "custom":
+                if (!int.TryParse(param, out var intervalDays) || intervalDays <= 0)
+                    return false;
+                if (string.IsNullOrWhiteSpace(lastAutoRunDate))
+                    return true; // never ran before, trigger immediately
+                if (!DateTime.TryParse(lastAutoRunDate, out var lastDate))
+                    return true;
+                return (now.Date - lastDate.Date).TotalDays >= intervalDays;
+
+            default:
+                return false;
+        }
     }
 
-    private static string NormalizeAutoRunDay(string autoRunDay)
+    private static string NormalizeAutoRunMode(string mode)
     {
-        return TryParseAutoRunDay(autoRunDay, out var day)
-            ? day.ToString()
-            : DayOfWeek.Monday.ToString();
+        var trimmed = (mode ?? "Off").Trim();
+        return trimmed.ToLowerInvariant() switch
+        {
+            "weekly" => "Weekly",
+            "monthly" => "Monthly",
+            "custom" => "Custom",
+            _ => "Off"
+        };
     }
 
 
