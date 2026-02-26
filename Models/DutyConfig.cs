@@ -89,9 +89,6 @@ public class DutyConfig
     [JsonPropertyName("duty_rule")]
     public string DutyRule { get; set; } = string.Empty;
 
-    [JsonPropertyName("start_from_today")]
-    public bool StartFromToday { get; set; } = false;
-
     [JsonPropertyName("auto_run_retry_times")]
     public int AutoRunRetryTimes { get; set; } = 3;
 

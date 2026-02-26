@@ -1084,11 +1084,6 @@ public sealed class DutyLocalPreviewHostedService : IHostedService, IDisposable
             errorMessage = parseError ?? "Invalid params.";
             return false;
         }
-        if (!TryReadOptionalBooleanArgument(argumentsElement, "start_from_today", out var startFromToday, out parseError))
-        {
-            errorMessage = parseError ?? "Invalid params.";
-            return false;
-        }
         if (!TryReadOptionalStringArgument(argumentsElement, "component_refresh_time", out var componentRefreshTime,
                 out parseError))
         {
@@ -1133,7 +1128,6 @@ public sealed class DutyLocalPreviewHostedService : IHostedService, IDisposable
                 autoRunTime: autoRunTime ?? current.AutoRunTime,
                 perDay: perDay ?? current.PerDay,
                 dutyRule: dutyRule ?? current.DutyRule,
-                startFromToday: startFromToday ?? current.StartFromToday,
                 componentRefreshTime: componentRefreshTime ?? current.ComponentRefreshTime,
                 pythonPath: pythonPath ?? current.PythonPath,
                 notificationTemplates: notificationTemplates ?? current.NotificationTemplates,
@@ -1172,7 +1166,6 @@ public sealed class DutyLocalPreviewHostedService : IHostedService, IDisposable
                 auto_run_time = saved.AutoRunTime,
                 per_day = saved.PerDay,
                 duty_rule = saved.DutyRule,
-                start_from_today = saved.StartFromToday,
                 component_refresh_time = saved.ComponentRefreshTime,
                 notification_templates = _backendService.GetNotificationTemplates(),
                 duty_reminder_enabled = saved.DutyReminderEnabled,
@@ -1929,7 +1922,6 @@ public sealed class DutyLocalPreviewHostedService : IHostedService, IDisposable
         var model = config.Model ?? current.Model;
         var perDay = config.PerDay ?? current.PerDay;
         var dutyRule = config.DutyRule ?? current.DutyRule;
-        var startFromToday = config.StartFromToday ?? current.StartFromToday;
         var pythonPath = config.PythonPath ?? current.PythonPath;
 
         _backendService.SaveUserConfig(
@@ -1941,7 +1933,6 @@ public sealed class DutyLocalPreviewHostedService : IHostedService, IDisposable
             autoRunTime: current.AutoRunTime,
             perDay: perDay,
             dutyRule: dutyRule,
-            startFromToday: startFromToday,
             componentRefreshTime: current.ComponentRefreshTime,
             pythonPath: pythonPath,
             notificationTemplates: current.NotificationTemplates,
@@ -2084,9 +2075,6 @@ public sealed class DutyLocalPreviewHostedService : IHostedService, IDisposable
 
         [JsonPropertyName("duty_rule")]
         public string? DutyRule { get; set; }
-
-        [JsonPropertyName("start_from_today")]
-        public bool? StartFromToday { get; set; }
 
         [JsonPropertyName("python_path")]
         public string? PythonPath { get; set; }

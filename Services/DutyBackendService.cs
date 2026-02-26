@@ -183,7 +183,6 @@ public class DutyBackendService : IDisposable
         string autoRunTime,
         int perDay,
         string dutyRule,
-        bool startFromToday,
         string componentRefreshTime,
         string pythonPath,
         IEnumerable<string>? notificationTemplates = null,
@@ -206,7 +205,6 @@ public class DutyBackendService : IDisposable
             Config.AutoRunTime = NormalizeTimeOrThrow(autoRunTime);
             Config.PerDay = Math.Clamp(perDay, 1, 30);
             Config.DutyRule = dutyRule;
-            Config.StartFromToday = startFromToday;
             Config.ComponentRefreshTime = NormalizeTimeOrThrow(componentRefreshTime);
             Config.AutoRunTriggerNotificationEnabled =
                 autoRunTriggerNotificationEnabled ?? Config.AutoRunTriggerNotificationEnabled;
@@ -280,7 +278,6 @@ public class DutyBackendService : IDisposable
         {
             instruction = effectiveInstruction,
             apply_mode = applyMode,
-            start_from_today = Config.StartFromToday,
             per_day = Config.PerDay,
             duty_rule = Config.DutyRule,
             base_url = Config.BaseUrl,

@@ -305,7 +305,6 @@ public partial class DutyMainSettingsPage : SettingsPageBase
                 autoRunTime: autoRunTime,
                 perDay: perDay,
                 dutyRule: DutyRuleBox.Text ?? string.Empty,
-                startFromToday: StartFromTodaySwitch.IsChecked == true,
                 componentRefreshTime: componentRefreshTime,
                 // 普通用户页不提供 Python 路径编辑。
                 pythonPath: current.PythonPath,
@@ -520,7 +519,6 @@ public partial class DutyMainSettingsPage : SettingsPageBase
             SetAutoRunModeSelection(config.AutoRunMode);
             SetAutoRunParameterSelection(config.AutoRunMode, config.AutoRunParameter);
             SetAutoRunTimeSelection(config.AutoRunTime);
-            StartFromTodaySwitch.IsChecked = config.StartFromToday;
             AutoRunTriggerNotificationSwitch.IsChecked = config.AutoRunTriggerNotificationEnabled;
             DutyReminderEnabledSwitch.IsChecked = config.DutyReminderEnabled;
             SetDutyReminderTimeSelection(Service.GetDutyReminderTimes().FirstOrDefault());

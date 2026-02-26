@@ -463,7 +463,6 @@ public partial class DutyWebSettingsPage : SettingsPageBase
         var autoRunTime = config.AutoRunTime ?? current.AutoRunTime;
         var perDay = config.PerDay ?? current.PerDay;
         var dutyRule = config.DutyRule ?? current.DutyRule;
-        var startFromToday = config.StartFromToday ?? current.StartFromToday;
         var autoRunTriggerNotificationEnabled =
             config.AutoRunTriggerNotificationEnabled ?? current.AutoRunTriggerNotificationEnabled;
         var componentRefreshTime = config.ComponentRefreshTime ?? current.ComponentRefreshTime;
@@ -482,7 +481,6 @@ public partial class DutyWebSettingsPage : SettingsPageBase
             autoRunTime: autoRunTime,
             perDay: perDay,
             dutyRule: dutyRule,
-            startFromToday: startFromToday,
             componentRefreshTime: componentRefreshTime,
             pythonPath: pythonPath,
             notificationTemplates: notificationTemplates,
@@ -517,7 +515,6 @@ public partial class DutyWebSettingsPage : SettingsPageBase
                 AutoRunTime = config.AutoRunTime,
                 PerDay = config.PerDay,
                 DutyRule = config.DutyRule,
-                StartFromToday = config.StartFromToday,
                 ComponentRefreshTime = config.ComponentRefreshTime,
                 NotificationTemplates = _backendService.GetNotificationTemplates(),
                 DutyReminderEnabled = config.DutyReminderEnabled,
@@ -868,9 +865,6 @@ public partial class DutyWebSettingsPage : SettingsPageBase
 
         [JsonPropertyName("duty_rule")]
         public string? DutyRule { get; set; }
-
-        [JsonPropertyName("start_from_today")]
-        public bool? StartFromToday { get; set; }
 
         [JsonPropertyName("auto_run_trigger_notification_enabled")]
         public bool? AutoRunTriggerNotificationEnabled { get; set; }

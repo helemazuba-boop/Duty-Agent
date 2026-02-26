@@ -400,8 +400,16 @@ Your goal is to generate a schedule that balances **Hard Constraints** (Sick lea
 1. **Debt Queue**: Stores IDs skipped temporarily due to soft conflicts (e.g. Training). These MUST be cleared first.
 2. **Main Pointer**: Tracks the highest ID accessed in the roster. It **ONLY increments**. It never resets or goes back.
 
+# The "Patch" Principle (CRITICAL)
+Your output acts as a JSON PATCH to an existing live scheduling database.
+1. ONLY generate schedule entries for the specific dates requested by the User Instruction.
+2. OVER-GENERATION IS FATAL: If the user asks for "Thursday and Friday" (2 days), you MUST output exactly 2 entries. Do NOT generate Saturday, Sunday, or next week.
+3. Generating unrequested future dates will irreversibly DESTROY the user's existing future schedules.
+4. When in doubt, generate FEWER days rather than more.
+
 # Process (Chain of Thought)
-For each day, perform these steps in your `thinking_trace`:
+For each scheduling request, perform these steps in your `thinking_trace`:
+0. **Intent Parsing**: Read the User Instruction carefully. Count exactly how many days are requested. List the target dates explicitly. This is your contract — do NOT exceed it.
 1. **Date & Conflict**: Calculate the date. Identify who is blocked (Sick or Team).
 2. **Check Debt**: Is anyone in `Debt Queue` available today?
    - YES: Schedule them first (Backfill).
@@ -411,14 +419,17 @@ For each day, perform these steps in your `thinking_trace`:
    - If New ID is Team/Soft Conflict -> Skip for today, ADD to `Debt Queue`, and increment Pointer again.
    - If Valid -> Schedule them.
 4. **Flow Control**: Do not exceed daily capacity by too much. Spread debt repayment over multiple days if the queue is large ("Debt Avalanche" prevention).
+5. **Final Check**: Before outputting, verify that your schedule array length matches the day count from step 0. If it doesn't, you have a bug.
 
 # Output Schema (Strict JSON)
 ```json
 {{
   "thinking_trace": {{
+    "intent_parsing": "User requested Thursday and Friday. Target day count: 2. I will generate exactly 2 entries.",
     "step_1_analysis": "Date is 2026-02-18. IDs 5,6 are Team (blocked).",
     "step_2_pointer_logic": "Debt Queue is empty. Main Pointer moved from 10 to 12.",
-    "step_3_action": "Scheduled 11. 12 is Team, added to Debt. Scheduled 13."
+    "step_3_action": "Scheduled 11. 12 is Team, added to Debt. Scheduled 13.",
+    "final_check": "Output has 2 entries matching target. Safe to submit."
   }},
   "schedule": [
     {{
@@ -1118,10 +1129,6 @@ def main():
         )
         duty_rule = str(input_data.get("duty_rule", ctx.config.get("duty_rule", ""))).strip()
         apply_mode = str(input_data.get("apply_mode", "append")).strip().lower()
-        start_from_today = parse_bool(
-            input_data.get("start_from_today", ctx.config.get("start_from_today", False)),
-            False,
-        )
         existing_notes = input_data.get("existing_notes", {})
         if not isinstance(existing_notes, dict):
             existing_notes = {}
@@ -1130,9 +1137,7 @@ def main():
         today_date = datetime.now().date()
         entries = get_pool_entries_with_date(state_data)
         if apply_mode == "append":
-            if start_from_today:
-                start_date = today_date
-            elif entries:
+            if entries:
                 start_date = entries[-1][1] + timedelta(days=1)
             else:
                 start_date = today_date
