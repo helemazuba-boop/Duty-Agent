@@ -7,7 +7,7 @@
         <RootNamespace>DutyAgent</RootNamespace>
 		<AssemblyName>Duty-Agent</AssemblyName>
 		<Product>Duty-Agent</Product>
-		<Version>0.30.0-beta</Version>
+		<Version>0.31.0-beta</Version>
 	</PropertyGroup>
     
 	<ItemGroup>

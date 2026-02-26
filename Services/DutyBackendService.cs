@@ -13,6 +13,7 @@ public class DutyBackendService : IDisposable
     private const int AutoRunRetryCooldownMinutes = 30;
     private const int CoreProcessTimeoutMs = 300_000;
     private const string ApiKeyMask = "********";
+    private const string CoreProgressPrefix = "__DUTY_PROGRESS__:";
     private const string DefaultAreaClassroom = "\u6559\u5BA4";
     private const string DefaultAreaCleaning = "\u6E05\u6D01\u533A";
     private const string DefaultNotificationTemplate =
@@ -237,7 +238,8 @@ public class DutyBackendService : IDisposable
         string? overrideModel = null,
         Action<CoreRunProgress>? progress = null)
     {
-        static CoreRunProgress BuildProgress(string phase, string message) => new(phase, message);
+        static CoreRunProgress BuildProgress(string phase, string message, string? streamChunk = null) =>
+            new(phase, message, streamChunk);
 
         var effectiveInstruction = string.IsNullOrWhiteSpace(instruction)
             ? AutoRunInstruction
@@ -301,7 +303,18 @@ public class DutyBackendService : IDisposable
         var stdout = new StringBuilder();
         var stderr = new StringBuilder();
 
-        process.OutputDataReceived += (_, args) => { if (args.Data != null) stdout.AppendLine(args.Data); };
+        process.OutputDataReceived += (_, args) =>
+        {
+            if (args.Data == null)
+            {
+                return;
+            }
+
+            if (!TryHandleCoreProgressLine(args.Data, progress))
+            {
+                stdout.AppendLine(args.Data);
+            }
+        };
         process.ErrorDataReceived += (_, args) => { if (args.Data != null) stderr.AppendLine(args.Data); };
 
         var processStarted = false;
@@ -419,6 +432,46 @@ public class DutyBackendService : IDisposable
         {
             _runCoreGate.Release();
         }
+    }
+
+    private static bool TryHandleCoreProgressLine(string line, Action<CoreRunProgress>? progress)
+    {
+        if (!line.StartsWith(CoreProgressPrefix, StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        var rawPayload = line[CoreProgressPrefix.Length..].Trim();
+        if (rawPayload.Length == 0)
+        {
+            return true;
+        }
+
+        try
+        {
+            using var doc = JsonDocument.Parse(rawPayload);
+            var phase = doc.RootElement.TryGetProperty("phase", out var phaseElement)
+                ? (phaseElement.GetString() ?? string.Empty).Trim()
+                : string.Empty;
+            if (phase.Length == 0)
+            {
+                return true;
+            }
+
+            var message = doc.RootElement.TryGetProperty("message", out var messageElement)
+                ? (messageElement.GetString() ?? string.Empty)
+                : string.Empty;
+            var streamChunk = doc.RootElement.TryGetProperty("chunk", out var chunkElement)
+                ? (chunkElement.GetString() ?? string.Empty)
+                : string.Empty;
+            progress?.Invoke(new CoreRunProgress(phase, message, streamChunk));
+        }
+        catch
+        {
+            // Ignore malformed progress payloads and keep processing.
+        }
+
+        return true;
     }
 
     private static (string? Message, string? AiResponse) TryReadCoreResultFields(string resultPath)
@@ -1492,11 +1545,13 @@ public class DutyBackendService : IDisposable
     {
         public string Phase { get; }
         public string Message { get; }
+        public string StreamChunk { get; }
 
-        public CoreRunProgress(string phase, string message)
+        public CoreRunProgress(string phase, string message, string? streamChunk = null)
         {
             Phase = phase;
             Message = message;
+            StreamChunk = streamChunk ?? string.Empty;
         }
     }
 }

@@ -14,7 +14,7 @@ import urllib.error
 import urllib.request
 from datetime import datetime, timedelta, date
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 DEFAULT_PER_DAY = 2
 DEFAULT_AREA_NAMES = ["教室", "清洁区"]
@@ -23,6 +23,9 @@ LLM_TIMEOUT_SECONDS = 120
 LLM_MAX_RETRIES = 2
 LLM_RETRY_BACKOFF_SECONDS = 2
 AI_RESPONSE_MAX_CHARS = 20000
+LLM_STREAM_ENABLED_DEFAULT = True
+LLM_PROGRESS_LINE_PREFIX = "__DUTY_PROGRESS__:"
+LLM_STREAM_PROGRESS_MIN_INTERVAL_SECONDS = 0.2
 
 
 class Context:
@@ -462,7 +465,269 @@ def is_timeout_error(ex: Exception) -> bool:
     return "timed out" in str(ex).lower()
 
 
-def call_llm(messages: List[dict], config: dict) -> Tuple[dict, str]:
+class StreamUnsupportedError(RuntimeError):
+    pass
+
+
+def emit_progress_line(phase: str, message: str = "", chunk: str = "") -> None:
+    phase_text = str(phase or "").strip()
+    if not phase_text:
+        return
+
+    payload: Dict[str, str] = {"phase": phase_text}
+    message_text = str(message or "").strip()
+    if message_text:
+        payload["message"] = message_text
+    if chunk:
+        payload["chunk"] = str(chunk)
+
+    try:
+        line = f"{LLM_PROGRESS_LINE_PREFIX}{json.dumps(payload, ensure_ascii=False)}"
+        print(line, flush=True)
+    except Exception:
+        # Progress output should never break the scheduling flow.
+        pass
+
+
+def invoke_progress_callback(
+    progress_callback: Optional[Callable[[str, str, str], None]],
+    phase: str,
+    message: str = "",
+    chunk: str = "",
+) -> None:
+    if progress_callback is None:
+        return
+    try:
+        progress_callback(phase, message, chunk)
+    except Exception:
+        # Ignore callback exceptions to avoid interrupting model calls.
+        pass
+
+
+def extract_text_content(content: Any) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: List[str] = []
+        for item in content:
+            if isinstance(item, str):
+                parts.append(item)
+                continue
+            if not isinstance(item, dict):
+                continue
+            text_value = item.get("text")
+            if isinstance(text_value, str):
+                parts.append(text_value)
+                continue
+            nested = item.get("content")
+            if isinstance(nested, str):
+                parts.append(nested)
+        return "".join(parts)
+    return ""
+
+
+def extract_text_from_non_stream_response(response: dict) -> str:
+    choices = response.get("choices", [])
+    if not isinstance(choices, list) or not choices:
+        return ""
+
+    choice = choices[0]
+    if not isinstance(choice, dict):
+        return ""
+
+    message = choice.get("message", {})
+    if isinstance(message, dict):
+        content = extract_text_content(message.get("content"))
+        if content:
+            return content
+
+    return extract_text_content(choice.get("text"))
+
+
+def extract_text_from_stream_event(event_obj: dict) -> str:
+    choices = event_obj.get("choices", [])
+    if not isinstance(choices, list) or not choices:
+        return ""
+
+    choice = choices[0]
+    if not isinstance(choice, dict):
+        return ""
+
+    delta = choice.get("delta", {})
+    if isinstance(delta, dict):
+        content = extract_text_content(delta.get("content"))
+        if content:
+            return content
+
+    message = choice.get("message", {})
+    if isinstance(message, dict):
+        content = extract_text_content(message.get("content"))
+        if content:
+            return content
+
+    return extract_text_content(choice.get("text"))
+
+
+def create_llm_request(url: str, payload: dict, api_key: str) -> urllib.request.Request:
+    data = json.dumps(payload).encode("utf-8")
+    return urllib.request.Request(
+        url=url,
+        data=data,
+        method="POST",
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {api_key}",
+        },
+    )
+
+
+def request_llm_non_stream(url: str, payload: dict, api_key: str) -> str:
+    req = create_llm_request(url, payload, api_key)
+    with urllib.request.urlopen(req, timeout=LLM_TIMEOUT_SECONDS) as resp:
+        raw = resp.read().decode("utf-8")
+
+    response = json.loads(raw)
+    content = extract_text_from_non_stream_response(response)
+    if not content.strip():
+        raise RuntimeError("LLM returned empty content.")
+    return content
+
+
+def request_llm_stream(
+    url: str,
+    payload: dict,
+    api_key: str,
+    progress_callback: Optional[Callable[[str, str, str], None]] = None,
+) -> str:
+    stream_payload = dict(payload)
+    stream_payload["stream"] = True
+    req = create_llm_request(url, stream_payload, api_key)
+
+    invoke_progress_callback(progress_callback, "stream_start", "Streaming response opened.")
+
+    chunks: List[str] = []
+    buffered_for_progress: List[str] = []
+    saw_sse_data = False
+    raw_lines: List[str] = []
+    last_progress_emit_at = time.time()
+
+    with urllib.request.urlopen(req, timeout=LLM_TIMEOUT_SECONDS) as resp:
+        for raw_line in resp:
+            decoded = raw_line.decode("utf-8", errors="ignore")
+            raw_lines.append(decoded)
+            line = decoded.strip()
+            if not line or line.startswith(":"):
+                continue
+            if not line.startswith("data:"):
+                continue
+
+            saw_sse_data = True
+            data_text = line[5:].strip()
+            if not data_text:
+                continue
+            if data_text == "[DONE]":
+                break
+
+            try:
+                event_obj = json.loads(data_text)
+            except json.JSONDecodeError:
+                continue
+
+            text = extract_text_from_stream_event(event_obj)
+            if not text:
+                continue
+
+            chunks.append(text)
+            buffered_for_progress.append(text)
+            now = time.time()
+            if (now - last_progress_emit_at) >= LLM_STREAM_PROGRESS_MIN_INTERVAL_SECONDS:
+                progress_chunk = "".join(buffered_for_progress)
+                buffered_for_progress.clear()
+                invoke_progress_callback(
+                    progress_callback,
+                    "stream_chunk",
+                    "Receiving model stream...",
+                    progress_chunk,
+                )
+                last_progress_emit_at = now
+
+    if not saw_sse_data:
+        raw_text = "".join(raw_lines).strip()
+        if raw_text:
+            try:
+                fallback_response = json.loads(raw_text)
+                content = extract_text_from_non_stream_response(fallback_response)
+                if content.strip():
+                    invoke_progress_callback(
+                        progress_callback,
+                        "stream_end",
+                        "Streaming endpoint returned full response payload.",
+                    )
+                    return content
+            except Exception:
+                pass
+        raise StreamUnsupportedError("Upstream endpoint does not provide SSE stream output.")
+
+    if buffered_for_progress:
+        invoke_progress_callback(
+            progress_callback,
+            "stream_chunk",
+            "Receiving model stream...",
+            "".join(buffered_for_progress),
+        )
+
+    content = "".join(chunks)
+    if not content.strip():
+        raise RuntimeError("LLM stream returned empty content.")
+
+    invoke_progress_callback(progress_callback, "stream_end", "Streaming response completed.")
+    return content
+
+
+def execute_with_retries(
+    request_fn: Callable[[], str],
+    mode: str,
+) -> str:
+    last_error: Optional[Exception] = None
+    for attempt in range(LLM_MAX_RETRIES + 1):
+        try:
+            return request_fn()
+        except StreamUnsupportedError:
+            raise
+        except urllib.error.HTTPError as ex:
+            detail = ex.read().decode("utf-8", errors="ignore")
+            retryable = ex.code == 429 or 500 <= ex.code < 600
+            if retryable and attempt < LLM_MAX_RETRIES:
+                time.sleep(LLM_RETRY_BACKOFF_SECONDS * (attempt + 1))
+                continue
+
+            if mode == "stream" and ex.code in (400, 404, 405, 415, 422, 426, 501):
+                raise StreamUnsupportedError(
+                    f"Streaming request is not supported by upstream endpoint (HTTP {ex.code})."
+                ) from ex
+
+            raise RuntimeError(f"HTTP error {ex.code}: {detail}") from ex
+        except (urllib.error.URLError, TimeoutError, socket.timeout) as ex:
+            last_error = ex
+            if attempt < LLM_MAX_RETRIES:
+                time.sleep(LLM_RETRY_BACKOFF_SECONDS * (attempt + 1))
+                continue
+
+            if is_timeout_error(ex):
+                raise RuntimeError(
+                    f"Network request timed out ({LLM_TIMEOUT_SECONDS} seconds)."
+                ) from ex
+            reason = getattr(ex, "reason", ex)
+            raise RuntimeError(f"Network error: {reason}") from ex
+
+    raise RuntimeError(f"Network request failed: {last_error}") from last_error
+
+
+def call_llm(
+    messages: List[dict],
+    config: dict,
+    progress_callback: Optional[Callable[[str, str, str], None]] = None,
+) -> Tuple[dict, str]:
     """Send prompt messages to the LLM and return parsed JSON + raw text."""
     base_url = str(config["base_url"]).rstrip("/")
     url = f"{base_url}/chat/completions"
@@ -471,56 +736,40 @@ def call_llm(messages: List[dict], config: dict) -> Tuple[dict, str]:
         "messages": messages,
         "temperature": 0.1,
     }
-    data = json.dumps(payload).encode("utf-8")
-    req = urllib.request.Request(
-        url=url,
-        data=data,
-        method="POST",
-        headers={
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {config['api_key']}",
-        },
+    api_key = str(config.get("api_key", "")).strip()
+    if not api_key:
+        raise ValueError("Missing API key.")
+
+    stream_enabled = parse_bool(
+        config.get("llm_stream", config.get("stream", LLM_STREAM_ENABLED_DEFAULT)),
+        LLM_STREAM_ENABLED_DEFAULT,
     )
 
-    last_error: Optional[Exception] = None
-    for attempt in range(LLM_MAX_RETRIES + 1):
+    content = ""
+    if stream_enabled:
         try:
-            with urllib.request.urlopen(req, timeout=LLM_TIMEOUT_SECONDS) as resp:
-                raw = resp.read().decode("utf-8")
-            break
-        except urllib.error.HTTPError as ex:
-            detail = ex.read().decode("utf-8", errors="ignore")
-            retryable = ex.code == 429 or 500 <= ex.code < 600
-            if retryable and attempt < LLM_MAX_RETRIES:
-                time.sleep(LLM_RETRY_BACKOFF_SECONDS * (attempt + 1))
-                continue
-            raise RuntimeError(f"HTTP 错误 {ex.code}: {detail}") from ex
-        except (urllib.error.URLError, TimeoutError, socket.timeout) as ex:
-            last_error = ex
-            if attempt < LLM_MAX_RETRIES:
-                time.sleep(LLM_RETRY_BACKOFF_SECONDS * (attempt + 1))
-                continue
-            if is_timeout_error(ex):
-                raise RuntimeError(
-                    f"网络请求超时（{LLM_TIMEOUT_SECONDS}秒），请检查网络连接或稍后重试。"
-                ) from ex
-            reason = getattr(ex, "reason", ex)
-            raise RuntimeError(f"网络错误: {reason}") from ex
-    else:
-        raise RuntimeError(f"网络请求失败: {last_error}") from last_error
+            content = execute_with_retries(
+                lambda: request_llm_stream(url, payload, api_key, progress_callback),
+                mode="stream",
+            )
+        except StreamUnsupportedError:
+            invoke_progress_callback(
+                progress_callback,
+                "stream_fallback",
+                "Streaming not supported by endpoint. Falling back to non-stream mode.",
+            )
 
-    response = json.loads(raw)
-    choices = response.get("choices", [])
-    if not choices:
-        raise RuntimeError("LLM response missing choices.")
-    message = choices[0].get("message", {})
-    content = message.get("content") or ""
+    if not content:
+        content = execute_with_retries(
+            lambda: request_llm_non_stream(url, payload, api_key),
+            mode="non_stream",
+        )
+
     if not content.strip():
         raise RuntimeError("LLM returned empty content.")
-    return json.loads(clean_json_response(content)), content
 
-
-
+    parsed = json.loads(clean_json_response(content))
+    return parsed, content
 
 
 def extract_ids_from_value(value, active_set: set, limit: int) -> List[int]:
@@ -596,6 +845,7 @@ def normalize_multi_area_schedule_ids(
         day_assignments: Dict[str, List[int]] = {}
         used_ids: set = set()
 
+        # 1. Extract Predefined Configured Areas
         for area_index, area_name in enumerate(area_names):
             per_area_count = area_per_day_counts.get(area_name, DEFAULT_PER_DAY)
             
@@ -606,6 +856,19 @@ def normalize_multi_area_schedule_ids(
             
             day_assignments[area_name] = final_ids
             used_ids.update(final_ids)
+
+        # 2. Extract Dynamic Areas created by AI
+        raw_area_ids = entry.get("area_ids") or entry.get("areas") or entry.get("area_assignments") or {}
+        if isinstance(raw_area_ids, dict):
+            for dynamic_area_name, raw_value in raw_area_ids.items():
+                dynamic_area_name = str(dynamic_area_name).strip()
+                if not dynamic_area_name or dynamic_area_name in day_assignments:
+                    continue
+                extracted_ids = extract_ids_from_value(raw_value, active_set, 999)
+                final_ids = [pid for pid in extracted_ids if pid not in used_ids]
+                if final_ids:
+                    day_assignments[dynamic_area_name] = final_ids
+                    used_ids.update(final_ids)
 
         note = str(entry.get("note", "")).strip()
         normalized.append({
@@ -640,10 +903,21 @@ def restore_schedule(
             area_ids_map = {}
 
         area_assignments: Dict[str, List[str]] = {}
+        # 1. Predefined Configured Areas
         for area_name in area_names:
             area_ids = area_ids_map.get(area_name, [])
             students = [id_to_name[pid] for pid in area_ids if pid in id_to_name]
             area_assignments[area_name] = students
+
+        # 2. Dynamic Areas
+        for dynamic_area_name, area_ids in area_ids_map.items():
+            dynamic_area_name = str(dynamic_area_name).strip()
+            if not dynamic_area_name or dynamic_area_name in area_assignments:
+                continue
+            if isinstance(area_ids, list):
+                students = [id_to_name[pid] for pid in area_ids if pid in id_to_name]
+                if students:
+                    area_assignments[dynamic_area_name] = students
 
         # Note logic: Use new note from AI if present, else fallback to existing note
         note = str(day_entry.get("note", "")).strip()
@@ -746,6 +1020,13 @@ def main():
         ctx.config["base_url"] = base_url
         ctx.config["model"] = model
         ctx.config["api_key"] = load_api_key_from_env()
+        ctx.config["llm_stream"] = parse_bool(
+            input_data.get(
+                "llm_stream",
+                input_data.get("stream", ctx.config.get("llm_stream", ctx.config.get("stream", LLM_STREAM_ENABLED_DEFAULT))),
+            ),
+            LLM_STREAM_ENABLED_DEFAULT,
+        )
         per_day = parse_int(
             input_data.get("per_day", ctx.config.get("per_day", DEFAULT_PER_DAY)),
             DEFAULT_PER_DAY,
@@ -805,7 +1086,11 @@ def main():
             debt_list=debt_list,
         )
 
-        llm_result, llm_response_text = call_llm(messages, ctx.config)
+        llm_result, llm_response_text = call_llm(
+            messages,
+            ctx.config,
+            progress_callback=emit_progress_line,
+        )
         schedule_raw = llm_result.get("schedule", [])
         validate_llm_schedule_entries(schedule_raw)
         

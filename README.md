@@ -1,6 +1,6 @@
 <div align="center">
   <img src="icon.png" width="128" alt="Duty-Agent Logo" />
-  <h1>🛡️ Duty-Agent</h1>
+  <h1>Duty-Agent</h1>
   <p><em>"Reasoning via LLM, Reliability via Code." —— 面向 ClassIsland 的下一代混合智能排班系统</em></p>
   <p><strong>当前版本: v0.30-Beta</strong></p>
 </div>

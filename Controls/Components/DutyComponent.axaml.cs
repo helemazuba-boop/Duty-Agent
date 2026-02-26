@@ -59,11 +59,22 @@ public partial class DutyComponent : ComponentBase<DutyComponentSettings>
                 return;
             }
 
-            var today = DateTime.Now.ToString("yyyy-MM-dd");
-            var item = state.SchedulePool.LastOrDefault(x => x.Date == today);
+            _service.LoadConfig();
+            var now = DateTime.Now;
+            var targetDate = now.Date;
+            if (TimeSpan.TryParse(_service.Config.ComponentRefreshTime, out var refreshTime))
+            {
+                if (now.TimeOfDay >= refreshTime)
+                {
+                    targetDate = targetDate.AddDays(1);
+                }
+            }
+
+            var targetDateString = targetDate.ToString("yyyy-MM-dd");
+            var item = state.SchedulePool.LastOrDefault(x => x.Date == targetDateString);
             if (item == null)
             {
-                DutyText.Text = "\u4ECA\u65E5\u6682\u65E0\u503C\u65E5\u5B89\u6392";
+                DutyText.Text = "该日暂无值日安排";
                 DutyText.Foreground = Brushes.Red;
                 return;
             }

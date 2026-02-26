@@ -24,3 +24,4 @@ Assets_Duty/data/*.tmp
 # OS
 .DS_Store
 Thumbs.db
+.gitnexus

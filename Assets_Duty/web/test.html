@@ -777,6 +777,7 @@
       INFO: '信息',
       WARN: '警告',
       ERROR: '错误',
+      STREAM: '流式',
       SEND: '发送',
       RECV: '接收',
       OK: '成功'
@@ -1972,6 +1973,14 @@
       if (data.type === 'run_status') {
         const phase = String(data.phase || '').trim().toLowerCase();
         const message = String(data.message || '').trim();
+        const streamChunk = String(data.stream_chunk || '');
+        if (phase === 'stream_chunk') {
+          setRunInProgress(true, message || '正在接收模型流式输出...');
+          if (streamChunk.trim()) {
+            log('STREAM', '模型流式片段。', { chunk: streamChunk });
+          }
+          return;
+        }
         if (phase === 'started' || phase === 'running') {
           setRunInProgress(true, message || '正在执行排班，请稍候...');
         } else if (phase === 'completed' || phase === 'failed' || phase === 'error') {

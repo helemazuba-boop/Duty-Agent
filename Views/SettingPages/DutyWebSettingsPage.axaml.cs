@@ -270,13 +270,31 @@ public partial class DutyWebSettingsPage : SettingsPageBase
                         return;
                     }
 
+                    var progressMessage = progress.Message ?? string.Empty;
+                    var streamChunk = progress.StreamChunk ?? string.Empty;
+                    if (phase == "stream_chunk")
+                    {
+                        if (streamChunk.Length == 0)
+                        {
+                            return;
+                        }
+
+                        DutyDiagnosticsLogger.Info("RunCore", "Streaming chunk received.",
+                            new
+                            {
+                                chunkLength = streamChunk.Length
+                            });
+                        Dispatcher.UIThread.Post(() =>
+                            _ = SendRunStatusAsync(phase, progressMessage, streamChunk));
+                        return;
+                    }
+
                     DutyDiagnosticsLogger.Info("RunCore", "Progress update.",
                         new
                         {
                             phase,
-                            message = TruncateForLog(progress.Message ?? string.Empty, 220)
+                            message = TruncateForLog(progressMessage, 220)
                         });
-                    var progressMessage = progress.Message ?? string.Empty;
                     Dispatcher.UIThread.Post(() => _ = SendRunStatusAsync(phase, progressMessage));
                 }));
             var resultMessage = result.Message ?? string.Empty;
@@ -593,13 +611,14 @@ public partial class DutyWebSettingsPage : SettingsPageBase
         });
     }
 
-    private Task SendRunStatusAsync(string phase, string message)
+    private Task SendRunStatusAsync(string phase, string message, string? streamChunk = null)
     {
         return _webViewHost.PostJsonAsync(new RunStatusMessage
         {
             Type = "run_status",
             Phase = phase,
-            Message = message
+            Message = message,
+            StreamChunk = streamChunk ?? string.Empty
         });
     }
 
@@ -753,6 +772,9 @@ public partial class DutyWebSettingsPage : SettingsPageBase
 
         [JsonPropertyName("message")]
         public string Message { get; set; } = string.Empty;
+
+        [JsonPropertyName("stream_chunk")]
+        public string StreamChunk { get; set; } = string.Empty;
     }
 
     private sealed class ErrorMessage
