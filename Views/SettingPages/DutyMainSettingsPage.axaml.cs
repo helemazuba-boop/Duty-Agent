@@ -32,7 +32,6 @@ public partial class DutyMainSettingsPage : SettingsPageBase
     private bool _hasPendingConfigApply;
     private string _pendingScheduleSelectionDate = string.Empty;
     private bool _isPopulatingEditor;
-    private bool _isEditorDirty;
 
     public DutyMainSettingsPage()
     {
@@ -815,7 +814,6 @@ public partial class DutyMainSettingsPage : SettingsPageBase
         }
         finally
         {
-            _isEditorDirty = false;
             ScheduleListBox.IsEnabled = true;
             _isPopulatingEditor = false;
         }
@@ -834,7 +832,6 @@ public partial class DutyMainSettingsPage : SettingsPageBase
     private void HandleScheduleEditorChanged()
     {
         if (_isPopulatingEditor) return;
-        _isEditorDirty = true;
         ScheduleListBox.IsEnabled = false;
         SelectedScheduleMetaText.Text = "（您有未保存的修改。若想切换日期，请先保存或点击【重新载入】）";
     }

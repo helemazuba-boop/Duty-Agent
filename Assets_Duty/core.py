@@ -25,6 +25,7 @@ LLM_MAX_RETRIES = 2
 LLM_RETRY_BACKOFF_SECONDS = 2
 AI_RESPONSE_MAX_CHARS = 20000
 LLM_STREAM_ENABLED_DEFAULT = True
+LLM_PARSE_MAX_RETRIES = 1
 LLM_PROGRESS_LINE_PREFIX = "__DUTY_PROGRESS__:"
 LLM_STREAM_PROGRESS_MIN_INTERVAL_SECONDS = 0.2
 
@@ -358,11 +359,11 @@ def build_calendar_anchor(
                     f"Cross-Month Boundary: {last_day_of_month.isoformat()} ({WEEKDAY_CN[last_day_of_month.weekday()]}) "
                     f"-> {next_month_first.isoformat()} ({WEEKDAY_CN[next_month_first.weekday()]})"
                 )
-            # Move to next month
+            # Move to next month (use date() constructor to avoid day-out-of-range crash)
             if cursor.month == 12:
-                cursor = cursor.replace(year=cursor.year + 1, month=1)
+                cursor = date(cursor.year + 1, 1, 1)
             else:
-                cursor = cursor.replace(month=cursor.month + 1)
+                cursor = date(cursor.year, cursor.month + 1, 1)
 
     lines.append(
         "HARD CONSTRAINT: You MUST NOT generate any date outside this range. "
@@ -478,35 +479,34 @@ For each scheduling request, perform these steps in your `thinking_trace`:
     ]
 
 
-def force_insert_debts(schedule_raw: List[dict], debt_list: List[int], area_names: List[str]) -> None:
-    """Force insert debt IDs into the first day's schedule if not present."""
-    if not debt_list or not schedule_raw or not area_names:
-        return
+def recover_missing_debts(
+    original_debt_list: List[int],
+    new_debt_ids_from_llm: List[int],
+    normalized_schedule: List[dict],
+) -> List[int]:
+    """Audit post-normalization schedule to recover debts the LLM missed.
 
-    # 1. Identify who is arguably already scheduled?
-    # Actually, we can just prepend them to the first slot and let normalization dedupe.
-    # But wait, we want to ensure they are *first* in the list.
-    
-    target_day = schedule_raw[0]
-    if "area_ids" not in target_day or not isinstance(target_day["area_ids"], dict):
-        target_day["area_ids"] = {}
-    
-    first_area = area_names[0]
-    existing = target_day["area_ids"].get(first_area, [])
-    if not isinstance(existing, list):
-        existing = []
-    
-    # Prepend debts to the first area of the first day
-    # Filter out duplicates that might already be in existing to avoid double-adding?
-    # Normalization handles deduplication, but we want debts at the FRONT.
-    
-    # We only prepend debts that are NOT already in the list to avoid duplication if LLM did its job.
-    # Actually, if LLM did its job, they are somewhere. If we prepend, they are at the front.
-    # If LLM put them at the end, prepending moves them to front (and dupes are removed later).
-    # So prepending is safe.
-    
-    new_list = list(debt_list) + existing
-    target_day["area_ids"][first_area] = new_list
+    Returns a deduplicated, sorted list of IDs that should remain in debt.
+    """
+    # Collect all IDs that actually made it into the final schedule
+    scheduled_set: set = set()
+    for entry in normalized_schedule:
+        for ids in entry.get("area_ids", {}).values():
+            if isinstance(ids, list):
+                scheduled_set.update(ids)
+
+    # Start with what the LLM reported as still in debt
+    final_debt_set = set(new_debt_ids_from_llm)
+
+    # Add any original debts that the LLM failed to schedule
+    for pid in original_debt_list:
+        if pid not in scheduled_set:
+            final_debt_set.add(pid)
+
+    # Remove anyone who IS scheduled (LLM might list them as debt AND schedule them)
+    final_debt_set -= scheduled_set
+
+    return sorted(final_debt_set)
 
 
 
@@ -856,8 +856,32 @@ def call_llm(
     if not content.strip():
         raise RuntimeError("LLM returned empty content.")
 
-    parsed = json.loads(clean_json_response(content))
-    return parsed, content
+    # Parse JSON with application-level retry (re-call LLM on format hallucination)
+    last_parse_error: Optional[Exception] = None
+    for parse_attempt in range(LLM_PARSE_MAX_RETRIES + 1):
+        try:
+            parsed = json.loads(clean_json_response(content))
+            return parsed, content
+        except json.JSONDecodeError as je:
+            last_parse_error = je
+            if parse_attempt < LLM_PARSE_MAX_RETRIES:
+                invoke_progress_callback(
+                    progress_callback,
+                    "parse_retry",
+                    f"AI output JSON format error, retrying ({parse_attempt + 1}/{LLM_PARSE_MAX_RETRIES})...",
+                )
+                # Append failed output + error context so the LLM can self-correct
+                payload["messages"].append({"role": "assistant", "content": content})
+                payload["messages"].append({
+                    "role": "user",
+                    "content": f"你的上一次输出无法解析为JSON。报错信息：{str(je)}。请检查是否遗漏了逗号或括号，纠正格式并重新输出。严格要求只输出合法的JSON。"
+                })
+                # Re-call LLM to get a corrected response
+                content = execute_with_retries(
+                    lambda: request_llm_non_stream(url, payload, api_key),
+                    mode="non_stream",
+                )
+    raise RuntimeError(f"LLM returned malformed JSON after {LLM_PARSE_MAX_RETRIES + 1} attempts: {last_parse_error}") from last_parse_error
 
 
 def extract_ids_from_value(value, active_set: set, limit: int) -> List[int]:
@@ -1146,6 +1170,7 @@ def main():
 
         anchor_id = get_anchor_id(state_data, name_to_id, active_ids, start_date, apply_mode)
         sanitized_instruction = anonymize_instruction(instruction, name_to_id)
+        duty_rule = anonymize_instruction(duty_rule, name_to_id)
 
         # Build prompt with ID range + disabled IDs
         id_range = (min(all_ids), max(all_ids))
@@ -1185,58 +1210,22 @@ def main():
         # Persist next_run_note for future runs
         next_run_note = str(llm_result.get("next_run_note", "")).strip()
         state_data["next_run_note"] = next_run_note
-        
-        # --- SCHEME 1: Structured Debt Enforcement ---
-        # 1. Force insert existing debts
-        force_insert_debts(schedule_raw, debt_list, area_names)
-        
-        # 2. Update debt list based on output `new_debt_ids`
-        # Note: We trust the LLM to tell us who is STILL in debt (or newly added).
-        # But we also should verify if our forced debts actually got scheduled?
-        # If we force insert, they WILL be scheduled (unless active_ids filter drops them, but we checked that).
-        
-        raw_new_debts = llm_result.get("new_debt_ids", [])
-        new_debt_list = extract_ids_from_value(raw_new_debts, set(active_ids), 9999)
-        state_data["debt_list"] = new_debt_list
-        # ---------------------------------------------
-        
+
         normalized_ids = normalize_multi_area_schedule_ids(
             schedule_raw,
             active_ids,
             area_names,
             area_per_day_counts,
         )
-        
-        # Verify if force insertion worked?
-        # If normalization dropped them (due to per_day limit), they should logically remain in debt.
-        # But `new_debt_list` comes from LLM. LLM might not know we force inserted.
-        # If we force insert, we are overriding LLM.
-        # So we should recalculate debt?
-        # logic: final_debt = (old_debt + new_debt) - scheduled_ids
-        
-        scheduled_set = set()
-        for entry in normalized_ids:
-            for ids in entry.get("area_ids", {}).values():
-                scheduled_set.update(ids)
-                
-        # Recalculate strict debt list
-        # Start with what LLM thinks is debt
-        final_debt_set = set(new_debt_list)
-        # Add original debts that failed to schedule (if any)
-        # We check against keys in normalized_ids to see who ACTUALLY got scheduled
-        scheduled_set = set()
-        for entry in normalized_ids:
-            for ids in entry.get("area_ids", {}).values():
-                scheduled_set.update(ids)
 
-        for old_pid in debt_list:
-            if old_pid not in scheduled_set:
-                final_debt_set.add(old_pid)
-        
-        # Remove anyone who IS scheduled (just in case LLM listed them as debt but also scheduled them)
-        final_debt_set = final_debt_set - scheduled_set
-        
-        state_data["debt_list"] = sorted(list(final_debt_set))
+        # --- Debt Recovery Audit ---
+        raw_new_debts = llm_result.get("new_debt_ids", [])
+        new_debt_list = extract_ids_from_value(raw_new_debts, set(active_ids), 9999)
+        state_data["debt_list"] = recover_missing_debts(
+            original_debt_list=debt_list,
+            new_debt_ids_from_llm=new_debt_list,
+            normalized_schedule=normalized_ids,
+        )
 
         restored = restore_schedule(
             normalized_ids,

@@ -14,11 +14,7 @@
 		<PackageReference Include="ClassIsland.PluginSdk" Version="2.0.0.2">
 			<ExcludeAssets>runtime; native</ExcludeAssets>
 		</PackageReference>
-		<PackageReference Include="DotNetCommon.PinYin" Version="8.0.0" />
 		<PackageReference Include="Microsoft.Web.WebView2" Version="1.0.2903.40" />
-		<PackageReference Include="Pastel" Version="4.2.0" />
-		<PackageReference Include="Sentry" Version="6.1.0-alpha.1" />
-		<PackageReference Include="SuperAutoIsland.Interface" Version="0.1.2.4" />
 	</ItemGroup>
 
 	<ItemGroup>
@@ -41,22 +37,11 @@
 			<CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
 		</None>
 	</ItemGroup>
-
-	<ItemGroup>
-		<Compile Remove="Views\ImportWorkersWindow.axaml.cs" />
-		<Compile Remove="Views\SettingPages\DebugSettingsPage.axaml.cs" />
-		<Compile Remove="Views\SettingPages\DutyProfileSettingsPage.axaml.cs" />
-		<Compile Remove="Views\SettingPages\DutyRollingSettingsPage.axaml.cs" />
-		<Compile Remove="SecRandom-CI-master\**\*.cs" />
-		<AvaloniaXaml Remove="Views\ImportWorkersWindow.axaml" />
-		<AvaloniaXaml Remove="Views\SettingPages\DebugSettingsPage.axaml" />
-		<AvaloniaXaml Remove="Views\SettingPages\DutyProfileSettingsPage.axaml" />
-		<AvaloniaXaml Remove="Views\SettingPages\DutyRollingSettingsPage.axaml" />
-		<AvaloniaXaml Remove="SecRandom-CI-master\**\*.axaml" />
-	</ItemGroup>
 	
 	<ItemGroup>
-		<AvaloniaResource Include="Assets\**" />
+		<None Update="Assets_Duty\test_*.py;Assets_Duty\test_*.txt;Assets_Duty\web\INDEX_UI_HANDOFF.md;Assets_Duty\web\FEATURE_LAYERING.md">
+			<CopyToOutputDirectory>Never</CopyToOutputDirectory>
+		</None>
 	</ItemGroup>
 </Project>
 
