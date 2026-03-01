@@ -381,6 +381,7 @@ def build_prompt_messages(
     duty_rule: str,
     area_names: List[str],
     debt_list: List[int],
+    credit_list: List[int],
     previous_context: str = "",
     calendar_anchor: str = "",
 ) -> List[dict]:
@@ -397,9 +398,10 @@ Your goal is to generate a schedule that balances **Hard Constraints** (Sick lea
 - IDs are a continuous sequence (e.g., 1, 2, 3...).
 - You have a `Main_Pointer` starting at `Last ID`.
 
-# The "Two-Queue" Protocol
-1. **Debt Queue**: Stores IDs skipped temporarily due to soft conflicts (e.g. Training). These MUST be cleared first.
-2. **Main Pointer**: Tracks the highest ID accessed in the roster. It **ONLY increments**. It never resets or goes back.
+# The "Three-Queue" Protocol
+1. **Debt Queue**: Stores IDs who owe duty (skipped due to soft conflicts, or removed via manual edit). These MUST be cleared first.
+2. **Credit Queue**: Stores IDs who did extra volunteer work (added via manual edit). When `Main_Pointer` naturally reaches them, SKIP them once and remove from Credit. They earned immunity.
+3. **Main Pointer**: Tracks the highest ID accessed in the roster. It **ONLY increments**. It never resets or goes back.
 
 # The "Patch" Principle (CRITICAL)
 Your output acts as a JSON PATCH to an existing live scheduling database.
@@ -416,6 +418,7 @@ For each scheduling request, perform these steps in your `thinking_trace`:
    - YES: Schedule them first (Backfill).
    - NO: Proceed to step 3.
 3. **Advance Pointer**: If more slots are needed, increment `Main_Pointer`.
+   - If New ID is in `Credit Queue` -> SKIP them (immunity), remove from Credit, do NOT add to Debt. Increment Pointer again.
    - If New ID is Sick -> Skip permanently (do not add to Debt).
    - If New ID is Team/Soft Conflict -> Skip for today, ADD to `Debt Queue`, and increment Pointer again.
    - If Valid -> Schedule them.
@@ -439,13 +442,15 @@ For each scheduling request, perform these steps in your `thinking_trace`:
       "note": "Brief reason (e.g., 'Backfilled ID 6')"
     }}
   ],
-  "next_run_note": "CRITICAL: Debt List [12] must be handled next run. Current Pointer at 13.",
-  "new_debt_ids": [12]
+  "next_run_note": "CRITICAL: Debt List [12] must be handled next run. Credit List [5] gets immunity next. Current Pointer at 13.",
+  "new_debt_ids": [12],
+  "new_credit_ids": [5]
 }}
 ```
 **Important**:
-1. The `next_run_note` is your "Memory" for the next time you run. You MUST strictly record any remaining Debt List or important context here.
+1. The `next_run_note` is your "Memory" for the next time you run. You MUST strictly record any remaining Debt List, Credit List, or important context here.
 2. `new_debt_ids`: If you added anyone to the Debt Queue (or if anyone remains in it), you MUST output their IDs here as a list of integers.
+3. `new_credit_ids`: If anyone remains in the Credit Queue after this run (i.e. their immunity was NOT consumed), output their IDs here. If a credit was consumed, remove them from this list.
 """
 
     duty_rule = (duty_rule or "").strip()
@@ -463,6 +468,9 @@ For each scheduling request, perform these steps in your `thinking_trace`:
 
     if debt_list:
         user_parts.append(f"CURRENT DEBT LIST (PRIORITY HIGH): {debt_list}. You MUST schedule these IDs first.")
+
+    if credit_list:
+        user_parts.append(f"CURRENT CREDIT LIST (IMMUNITY): {credit_list}. When Main_Pointer reaches these IDs, SKIP them once (free pass) and remove from Credit.")
 
     user_parts.append(f"Current Time: {current_time}")
 
@@ -1180,6 +1188,7 @@ def main():
         # Load previous context (AI Memory)
         previous_context = str(state_data.get("next_run_note", "")).strip()
         debt_list = extract_ids_from_value(state_data.get("debt_list", []), set(active_ids), 9999)
+        credit_list = extract_ids_from_value(state_data.get("credit_list", []), set(active_ids), 9999)
         
         # Build calendar anchor for AI date context
         auto_run_mode = str(input_data.get("auto_run_mode", ctx.config.get("auto_run_mode", "Off"))).strip()
@@ -1196,6 +1205,7 @@ def main():
             area_names,
             previous_context=previous_context,
             debt_list=debt_list,
+            credit_list=credit_list,
             calendar_anchor=cal_anchor,
         )
 
@@ -1226,6 +1236,22 @@ def main():
             new_debt_ids_from_llm=new_debt_list,
             normalized_schedule=normalized_ids,
         )
+
+        # --- Credit List Persistence ---
+        raw_new_credits = llm_result.get("new_credit_ids", [])
+        new_credit_list = extract_ids_from_value(raw_new_credits, set(active_ids), 9999)
+        # Merge: keep original credits that AI didn't consume + any AI-reported remaining credits
+        scheduled_set: set = set()
+        for entry in normalized_ids:
+            for ids in entry.get("area_ids", {}).values():
+                if isinstance(ids, list):
+                    scheduled_set.update(ids)
+        # Credits consumed = originally had credit AND got scheduled this run
+        remaining_credits = set(new_credit_list)
+        for cid in credit_list:
+            if cid not in scheduled_set:
+                remaining_credits.add(cid)  # AI didn't reach this ID, keep credit
+        state_data["credit_list"] = sorted(remaining_credits)
 
         restored = restore_schedule(
             normalized_ids,

@@ -814,10 +814,68 @@ public class DutyBackendService : IDisposable
             return false;
         }
 
+        // --- Debt/Credit Diff: Extract OLD names before overwriting ---
+        var oldNames = new HashSet<string>(StringComparer.Ordinal);
+        if (item.AreaAssignments is { Count: > 0 })
+        {
+            foreach (var names in item.AreaAssignments.Values)
+            {
+                if (names == null) continue;
+                foreach (var n in names) oldNames.Add(n.Trim());
+            }
+        }
+
         item.Date = normalizedTargetDate;
         item.Day = normalizedDay;
         item.AreaAssignments = normalizedAssignments;
         item.Note = normalizedNote;
+
+        // --- Debt/Credit Diff: Extract NEW names and reconcile ---
+        var newNames = new HashSet<string>(StringComparer.Ordinal);
+        if (normalizedAssignments is { Count: > 0 })
+        {
+            foreach (var names in normalizedAssignments.Values)
+            {
+                if (names == null) continue;
+                foreach (var n in names) newNames.Add(n.Trim());
+            }
+        }
+
+        var removedNames = oldNames.Except(newNames).ToArray();
+        var addedNames = newNames.Except(oldNames).ToArray();
+
+        if (removedNames.Length > 0 || addedNames.Length > 0)
+        {
+            var roster = LoadRosterEntries();
+            var nameToId = new Dictionary<string, int>(StringComparer.Ordinal);
+            foreach (var r in roster)
+            {
+                if (r.Active && !string.IsNullOrWhiteSpace(r.Name))
+                    nameToId.TryAdd(r.Name.Trim(), r.Id);
+            }
+
+            var debtSet = new HashSet<int>(state.DebtList ?? []);
+            var creditSet = new HashSet<int>(state.CreditList ?? []);
+
+            // Removed people: they escaped duty
+            foreach (var name in removedNames)
+            {
+                if (!nameToId.TryGetValue(name, out var id)) continue;
+                if (creditSet.Remove(id)) { /* had credit, consume it */ }
+                else { debtSet.Add(id); /* no credit, they owe */ }
+            }
+
+            // Added people: they did extra work
+            foreach (var name in addedNames)
+            {
+                if (!nameToId.TryGetValue(name, out var id)) continue;
+                if (debtSet.Remove(id)) { /* had debt, pay it off */ }
+                else { creditSet.Add(id); /* no debt, earn credit */ }
+            }
+
+            state.DebtList = debtSet.OrderBy(x => x).ToList();
+            state.CreditList = creditSet.OrderBy(x => x).ToList();
+        }
 
         state.SchedulePool = state.SchedulePool
             .OrderBy(x => x.Date, StringComparer.Ordinal)
