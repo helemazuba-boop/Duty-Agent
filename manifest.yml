@@ -3,7 +3,7 @@ name: Duty-Agent
 description: 为Classisland添加一个由AI驱动的值日表
 entranceAssembly: "Duty-Agent.dll"
 url: https://github.com/helemazuba-boop/Duty-Agent
-version: 0.32.0-beta
+version: 0.40.0-beta
 apiVersion: 2.0.0.0
 author: helemazuba-boop
 

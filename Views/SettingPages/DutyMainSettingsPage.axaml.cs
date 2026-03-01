@@ -584,7 +584,10 @@ public partial class DutyMainSettingsPage : SettingsPageBase
 
             foreach (var name in namesInDay)
             {
-                dutyCountByName[name] = dutyCountByName.TryGetValue(name, out var count) ? count + 1 : 1;
+                if (date <= today)
+                {
+                    dutyCountByName[name] = dutyCountByName.TryGetValue(name, out var count) ? count + 1 : 1;
+                }
                 if (date < today)
                 {
                     continue;
