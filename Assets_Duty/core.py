@@ -300,7 +300,7 @@ def anonymize_instruction(text: str, name_to_id: Dict[str, int]) -> str:
         result = result.replace(placeholder, pid_str)
     return result
 
-WEEKDAY_CN = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+WEEKDAY_CN = ["星期一", "星期二", "星期三", "星期四", "星期五", "星期六", "星期日"]
 
 
 def build_calendar_anchor(
@@ -387,7 +387,7 @@ def build_prompt_messages(
 ) -> List[dict]:
     """Build the 3-part prompt messages for the LLM."""
     
-    area_schema_items = [f'"{name}": [101, 102]' for name in area_names]
+    area_schema_items = [f'{json.dumps(name)}: [101, 102]' for name in area_names]
     area_schema = ", ".join(area_schema_items)
 
     system_content = f"""# Role
@@ -866,6 +866,7 @@ def call_llm(
 
     # Parse JSON with application-level retry (re-call LLM on format hallucination)
     last_parse_error: Optional[Exception] = None
+    original_msg_count = len(payload["messages"])
     for parse_attempt in range(LLM_PARSE_MAX_RETRIES + 1):
         try:
             parsed = json.loads(clean_json_response(content))
@@ -878,11 +879,15 @@ def call_llm(
                     "parse_retry",
                     f"AI output JSON format error, retrying ({parse_attempt + 1}/{LLM_PARSE_MAX_RETRIES})...",
                 )
+                
+                # Revert to the original message count to prevent context bloat
+                del payload["messages"][original_msg_count:]
+                
                 # Append failed output + error context so the LLM can self-correct
                 payload["messages"].append({"role": "assistant", "content": content})
                 payload["messages"].append({
                     "role": "user",
-                    "content": f"你的上一次输出无法解析为JSON。报错信息：{str(je)}。请检查是否遗漏了逗号或括号，纠正格式并重新输出。严格要求只输出合法的JSON。"
+                    "content": f"你的上一次输出无法解析为JSON。报错信息：{str(je)}。请检查是否遗漏了逗号或括号，纠正格式并重新输出。严格要求只输出合法的JSON格式。"
                 })
                 # Re-call LLM to get a corrected response
                 content = execute_with_retries(
