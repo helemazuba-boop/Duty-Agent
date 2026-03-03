@@ -17,7 +17,7 @@
                     Padding="16">
                 <StackPanel Spacing="10">
                     <StackPanel Orientation="Horizontal" Spacing="8">
-                        <TextBlock FontFamily="Segoe Fluent Icons" Text="&#xE713;" FontSize="18" />
+                        <TextBlock FontFamily="Segoe MDL2 Assets, Segoe Fluent Icons, Segoe UI Symbol" Text="&#xE713;" FontSize="18" />
                         <TextBlock Text="Duty-Agent 设置" FontSize="20" FontWeight="Bold" />
                     </StackPanel>
                     <TextBlock Text="面向普通用户：配置排班、执行任务、管理名单。"
@@ -46,7 +46,7 @@
                     Padding="16">
                 <StackPanel Spacing="10">
                     <StackPanel Orientation="Horizontal" Spacing="8">
-                        <TextBlock FontFamily="Segoe Fluent Icons" Text="&#xE7C3;" FontSize="16" />
+                        <TextBlock FontFamily="Segoe MDL2 Assets, Segoe Fluent Icons, Segoe UI Symbol" Text="&#xE7C3;" FontSize="16" />
                         <TextBlock Text="执行排班" FontSize="16" FontWeight="SemiBold" />
                     </StackPanel>
                     <TextBlock Text="排班指令" />
@@ -60,7 +60,7 @@
                             Classes="accent"
                             Click="OnRunAgentClick">
                         <StackPanel Orientation="Horizontal" Spacing="8">
-                            <TextBlock FontFamily="Segoe Fluent Icons" Text="&#xE768;" FontSize="16" VerticalAlignment="Center" />
+                            <TextBlock FontFamily="Segoe MDL2 Assets, Segoe Fluent Icons, Segoe UI Symbol" Text="&#xE768;" FontSize="16" VerticalAlignment="Center" />
                             <TextBlock Text="开始排班（覆盖）" VerticalAlignment="Center" />
                         </StackPanel>
                     </Button>
@@ -92,7 +92,7 @@
                     Padding="16">
                 <StackPanel Spacing="10">
                     <StackPanel Orientation="Horizontal" Spacing="8">
-                        <TextBlock FontFamily="Segoe Fluent Icons" Text="&#xE8A5;" FontSize="16" />
+                        <TextBlock FontFamily="Segoe MDL2 Assets, Segoe Fluent Icons, Segoe UI Symbol" Text="&#xE8A5;" FontSize="16" />
                         <TextBlock Text="排班预览" FontSize="16" FontWeight="SemiBold" />
                     </StackPanel>
                     <Button x:Name="RefreshDataBtn"
@@ -139,7 +139,7 @@
                                 </ListBox.ItemTemplate>
                             </ListBox>
                             <StackPanel x:Name="ScheduleEmptyStatePanel" Grid.Row="1" VerticalAlignment="Center" HorizontalAlignment="Center" Spacing="8" IsVisible="False">
-                                <TextBlock FontFamily="Segoe Fluent Icons" Text="&#xE8A5;" FontSize="48" Opacity="0.4" HorizontalAlignment="Center" />
+                                <TextBlock FontFamily="Segoe MDL2 Assets, Segoe Fluent Icons, Segoe UI Symbol" Text="&#xE8A5;" FontSize="48" Opacity="0.4" HorizontalAlignment="Center" />
                                 <TextBlock Text="暂无排班预期数据" Opacity="0.6" FontSize="14" FontWeight="SemiBold" HorizontalAlignment="Center" />
                                 <TextBlock Text="点击上方【刷新预览】或【开始排班】生成" Opacity="0.5" FontSize="12" HorizontalAlignment="Center" />
                             </StackPanel>
@@ -193,7 +193,7 @@
             <Expander HorizontalAlignment="Stretch" Padding="16">
                 <Expander.Header>
                     <StackPanel Orientation="Horizontal" Spacing="8">
-                        <TextBlock FontFamily="Segoe Fluent Icons" Text="&#xE125;" FontSize="16" VerticalAlignment="Center" />
+                        <TextBlock FontFamily="Segoe MDL2 Assets, Segoe Fluent Icons, Segoe UI Symbol" Text="&#xE125;" FontSize="16" VerticalAlignment="Center" />
                         <TextBlock Text="花名册管理" FontSize="16" FontWeight="SemiBold" VerticalAlignment="Center" />
                     </StackPanel>
                 </Expander.Header>
@@ -206,7 +206,7 @@
                     Padding="16">
                 <StackPanel Spacing="10">
                     <StackPanel Orientation="Horizontal" Spacing="8">
-                        <TextBlock FontFamily="Segoe Fluent Icons" Text="&#xE716;" FontSize="16" />
+                        <TextBlock FontFamily="Segoe MDL2 Assets, Segoe Fluent Icons, Segoe UI Symbol" Text="&#xE716;" FontSize="16" />
                         <TextBlock Text="学生名单" FontSize="16" FontWeight="SemiBold" />
                     </StackPanel>
 
@@ -228,7 +228,7 @@
                             <Button x:Name="DeleteStudentBtn"
                                     ToolTip.Tip="删除选中"
                                     Click="OnDeleteStudentClick">
-                                <TextBlock FontFamily="Segoe Fluent Icons" Text="&#xE74D;" Foreground="#E81123" />
+                                <TextBlock FontFamily="Segoe MDL2 Assets, Segoe Fluent Icons, Segoe UI Symbol" Text="&#xE74D;" Foreground="#E81123" />
                             </Button>
                             <Button x:Name="ImportRosterFromFileBtn"
                                     Content="导入..."
@@ -236,7 +236,7 @@
                             <Button x:Name="OpenRosterBtn"
                                     ToolTip.Tip="打开源文件"
                                     Click="OnOpenRosterClick">
-                                <TextBlock FontFamily="Segoe Fluent Icons" Text="&#xE8E5;" />
+                                <TextBlock FontFamily="Segoe MDL2 Assets, Segoe Fluent Icons, Segoe UI Symbol" Text="&#xE8E5;" />
                             </Button>
                         </StackPanel>
                     </Grid>
@@ -285,7 +285,7 @@
                                 </ListBox.ItemTemplate>
                             </ListBox>
                             <StackPanel x:Name="RosterEmptyStatePanel" Grid.Row="1" VerticalAlignment="Center" HorizontalAlignment="Center" Spacing="8" IsVisible="False">
-                                <TextBlock FontFamily="Segoe Fluent Icons" Text="&#xE716;" FontSize="48" Opacity="0.4" HorizontalAlignment="Center" />
+                                <TextBlock FontFamily="Segoe MDL2 Assets, Segoe Fluent Icons, Segoe UI Symbol" Text="&#xE716;" FontSize="48" Opacity="0.4" HorizontalAlignment="Center" />
                                 <TextBlock Text="当前暂无学生名单数据" Opacity="0.6" FontSize="14" FontWeight="SemiBold" HorizontalAlignment="Center" />
                                 <TextBlock Text="请在上方添加或导入名单" Opacity="0.5" FontSize="12" HorizontalAlignment="Center" />
                             </StackPanel>
@@ -306,7 +306,7 @@
             <Expander HorizontalAlignment="Stretch" Padding="16">
                 <Expander.Header>
                     <StackPanel Orientation="Horizontal" Spacing="8">
-                        <TextBlock FontFamily="Segoe Fluent Icons" Text="&#xE8D2;" FontSize="16" VerticalAlignment="Center" />
+                        <TextBlock FontFamily="Segoe MDL2 Assets, Segoe Fluent Icons, Segoe UI Symbol" Text="&#xE8D2;" FontSize="16" VerticalAlignment="Center" />
                         <TextBlock Text="连接与模型" FontSize="16" FontWeight="SemiBold" VerticalAlignment="Center" />
                     </StackPanel>
                 </Expander.Header>
@@ -319,7 +319,7 @@
                     Padding="16">
                 <StackPanel Spacing="10">
                     <StackPanel Orientation="Horizontal" Spacing="8">
-                        <TextBlock FontFamily="Segoe Fluent Icons" Text="&#xE8D2;" FontSize="16" />
+                        <TextBlock FontFamily="Segoe MDL2 Assets, Segoe Fluent Icons, Segoe UI Symbol" Text="&#xE8D2;" FontSize="16" />
                         <TextBlock Text="连接与模型" FontSize="16" FontWeight="SemiBold" />
                     </StackPanel>
                     <Grid ColumnDefinitions="Auto,*" RowDefinitions="Auto,Auto,Auto" RowSpacing="12" Margin="0,12,0,0">
@@ -355,7 +355,7 @@
             <Expander HorizontalAlignment="Stretch" Padding="16">
                 <Expander.Header>
                     <StackPanel Orientation="Horizontal" Spacing="8">
-                        <TextBlock FontFamily="Segoe Fluent Icons" Text="&#xE945;" FontSize="16" VerticalAlignment="Center" />
+                        <TextBlock FontFamily="Segoe MDL2 Assets, Segoe Fluent Icons, Segoe UI Symbol" Text="&#xE945;" FontSize="16" VerticalAlignment="Center" />
                         <TextBlock Text="AI 长期规则" FontSize="16" FontWeight="SemiBold" VerticalAlignment="Center" />
                     </StackPanel>
                 </Expander.Header>
@@ -368,7 +368,7 @@
                     Padding="16">
                 <StackPanel Spacing="10">
                     <StackPanel Orientation="Horizontal" Spacing="8">
-                        <TextBlock FontFamily="Segoe Fluent Icons" Text="&#xE945;" FontSize="16" />
+                        <TextBlock FontFamily="Segoe MDL2 Assets, Segoe Fluent Icons, Segoe UI Symbol" Text="&#xE945;" FontSize="16" />
                         <TextBlock Text="AI 长期规则" FontSize="16" FontWeight="SemiBold" />
                     </StackPanel>
                     <TextBlock Text="以下内容会作为固定规则发送给 AI，每次排班都会生效。可包含排班逻辑、区域分配偏好、特殊安排等。"
@@ -392,7 +392,7 @@
             <Expander HorizontalAlignment="Stretch" Padding="16">
                 <Expander.Header>
                     <StackPanel Orientation="Horizontal" Spacing="8">
-                        <TextBlock FontFamily="Segoe Fluent Icons" Text="&#xE823;" FontSize="16" VerticalAlignment="Center" />
+                        <TextBlock FontFamily="Segoe MDL2 Assets, Segoe Fluent Icons, Segoe UI Symbol" Text="&#xE823;" FontSize="16" VerticalAlignment="Center" />
                         <TextBlock Text="排班处理参数" FontSize="16" FontWeight="SemiBold" VerticalAlignment="Center" />
                     </StackPanel>
                 </Expander.Header>
@@ -405,7 +405,7 @@
                     Padding="16">
                 <StackPanel Spacing="10">
                     <StackPanel Orientation="Horizontal" Spacing="8">
-                        <TextBlock FontFamily="Segoe Fluent Icons" Text="&#xE823;" FontSize="16" />
+                        <TextBlock FontFamily="Segoe MDL2 Assets, Segoe Fluent Icons, Segoe UI Symbol" Text="&#xE823;" FontSize="16" />
                         <TextBlock Text="排班处理参数" FontSize="16" FontWeight="SemiBold" />
                     </StackPanel>
                     <TextBlock Text="以下参数用于控制排班的运行时处理逻辑（日期生成、结果归一化等），不会直接发送给 AI。"
@@ -518,7 +518,7 @@
             <Expander HorizontalAlignment="Stretch" Padding="16">
                 <Expander.Header>
                     <StackPanel Orientation="Horizontal" Spacing="8">
-                        <TextBlock FontFamily="Segoe Fluent Icons" Text="&#xE943;" FontSize="16" VerticalAlignment="Center" />
+                        <TextBlock FontFamily="Segoe MDL2 Assets, Segoe Fluent Icons, Segoe UI Symbol" Text="&#xE943;" FontSize="16" VerticalAlignment="Center" />
                         <TextBlock Text="调试与集成" FontSize="16" FontWeight="SemiBold" VerticalAlignment="Center" />
                     </StackPanel>
                 </Expander.Header>
@@ -531,7 +531,7 @@
                     Padding="16">
                 <StackPanel Spacing="10">
                     <StackPanel Orientation="Horizontal" Spacing="8">
-                        <TextBlock FontFamily="Segoe Fluent Icons" Text="&#xE943;" FontSize="16" />
+                        <TextBlock FontFamily="Segoe MDL2 Assets, Segoe Fluent Icons, Segoe UI Symbol" Text="&#xE943;" FontSize="16" />
                         <TextBlock Text="调试与集成" FontSize="16" FontWeight="SemiBold" />
                     </StackPanel>
                     <ToggleSwitch x:Name="EnableMcpSwitch"

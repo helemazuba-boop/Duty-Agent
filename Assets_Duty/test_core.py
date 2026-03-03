@@ -16,14 +16,43 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from core import (
     merge_schedule_pool,
+    reconcile_credit_list,
+    call_llm,
     anonymize_instruction,
     save_json_atomic,
     dedupe_pool_by_date,
     merge_input_config,
+    normalize_area_names,
     normalize_multi_area_schedule_ids,
     restore_schedule,
     validate_llm_schedule_entries,
 )
+
+
+class TestAreaNameNormalization(unittest.TestCase):
+    def test_empty_area_names_remains_empty(self):
+        self.assertEqual(normalize_area_names([]), [])
+
+    def test_missing_area_names_remains_empty(self):
+        self.assertEqual(normalize_area_names(None), [])
+
+
+class TestMergeInputConfig(unittest.TestCase):
+    def test_root_fields_override_config_fields(self):
+        merged = merge_input_config(
+            {
+                "instruction": "root-instruction",
+                "model": "root-model",
+                "config": {
+                    "instruction": "config-instruction",
+                    "model": "config-model",
+                    "base_url": "https://example.com",
+                },
+            }
+        )
+        self.assertEqual(merged["instruction"], "root-instruction")
+        self.assertEqual(merged["model"], "root-model")
+        self.assertEqual(merged["base_url"], "https://example.com")
 
 
 class TestNormalizeScheduleNoValidation(unittest.TestCase):
@@ -73,6 +102,17 @@ class TestNormalizeScheduleNoValidation(unittest.TestCase):
         normalized = normalize_multi_area_schedule_ids(raw, active, areas, counts)
         self.assertEqual(normalized[0]["area_ids"]["A"], [1])
 
+    def test_dynamic_areas_without_predefined(self):
+        """When configured area_names is empty, only AI dynamic areas should remain."""
+        raw = [{"date": "2023-10-23", "area_ids": {"后花园": [1], "天台": [2]}}]
+        active = [1, 2]
+        areas = []
+        counts = {}
+
+        normalized = normalize_multi_area_schedule_ids(raw, active, areas, counts)
+        self.assertEqual(len(normalized), 1)
+        self.assertEqual(set(normalized[0]["area_ids"].keys()), {"后花园", "天台"})
+
 
 class TestScheduleValidation(unittest.TestCase):
     def test_unsorted_dates_raise_error(self):
@@ -89,6 +129,14 @@ class TestScheduleValidation(unittest.TestCase):
             {"date": "2026-02-12", "area_ids": {"A": [2]}},
         ]
         validate_llm_schedule_entries(schedule)
+
+    def test_duplicate_dates_raise_error(self):
+        schedule = [
+            {"date": "2026-02-11", "area_ids": {"A": [1]}},
+            {"date": "2026-02-11", "area_ids": {"A": [2]}},
+        ]
+        with self.assertRaises(ValueError):
+            validate_llm_schedule_entries(schedule)
 
 
 class TestRestoreScheduleDirectDate(unittest.TestCase):
@@ -250,6 +298,96 @@ class TestSaveJsonAtomic(unittest.TestCase):
             save_json_atomic(path, {"a": 1})
             tmp = path.with_suffix(".json.tmp")
             self.assertFalse(tmp.exists())
+
+
+class TestCallLlmPayloadIsolation(unittest.TestCase):
+    def test_parse_retry_does_not_mutate_input_messages(self):
+        messages = [{"role": "user", "content": "hello"}]
+        config = {
+            "base_url": "https://example.com",
+            "model": "dummy",
+            "api_key": "k",
+            "llm_stream": False,
+        }
+        with patch(
+            "core.request_llm_non_stream",
+            side_effect=['{"bad": ]}', '{"ok": true}'],
+        ):
+            parsed, _ = call_llm(messages, config)
+        self.assertEqual(parsed, {"ok": True})
+        self.assertEqual(messages, [{"role": "user", "content": "hello"}])
+
+
+class TestDynamicAreaExtractionLimit(unittest.TestCase):
+    def test_dynamic_area_ids_not_capped_at_999(self):
+        active = list(range(1, 1201))
+        raw = [{"date": "2026-02-11", "area_ids": {"Dynamic": active[:]}}]
+
+        normalized = normalize_multi_area_schedule_ids(raw, active, [], {})
+        dynamic_ids = normalized[0]["area_ids"]["Dynamic"]
+        self.assertEqual(len(dynamic_ids), 1200)
+        self.assertEqual(dynamic_ids[0], 1)
+        self.assertEqual(dynamic_ids[-1], 1200)
+
+
+class TestMergeSchedulePoolRobustness(unittest.TestCase):
+    def test_replace_future_skips_non_dict_pool_items(self):
+        state = {"schedule_pool": ["bad", 123, {"date": "2026-02-10"}, {"date": "2026-02-12"}]}
+        new_entries = [{"date": "2026-02-12", "note": "new"}]
+
+        result = merge_schedule_pool(state, new_entries, "replace_future", date(2026, 2, 12))
+        self.assertEqual(result, [{"date": "2026-02-10"}, {"date": "2026-02-12", "note": "new"}])
+
+    def test_replace_overlap_preserves_invalid_date_entries(self):
+        state = {
+            "schedule_pool": [
+                {"date": "2026-02-09", "note": "before"},
+                {"date": "not-a-date", "note": "legacy"},
+                {"date": "2026-02-10", "note": "old"},
+            ]
+        }
+        new_entries = [{"date": "2026-02-10", "note": "new"}]
+
+        result = merge_schedule_pool(state, new_entries, "replace_overlap", date(2026, 2, 10))
+        notes_by_date = {entry["date"]: entry.get("note", "") for entry in result}
+        self.assertEqual(notes_by_date["2026-02-09"], "before")
+        self.assertEqual(notes_by_date["2026-02-10"], "new")
+        self.assertEqual(notes_by_date["not-a-date"], "legacy")
+
+
+class TestCreditReconciliation(unittest.TestCase):
+    def test_uses_original_credit_when_llm_field_missing(self):
+        result = reconcile_credit_list(
+            original_credit_list=[7],
+            new_credit_ids_from_llm=[],
+            normalized_schedule=[],
+            valid_ids={7},
+            debt_list=[],
+            has_llm_field=False,
+        )
+        self.assertEqual(result, [7])
+
+    def test_uses_llm_credit_when_field_present(self):
+        result = reconcile_credit_list(
+            original_credit_list=[7, 8],
+            new_credit_ids_from_llm=[8],
+            normalized_schedule=[],
+            valid_ids={7, 8},
+            debt_list=[],
+            has_llm_field=True,
+        )
+        self.assertEqual(result, [8])
+
+    def test_filters_debt_and_invalid_ids(self):
+        result = reconcile_credit_list(
+            original_credit_list=[7],
+            new_credit_ids_from_llm=[7, 9, 999],
+            normalized_schedule=[],
+            valid_ids={7, 9},
+            debt_list=[9],
+            has_llm_field=True,
+        )
+        self.assertEqual(result, [7])
 
 
 if __name__ == "__main__":

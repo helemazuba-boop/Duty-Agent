@@ -18,7 +18,6 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 DEFAULT_PER_DAY = 2
-DEFAULT_AREA_NAMES = ["教室", "清洁区"]
 DAY_NAMES = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 LLM_TIMEOUT_SECONDS = 120
 LLM_MAX_RETRIES = 2
@@ -28,6 +27,8 @@ LLM_STREAM_ENABLED_DEFAULT = True
 LLM_PARSE_MAX_RETRIES = 1
 LLM_PROGRESS_LINE_PREFIX = "__DUTY_PROGRESS__:"
 LLM_STREAM_PROGRESS_MIN_INTERVAL_SECONDS = 0.2
+STATE_LOCK_TIMEOUT_SECONDS = 360
+STATE_LOCK_RETRY_INTERVAL_SECONDS = 0.2
 
 
 class Context:
@@ -57,6 +58,28 @@ def save_json_atomic(path: Path, data: dict):
                 time.sleep(0.1 * (attempt + 1))
             else:
                 raise
+
+
+def acquire_state_file_lock(lock_path: Path, timeout_seconds: int = STATE_LOCK_TIMEOUT_SECONDS) -> None:
+    deadline = time.time() + max(1, int(timeout_seconds))
+    while True:
+        try:
+            fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            with os.fdopen(fd, "w", encoding="utf-8") as lock_file:
+                lock_file.write(f"{os.getpid()}\n")
+                lock_file.write(f"{datetime.now().isoformat()}\n")
+            return
+        except FileExistsError:
+            if time.time() >= deadline:
+                raise TimeoutError(f"Timed out waiting for state lock: {lock_path}")
+            time.sleep(STATE_LOCK_RETRY_INTERVAL_SECONDS)
+
+
+def release_state_file_lock(lock_path: Path) -> None:
+    try:
+        lock_path.unlink()
+    except FileNotFoundError:
+        pass
 
 
 def write_result(path: Path, status: str, message: str = "", extra: Optional[dict] = None):
@@ -202,9 +225,6 @@ def normalize_area_names(raw_area_names) -> List[str]:
             continue
         seen.add(name)
         areas.append(name)
-
-    if not areas:
-        return DEFAULT_AREA_NAMES[:]
     return areas
 
 
@@ -270,8 +290,11 @@ def build_prompt_messages(
     previous_context: str = "",
 ) -> List[dict]:
     """Build the 3-part prompt messages for the LLM."""
-    
-    area_schema_items = [f'{json.dumps(name)}: [101, 102]' for name in area_names]
+
+    if area_names:
+        area_schema_items = [f'{json.dumps(name)}: [101, 102]' for name in area_names]
+    else:
+        area_schema_items = ['"<dynamic_area_name>": [101, 102]']
     area_schema = ", ".join(area_schema_items)
 
     inactive_ids = [pid for pid, active in id_to_active.items() if active == 0]
@@ -375,6 +398,8 @@ def recover_missing_debts(
     # Collect all IDs that actually made it into the final schedule
     scheduled_set: set = set()
     for entry in normalized_schedule:
+        if not isinstance(entry, dict):
+            continue
         for ids in entry.get("area_ids", {}).values():
             if isinstance(ids, list):
                 scheduled_set.update(ids)
@@ -393,6 +418,35 @@ def recover_missing_debts(
     return sorted(final_debt_set)
 
 
+def reconcile_credit_list(
+    original_credit_list: List[int],
+    new_credit_ids_from_llm: List[int],
+    normalized_schedule: List[dict],
+    valid_ids: set,
+    debt_list: Optional[List[int]] = None,
+    has_llm_field: bool = True,
+) -> List[int]:
+    """Reconcile credit list with runtime semantics.
+
+    Rule:
+    - Prefer LLM's explicit remaining credit list when the field is present.
+    - Fall back to original list when the field is missing (compat mode).
+    """
+    # Kept for signature compatibility and potential future audits.
+    _ = normalized_schedule
+
+    if not has_llm_field:
+        next_credit_set = set(original_credit_list)
+    else:
+        next_credit_set = set(new_credit_ids_from_llm)
+
+    next_credit_set = {cid for cid in next_credit_set if cid in valid_ids}
+    if debt_list:
+        next_credit_set -= set(debt_list)
+
+    return sorted(next_credit_set)
+
+
 
 def clean_json_response(text: str) -> str:
     text = text.strip()
@@ -407,6 +461,7 @@ def validate_llm_schedule_entries(schedule_raw) -> None:
         raise ValueError("LLM returned invalid schedule: `schedule` must be a list.")
 
     previous_date: Optional[date] = None
+    seen_dates: set = set()
     for idx, entry in enumerate(schedule_raw):
         if not isinstance(entry, dict):
             raise ValueError(f"LLM schedule entry at index {idx} must be an object.")
@@ -424,8 +479,11 @@ def validate_llm_schedule_entries(schedule_raw) -> None:
 
         if previous_date is not None and current_date < previous_date:
             raise ValueError("LLM schedule dates must be sorted in ascending order.")
+        if current_date in seen_dates:
+            raise ValueError(f"LLM schedule has duplicate date `{raw_date}` at index {idx}.")
 
         previous_date = current_date
+        seen_dates.add(current_date)
 
 
 def is_timeout_error(ex: Exception) -> bool:
@@ -574,6 +632,7 @@ def request_llm_stream(
     stream_payload = dict(payload)
     stream_payload["stream"] = True
     req = create_llm_request(url, stream_payload, api_key)
+    deadline = time.time() + (LLM_TIMEOUT_SECONDS * 3)
 
     invoke_progress_callback(progress_callback, "stream_start", "Streaming response opened.")
 
@@ -585,6 +644,8 @@ def request_llm_stream(
 
     with urllib.request.urlopen(req, timeout=LLM_TIMEOUT_SECONDS) as resp:
         for raw_line in resp:
+            if time.time() > deadline:
+                raise TimeoutError("Total stream duration exceeded timeout budget.")
             decoded = raw_line.decode("utf-8", errors="ignore")
             raw_lines.append(decoded)
             line = decoded.strip()
@@ -705,7 +766,7 @@ def call_llm(
     url = f"{base_url}/chat/completions"
     payload = {
         "model": config["model"],
-        "messages": messages,
+        "messages": list(messages),
         "temperature": 0.1,
     }
     api_key = str(config.get("api_key", "")).strip()
@@ -773,7 +834,7 @@ def call_llm(
     raise RuntimeError(f"LLM returned malformed JSON after {LLM_PARSE_MAX_RETRIES + 1} attempts: {last_parse_error}") from last_parse_error
 
 
-def extract_ids_from_value(value, active_set: set, limit: int) -> List[int]:
+def extract_ids_from_value(value, active_set: set, limit: Optional[int] = None) -> List[int]:
     if not isinstance(value, list):
         return []
 
@@ -786,7 +847,7 @@ def extract_ids_from_value(value, active_set: set, limit: int) -> List[int]:
         if pid not in active_set or pid in result:
             continue
         result.append(pid)
-        if len(result) >= limit:
+        if limit is not None and len(result) >= limit:
             break
     return result
 
@@ -865,7 +926,7 @@ def normalize_multi_area_schedule_ids(
                 dynamic_area_name = str(dynamic_area_name).strip()
                 if not dynamic_area_name or dynamic_area_name in day_assignments:
                     continue
-                extracted_ids = extract_ids_from_value(raw_value, active_set, 999)
+                extracted_ids = extract_ids_from_value(raw_value, active_set, None)
                 final_ids = [pid for pid in extracted_ids if pid not in used_ids]
                 if final_ids:
                     day_assignments[dynamic_area_name] = final_ids
@@ -948,44 +1009,71 @@ def dedupe_pool_by_date(entries: List[dict]) -> List[dict]:
     return [by_date[d] for d in sorted(by_date.keys())]
 
 
+def try_parse_iso_date(value: Any) -> Optional[date]:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        return datetime.strptime(text, "%Y-%m-%d").date()
+    except ValueError:
+        return None
+
+
 def merge_schedule_pool(state_data: dict, restored: List[dict], apply_mode: str, start_date: date) -> List[dict]:
     pool = state_data.get("schedule_pool", [])
     if not isinstance(pool, list):
         pool = []
+    if not isinstance(restored, list):
+        restored = []
+
+    normalized_pool = [x for x in pool if isinstance(x, dict)]
+    normalized_restored = [x for x in restored if isinstance(x, dict)]
 
     if apply_mode == "append":
-        return dedupe_pool_by_date(pool + restored)
+        return dedupe_pool_by_date(normalized_pool + normalized_restored)
 
     if apply_mode == "replace_all":
-        return dedupe_pool_by_date(restored)
+        return dedupe_pool_by_date(normalized_restored)
 
     if apply_mode == "replace_future":
-        start_str = start_date.strftime("%Y-%m-%d")
-        kept = [x for x in pool if x.get("date", "") < start_str]
-        return dedupe_pool_by_date(kept + restored)
+        kept = []
+        for entry in normalized_pool:
+            entry_date = try_parse_iso_date(entry.get("date"))
+            # Keep invalid-date legacy entries to avoid destructive loss.
+            if entry_date is None or entry_date < start_date:
+                kept.append(entry)
+        return dedupe_pool_by_date(kept + normalized_restored)
 
     if apply_mode == "replace_overlap":
-        if not restored:
-            return dedupe_pool_by_date(pool)
-        start_str = start_date.strftime("%Y-%m-%d")
-        end_str = restored[-1]["date"]
-        kept = [x for x in pool if x.get("date", "") < start_str or x.get("date", "") > end_str]
-        return dedupe_pool_by_date(kept + restored)
+        if not normalized_restored:
+            return dedupe_pool_by_date(normalized_pool)
 
-    return dedupe_pool_by_date(pool + restored)
+        restored_dates = [
+            try_parse_iso_date(entry.get("date"))
+            for entry in normalized_restored
+        ]
+        restored_dates = [d for d in restored_dates if d is not None]
+        if not restored_dates:
+            return dedupe_pool_by_date(normalized_pool + normalized_restored)
+
+        end_date = max(restored_dates)
+        kept = []
+        for entry in normalized_pool:
+            entry_date = try_parse_iso_date(entry.get("date"))
+            if entry_date is None or entry_date < start_date or entry_date > end_date:
+                kept.append(entry)
+        return dedupe_pool_by_date(kept + normalized_restored)
+
+    return dedupe_pool_by_date(normalized_pool + normalized_restored)
 
 def merge_input_config(input_data: dict) -> dict:
     if not isinstance(input_data, dict):
         return {}
-    if "config" in input_data and isinstance(input_data["config"], dict):
-        # Merge config into root, preserving root keys if they exist (though typically they won't)
-        # We want config overrides to apply, so we merge config INTO root.
-        # But wait, if root has "instruction" and config has others, we want union.
-        merged = input_data.copy()
-        merged.update(input_data["config"])
-        # Ensure instruction is preserved if it was in root (it usually is)
-        if "instruction" in input_data:
-            merged["instruction"] = input_data["instruction"]
+    config_sub = input_data.get("config", {})
+    if isinstance(config_sub, dict):
+        # Treat config as defaults, root-level fields as explicit overrides.
+        merged = dict(config_sub)
+        merged.update(input_data)
         return merged
     return input_data
 
@@ -998,10 +1086,15 @@ def main():
     data_dir = Path(args.data_dir).resolve()
     data_dir.mkdir(parents=True, exist_ok=True)
     ctx = Context(data_dir)
+    state_lock_path = ctx.paths["state"].with_suffix(ctx.paths["state"].suffix + ".lock")
+    state_lock_acquired = False
 
     try:
+        run_now = datetime.now()
         ctx.config = load_config(ctx)
         name_to_id, id_to_name, all_ids, id_to_active = load_roster(ctx.paths["roster"])
+        acquire_state_file_lock(state_lock_path)
+        state_lock_acquired = True
         state_data = load_state(ctx.paths["state"])
 
         input_data = {}
@@ -1034,7 +1127,7 @@ def main():
             1,
             30,
         )
-        area_names = normalize_area_names(input_data.get("area_names", ctx.config.get("area_names", DEFAULT_AREA_NAMES)))
+        area_names = normalize_area_names(input_data.get("area_names", ctx.config.get("area_names", [])))
         area_per_day_counts = normalize_area_per_day_counts(
             area_names,
             input_data.get("area_per_day_counts", ctx.config.get("area_per_day_counts", {})),
@@ -1047,7 +1140,7 @@ def main():
             existing_notes = {}
 
         # Start date
-        today_date = datetime.now().date()
+        today_date = run_now.date()
         entries = get_pool_entries_with_date(state_data)
         if apply_mode == "append":
             if entries:
@@ -1060,7 +1153,7 @@ def main():
         sanitized_instruction = anonymize_instruction(instruction, name_to_id)
         duty_rule = anonymize_instruction(duty_rule, name_to_id)
 
-        current_time = datetime.now().strftime("%Y-%m-%d %H:%M")
+        current_time = run_now.strftime("%Y-%m-%d %H:%M")
         
         # Load previous context (AI Memory)
         previous_context = str(state_data.get("next_run_note", "")).strip()
@@ -1110,18 +1203,14 @@ def main():
         # --- Credit List Persistence ---
         raw_new_credits = llm_result.get("new_credit_ids", [])
         new_credit_list = extract_ids_from_value(raw_new_credits, set(all_ids), 9999)
-        # Merge: keep original credits that AI didn't consume + any AI-reported remaining credits
-        scheduled_set: set = set()
-        for entry in normalized_ids:
-            for ids in entry.get("area_ids", {}).values():
-                if isinstance(ids, list):
-                    scheduled_set.update(ids)
-        # Credits consumed = originally had credit AND got scheduled this run
-        remaining_credits = set(new_credit_list)
-        for cid in credit_list:
-            if cid not in scheduled_set:
-                remaining_credits.add(cid)  # AI didn't reach this ID, keep credit
-        state_data["credit_list"] = sorted(remaining_credits)
+        state_data["credit_list"] = reconcile_credit_list(
+            original_credit_list=credit_list,
+            new_credit_ids_from_llm=new_credit_list,
+            normalized_schedule=normalized_ids,
+            valid_ids=set(all_ids),
+            debt_list=state_data.get("debt_list", []),
+            has_llm_field="new_credit_ids" in llm_result,
+        )
 
         restored = restore_schedule(
             normalized_ids,
@@ -1148,6 +1237,12 @@ def main():
         except Exception:
             pass
         sys.exit(1)
+    finally:
+        if state_lock_acquired:
+            try:
+                release_state_file_lock(state_lock_path)
+            except Exception:
+                pass
 
 
 if __name__ == "__main__":
