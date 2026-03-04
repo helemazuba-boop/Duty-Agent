@@ -46,11 +46,11 @@ public class Plugin : PluginBase
 
         if (InjectService.TryGetAddSettingsPageGroupMethod(out var addSettingsPageGroupMethod))
         {
-            addSettingsPageGroupMethod.Invoke(typeof(SettingsWindowRegistryExtensions), [services, "duty-agent.settings", "\uE31E", "Duty-Agent"]);
+            addSettingsPageGroupMethod.Invoke(typeof(SettingsWindowRegistryExtensions), [services, "duty-agent.group", "\uE31E", "Duty-Agent"]);
             var groupIdProperty = InjectService.GetSettingsPageInfoGroupIdProperty();
             foreach (var info in registeredSettingsPageInfos)
             {
-                groupIdProperty.SetValue(info, "duty-agent.settings");
+                groupIdProperty.SetValue(info, "duty-agent.group");
             }
         }
         else
