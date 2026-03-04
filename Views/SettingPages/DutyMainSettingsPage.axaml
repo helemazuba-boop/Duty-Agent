@@ -491,20 +491,6 @@
                                        Checked="OnConfigToggleChanged"
                                        Unchecked="OnConfigToggleChanged" />
                     </Grid>
-                    <Grid ColumnDefinitions="*,*" RowDefinitions="Auto" ColumnSpacing="10" RowSpacing="8">
-                        <ToggleSwitch x:Name="UseDualRowDisplaySwitch"
-                                       Grid.Row="0"
-                                       Grid.Column="0"
-                                       Content="值日名单双行显示"
-                                       Checked="OnConfigToggleChanged"
-                                       Unchecked="OnConfigToggleChanged" />
-                        <ToggleSwitch x:Name="UsePerAreaMultiLineSwitch"
-                                       Grid.Row="0"
-                                       Grid.Column="1"
-                                       Content="每个区域一行显示"
-                                       Checked="OnConfigToggleChanged"
-                                       Unchecked="OnConfigToggleChanged" />
-                    </Grid>
                     <TextBlock Text="值日通知时间" />
                     <StackPanel Orientation="Horizontal" Spacing="6">
                         <ComboBox x:Name="DutyReminderHourComboBox"

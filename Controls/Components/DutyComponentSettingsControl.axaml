@@ -1,0 +1,19 @@
+<ci:ComponentBase x:Class="DutyAgent.Controls.Components.DutyComponentSettingsControl"
+                  x:TypeArguments="models:DutyComponentSettings"
+                  xmlns="https://github.com/avaloniaui"
+                  xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+                  xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+                  xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+                  xmlns:ci="http://classisland.tech/schemas/xaml/core"
+                  xmlns:models="clr-namespace:DutyAgent.Models"
+                  mc:Ignorable="d"
+                  d:DesignWidth="400"
+                  d:DesignHeight="120">
+    <StackPanel DataContext="{Binding RelativeSource={RelativeSource FindAncestor, AncestorType=ci:ComponentBase}}"
+                Spacing="8" Margin="8">
+        <ToggleSwitch IsChecked="{Binding Settings.UseDualRowDisplay}"
+                      Content="值日名单双行显示（截取中间分行）" />
+        <ToggleSwitch IsChecked="{Binding Settings.UsePerAreaMultiLine}"
+                      Content="每个区域一行显示" />
+    </StackPanel>
+</ci:ComponentBase>

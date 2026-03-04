@@ -300,9 +300,7 @@ public partial class DutyMainSettingsPage : SettingsPageBase
                 DutyReminderTime = GetSelectedDutyReminderTime(),
                 EnableMcp = EnableMcpSwitch.IsChecked == true,
                 EnableWebViewDebugLayer = EnableWebDebugLayerSwitch.IsChecked == true,
-                DutyRule = DutyRuleBox.Text,
-                UseDualRowDisplay = UseDualRowDisplaySwitch.IsChecked == true,
-                UsePerAreaMultiLine = UsePerAreaMultiLineSwitch.IsChecked == true
+                DutyRule = DutyRuleBox.Text
             };
             var result = _configModule.Apply(request);
 
@@ -482,8 +480,6 @@ public partial class DutyMainSettingsPage : SettingsPageBase
             EnableWebDebugLayerSwitch.IsChecked = formModel.EnableWebViewDebugLayer;
             SetComponentRefreshTimeSelection(formModel.ComponentRefreshTime);
             DutyRuleBox.Text = formModel.DutyRule;
-            UseDualRowDisplaySwitch.IsChecked = formModel.UseDualRowDisplay;
-            UsePerAreaMultiLineSwitch.IsChecked = formModel.UsePerAreaMultiLine;
         }
         finally
         {

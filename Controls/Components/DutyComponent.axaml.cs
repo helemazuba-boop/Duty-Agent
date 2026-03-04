@@ -89,7 +89,7 @@ public partial class DutyComponent : ComponentBase<DutyComponentSettings>
                 }
             }
 
-            if (_service.Config.UseDualRowDisplay)
+            if (Settings?.UseDualRowDisplay == true)
             {
                 RenderDualRow(areaOrder, assignments);
             }
@@ -115,7 +115,7 @@ public partial class DutyComponent : ComponentBase<DutyComponentSettings>
             })
             .ToList();
 
-        var separator = _service.Config.UsePerAreaMultiLine
+        var separator = Settings?.UsePerAreaMultiLine == true
             ? Environment.NewLine
             : "\uFF1B";
 

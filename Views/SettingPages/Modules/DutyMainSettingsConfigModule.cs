@@ -30,9 +30,7 @@ internal sealed class DutyMainSettingsConfigModule
             EnableMcp = config.EnableMcp,
             EnableWebViewDebugLayer = config.EnableWebViewDebugLayer,
             ComponentRefreshTime = config.ComponentRefreshTime,
-            DutyRule = config.DutyRule,
-            UseDualRowDisplay = config.UseDualRowDisplay,
-            UsePerAreaMultiLine = config.UsePerAreaMultiLine
+            DutyRule = config.DutyRule
         };
     }
 
@@ -61,8 +59,6 @@ internal sealed class DutyMainSettingsConfigModule
         current.EnableMcp = request.EnableMcp;
         current.EnableWebViewDebugLayer = request.EnableWebViewDebugLayer;
         current.AutoRunTriggerNotificationEnabled = request.AutoRunTriggerNotificationEnabled;
-        current.UseDualRowDisplay = request.UseDualRowDisplay;
-        current.UsePerAreaMultiLine = request.UsePerAreaMultiLine;
 
         var restartRequired = previousEnableMcp != request.EnableMcp ||
                               previousEnableWebViewDebugLayer != request.EnableWebViewDebugLayer;

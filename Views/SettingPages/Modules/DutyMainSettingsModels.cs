@@ -17,8 +17,6 @@ internal sealed class DutySettingsFormModel
     public bool EnableWebViewDebugLayer { get; init; }
     public string ComponentRefreshTime { get; init; } = "08:00";
     public string DutyRule { get; init; } = string.Empty;
-    public bool UseDualRowDisplay { get; init; }
-    public bool UsePerAreaMultiLine { get; init; }
 }
 
 internal sealed class DutySettingsApplyRequest
@@ -36,8 +34,6 @@ internal sealed class DutySettingsApplyRequest
     public bool EnableMcp { get; init; }
     public bool EnableWebViewDebugLayer { get; init; }
     public string? DutyRule { get; init; }
-    public bool UseDualRowDisplay { get; init; }
-    public bool UsePerAreaMultiLine { get; init; }
 }
 
 internal readonly record struct DutySettingsApplyResult(bool RestartRequired);

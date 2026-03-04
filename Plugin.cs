@@ -23,7 +23,7 @@ public class Plugin : PluginBase
     {
         services.AddSingleton<DutyBackendService>();
         services.AddSingleton<DutyNotificationService>();
-        services.AddComponent<DutyComponent, DutyComponentSettings>();
+        services.AddComponent<DutyComponent, DutyComponentSettingsControl>();
         services.AddNotificationProvider<DutyNotificationProvider>();
         services.AddSettingsPage<DutyMainSettingsPage>();
 
@@ -53,14 +53,7 @@ public class Plugin : PluginBase
                 groupIdProperty.SetValue(info, "duty-agent.group");
             }
         }
-        else
-        {
-            var nameField = InjectService.GetSettingsPageInfoNameField();
-            foreach (var info in registeredSettingsPageInfos)
-            {
-                nameField.SetValue(info, "Duty-Agent\u00B7" + (string?)nameField.GetValue(info));
-            }
-        }
+        // fallback: 低版本 SDK 无分组 API 时不修改名称
 
         AppDomain.CurrentDomain.ProcessExit += (_, _) => CleanupPythonProcesses();
     }

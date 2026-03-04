@@ -124,12 +124,4 @@ public partial class DutyConfig : ObservableObject
     [property: JsonPropertyName("duty_reminder_templates")]
     private List<string> _dutyReminderTemplates =
         ["\u503C\u65E5\u63D0\u9192\uFF1A{date} {time}\uFF0C{assignments}"];
-
-    [ObservableProperty]
-    [property: JsonPropertyName("use_dual_row_display")]
-    private bool _useDualRowDisplay = false;
-
-    [ObservableProperty]
-    [property: JsonPropertyName("use_per_area_multi_line")]
-    private bool _usePerAreaMultiLine = false;
 }
