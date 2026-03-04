@@ -9,6 +9,7 @@ using DutyAgent.Views.SettingPages;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using System.Text.Json;
+using DutyAgent.Shared;
 
 namespace DutyAgent;
 
@@ -36,6 +37,29 @@ public class Plugin : PluginBase
         if (bootstrap.EnableWebViewDebugLayer)
         {
             services.AddSettingsPage<DutyWebSettingsPage>();
+        }
+
+        // 动态反射，实现在低 PluginSdk 上使用高版本的分组功能
+        var registeredSettingsPageInfos = ClassIsland.Core.Services.Registry.SettingsWindowRegistryService.Registered
+            .Where(info => info.Id.StartsWith("duty-agent"))
+            .ToList();
+
+        if (InjectService.TryGetAddSettingsPageGroupMethod(out var addSettingsPageGroupMethod))
+        {
+            addSettingsPageGroupMethod.Invoke(typeof(SettingsWindowRegistryExtensions), [services, "duty-agent.settings", "\uE31E", "Duty-Agent"]);
+            var groupIdProperty = InjectService.GetSettingsPageInfoGroupIdProperty();
+            foreach (var info in registeredSettingsPageInfos)
+            {
+                groupIdProperty.SetValue(info, "duty-agent.settings");
+            }
+        }
+        else
+        {
+            var nameField = InjectService.GetSettingsPageInfoNameField();
+            foreach (var info in registeredSettingsPageInfos)
+            {
+                nameField.SetValue(info, "Duty-Agent\u00B7" + (string?)nameField.GetValue(info));
+            }
         }
 
         AppDomain.CurrentDomain.ProcessExit += (_, _) => CleanupPythonProcesses();

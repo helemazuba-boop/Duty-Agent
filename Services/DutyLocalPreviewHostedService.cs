@@ -1119,23 +1119,22 @@ public sealed class DutyLocalPreviewHostedService : IHostedService, IDisposable
         var current = _backendService.Config;
         try
         {
-            _backendService.SaveUserConfig(
-                apiKey: DutyBackendService.ResolveApiKeyInput(apiKey, current.DecryptedApiKey),
-                baseUrl: baseUrl ?? current.BaseUrl,
-                model: model ?? current.Model,
-                autoRunMode: autoRunMode ?? current.AutoRunMode,
-                autoRunParameter: autoRunParameter ?? current.AutoRunParameter,
-                autoRunTime: autoRunTime ?? current.AutoRunTime,
-                perDay: perDay ?? current.PerDay,
-                dutyRule: dutyRule ?? current.DutyRule,
-                componentRefreshTime: componentRefreshTime ?? current.ComponentRefreshTime,
-                pythonPath: pythonPath ?? current.PythonPath,
-                notificationTemplates: notificationTemplates ?? current.NotificationTemplates,
-                dutyReminderEnabled: dutyReminderEnabled ?? current.DutyReminderEnabled,
-                dutyReminderTimes: dutyReminderTimes ?? current.DutyReminderTimes,
-                dutyReminderTemplates: dutyReminderTemplates ?? current.DutyReminderTemplates,
-                enableMcp: enableMcp,
-                enableWebViewDebugLayer: enableWebViewDebugLayer);
+            current.DecryptedApiKey = DutyBackendService.ResolveApiKeyInput(apiKey, current.DecryptedApiKey);
+            current.BaseUrl = baseUrl ?? current.BaseUrl;
+            current.Model = model ?? current.Model;
+            current.AutoRunMode = autoRunMode ?? current.AutoRunMode;
+            current.AutoRunParameter = autoRunParameter ?? current.AutoRunParameter;
+            current.AutoRunTime = autoRunTime ?? current.AutoRunTime;
+            current.PerDay = perDay ?? current.PerDay;
+            current.DutyRule = dutyRule ?? current.DutyRule;
+            current.ComponentRefreshTime = componentRefreshTime ?? current.ComponentRefreshTime;
+            current.PythonPath = pythonPath ?? current.PythonPath;
+            current.NotificationTemplates = notificationTemplates ?? current.NotificationTemplates;
+            current.DutyReminderEnabled = dutyReminderEnabled ?? current.DutyReminderEnabled;
+            current.DutyReminderTimes = dutyReminderTimes ?? current.DutyReminderTimes;
+            current.DutyReminderTemplates = dutyReminderTemplates ?? current.DutyReminderTemplates;
+            current.EnableMcp = enableMcp ?? current.EnableMcp;
+            current.EnableWebViewDebugLayer = enableWebViewDebugLayer ?? current.EnableWebViewDebugLayer;
         }
         catch (Exception ex)
         {
@@ -1924,22 +1923,12 @@ public sealed class DutyLocalPreviewHostedService : IHostedService, IDisposable
         var dutyRule = config.DutyRule ?? current.DutyRule;
         var pythonPath = config.PythonPath ?? current.PythonPath;
 
-        _backendService.SaveUserConfig(
-            apiKey: apiKey,
-            baseUrl: baseUrl,
-            model: model,
-            autoRunMode: current.AutoRunMode,
-            autoRunParameter: current.AutoRunParameter,
-            autoRunTime: current.AutoRunTime,
-            perDay: perDay,
-            dutyRule: dutyRule,
-            componentRefreshTime: current.ComponentRefreshTime,
-            pythonPath: pythonPath,
-            notificationTemplates: current.NotificationTemplates,
-            dutyReminderEnabled: current.DutyReminderEnabled,
-            dutyReminderTimes: current.DutyReminderTimes,
-            dutyReminderTemplates: current.DutyReminderTemplates,
-            enableMcp: current.EnableMcp);
+        current.DecryptedApiKey = apiKey;
+        current.BaseUrl = baseUrl;
+        current.Model = model;
+        current.PerDay = perDay;
+        current.DutyRule = dutyRule;
+        current.PythonPath = pythonPath;
     }
 
     private bool IsMcpEnabled()

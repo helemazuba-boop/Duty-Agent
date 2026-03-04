@@ -4,6 +4,8 @@ using System.Text.Json;
 using Avalonia.Threading;
 using DutyAgent.Models;
 using Timer = System.Timers.Timer;
+using ClassIsland.Shared.Helpers;
+using System.ComponentModel;
 
 namespace DutyAgent.Services;
 
@@ -115,6 +117,11 @@ public class DutyBackendService : IDisposable
     {
         lock (_configLock)
         {
+            if (Config != null)
+            {
+                Config.PropertyChanged -= OnConfigPropertyChanged;
+            }
+
             if (!File.Exists(_configPath))
             {
                 Config = new DutyConfig();
@@ -122,100 +129,53 @@ public class DutyBackendService : IDisposable
                 Config.DutyReminderTimes = NormalizeDutyReminderTimes(Config.DutyReminderTimes);
                 Config.DutyReminderTemplates = NormalizeDutyReminderTemplates(Config.DutyReminderTemplates);
                 SaveConfig();
-                return;
             }
-
-            try
+            else
             {
-                var json = File.ReadAllText(_configPath, Encoding.UTF8);
-                var config = JsonSerializer.Deserialize<DutyConfig>(json) ?? new DutyConfig();
-                config.NotificationTemplates = NormalizeNotificationTemplates(config.NotificationTemplates);
-                config.DutyReminderTimes = NormalizeDutyReminderTimes(config.DutyReminderTimes);
-                config.DutyReminderTemplates = NormalizeDutyReminderTemplates(config.DutyReminderTemplates);
-
-                if (!string.IsNullOrWhiteSpace(config.EncryptedApiKey))
+                try
                 {
-                    if (!SecurityHelper.IsCurrentEncryptionFormat(config.EncryptedApiKey))
+                    var config = ConfigureFileHelper.LoadConfig<DutyConfig>(_configPath);
+                    config.NotificationTemplates = NormalizeNotificationTemplates(config.NotificationTemplates);
+                    config.DutyReminderTimes = NormalizeDutyReminderTimes(config.DutyReminderTimes);
+                    config.DutyReminderTemplates = NormalizeDutyReminderTemplates(config.DutyReminderTemplates);
+                    
+                    if (!string.IsNullOrWhiteSpace(config.EncryptedApiKey) && 
+                        !SecurityHelper.IsCurrentEncryptionFormat(config.EncryptedApiKey))
                     {
-                        // Migrate legacy plaintext API keys to encrypted storage.
                         config.DecryptedApiKey = config.EncryptedApiKey;
                         Config = config;
                         SaveConfig();
-                        return;
                     }
-
-                    _ = config.DecryptedApiKey;
+                    else
+                    {
+                        Config = config;
+                    }
                 }
-
-                Config = config;
+                catch (Exception ex)
+                {
+                    Debug.WriteLine($"LoadConfig Error: {ex.Message}");
+                    Config = new DutyConfig();
+                    Config.NotificationTemplates = NormalizeNotificationTemplates(Config.NotificationTemplates);
+                    Config.DutyReminderTimes = NormalizeDutyReminderTimes(Config.DutyReminderTimes);
+                    Config.DutyReminderTemplates = NormalizeDutyReminderTemplates(Config.DutyReminderTemplates);
+                    SaveConfig();
+                }
             }
-            catch (Exception ex)
-            {
-                Debug.WriteLine($"LoadConfig Error: {ex.Message}");
-                Config = new DutyConfig();
-                Config.NotificationTemplates = NormalizeNotificationTemplates(Config.NotificationTemplates);
-                Config.DutyReminderTimes = NormalizeDutyReminderTimes(Config.DutyReminderTimes);
-                Config.DutyReminderTemplates = NormalizeDutyReminderTemplates(Config.DutyReminderTemplates);
-                SaveConfig();
-            }
+            
+            Config.PropertyChanged += OnConfigPropertyChanged;
         }
+    }
+
+    private void OnConfigPropertyChanged(object? sender, PropertyChangedEventArgs e)
+    {
+        SaveConfig();
     }
 
     public void SaveConfig()
     {
         lock (_configLock)
         {
-            var options = new JsonSerializerOptions
-            {
-                WriteIndented = true
-            };
-            var json = JsonSerializer.Serialize(Config, options);
-            File.WriteAllText(_configPath, json, Utf8NoBom);
-        }
-    }
-
-    public void SaveUserConfig(
-        string apiKey,
-        string baseUrl,
-        string model,
-        string autoRunMode,
-        string autoRunParameter,
-        string autoRunTime,
-        int perDay,
-        string dutyRule,
-        string componentRefreshTime,
-        string pythonPath,
-        IEnumerable<string>? notificationTemplates = null,
-        bool? dutyReminderEnabled = null,
-        IEnumerable<string>? dutyReminderTimes = null,
-        IEnumerable<string>? dutyReminderTemplates = null,
-        bool? enableMcp = null,
-        bool? enableWebViewDebugLayer = null,
-        bool? autoRunTriggerNotificationEnabled = null)
-    {
-        lock (_configLock)
-        {
-            Config.DecryptedApiKey = ResolveApiKeyInput(apiKey, Config.DecryptedApiKey);
-            Config.BaseUrl = baseUrl;
-            Config.Model = model;
-            Config.AutoRunMode = NormalizeAutoRunMode(autoRunMode);
-            Config.AutoRunParameter = (autoRunParameter ?? Config.AutoRunParameter).Trim();
-            Config.EnableMcp = enableMcp ?? Config.EnableMcp;
-            Config.EnableWebViewDebugLayer = enableWebViewDebugLayer ?? Config.EnableWebViewDebugLayer;
-            Config.AutoRunTime = NormalizeTimeOrThrow(autoRunTime);
-            Config.PerDay = Math.Clamp(perDay, 1, 30);
-            Config.DutyRule = dutyRule;
-            Config.ComponentRefreshTime = NormalizeTimeOrThrow(componentRefreshTime);
-            Config.AutoRunTriggerNotificationEnabled =
-                autoRunTriggerNotificationEnabled ?? Config.AutoRunTriggerNotificationEnabled;
-            Config.PythonPath = string.IsNullOrWhiteSpace(pythonPath) ? Config.PythonPath : pythonPath.Trim();
-            Config.NotificationTemplates =
-                NormalizeNotificationTemplates(notificationTemplates ?? Config.NotificationTemplates);
-            Config.DutyReminderEnabled = dutyReminderEnabled ?? Config.DutyReminderEnabled;
-            Config.DutyReminderTimes = NormalizeDutyReminderTimes(dutyReminderTimes ?? Config.DutyReminderTimes);
-            Config.DutyReminderTemplates =
-                NormalizeDutyReminderTemplates(dutyReminderTemplates ?? Config.DutyReminderTemplates);
-            SaveConfig();
+            ConfigureFileHelper.SaveConfig(_configPath, Config);
         }
     }
 
@@ -988,7 +948,7 @@ public class DutyBackendService : IDisposable
         return Path.GetFullPath(Path.Combine(pluginBasePath, normalized));
     }
 
-    private static string NormalizeTimeOrThrow(string? time)
+    public static string NormalizeTimeOrThrow(string? time)
     {
         if (TimeSpan.TryParse(time, out var ts)) return ts.ToString(@"hh\:mm");
         throw new ArgumentException("Invalid time format.");
@@ -1035,7 +995,7 @@ public class DutyBackendService : IDisposable
         }
     }
 
-    private static string NormalizeAutoRunMode(string mode)
+    public static string NormalizeAutoRunMode(string mode)
     {
         var trimmed = (mode ?? "Off").Trim();
         return trimmed.ToLowerInvariant() switch
@@ -1154,7 +1114,7 @@ public class DutyBackendService : IDisposable
         return areas;
     }
 
-    private static List<string> NormalizeNotificationTemplates(IEnumerable<string>? rawTemplates)
+    public static List<string> NormalizeNotificationTemplates(IEnumerable<string>? rawTemplates)
     {
         var templates = new List<string>();
         var seen = new HashSet<string>(StringComparer.Ordinal);

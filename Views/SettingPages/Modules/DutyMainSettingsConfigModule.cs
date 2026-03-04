@@ -45,22 +45,20 @@ internal sealed class DutyMainSettingsConfigModule
         var resolvedApiKey = DutyBackendService.ResolveApiKeyInput(request.ApiKeyInput, current.DecryptedApiKey);
         var dutyReminderTimes = new List<string> { request.DutyReminderTime };
 
-        _service.SaveUserConfig(
-            apiKey: resolvedApiKey,
-            baseUrl: request.BaseUrl?.Trim() ?? string.Empty,
-            model: request.Model?.Trim() ?? string.Empty,
-            autoRunMode: request.AutoRunMode,
-            autoRunParameter: request.AutoRunParameter,
-            autoRunTime: request.AutoRunTime,
-            perDay: Math.Clamp(current.PerDay, 1, 30),
-            dutyRule: request.DutyRule ?? string.Empty,
-            componentRefreshTime: request.ComponentRefreshTime,
-            pythonPath: current.PythonPath,
-            dutyReminderEnabled: request.DutyReminderEnabled,
-            dutyReminderTimes: dutyReminderTimes,
-            enableMcp: request.EnableMcp,
-            enableWebViewDebugLayer: request.EnableWebViewDebugLayer,
-            autoRunTriggerNotificationEnabled: request.AutoRunTriggerNotificationEnabled);
+        current.DecryptedApiKey = resolvedApiKey;
+        current.BaseUrl = request.BaseUrl?.Trim() ?? string.Empty;
+        current.Model = request.Model?.Trim() ?? string.Empty;
+        current.AutoRunMode = DutyBackendService.NormalizeAutoRunMode(request.AutoRunMode);
+        current.AutoRunParameter = (request.AutoRunParameter ?? current.AutoRunParameter).Trim();
+        current.AutoRunTime = DutyBackendService.NormalizeTimeOrThrow(request.AutoRunTime);
+        current.PerDay = Math.Clamp(current.PerDay, 1, 30);
+        current.DutyRule = request.DutyRule ?? string.Empty;
+        current.ComponentRefreshTime = DutyBackendService.NormalizeTimeOrThrow(request.ComponentRefreshTime);
+        current.DutyReminderEnabled = request.DutyReminderEnabled;
+        current.DutyReminderTimes = dutyReminderTimes;
+        current.EnableMcp = request.EnableMcp;
+        current.EnableWebViewDebugLayer = request.EnableWebViewDebugLayer;
+        current.AutoRunTriggerNotificationEnabled = request.AutoRunTriggerNotificationEnabled;
 
         var restartRequired = previousEnableMcp != request.EnableMcp ||
                               previousEnableWebViewDebugLayer != request.EnableWebViewDebugLayer;

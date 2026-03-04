@@ -1,17 +1,20 @@
 using System.Text.Json.Serialization;
+using CommunityToolkit.Mvvm.ComponentModel;
 using DutyAgent.Services;
 
 namespace DutyAgent.Models;
 
-public class DutyConfig
+public partial class DutyConfig : ObservableObject
 {
     private string _decryptedApiKey = string.Empty;
 
-    [JsonPropertyName("python_path")]
-    public string PythonPath { get; set; } = @".\Assets_Duty\python-embed\python.exe";
+    [ObservableProperty]
+    [property: JsonPropertyName("python_path")]
+    private string _pythonPath = @".\Assets_Duty\python-embed\python.exe";
 
-    [JsonPropertyName("api_key")]
-    public string EncryptedApiKey { get; set; } = string.Empty;
+    [ObservableProperty]
+    [property: JsonPropertyName("api_key")]
+    private string _encryptedApiKey = string.Empty;
 
     [JsonIgnore]
     public string DecryptedApiKey
@@ -48,70 +51,77 @@ public class DutyConfig
         }
     }
 
-    [JsonPropertyName("base_url")]
-    public string BaseUrl { get; set; } = "https://integrate.api.nvidia.com/v1";
+    [ObservableProperty]
+    [property: JsonPropertyName("base_url")]
+    private string _baseUrl = "https://integrate.api.nvidia.com/v1";
 
-    [JsonPropertyName("model")]
-    public string Model { get; set; } = "moonshotai/kimi-k2-thinking";
+    [ObservableProperty]
+    [property: JsonPropertyName("model")]
+    private string _model = "moonshotai/kimi-k2-thinking";
 
-    /// <summary>
-    /// Auto-run mode: "Off", "Weekly", "Monthly", "Custom".
-    /// Replaces the old EnableAutoRun (bool) + AutoRunDay (string) combo.
-    /// </summary>
-    [JsonPropertyName("auto_run_mode")]
-    public string AutoRunMode { get; set; } = "Off";
+    [ObservableProperty]
+    [property: JsonPropertyName("auto_run_mode")]
+    private string _autoRunMode = "Off";
 
-    /// <summary>
-    /// Parameter for AutoRunMode:
-    ///   Weekly  -> DayOfWeek name (e.g. "Monday")
-    ///   Monthly -> day-of-month as string ("1".."31") or "L" for last day
-    ///   Custom  -> interval in days (e.g. "14")
-    ///   Off     -> ignored
-    /// </summary>
-    [JsonPropertyName("auto_run_parameter")]
-    public string AutoRunParameter { get; set; } = "Monday";
+    [ObservableProperty]
+    [property: JsonPropertyName("auto_run_parameter")]
+    private string _autoRunParameter = "Monday";
 
-    [JsonPropertyName("enable_mcp")]
-    public bool EnableMcp { get; set; } = false;
+    [ObservableProperty]
+    [property: JsonPropertyName("enable_mcp")]
+    private bool _enableMcp = false;
 
-    [JsonPropertyName("enable_webview_debug_layer")]
-    public bool EnableWebViewDebugLayer { get; set; } = false;
+    [ObservableProperty]
+    [property: JsonPropertyName("enable_webview_debug_layer")]
+    private bool _enableWebViewDebugLayer = false;
 
-    [JsonPropertyName("auto_run_time")]
-    public string AutoRunTime { get; set; } = "08:00";
+    [ObservableProperty]
+    [property: JsonPropertyName("auto_run_time")]
+    private string _autoRunTime = "08:00";
 
-    [JsonPropertyName("auto_run_trigger_notification_enabled")]
-    public bool AutoRunTriggerNotificationEnabled { get; set; } = true;
+    [ObservableProperty]
+    [property: JsonPropertyName("auto_run_trigger_notification_enabled")]
+    private bool _autoRunTriggerNotificationEnabled = true;
 
-    [JsonPropertyName("per_day")]
-    public int PerDay { get; set; } = 2;
+    [ObservableProperty]
+    [property: JsonPropertyName("per_day")]
+    private int _perDay = 2;
 
-    [JsonPropertyName("duty_rule")]
-    public string DutyRule { get; set; } = string.Empty;
+    [ObservableProperty]
+    [property: JsonPropertyName("duty_rule")]
+    private string _dutyRule = string.Empty;
 
-    [JsonPropertyName("auto_run_retry_times")]
-    public int AutoRunRetryTimes { get; set; } = 3;
+    [ObservableProperty]
+    [property: JsonPropertyName("auto_run_retry_times")]
+    private int _autoRunRetryTimes = 3;
 
-    [JsonPropertyName("ai_consecutive_failures")]
-    public int AiConsecutiveFailures { get; set; } = 0;
+    [ObservableProperty]
+    [property: JsonPropertyName("ai_consecutive_failures")]
+    private int _aiConsecutiveFailures = 0;
 
-    [JsonPropertyName("last_auto_run_date")]
-    public string LastAutoRunDate { get; set; } = string.Empty;
+    [ObservableProperty]
+    [property: JsonPropertyName("last_auto_run_date")]
+    private string _lastAutoRunDate = string.Empty;
 
-    [JsonPropertyName("component_refresh_time")]
-    public string ComponentRefreshTime { get; set; } = "08:00";
+    [ObservableProperty]
+    [property: JsonPropertyName("component_refresh_time")]
+    private string _componentRefreshTime = "08:00";
 
-    [JsonPropertyName("notification_templates")]
-    public List<string> NotificationTemplates { get; set; } =
+    [ObservableProperty]
+    [property: JsonPropertyName("notification_templates")]
+    private List<string> _notificationTemplates =
         ["{scene}{status}\uFF0C\u65E5\u671F\uFF1A{date}\uFF0C\u533A\u57DF\uFF1A{areas}"];
 
-    [JsonPropertyName("duty_reminder_enabled")]
-    public bool DutyReminderEnabled { get; set; } = false;
+    [ObservableProperty]
+    [property: JsonPropertyName("duty_reminder_enabled")]
+    private bool _dutyReminderEnabled = false;
 
-    [JsonPropertyName("duty_reminder_times")]
-    public List<string> DutyReminderTimes { get; set; } = ["07:40"];
+    [ObservableProperty]
+    [property: JsonPropertyName("duty_reminder_times")]
+    private List<string> _dutyReminderTimes = ["07:40"];
 
-    [JsonPropertyName("duty_reminder_templates")]
-    public List<string> DutyReminderTemplates { get; set; } =
+    [ObservableProperty]
+    [property: JsonPropertyName("duty_reminder_templates")]
+    private List<string> _dutyReminderTemplates =
         ["\u503C\u65E5\u63D0\u9192\uFF1A{date} {time}\uFF0C{assignments}"];
 }

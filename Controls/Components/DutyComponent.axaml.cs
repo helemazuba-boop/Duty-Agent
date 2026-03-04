@@ -64,9 +64,11 @@ public partial class DutyComponent : ComponentBase<DutyComponentSettings>
             var targetDate = now.Date;
             if (TimeSpan.TryParse(_service.Config.ComponentRefreshTime, out var refreshTime))
             {
-                if (now.TimeOfDay >= refreshTime)
+                // The refresh time is the daily handover point:
+                // before this moment keep showing the previous day; after it show today.
+                if (now.TimeOfDay < refreshTime)
                 {
-                    targetDate = targetDate.AddDays(1);
+                    targetDate = targetDate.AddDays(-1);
                 }
             }
 

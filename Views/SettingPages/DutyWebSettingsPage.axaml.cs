@@ -472,24 +472,23 @@ public partial class DutyWebSettingsPage : SettingsPageBase
         var dutyReminderTimes = config.DutyReminderTimes ?? current.DutyReminderTimes;
         var dutyReminderTemplates = config.DutyReminderTemplates ?? current.DutyReminderTemplates;
 
-        _backendService.SaveUserConfig(
-            apiKey: apiKey,
-            baseUrl: baseUrl,
-            model: model,
-            autoRunMode: autoRunMode,
-            autoRunParameter: autoRunParameter,
-            autoRunTime: autoRunTime,
-            perDay: perDay,
-            dutyRule: dutyRule,
-            componentRefreshTime: componentRefreshTime,
-            pythonPath: pythonPath,
-            notificationTemplates: notificationTemplates,
-            dutyReminderEnabled: dutyReminderEnabled,
-            dutyReminderTimes: dutyReminderTimes,
-            dutyReminderTemplates: dutyReminderTemplates,
-            enableMcp: enableMcp,
-            enableWebViewDebugLayer: enableWebViewDebugLayer,
-            autoRunTriggerNotificationEnabled: autoRunTriggerNotificationEnabled);
+        current.DecryptedApiKey = apiKey;
+        current.BaseUrl = baseUrl;
+        current.Model = model;
+        current.AutoRunMode = DutyBackendService.NormalizeAutoRunMode(autoRunMode);
+        current.AutoRunParameter = (autoRunParameter ?? current.AutoRunParameter).Trim();
+        current.AutoRunTime = DutyBackendService.NormalizeTimeOrThrow(autoRunTime);
+        current.PerDay = Math.Clamp(perDay, 1, 30);
+        current.DutyRule = dutyRule;
+        current.ComponentRefreshTime = DutyBackendService.NormalizeTimeOrThrow(componentRefreshTime);
+        current.DutyReminderEnabled = dutyReminderEnabled;
+        current.DutyReminderTimes = dutyReminderTimes;
+        current.DutyReminderTemplates = dutyReminderTemplates;
+        current.EnableMcp = enableMcp;
+        current.EnableWebViewDebugLayer = enableWebViewDebugLayer;
+        current.AutoRunTriggerNotificationEnabled = autoRunTriggerNotificationEnabled;
+        current.PythonPath = pythonPath;
+        current.NotificationTemplates = DutyBackendService.NormalizeNotificationTemplates(notificationTemplates);
     }
 
     private async Task SendSnapshotAsync()

@@ -1,394 +1,914 @@
-﻿diff --git a/Assets_Duty/core.py b/Assets_Duty/core.py
-index 8635512..2eb4ff0 100644
+﻿commit 28b10f07754f994d5f813c125506c13105498ef1
+Author: helemazuba-boop <helemazuba@gmail.com>
+Date:   Wed Mar 4 01:44:26 2026 +0800
+
+    feat:鍏煎win10锛屼慨澶峛ug
+
+diff --git a/Assets_Duty/core.py b/Assets_Duty/core.py
+index 2eb4ff0..cd7d737 100644
 --- a/Assets_Duty/core.py
 +++ b/Assets_Duty/core.py
-@@ -104,32 +104,19 @@ def load_api_key_from_env() -> str:
-     return api_key
+@@ -18,7 +18,6 @@ from pathlib import Path
+ from typing import Any, Callable, Dict, List, Optional, Tuple
+ 
+ DEFAULT_PER_DAY = 2
+-DEFAULT_AREA_NAMES = ["鏁欏", "娓呮磥鍖?]
+ DAY_NAMES = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+ LLM_TIMEOUT_SECONDS = 120
+ LLM_MAX_RETRIES = 2
+@@ -28,6 +27,8 @@ LLM_STREAM_ENABLED_DEFAULT = True
+ LLM_PARSE_MAX_RETRIES = 1
+ LLM_PROGRESS_LINE_PREFIX = "__DUTY_PROGRESS__:"
+ LLM_STREAM_PROGRESS_MIN_INTERVAL_SECONDS = 0.2
++STATE_LOCK_TIMEOUT_SECONDS = 360
++STATE_LOCK_RETRY_INTERVAL_SECONDS = 0.2
  
  
--def to_unique_name(raw_name: str, seen_counts: Dict[str, int]) -> str:
--    base_name = raw_name.strip()
--    if not base_name:
--        return ""
+ class Context:
+@@ -59,6 +60,28 @@ def save_json_atomic(path: Path, data: dict):
+                 raise
+ 
+ 
++def acquire_state_file_lock(lock_path: Path, timeout_seconds: int = STATE_LOCK_TIMEOUT_SECONDS) -> None:
++    deadline = time.time() + max(1, int(timeout_seconds))
++    while True:
++        try:
++            fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
++            with os.fdopen(fd, "w", encoding="utf-8") as lock_file:
++                lock_file.write(f"{os.getpid()}\n")
++                lock_file.write(f"{datetime.now().isoformat()}\n")
++            return
++        except FileExistsError:
++            if time.time() >= deadline:
++                raise TimeoutError(f"Timed out waiting for state lock: {lock_path}")
++            time.sleep(STATE_LOCK_RETRY_INTERVAL_SECONDS)
++
++
++def release_state_file_lock(lock_path: Path) -> None:
++    try:
++        lock_path.unlink()
++    except FileNotFoundError:
++        pass
++
++
+ def write_result(path: Path, status: str, message: str = "", extra: Optional[dict] = None):
+     payload = {"status": status}
+     if message:
+@@ -202,9 +225,6 @@ def normalize_area_names(raw_area_names) -> List[str]:
+             continue
+         seen.add(name)
+         areas.append(name)
 -
--    next_count = seen_counts.get(base_name, 0) + 1
--    seen_counts[base_name] = next_count
--    if next_count == 1:
--        return base_name
--    return f"{base_name}{next_count}"
--
--
--def load_roster(csv_path: Path) -> Tuple[Dict[str, int], Dict[int, str], List[int], List[int]]:
-+def load_roster(csv_path: Path) -> Tuple[Dict[str, int], Dict[int, str], List[int], Dict[int, int]]:
-     """Load roster from CSV.
- 
-     Returns:
--        name_to_id, id_to_name, active_ids, all_ids
-+        name_to_id, id_to_name, all_ids, id_to_active
-     """
-     if not csv_path.exists():
-         raise FileNotFoundError(f"roster.csv not found: {csv_path}")
- 
-     name_to_id: Dict[str, int] = {}
-     id_to_name: Dict[int, str] = {}
--    active_ids: List[int] = []
-     all_ids: List[int] = []
--    seen_name_counts: Dict[str, int] = {}
-+    id_to_active: Dict[int, int] = {}
- 
-     with open(csv_path, "r", encoding="utf-8-sig", newline="") as f:
-         reader = csv.DictReader(f)
-@@ -152,21 +139,18 @@ def load_roster(csv_path: Path) -> Tuple[Dict[str, int], Dict[int, str], List[in
-             except (TypeError, ValueError):
-                 active = 1
- 
--            unique_name = to_unique_name(raw_name, seen_name_counts)
--            if not unique_name:
--                continue
-+            if raw_name in name_to_id:
-+                raise ValueError(f"妫€娴嬪埌閲嶅悕瀛︾敓: {raw_name}锛岃淇敼鍚嶅崟鍚庨噸璇曘€?)
- 
--            name_to_id[unique_name] = pid
--            id_to_name[pid] = unique_name
-+            name_to_id[raw_name] = pid
-+            id_to_name[pid] = raw_name
-             all_ids.append(pid)
--            if active == 1:
--                active_ids.append(pid)
-+            id_to_active[pid] = active
- 
-     all_ids = sorted(set(all_ids))
--    active_ids = sorted(set(active_ids))
--    if not active_ids:
--        raise ValueError("No active people in roster.csv.")
--    return name_to_id, id_to_name, active_ids, all_ids
-+    if not all_ids:
-+        raise ValueError("No people in roster.csv.")
-+    return name_to_id, id_to_name, all_ids, id_to_active
+-    if not areas:
+-        return DEFAULT_AREA_NAMES[:]
+     return areas
  
  
- def load_state(path: Path) -> dict:
-@@ -258,34 +242,6 @@ def get_pool_entries_with_date(state_data: dict) -> List[Tuple[dict, date]]:
-     return result
- 
- 
--def get_anchor_id(
--    state_data: dict,
--    name_to_id: Dict[str, int],
--    active_ids: List[int],
--    start_date: date,
--    apply_mode: str,
--) -> int:
--    entries = get_pool_entries_with_date(state_data)
--
--    if apply_mode == "append":
--        candidates = entries
--    else:
--        candidates = [x for x in entries if x[1] < start_date]
--
--    for entry, _ in reversed(candidates):
--        area_assignments = entry.get("area_assignments", {})
--        if isinstance(area_assignments, dict):
--            for name_list in area_assignments.values():
--                if not isinstance(name_list, list) or not name_list:
--                    continue
--                last_name = str(name_list[-1]).strip()
--                if last_name in name_to_id:
--                    anchor_id = name_to_id[last_name]
--                    if anchor_id in active_ids:
--                        return anchor_id
--
--    return active_ids[-1]
--
- 
- def anonymize_instruction(text: str, name_to_id: Dict[str, int]) -> str:
-     if not text:
-@@ -300,82 +256,11 @@ def anonymize_instruction(text: str, name_to_id: Dict[str, int]) -> str:
-         result = result.replace(placeholder, pid_str)
-     return result
- 
--WEEKDAY_CN = ["鏄熸湡涓€", "鏄熸湡浜?, "鏄熸湡涓?, "鏄熸湡鍥?, "鏄熸湡浜?, "鏄熸湡鍏?, "鏄熸湡鏃?]
--
--
--def build_calendar_anchor(
--    auto_run_mode: str,
--    auto_run_parameter: str,
--    per_day: int,
--    active_count: int,
--) -> str:
--    """Build a calendar anchor string that tells the AI exactly which date range to schedule.
--
--    Returns a multi-line string with:
--      - Start Date / End Date (with weekday)
--      - Cross-month boundaries if applicable
--      - Hard constraint: no dates outside this range
--    """
--    today = datetime.now().date()
--    mode = (auto_run_mode or "Off").strip().lower()
--
--    # Determine scheduling span in days
--    if mode == "weekly":
--        span_days = 7
--    elif mode == "monthly":
--        span_days = calendar.monthrange(today.year, today.month)[1]
--    elif mode == "custom":
--        try:
--            span_days = max(int(auto_run_parameter), 1)
--        except (ValueError, TypeError):
--            span_days = 14
--    else:
--        # For "Off" or unknown, estimate from roster size
--        if per_day > 0 and active_count > 0:
--            span_days = max((active_count // per_day) + 1, 7)
--        else:
--            span_days = 7
--
--    start_date = today
--    end_date = today + timedelta(days=span_days - 1)
--
--    lines = [
--        f"Schedule Start Date: {start_date.isoformat()} ({WEEKDAY_CN[start_date.weekday()]})",
--        f"Schedule End Date:   {end_date.isoformat()} ({WEEKDAY_CN[end_date.weekday()]})",
--        f"Total Days: {span_days}",
--    ]
--
--    # Cross-month boundary detection
--    if start_date.month != end_date.month:
--        # Find all month boundaries in the range
--        cursor = start_date.replace(day=1)
--        while cursor <= end_date:
--            last_day_of_month = cursor.replace(
--                day=calendar.monthrange(cursor.year, cursor.month)[1]
--            )
--            if start_date <= last_day_of_month <= end_date:
--                next_month_first = last_day_of_month + timedelta(days=1)
--                lines.append(
--                    f"Cross-Month Boundary: {last_day_of_month.isoformat()} ({WEEKDAY_CN[last_day_of_month.weekday()]}) "
--                    f"-> {next_month_first.isoformat()} ({WEEKDAY_CN[next_month_first.weekday()]})"
--                )
--            # Move to next month (use date() constructor to avoid day-out-of-range crash)
--            if cursor.month == 12:
--                cursor = date(cursor.year + 1, 1, 1)
--            else:
--                cursor = date(cursor.year, cursor.month + 1, 1)
--
--    lines.append(
--        "HARD CONSTRAINT: You MUST NOT generate any date outside this range. "
--        "Use the boundaries above to verify every date you produce."
--    )
--    return "\n".join(lines)
- 
- 
- def build_prompt_messages(
--    id_range: Tuple[int, int],
--    disabled_ids: List[int],
--    last_id: int,
-+    all_ids: List[int],
-+    id_to_active: Dict[int, int],
-     current_time: str,
-     instruction: str,
-     duty_rule: str,
-@@ -383,57 +268,52 @@ def build_prompt_messages(
-     debt_list: List[int],
-     credit_list: List[int],
+@@ -270,8 +290,11 @@ def build_prompt_messages(
      previous_context: str = "",
--    calendar_anchor: str = "",
  ) -> List[dict]:
      """Build the 3-part prompt messages for the LLM."""
-     
-     area_schema_items = [f'{json.dumps(name)}: [101, 102]' for name in area_names]
+-    
+-    area_schema_items = [f'{json.dumps(name)}: [101, 102]' for name in area_names]
++
++    if area_names:
++        area_schema_items = [f'{json.dumps(name)}: [101, 102]' for name in area_names]
++    else:
++        area_schema_items = ['"<dynamic_area_name>": [101, 102]']
      area_schema = ", ".join(area_schema_items)
  
-+    inactive_ids = [pid for pid, active in id_to_active.items() if active == 0]
+     inactive_ids = [pid for pid, active in id_to_active.items() if active == 0]
+@@ -375,6 +398,8 @@ def recover_missing_debts(
+     # Collect all IDs that actually made it into the final schedule
+     scheduled_set: set = set()
+     for entry in normalized_schedule:
++        if not isinstance(entry, dict):
++            continue
+         for ids in entry.get("area_ids", {}).values():
+             if isinstance(ids, list):
+                 scheduled_set.update(ids)
+@@ -393,6 +418,35 @@ def recover_missing_debts(
+     return sorted(final_debt_set)
+ 
+ 
++def reconcile_credit_list(
++    original_credit_list: List[int],
++    new_credit_ids_from_llm: List[int],
++    normalized_schedule: List[dict],
++    valid_ids: set,
++    debt_list: Optional[List[int]] = None,
++    has_llm_field: bool = True,
++) -> List[int]:
++    """Reconcile credit list with runtime semantics.
 +
-     system_content = f"""# Role
- You are the Duty-Agent, an intelligent scheduling assistant.
--Your goal is to generate a schedule that balances **Hard Constraints** (Sick leave), **Soft Constraints** (Team training), and **Fairness** (Debt repayment).
-+Your goal is to generate a schedule that balances **Hard Constraints** (Sick leave, Inactive status), **Soft Constraints** (Team training), and **Fairness** (Debt repayment).
++    Rule:
++    - Prefer LLM's explicit remaining credit list when the field is present.
++    - Fall back to original list when the field is missing (compat mode).
++    """
++    # Kept for signature compatibility and potential future audits.
++    _ = normalized_schedule
++
++    if not has_llm_field:
++        next_credit_set = set(original_credit_list)
++    else:
++        next_credit_set = set(new_credit_ids_from_llm)
++
++    next_credit_set = {cid for cid in next_credit_set if cid in valid_ids}
++    if debt_list:
++        next_credit_set -= set(debt_list)
++
++    return sorted(next_credit_set)
++
++
  
- # Input Context
--- IDs are a continuous sequence (e.g., 1, 2, 3...).
--- You have a `Main_Pointer` starting at `Last ID`.
-+- You will be given the entire Roster IDs.
-+- You must dynamically decide the Schedule Dates and the Scheduling Pointer order purely based on the **User Instruction** and the **PREVIOUS RUN MEMORY**.
+ def clean_json_response(text: str) -> str:
+     text = text.strip()
+@@ -407,6 +461,7 @@ def validate_llm_schedule_entries(schedule_raw) -> None:
+         raise ValueError("LLM returned invalid schedule: `schedule` must be a list.")
  
- # The "Three-Queue" Protocol
--1. **Debt Queue**: Stores IDs who owe duty (skipped due to soft conflicts, or removed via manual edit). These MUST be cleared first.
--2. **Credit Queue**: Stores IDs who did extra volunteer work (added via manual edit). When `Main_Pointer` naturally reaches them, SKIP them once and remove from Credit. They earned immunity.
--3. **Main Pointer**: Tracks the highest ID accessed in the roster. It **ONLY increments**. It never resets or goes back.
-+1. **Debt Queue**: Stores IDs who owe duty. These MUST be cleared first (Backfill).
-+2. **Credit Queue**: Stores IDs who did extra volunteer work. When you naturally reach them in your scheduling order, SKIP them once and remove from Credit. They earned immunity.
-+3. **Inactive IDs**: Students who are currently suspended or unavailable. DO NOT SCHEDULE THEM unless explicitly requested.
+     previous_date: Optional[date] = None
++    seen_dates: set = set()
+     for idx, entry in enumerate(schedule_raw):
+         if not isinstance(entry, dict):
+             raise ValueError(f"LLM schedule entry at index {idx} must be an object.")
+@@ -424,8 +479,11 @@ def validate_llm_schedule_entries(schedule_raw) -> None:
  
- # The "Patch" Principle (CRITICAL)
- Your output acts as a JSON PATCH to an existing live scheduling database.
- 1. ONLY generate schedule entries for the specific dates requested by the User Instruction.
--2. OVER-GENERATION IS FATAL: If the user asks for "Thursday and Friday" (2 days), you MUST output exactly 2 entries. Do NOT generate Saturday, Sunday, or next week.
--3. Generating unrequested future dates will irreversibly DESTROY the user's existing future schedules.
--4. When in doubt, generate FEWER days rather than more.
-+2. OVER-GENERATION IS FATAL. If the user asks for 2 days, strictly output 2 days.
-+3. When in doubt, generate FEWER days rather than more.
+         if previous_date is not None and current_date < previous_date:
+             raise ValueError("LLM schedule dates must be sorted in ascending order.")
++        if current_date in seen_dates:
++            raise ValueError(f"LLM schedule has duplicate date `{raw_date}` at index {idx}.")
  
- # Process (Chain of Thought)
- For each scheduling request, perform these steps in your `thinking_trace`:
--0. **Intent Parsing**: Read the User Instruction carefully. Count exactly how many days are requested. List the target dates explicitly. This is your contract 鈥?do NOT exceed it.
--1. **Date & Conflict**: Calculate the date. Identify who is blocked (Sick or Team).
-+0. **Intent Parsing**: Count exactly how many days are requested. List target dates.
-+1. **Context Deduce**: Read PREVIOUS RUN MEMORY. Decide which date comes next and whose turn it is next.
- 2. **Check Debt**: Is anyone in `Debt Queue` available today?
--   - YES: Schedule them first (Backfill).
--   - NO: Proceed to step 3.
--3. **Advance Pointer**: If more slots are needed, increment `Main_Pointer`.
--   - If New ID is in `Credit Queue` -> SKIP them (immunity), remove from Credit, do NOT add to Debt. Increment Pointer again.
--   - If New ID is Sick -> Skip permanently (do not add to Debt).
--   - If New ID is Team/Soft Conflict -> Skip for today, ADD to `Debt Queue`, and increment Pointer again.
--   - If Valid -> Schedule them.
--4. **Flow Control**: Do not exceed daily capacity by too much. Spread debt repayment over multiple days if the queue is large ("Debt Avalanche" prevention).
--5. **Final Check**: Before outputting, verify that your schedule array length matches the day count from step 0. If it doesn't, you have a bug.
-+   - YES: Schedule them first.
-+3. **Regular Roster**: Pick the next IDs in sequence.
-+   - If New ID is in `Credit Queue` -> SKIP them (immunity), allocate to next person.
-+   - If New ID is Sick/Inactive -> Skip permanently.
-+4. **Final Check**: Verify schedule array length matches requested day count.
+         previous_date = current_date
++        seen_dates.add(current_date)
  
- # Output Schema (Strict JSON)
- ```json
- {{
-   "thinking_trace": {{
-     "intent_parsing": "User requested Thursday and Friday. Target day count: 2. I will generate exactly 2 entries.",
--    "step_1_analysis": "Date is 2026-02-18. IDs 5,6 are Team (blocked).",
--    "step_2_pointer_logic": "Debt Queue is empty. Main Pointer moved from 10 to 12.",
--    "step_3_action": "Scheduled 11. 12 is Team, added to Debt. Scheduled 13.",
--    "final_check": "Output has 2 entries matching target. Safe to submit."
-+    "context_deduce": "Last scheduled date was Monday. I will generate for Tue and Wed. Last assigned ID was 12, so I start from 13.",
-+    "step_3_action": "Scheduled 13. 14 is Inactive, skipped. 15 is in Credit Queue, skipped and immunity consumed.",
-+    "final_check": "Output has 2 entries. Safe to submit."
-   }},
-   "schedule": [
-     {{
-@@ -442,14 +322,14 @@ For each scheduling request, perform these steps in your `thinking_trace`:
-       "note": "Brief reason (e.g., 'Backfilled ID 6')"
-     }}
-   ],
--  "next_run_note": "CRITICAL: Debt List [12] must be handled next run. Credit List [5] gets immunity next. Current Pointer at 13.",
-+  "next_run_note": "CRITICAL: Scheduled Tuesday and Wednesday. The last ID assigned was 16. Current Debt: [12]. Current Credit: [5].",
-   "new_debt_ids": [12],
-   "new_credit_ids": [5]
- }}
- ```
- **Important**:
--1. The `next_run_note` is your "Memory" for the next time you run. You MUST strictly record any remaining Debt List, Credit List, or important context here.
--2. `new_debt_ids`: If you added anyone to the Debt Queue (or if anyone remains in it), you MUST output their IDs here as a list of integers.
-+1. The `next_run_note` is your "Memory" for the next time you run. You MUST strictly record the LAST DATE generated, the LAST ID assigned, and any remaining Debt/Credit List here.
-+2. `new_debt_ids`: If you added anyone to the Debt Queue (or if anyone remains in it), output their IDs here.
- 3. `new_credit_ids`: If anyone remains in the Credit Queue after this run (i.e. their immunity was NOT consumed), output their IDs here. If a credit was consumed, remove them from this list.
- """
  
-@@ -458,9 +338,8 @@ For each scheduling request, perform these steps in your `thinking_trace`:
-         system_content += f"\n\n--- User Defined Rules ---\n{duty_rule}"
+ def is_timeout_error(ex: Exception) -> bool:
+@@ -574,6 +632,7 @@ def request_llm_stream(
+     stream_payload = dict(payload)
+     stream_payload["stream"] = True
+     req = create_llm_request(url, stream_payload, api_key)
++    deadline = time.time() + (LLM_TIMEOUT_SECONDS * 3)
  
-     user_parts = [
--        f"ID Range: {id_range[0]}-{id_range[1]}",
--        f"Disabled IDs: {disabled_ids}",
--        f"Last ID: {last_id}",
-+        f"All Roster IDs: {all_ids}",
-+        f"Inactive IDs (DO NOT SCHEDULE): {inactive_ids}",
-     ]
+     invoke_progress_callback(progress_callback, "stream_start", "Streaming response opened.")
  
-     if previous_context:
-@@ -470,13 +349,10 @@ For each scheduling request, perform these steps in your `thinking_trace`:
-         user_parts.append(f"CURRENT DEBT LIST (PRIORITY HIGH): {debt_list}. You MUST schedule these IDs first.")
+@@ -585,6 +644,8 @@ def request_llm_stream(
  
-     if credit_list:
--        user_parts.append(f"CURRENT CREDIT LIST (IMMUNITY): {credit_list}. When Main_Pointer reaches these IDs, SKIP them once (free pass) and remove from Credit.")
-+        user_parts.append(f"CURRENT CREDIT LIST (IMMUNITY): {credit_list}. When you naturally reach these IDs, SKIP them once (free pass) and remove from Credit.")
+     with urllib.request.urlopen(req, timeout=LLM_TIMEOUT_SECONDS) as resp:
+         for raw_line in resp:
++            if time.time() > deadline:
++                raise TimeoutError("Total stream duration exceeded timeout budget.")
+             decoded = raw_line.decode("utf-8", errors="ignore")
+             raw_lines.append(decoded)
+             line = decoded.strip()
+@@ -705,7 +766,7 @@ def call_llm(
+     url = f"{base_url}/chat/completions"
+     payload = {
+         "model": config["model"],
+-        "messages": messages,
++        "messages": list(messages),
+         "temperature": 0.1,
+     }
+     api_key = str(config.get("api_key", "")).strip()
+@@ -773,7 +834,7 @@ def call_llm(
+     raise RuntimeError(f"LLM returned malformed JSON after {LLM_PARSE_MAX_RETRIES + 1} attempts: {last_parse_error}") from last_parse_error
  
-     user_parts.append(f"Current Time: {current_time}")
  
--    if calendar_anchor:
--        user_parts.append(f"\n--- Calendar Anchor (DO NOT VIOLATE) ---\n{calendar_anchor}")
+-def extract_ids_from_value(value, active_set: set, limit: int) -> List[int]:
++def extract_ids_from_value(value, active_set: set, limit: Optional[int] = None) -> List[int]:
+     if not isinstance(value, list):
+         return []
+ 
+@@ -786,7 +847,7 @@ def extract_ids_from_value(value, active_set: set, limit: int) -> List[int]:
+         if pid not in active_set or pid in result:
+             continue
+         result.append(pid)
+-        if len(result) >= limit:
++        if limit is not None and len(result) >= limit:
+             break
+     return result
+ 
+@@ -865,7 +926,7 @@ def normalize_multi_area_schedule_ids(
+                 dynamic_area_name = str(dynamic_area_name).strip()
+                 if not dynamic_area_name or dynamic_area_name in day_assignments:
+                     continue
+-                extracted_ids = extract_ids_from_value(raw_value, active_set, 999)
++                extracted_ids = extract_ids_from_value(raw_value, active_set, None)
+                 final_ids = [pid for pid in extracted_ids if pid not in used_ids]
+                 if final_ids:
+                     day_assignments[dynamic_area_name] = final_ids
+@@ -948,44 +1009,71 @@ def dedupe_pool_by_date(entries: List[dict]) -> List[dict]:
+     return [by_date[d] for d in sorted(by_date.keys())]
+ 
+ 
++def try_parse_iso_date(value: Any) -> Optional[date]:
++    text = str(value or "").strip()
++    if not text:
++        return None
++    try:
++        return datetime.strptime(text, "%Y-%m-%d").date()
++    except ValueError:
++        return None
++
++
+ def merge_schedule_pool(state_data: dict, restored: List[dict], apply_mode: str, start_date: date) -> List[dict]:
+     pool = state_data.get("schedule_pool", [])
+     if not isinstance(pool, list):
+         pool = []
++    if not isinstance(restored, list):
++        restored = []
++
++    normalized_pool = [x for x in pool if isinstance(x, dict)]
++    normalized_restored = [x for x in restored if isinstance(x, dict)]
+ 
+     if apply_mode == "append":
+-        return dedupe_pool_by_date(pool + restored)
++        return dedupe_pool_by_date(normalized_pool + normalized_restored)
+ 
+     if apply_mode == "replace_all":
+-        return dedupe_pool_by_date(restored)
++        return dedupe_pool_by_date(normalized_restored)
+ 
+     if apply_mode == "replace_future":
+-        start_str = start_date.strftime("%Y-%m-%d")
+-        kept = [x for x in pool if x.get("date", "") < start_str]
+-        return dedupe_pool_by_date(kept + restored)
++        kept = []
++        for entry in normalized_pool:
++            entry_date = try_parse_iso_date(entry.get("date"))
++            # Keep invalid-date legacy entries to avoid destructive loss.
++            if entry_date is None or entry_date < start_date:
++                kept.append(entry)
++        return dedupe_pool_by_date(kept + normalized_restored)
+ 
+     if apply_mode == "replace_overlap":
+-        if not restored:
+-            return dedupe_pool_by_date(pool)
+-        start_str = start_date.strftime("%Y-%m-%d")
+-        end_str = restored[-1]["date"]
+-        kept = [x for x in pool if x.get("date", "") < start_str or x.get("date", "") > end_str]
+-        return dedupe_pool_by_date(kept + restored)
 -
-     user_parts.append(f'Instruction: "{instruction}"')
-     
-     user_prompt = "\n".join(user_parts)
-@@ -1125,7 +1001,7 @@ def main():
+-    return dedupe_pool_by_date(pool + restored)
++        if not normalized_restored:
++            return dedupe_pool_by_date(normalized_pool)
++
++        restored_dates = [
++            try_parse_iso_date(entry.get("date"))
++            for entry in normalized_restored
++        ]
++        restored_dates = [d for d in restored_dates if d is not None]
++        if not restored_dates:
++            return dedupe_pool_by_date(normalized_pool + normalized_restored)
++
++        end_date = max(restored_dates)
++        kept = []
++        for entry in normalized_pool:
++            entry_date = try_parse_iso_date(entry.get("date"))
++            if entry_date is None or entry_date < start_date or entry_date > end_date:
++                kept.append(entry)
++        return dedupe_pool_by_date(kept + normalized_restored)
++
++    return dedupe_pool_by_date(normalized_pool + normalized_restored)
+ 
+ def merge_input_config(input_data: dict) -> dict:
+     if not isinstance(input_data, dict):
+         return {}
+-    if "config" in input_data and isinstance(input_data["config"], dict):
+-        # Merge config into root, preserving root keys if they exist (though typically they won't)
+-        # We want config overrides to apply, so we merge config INTO root.
+-        # But wait, if root has "instruction" and config has others, we want union.
+-        merged = input_data.copy()
+-        merged.update(input_data["config"])
+-        # Ensure instruction is preserved if it was in root (it usually is)
+-        if "instruction" in input_data:
+-            merged["instruction"] = input_data["instruction"]
++    config_sub = input_data.get("config", {})
++    if isinstance(config_sub, dict):
++        # Treat config as defaults, root-level fields as explicit overrides.
++        merged = dict(config_sub)
++        merged.update(input_data)
+         return merged
+     return input_data
+ 
+@@ -998,10 +1086,15 @@ def main():
+     data_dir = Path(args.data_dir).resolve()
+     data_dir.mkdir(parents=True, exist_ok=True)
+     ctx = Context(data_dir)
++    state_lock_path = ctx.paths["state"].with_suffix(ctx.paths["state"].suffix + ".lock")
++    state_lock_acquired = False
  
      try:
++        run_now = datetime.now()
          ctx.config = load_config(ctx)
--        name_to_id, id_to_name, active_ids, all_ids = load_roster(ctx.paths["roster"])
-+        name_to_id, id_to_name, all_ids, id_to_active = load_roster(ctx.paths["roster"])
+         name_to_id, id_to_name, all_ids, id_to_active = load_roster(ctx.paths["roster"])
++        acquire_state_file_lock(state_lock_path)
++        state_lock_acquired = True
          state_data = load_state(ctx.paths["state"])
  
          input_data = {}
-@@ -1181,37 +1057,26 @@ def main():
-         else:
-             start_date = today_date
+@@ -1034,7 +1127,7 @@ def main():
+             1,
+             30,
+         )
+-        area_names = normalize_area_names(input_data.get("area_names", ctx.config.get("area_names", DEFAULT_AREA_NAMES)))
++        area_names = normalize_area_names(input_data.get("area_names", ctx.config.get("area_names", [])))
+         area_per_day_counts = normalize_area_per_day_counts(
+             area_names,
+             input_data.get("area_per_day_counts", ctx.config.get("area_per_day_counts", {})),
+@@ -1047,7 +1140,7 @@ def main():
+             existing_notes = {}
  
--        anchor_id = get_anchor_id(state_data, name_to_id, active_ids, start_date, apply_mode)
+         # Start date
+-        today_date = datetime.now().date()
++        today_date = run_now.date()
+         entries = get_pool_entries_with_date(state_data)
+         if apply_mode == "append":
+             if entries:
+@@ -1060,7 +1153,7 @@ def main():
          sanitized_instruction = anonymize_instruction(instruction, name_to_id)
          duty_rule = anonymize_instruction(duty_rule, name_to_id)
  
--        # Build prompt with ID range + disabled IDs
--        id_range = (min(all_ids), max(all_ids))
--        disabled_ids = sorted(set(all_ids) - set(active_ids))
-         current_time = datetime.now().strftime("%Y-%m-%d %H:%M")
+-        current_time = datetime.now().strftime("%Y-%m-%d %H:%M")
++        current_time = run_now.strftime("%Y-%m-%d %H:%M")
          
          # Load previous context (AI Memory)
          previous_context = str(state_data.get("next_run_note", "")).strip()
--        debt_list = extract_ids_from_value(state_data.get("debt_list", []), set(active_ids), 9999)
--        credit_list = extract_ids_from_value(state_data.get("credit_list", []), set(active_ids), 9999)
--        
--        # Build calendar anchor for AI date context
--        auto_run_mode = str(input_data.get("auto_run_mode", ctx.config.get("auto_run_mode", "Off"))).strip()
--        auto_run_parameter = str(input_data.get("auto_run_parameter", ctx.config.get("auto_run_parameter", ""))).strip()
--        cal_anchor = build_calendar_anchor(auto_run_mode, auto_run_parameter, per_day, len(active_ids))
-+        debt_list = extract_ids_from_value(state_data.get("debt_list", []), set(all_ids), 9999)
-+        credit_list = extract_ids_from_value(state_data.get("credit_list", []), set(all_ids), 9999)
- 
-         messages = build_prompt_messages(
--            id_range,
--            disabled_ids,
--            anchor_id,
--            current_time,
--            sanitized_instruction,
--            duty_rule,
--            area_names,
-+            all_ids=all_ids,
-+            id_to_active=id_to_active,
-+            current_time=current_time,
-+            instruction=sanitized_instruction,
-+            duty_rule=duty_rule,
-+            area_names=area_names,
-             previous_context=previous_context,
-             debt_list=debt_list,
-             credit_list=credit_list,
--            calendar_anchor=cal_anchor,
-         )
- 
-         llm_result, llm_response_text = call_llm(
-@@ -1228,14 +1093,14 @@ def main():
- 
-         normalized_ids = normalize_multi_area_schedule_ids(
-             schedule_raw,
--            active_ids,
-+            all_ids,
-             area_names,
-             area_per_day_counts,
-         )
- 
-         # --- Debt Recovery Audit ---
-         raw_new_debts = llm_result.get("new_debt_ids", [])
--        new_debt_list = extract_ids_from_value(raw_new_debts, set(active_ids), 9999)
-+        new_debt_list = extract_ids_from_value(raw_new_debts, set(all_ids), 9999)
-         state_data["debt_list"] = recover_missing_debts(
-             original_debt_list=debt_list,
-             new_debt_ids_from_llm=new_debt_list,
-@@ -1244,7 +1109,7 @@ def main():
- 
+@@ -1110,18 +1203,14 @@ def main():
          # --- Credit List Persistence ---
          raw_new_credits = llm_result.get("new_credit_ids", [])
--        new_credit_list = extract_ids_from_value(raw_new_credits, set(active_ids), 9999)
-+        new_credit_list = extract_ids_from_value(raw_new_credits, set(all_ids), 9999)
-         # Merge: keep original credits that AI didn't consume + any AI-reported remaining credits
-         scheduled_set: set = set()
-         for entry in normalized_ids:
+         new_credit_list = extract_ids_from_value(raw_new_credits, set(all_ids), 9999)
+-        # Merge: keep original credits that AI didn't consume + any AI-reported remaining credits
+-        scheduled_set: set = set()
+-        for entry in normalized_ids:
+-            for ids in entry.get("area_ids", {}).values():
+-                if isinstance(ids, list):
+-                    scheduled_set.update(ids)
+-        # Credits consumed = originally had credit AND got scheduled this run
+-        remaining_credits = set(new_credit_list)
+-        for cid in credit_list:
+-            if cid not in scheduled_set:
+-                remaining_credits.add(cid)  # AI didn't reach this ID, keep credit
+-        state_data["credit_list"] = sorted(remaining_credits)
++        state_data["credit_list"] = reconcile_credit_list(
++            original_credit_list=credit_list,
++            new_credit_ids_from_llm=new_credit_list,
++            normalized_schedule=normalized_ids,
++            valid_ids=set(all_ids),
++            debt_list=state_data.get("debt_list", []),
++            has_llm_field="new_credit_ids" in llm_result,
++        )
+ 
+         restored = restore_schedule(
+             normalized_ids,
+@@ -1148,6 +1237,12 @@ def main():
+         except Exception:
+             pass
+         sys.exit(1)
++    finally:
++        if state_lock_acquired:
++            try:
++                release_state_file_lock(state_lock_path)
++            except Exception:
++                pass
+ 
+ 
+ if __name__ == "__main__":
+diff --git a/Assets_Duty/test_core.py b/Assets_Duty/test_core.py
+index 7e4fdfa..a68f268 100644
+--- a/Assets_Duty/test_core.py
++++ b/Assets_Duty/test_core.py
+@@ -16,16 +16,45 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
+ 
+ from core import (
+     merge_schedule_pool,
++    reconcile_credit_list,
++    call_llm,
+     anonymize_instruction,
+     save_json_atomic,
+     dedupe_pool_by_date,
+     merge_input_config,
++    normalize_area_names,
+     normalize_multi_area_schedule_ids,
+     restore_schedule,
+     validate_llm_schedule_entries,
+ )
+ 
+ 
++class TestAreaNameNormalization(unittest.TestCase):
++    def test_empty_area_names_remains_empty(self):
++        self.assertEqual(normalize_area_names([]), [])
++
++    def test_missing_area_names_remains_empty(self):
++        self.assertEqual(normalize_area_names(None), [])
++
++
++class TestMergeInputConfig(unittest.TestCase):
++    def test_root_fields_override_config_fields(self):
++        merged = merge_input_config(
++            {
++                "instruction": "root-instruction",
++                "model": "root-model",
++                "config": {
++                    "instruction": "config-instruction",
++                    "model": "config-model",
++                    "base_url": "https://example.com",
++                },
++            }
++        )
++        self.assertEqual(merged["instruction"], "root-instruction")
++        self.assertEqual(merged["model"], "root-model")
++        self.assertEqual(merged["base_url"], "https://example.com")
++
++
+ class TestNormalizeScheduleNoValidation(unittest.TestCase):
+     """Test the new 'no-validation' normalization logic."""
+ 
+@@ -73,6 +102,17 @@ class TestNormalizeScheduleNoValidation(unittest.TestCase):
+         normalized = normalize_multi_area_schedule_ids(raw, active, areas, counts)
+         self.assertEqual(normalized[0]["area_ids"]["A"], [1])
+ 
++    def test_dynamic_areas_without_predefined(self):
++        """When configured area_names is empty, only AI dynamic areas should remain."""
++        raw = [{"date": "2023-10-23", "area_ids": {"鍚庤姳鍥?: [1], "澶╁彴": [2]}}]
++        active = [1, 2]
++        areas = []
++        counts = {}
++
++        normalized = normalize_multi_area_schedule_ids(raw, active, areas, counts)
++        self.assertEqual(len(normalized), 1)
++        self.assertEqual(set(normalized[0]["area_ids"].keys()), {"鍚庤姳鍥?, "澶╁彴"})
++
+ 
+ class TestScheduleValidation(unittest.TestCase):
+     def test_unsorted_dates_raise_error(self):
+@@ -90,6 +130,14 @@ class TestScheduleValidation(unittest.TestCase):
+         ]
+         validate_llm_schedule_entries(schedule)
+ 
++    def test_duplicate_dates_raise_error(self):
++        schedule = [
++            {"date": "2026-02-11", "area_ids": {"A": [1]}},
++            {"date": "2026-02-11", "area_ids": {"A": [2]}},
++        ]
++        with self.assertRaises(ValueError):
++            validate_llm_schedule_entries(schedule)
++
+ 
+ class TestRestoreScheduleDirectDate(unittest.TestCase):
+     """Test restoration using explicit dates."""
+@@ -252,5 +300,95 @@ class TestSaveJsonAtomic(unittest.TestCase):
+             self.assertFalse(tmp.exists())
+ 
+ 
++class TestCallLlmPayloadIsolation(unittest.TestCase):
++    def test_parse_retry_does_not_mutate_input_messages(self):
++        messages = [{"role": "user", "content": "hello"}]
++        config = {
++            "base_url": "https://example.com",
++            "model": "dummy",
++            "api_key": "k",
++            "llm_stream": False,
++        }
++        with patch(
++            "core.request_llm_non_stream",
++            side_effect=['{"bad": ]}', '{"ok": true}'],
++        ):
++            parsed, _ = call_llm(messages, config)
++        self.assertEqual(parsed, {"ok": True})
++        self.assertEqual(messages, [{"role": "user", "content": "hello"}])
++
++
++class TestDynamicAreaExtractionLimit(unittest.TestCase):
++    def test_dynamic_area_ids_not_capped_at_999(self):
++        active = list(range(1, 1201))
++        raw = [{"date": "2026-02-11", "area_ids": {"Dynamic": active[:]}}]
++
++        normalized = normalize_multi_area_schedule_ids(raw, active, [], {})
++        dynamic_ids = normalized[0]["area_ids"]["Dynamic"]
++        self.assertEqual(len(dynamic_ids), 1200)
++        self.assertEqual(dynamic_ids[0], 1)
++        self.assertEqual(dynamic_ids[-1], 1200)
++
++
++class TestMergeSchedulePoolRobustness(unittest.TestCase):
++    def test_replace_future_skips_non_dict_pool_items(self):
++        state = {"schedule_pool": ["bad", 123, {"date": "2026-02-10"}, {"date": "2026-02-12"}]}
++        new_entries = [{"date": "2026-02-12", "note": "new"}]
++
++        result = merge_schedule_pool(state, new_entries, "replace_future", date(2026, 2, 12))
++        self.assertEqual(result, [{"date": "2026-02-10"}, {"date": "2026-02-12", "note": "new"}])
++
++    def test_replace_overlap_preserves_invalid_date_entries(self):
++        state = {
++            "schedule_pool": [
++                {"date": "2026-02-09", "note": "before"},
++                {"date": "not-a-date", "note": "legacy"},
++                {"date": "2026-02-10", "note": "old"},
++            ]
++        }
++        new_entries = [{"date": "2026-02-10", "note": "new"}]
++
++        result = merge_schedule_pool(state, new_entries, "replace_overlap", date(2026, 2, 10))
++        notes_by_date = {entry["date"]: entry.get("note", "") for entry in result}
++        self.assertEqual(notes_by_date["2026-02-09"], "before")
++        self.assertEqual(notes_by_date["2026-02-10"], "new")
++        self.assertEqual(notes_by_date["not-a-date"], "legacy")
++
++
++class TestCreditReconciliation(unittest.TestCase):
++    def test_uses_original_credit_when_llm_field_missing(self):
++        result = reconcile_credit_list(
++            original_credit_list=[7],
++            new_credit_ids_from_llm=[],
++            normalized_schedule=[],
++            valid_ids={7},
++            debt_list=[],
++            has_llm_field=False,
++        )
++        self.assertEqual(result, [7])
++
++    def test_uses_llm_credit_when_field_present(self):
++        result = reconcile_credit_list(
++            original_credit_list=[7, 8],
++            new_credit_ids_from_llm=[8],
++            normalized_schedule=[],
++            valid_ids={7, 8},
++            debt_list=[],
++            has_llm_field=True,
++        )
++        self.assertEqual(result, [8])
++
++    def test_filters_debt_and_invalid_ids(self):
++        result = reconcile_credit_list(
++            original_credit_list=[7],
++            new_credit_ids_from_llm=[7, 9, 999],
++            normalized_schedule=[],
++            valid_ids={7, 9},
++            debt_list=[9],
++            has_llm_field=True,
++        )
++        self.assertEqual(result, [7])
++
++
+ if __name__ == "__main__":
+     unittest.main()
+diff --git a/Assets_Duty/test_debt_enforcement.py b/Assets_Duty/test_debt_enforcement.py
+index 4905d78..f265e14 100644
+--- a/Assets_Duty/test_debt_enforcement.py
++++ b/Assets_Duty/test_debt_enforcement.py
+@@ -1,51 +1,56 @@
++#!/usr/bin/env python3
++# -*- coding: utf-8 -*-
+ 
+ import unittest
+-from core import force_insert_debts
+-
+-class TestDebtEnforcement(unittest.TestCase):
+-    def test_force_insert_debts_prepends(self):
+-        schedule_raw = [{"date": "2026-02-20", "area_ids": {"A": [3, 4]}}]
+-        debt_list = [1, 2]
+-        area_names = ["A", "B"]
+-        
+-        force_insert_debts(schedule_raw, debt_list, area_names)
+-        
+-        # Debts should be at the START of the list
+-        expected = [1, 2, 3, 4]
+-        self.assertEqual(schedule_raw[0]["area_ids"]["A"], expected)
+-
+-    def test_force_insert_debts_handles_empty_schedule(self):
+-        schedule_raw = [{"date": "2026-02-20"}]
+-        debt_list = [1]
+-        area_names = ["A"]
+-        
+-        force_insert_debts(schedule_raw, debt_list, area_names)
+-        
+-        self.assertEqual(schedule_raw[0]["area_ids"]["A"], [1])
+-
+-    def test_debt_recalculation_logic(self):
+-        # Simulation of main loop logic
+-        # Scenario: Debt [1, 2]. LLM says New Debt [3].
+-        # Schedule has [1]. (2 was dropped).
+-        
+-        normalized_ids = [{"area_ids": {"A": [1]}}]
+-        debt_list = [1, 2]
+-        new_debt_list = [3]
+-        
+-        scheduled_set = set()
+-        for entry in normalized_ids:
+-            for ids in entry.get("area_ids", {}).values():
+-                scheduled_set.update(ids)
+-        
+-        final_debt_set = set(new_debt_list)
+-        for old_pid in debt_list:
+-            if old_pid not in scheduled_set:
+-                final_debt_set.add(old_pid)
+-        final_debt_set = final_debt_set - scheduled_set
+-        
+-        # Expected: 1 is scheduled, so removed. 2 is not, so kept. 3 is new.
+-        # Result: {2, 3}
+-        self.assertEqual(final_debt_set, {2, 3})
+-
+-if __name__ == '__main__':
++from pathlib import Path
++import sys
++
++sys.path.insert(0, str(Path(__file__).resolve().parent))
++
++from core import recover_missing_debts, reconcile_credit_list
++
++
++class TestDebtQueueFallback(unittest.TestCase):
++    def test_unscheduled_original_debt_is_recovered(self):
++        normalized_ids = [{"date": "2026-02-20", "area_ids": {"A": [1]}}]
++        result = recover_missing_debts(
++            original_debt_list=[1, 2],
++            new_debt_ids_from_llm=[3],
++            normalized_schedule=normalized_ids,
++        )
++        self.assertEqual(result, [2, 3])
++
++    def test_scheduled_ids_removed_from_debt_even_if_llm_reports_them(self):
++        normalized_ids = [{"date": "2026-02-20", "area_ids": {"A": [1, 2]}}]
++        result = recover_missing_debts(
++            original_debt_list=[1],
++            new_debt_ids_from_llm=[1, 4],
++            normalized_schedule=normalized_ids,
++        )
++        self.assertEqual(result, [4])
++
++    def test_non_dict_entries_do_not_crash_recovery(self):
++        normalized_ids = ["bad", {"area_ids": {"A": [1]}}, 123]
++        result = recover_missing_debts(
++            original_debt_list=[1, 2],
++            new_debt_ids_from_llm=[],
++            normalized_schedule=normalized_ids,
++        )
++        self.assertEqual(result, [2])
++
++
++class TestCreditSemantics(unittest.TestCase):
++    def test_llm_remaining_credit_is_source_of_truth(self):
++        result = reconcile_credit_list(
++            original_credit_list=[10, 11],
++            new_credit_ids_from_llm=[11],
++            normalized_schedule=[],
++            valid_ids={10, 11},
++            debt_list=[],
++            has_llm_field=True,
++        )
++        self.assertEqual(result, [11])
++
++
++if __name__ == "__main__":
+     unittest.main()
+diff --git a/Assets_Duty/web/test.html b/Assets_Duty/web/test.html
+index f11a932..0229e2a 100644
+--- a/Assets_Duty/web/test.html
++++ b/Assets_Duty/web/test.html
+@@ -829,7 +829,7 @@
+         .replaceAll('"', '&quot;')
+         .replaceAll("'", '&#39;');
+     }
+-    function list(input, fallback) {
++    function list(input, fallback, allowEmpty = false) {
+       const seen = new Set();
+       const out = [];
+       if (Array.isArray(input)) {
+@@ -840,9 +840,10 @@
+           out.push(t);
+         }
+       }
+-      return out.length ? out : clone(fallback);
++      if (out.length || allowEmpty) return out;
++      return clone(fallback);
+     }
+-    function names(v) { return list(v, []); }
++    function names(v) { return list(v, [], true); }
+     function parseAreaCountsText(raw) {
+       const out = {};
+       for (const lineRaw of String(raw ?? '').split(/\r?\n/g)) {
+@@ -897,7 +898,7 @@
+     function normalizeConfig(input) {
+       const raw = input && typeof input === 'object' ? input : {};
+       const perDay = clamp(int(raw.per_day, DEFAULT_CONFIG.per_day), 1, 30);
+-      const areaNames = list(raw.area_names, DEFAULT_CONFIG.area_names);
++      const areaNames = list(raw.area_names, DEFAULT_CONFIG.area_names, true);
+       const areaCounts = normalizeAreaCounts(areaNames, raw.area_per_day_counts, perDay);
+       return {
+         python_path: String(raw.python_path ?? DEFAULT_CONFIG.python_path).trim() || DEFAULT_CONFIG.python_path,
+@@ -952,11 +953,6 @@
+       const cls = names(item.classroom_students);
+       const cln = names(item.cleaning_area_students);
+       const stu = names(item.students);
+-      if (!Object.keys(map).length) {
+-        if (cls.length) map['鏁欏'] = cls;
+-        if (cln.length) map['娓呮磥鍖?] = cln;
+-        if (!cls.length && !cln.length && stu.length) map['鏁欏'] = stu;
+-      }
+       return {
+         date: String(item.date ?? '').trim(),
+         day: String(item.day ?? '').trim(),
+@@ -985,14 +981,6 @@
+       const ordered = {};
+       for (const area of areaOrder) if (map[area]) ordered[area] = [...map[area]];
+       for (const [k, v] of Object.entries(map)) if (!ordered[k]) ordered[k] = [...v];
+-      if (!Object.keys(ordered).length) {
+-        const cls = names(item?.classroom_students);
+-        const cln = names(item?.cleaning_area_students);
+-        const stu = names(item?.students);
+-        if (cls.length) ordered['鏁欏'] = cls;
+-        if (cln.length) ordered['娓呮磥鍖?] = cln;
+-        if (!cls.length && !cln.length && stu.length) ordered[areaOrder[0] || '鏁欏'] = stu;
+-      }
+       return ordered;
+     }
+ 
+@@ -1455,7 +1443,7 @@
+ 
+     function runMockInternal(daysToGenerate, applyMode, instruction, detailText) {
+       syncConfigFromForm();
+-      const areas = list(store.config.area_names, DEFAULT_CONFIG.area_names);
++      const areas = list(store.config.area_names, DEFAULT_CONFIG.area_names, true);
+       const per = clamp(int(store.config.per_day, 2), 1, 30);
+       const areaCounts = normalizeAreaCounts(areas, store.config.area_per_day_counts, per);
+       const totalPerDay = Object.values(areaCounts).reduce((sum, value) => sum + value, 0);
+@@ -2159,4 +2147,4 @@
+   </script>
+ </body>
+ 
+-</html>
+\ No newline at end of file
++</html>
+diff --git a/Views/SettingPages/DutyMainSettingsPage.axaml b/Views/SettingPages/DutyMainSettingsPage.axaml
+index 8802e16..1fdecd5 100644
+--- a/Views/SettingPages/DutyMainSettingsPage.axaml
++++ b/Views/SettingPages/DutyMainSettingsPage.axaml
+@@ -17,7 +17,7 @@
+                     Padding="16">
+                 <StackPanel Spacing="10">
+                     <StackPanel Orientation="Horizontal" Spacing="8">
+-                        <TextBlock FontFamily="Segoe Fluent Icons" Text="&#xE713;" FontSize="18" />
++                        <TextBlock FontFamily="Segoe MDL2 Assets, Segoe Fluent Icons, Segoe UI Symbol" Text="&#xE713;" FontSize="18" />
+                         <TextBlock Text="Duty-Agent 璁剧疆" FontSize="20" FontWeight="Bold" />
+                     </StackPanel>
+                     <TextBlock Text="闈㈠悜鏅€氱敤鎴凤細閰嶇疆鎺掔彮銆佹墽琛屼换鍔°€佺鐞嗗悕鍗曘€?
+@@ -46,7 +46,7 @@
+                     Padding="16">
+                 <StackPanel Spacing="10">
+                     <StackPanel Orientation="Horizontal" Spacing="8">
+-                        <TextBlock FontFamily="Segoe Fluent Icons" Text="&#xE7C3;" FontSize="16" />
++                        <TextBlock FontFamily="Segoe MDL2 Assets, Segoe Fluent Icons, Segoe UI Symbol" Text="&#xE7C3;" FontSize="16" />
+                         <TextBlock Text="鎵ц鎺掔彮" FontSize="16" FontWeight="SemiBold" />
+                     </StackPanel>
+                     <TextBlock Text="鎺掔彮鎸囦护" />
+@@ -60,7 +60,7 @@
+                             Classes="accent"
+                             Click="OnRunAgentClick">
+                         <StackPanel Orientation="Horizontal" Spacing="8">
+-                            <TextBlock FontFamily="Segoe Fluent Icons" Text="&#xE768;" FontSize="16" VerticalAlignment="Center" />
++                            <TextBlock FontFamily="Segoe MDL2 Assets, Segoe Fluent Icons, Segoe UI Symbol" Text="&#xE768;" FontSize="16" VerticalAlignment="Center" />
+                             <TextBlock Text="寮€濮嬫帓鐝紙瑕嗙洊锛? VerticalAlignment="Center" />
+                         </StackPanel>
+                     </Button>
+@@ -92,7 +92,7 @@
+                     Padding="16">
+                 <StackPanel Spacing="10">
+                     <StackPanel Orientation="Horizontal" Spacing="8">
+-                        <TextBlock FontFamily="Segoe Fluent Icons" Text="&#xE8A5;" FontSize="16" />
++                        <TextBlock FontFamily="Segoe MDL2 Assets, Segoe Fluent Icons, Segoe UI Symbol" Text="&#xE8A5;" FontSize="16" />
+                         <TextBlock Text="鎺掔彮棰勮" FontSize="16" FontWeight="SemiBold" />
+                     </StackPanel>
+                     <Button x:Name="RefreshDataBtn"
+@@ -139,7 +139,7 @@
+                                 </ListBox.ItemTemplate>
+                             </ListBox>
+                             <StackPanel x:Name="ScheduleEmptyStatePanel" Grid.Row="1" VerticalAlignment="Center" HorizontalAlignment="Center" Spacing="8" IsVisible="False">
+-                                <TextBlock FontFamily="Segoe Fluent Icons" Text="&#xE8A5;" FontSize="48" Opacity="0.4" HorizontalAlignment="Center" />
++                                <TextBlock FontFamily="Segoe MDL2 Assets, Segoe Fluent Icons, Segoe UI Symbol" Text="&#xE8A5;" FontSize="48" Opacity="0.4" HorizontalAlignment="Center" />
+                                 <TextBlock Text="鏆傛棤鎺掔彮棰勬湡鏁版嵁" Opacity="0.6" FontSize="14" FontWeight="SemiBold" HorizontalAlignment="Center" />
+                                 <TextBlock Text="鐐瑰嚮涓婃柟銆愬埛鏂伴瑙堛€戞垨銆愬紑濮嬫帓鐝€戠敓鎴? Opacity="0.5" FontSize="12" HorizontalAlignment="Center" />
+                             </StackPanel>
+@@ -193,7 +193,7 @@
+             <Expander HorizontalAlignment="Stretch" Padding="16">
+                 <Expander.Header>
+                     <StackPanel Orientation="Horizontal" Spacing="8">
+-                        <TextBlock FontFamily="Segoe Fluent Icons" Text="&#xE125;" FontSize="16" VerticalAlignment="Center" />
++                        <TextBlock FontFamily="Segoe MDL2 Assets, Segoe Fluent Icons, Segoe UI Symbol" Text="&#xE125;" FontSize="16" VerticalAlignment="Center" />
+                         <TextBlock Text="鑺卞悕鍐岀鐞? FontSize="16" FontWeight="SemiBold" VerticalAlignment="Center" />
+                     </StackPanel>
+                 </Expander.Header>
+@@ -206,7 +206,7 @@
+                     Padding="16">
+                 <StackPanel Spacing="10">
+                     <StackPanel Orientation="Horizontal" Spacing="8">
+-                        <TextBlock FontFamily="Segoe Fluent Icons" Text="&#xE716;" FontSize="16" />
++                        <TextBlock FontFamily="Segoe MDL2 Assets, Segoe Fluent Icons, Segoe UI Symbol" Text="&#xE716;" FontSize="16" />
+                         <TextBlock Text="瀛︾敓鍚嶅崟" FontSize="16" FontWeight="SemiBold" />
+                     </StackPanel>
+ 
+@@ -228,7 +228,7 @@
+                             <Button x:Name="DeleteStudentBtn"
+                                     ToolTip.Tip="鍒犻櫎閫変腑"
+                                     Click="OnDeleteStudentClick">
+-                                <TextBlock FontFamily="Segoe Fluent Icons" Text="&#xE74D;" Foreground="#E81123" />
++                                <TextBlock FontFamily="Segoe MDL2 Assets, Segoe Fluent Icons, Segoe UI Symbol" Text="&#xE74D;" Foreground="#E81123" />
+                             </Button>
+                             <Button x:Name="ImportRosterFromFileBtn"
+                                     Content="瀵煎叆..."
+@@ -236,7 +236,7 @@
+                             <Button x:Name="OpenRosterBtn"
+                                     ToolTip.Tip="鎵撳紑婧愭枃浠?
+                                     Click="OnOpenRosterClick">
+-                                <TextBlock FontFamily="Segoe Fluent Icons" Text="&#xE8E5;" />
++                                <TextBlock FontFamily="Segoe MDL2 Assets, Segoe Fluent Icons, Segoe UI Symbol" Text="&#xE8E5;" />
+                             </Button>
+                         </StackPanel>
+                     </Grid>
+@@ -285,7 +285,7 @@
+                                 </ListBox.ItemTemplate>
+                             </ListBox>
+                             <StackPanel x:Name="RosterEmptyStatePanel" Grid.Row="1" VerticalAlignment="Center" HorizontalAlignment="Center" Spacing="8" IsVisible="False">
+-                                <TextBlock FontFamily="Segoe Fluent Icons" Text="&#xE716;" FontSize="48" Opacity="0.4" HorizontalAlignment="Center" />
++                                <TextBlock FontFamily="Segoe MDL2 Assets, Segoe Fluent Icons, Segoe UI Symbol" Text="&#xE716;" FontSize="48" Opacity="0.4" HorizontalAlignment="Center" />
+                                 <TextBlock Text="褰撳墠鏆傛棤瀛︾敓鍚嶅崟鏁版嵁" Opacity="0.6" FontSize="14" FontWeight="SemiBold" HorizontalAlignment="Center" />
+                                 <TextBlock Text="璇峰湪涓婃柟娣诲姞鎴栧鍏ュ悕鍗? Opacity="0.5" FontSize="12" HorizontalAlignment="Center" />
+                             </StackPanel>
+@@ -306,7 +306,7 @@
+             <Expander HorizontalAlignment="Stretch" Padding="16">
+                 <Expander.Header>
+                     <StackPanel Orientation="Horizontal" Spacing="8">
+-                        <TextBlock FontFamily="Segoe Fluent Icons" Text="&#xE8D2;" FontSize="16" VerticalAlignment="Center" />
++                        <TextBlock FontFamily="Segoe MDL2 Assets, Segoe Fluent Icons, Segoe UI Symbol" Text="&#xE8D2;" FontSize="16" VerticalAlignment="Center" />
+                         <TextBlock Text="杩炴帴涓庢ā鍨? FontSize="16" FontWeight="SemiBold" VerticalAlignment="Center" />
+                     </StackPanel>
+                 </Expander.Header>
+@@ -319,7 +319,7 @@
+                     Padding="16">
+                 <StackPanel Spacing="10">
+                     <StackPanel Orientation="Horizontal" Spacing="8">
+-                        <TextBlock FontFamily="Segoe Fluent Icons" Text="&#xE8D2;" FontSize="16" />
++                        <TextBlock FontFamily="Segoe MDL2 Assets, Segoe Fluent Icons, Segoe UI Symbol" Text="&#xE8D2;" FontSize="16" />
+                         <TextBlock Text="杩炴帴涓庢ā鍨? FontSize="16" FontWeight="SemiBold" />
+                     </StackPanel>
+                     <Grid ColumnDefinitions="Auto,*" RowDefinitions="Auto,Auto,Auto" RowSpacing="12" Margin="0,12,0,0">
+@@ -355,7 +355,7 @@
+             <Expander HorizontalAlignment="Stretch" Padding="16">
+                 <Expander.Header>
+                     <StackPanel Orientation="Horizontal" Spacing="8">
+-                        <TextBlock FontFamily="Segoe Fluent Icons" Text="&#xE945;" FontSize="16" VerticalAlignment="Center" />
++                        <TextBlock FontFamily="Segoe MDL2 Assets, Segoe Fluent Icons, Segoe UI Symbol" Text="&#xE945;" FontSize="16" VerticalAlignment="Center" />
+                         <TextBlock Text="AI 闀挎湡瑙勫垯" FontSize="16" FontWeight="SemiBold" VerticalAlignment="Center" />
+                     </StackPanel>
+                 </Expander.Header>
+@@ -368,7 +368,7 @@
+                     Padding="16">
+                 <StackPanel Spacing="10">
+                     <StackPanel Orientation="Horizontal" Spacing="8">
+-                        <TextBlock FontFamily="Segoe Fluent Icons" Text="&#xE945;" FontSize="16" />
++                        <TextBlock FontFamily="Segoe MDL2 Assets, Segoe Fluent Icons, Segoe UI Symbol" Text="&#xE945;" FontSize="16" />
+                         <TextBlock Text="AI 闀挎湡瑙勫垯" FontSize="16" FontWeight="SemiBold" />
+                     </StackPanel>
+                     <TextBlock Text="浠ヤ笅鍐呭浼氫綔涓哄浐瀹氳鍒欏彂閫佺粰 AI锛屾瘡娆℃帓鐝兘浼氱敓鏁堛€傚彲鍖呭惈鎺掔彮閫昏緫銆佸尯鍩熷垎閰嶅亸濂姐€佺壒娈婂畨鎺掔瓑銆?
+@@ -392,7 +392,7 @@
+             <Expander HorizontalAlignment="Stretch" Padding="16">
+                 <Expander.Header>
+                     <StackPanel Orientation="Horizontal" Spacing="8">
+-                        <TextBlock FontFamily="Segoe Fluent Icons" Text="&#xE823;" FontSize="16" VerticalAlignment="Center" />
++                        <TextBlock FontFamily="Segoe MDL2 Assets, Segoe Fluent Icons, Segoe UI Symbol" Text="&#xE823;" FontSize="16" VerticalAlignment="Center" />
+                         <TextBlock Text="鎺掔彮澶勭悊鍙傛暟" FontSize="16" FontWeight="SemiBold" VerticalAlignment="Center" />
+                     </StackPanel>
+                 </Expander.Header>
+@@ -405,7 +405,7 @@
+                     Padding="16">
+                 <StackPanel Spacing="10">
+                     <StackPanel Orientation="Horizontal" Spacing="8">
+-                        <TextBlock FontFamily="Segoe Fluent Icons" Text="&#xE823;" FontSize="16" />
++                        <TextBlock FontFamily="Segoe MDL2 Assets, Segoe Fluent Icons, Segoe UI Symbol" Text="&#xE823;" FontSize="16" />
+                         <TextBlock Text="鎺掔彮澶勭悊鍙傛暟" FontSize="16" FontWeight="SemiBold" />
+                     </StackPanel>
+                     <TextBlock Text="浠ヤ笅鍙傛暟鐢ㄤ簬鎺у埗鎺掔彮鐨勮繍琛屾椂澶勭悊閫昏緫锛堟棩鏈熺敓鎴愩€佺粨鏋滃綊涓€鍖栫瓑锛夛紝涓嶄細鐩存帴鍙戦€佺粰 AI銆?
+@@ -518,7 +518,7 @@
+             <Expander HorizontalAlignment="Stretch" Padding="16">
+                 <Expander.Header>
+                     <StackPanel Orientation="Horizontal" Spacing="8">
+-                        <TextBlock FontFamily="Segoe Fluent Icons" Text="&#xE943;" FontSize="16" VerticalAlignment="Center" />
++                        <TextBlock FontFamily="Segoe MDL2 Assets, Segoe Fluent Icons, Segoe UI Symbol" Text="&#xE943;" FontSize="16" VerticalAlignment="Center" />
+                         <TextBlock Text="璋冭瘯涓庨泦鎴? FontSize="16" FontWeight="SemiBold" VerticalAlignment="Center" />
+                     </StackPanel>
+                 </Expander.Header>
+@@ -531,7 +531,7 @@
+                     Padding="16">
+                 <StackPanel Spacing="10">
+                     <StackPanel Orientation="Horizontal" Spacing="8">
+-                        <TextBlock FontFamily="Segoe Fluent Icons" Text="&#xE943;" FontSize="16" />
++                        <TextBlock FontFamily="Segoe MDL2 Assets, Segoe Fluent Icons, Segoe UI Symbol" Text="&#xE943;" FontSize="16" />
+                         <TextBlock Text="璋冭瘯涓庨泦鎴? FontSize="16" FontWeight="SemiBold" />
+                     </StackPanel>
+                     <ToggleSwitch x:Name="EnableMcpSwitch"
+@@ -555,4 +555,4 @@
+ 
+ </StackPanel>
+     </ScrollViewer>
+-</ci:SettingsPageBase>
+\ No newline at end of file
++</ci:SettingsPageBase>
