@@ -7,7 +7,8 @@
                   mc:Ignorable="d"
                   d:DesignWidth="800"
                   d:DesignHeight="450">
-    <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
-        <TextBlock x:Name="DutyText" TextWrapping="Wrap">加载中...</TextBlock>
+    <StackPanel Orientation="Vertical" VerticalAlignment="Center">
+        <TextBlock x:Name="DutyTextRow1" TextWrapping="Wrap" HorizontalAlignment="Center">加载中...</TextBlock>
+        <TextBlock x:Name="DutyTextRow2" TextWrapping="Wrap" HorizontalAlignment="Center" IsVisible="False"/>
     </StackPanel>
 </ci:ComponentBase>
