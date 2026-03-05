@@ -21,6 +21,7 @@ namespace DutyAgent.Views.SettingPages;
 public partial class DutyMainSettingsPage : SettingsPageBase
 {
     private DutyBackendService Service { get; } = IAppHost.GetService<DutyBackendService>();
+    private DutyNotificationService NotificationService { get; } = IAppHost.GetService<DutyNotificationService>();
     private readonly DutyMainSettingsConfigModule _configModule;
     private readonly DutyMainSettingsRosterModule _rosterModule;
     private readonly DutyMainSettingsScheduleModule _scheduleModule;
@@ -300,7 +301,8 @@ public partial class DutyMainSettingsPage : SettingsPageBase
                 DutyReminderTime = GetSelectedDutyReminderTime(),
                 EnableMcp = EnableMcpSwitch.IsChecked == true,
                 EnableWebViewDebugLayer = EnableWebDebugLayerSwitch.IsChecked == true,
-                DutyRule = DutyRuleBox.Text
+                DutyRule = DutyRuleBox.Text,
+                NotificationDurationSeconds = (int)NotificationDurationSlider.Value
             };
             var result = _configModule.Apply(request);
 
@@ -480,6 +482,9 @@ public partial class DutyMainSettingsPage : SettingsPageBase
             EnableWebDebugLayerSwitch.IsChecked = formModel.EnableWebViewDebugLayer;
             SetComponentRefreshTimeSelection(formModel.ComponentRefreshTime);
             DutyRuleBox.Text = formModel.DutyRule;
+
+            NotificationDurationSlider.Value = formModel.NotificationDurationSeconds;
+            NotificationDurationLabel.Text = $"{formModel.NotificationDurationSeconds} 秒";
         }
         finally
         {
@@ -742,6 +747,23 @@ public partial class DutyMainSettingsPage : SettingsPageBase
 
         value = min;
         return false;
+    }
+
+    private void OnNotificationDurationChanged(object? sender, Avalonia.Controls.Primitives.RangeBaseValueChangedEventArgs e)
+    {
+        if (_isLoadingConfig) return;
+        var val = (int)e.NewValue;
+        NotificationDurationLabel.Text = $"{val} \u79d2";
+        QueueConfigApply();
+    }
+
+    private void OnTestNotificationClicked(object? sender, RoutedEventArgs e)
+    {
+        var duration = (int)NotificationDurationSlider.Value;
+        NotificationService.Publish(
+            "\u6D4B\u8BD5\u901A\u77E5",
+            "\u6559\u5BA4\uFF1A\u5F20\u4E09\u3001\u674E\u56DB\uFF1B\u6E05\u6D01\u533A\uFF1A\u738B\u4E94\u3001\u8D75\u516D",
+            duration);
     }
 
     private string GetSelectedDutyReminderTime()

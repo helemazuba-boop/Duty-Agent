@@ -1090,12 +1090,6 @@ public sealed class DutyLocalPreviewHostedService : IHostedService, IDisposable
             errorMessage = parseError ?? "Invalid params.";
             return false;
         }
-        if (!TryReadStringListArgument(argumentsElement, "notification_templates", required: false,
-                out var notificationTemplates, out var listParseError))
-        {
-            errorMessage = listParseError;
-            return false;
-        }
         if (!TryReadOptionalBooleanArgument(argumentsElement, "duty_reminder_enabled", out var dutyReminderEnabled,
                 out parseError))
         {
@@ -1103,13 +1097,7 @@ public sealed class DutyLocalPreviewHostedService : IHostedService, IDisposable
             return false;
         }
         if (!TryReadStringListArgument(argumentsElement, "duty_reminder_times", required: false, out var dutyReminderTimes,
-                out listParseError))
-        {
-            errorMessage = listParseError;
-            return false;
-        }
-        if (!TryReadStringListArgument(argumentsElement, "duty_reminder_templates", required: false,
-                out var dutyReminderTemplates, out listParseError))
+                out var listParseError))
         {
             errorMessage = listParseError;
             return false;
@@ -1129,10 +1117,8 @@ public sealed class DutyLocalPreviewHostedService : IHostedService, IDisposable
             current.DutyRule = dutyRule ?? current.DutyRule;
             current.ComponentRefreshTime = componentRefreshTime ?? current.ComponentRefreshTime;
             current.PythonPath = pythonPath ?? current.PythonPath;
-            current.NotificationTemplates = notificationTemplates ?? current.NotificationTemplates;
             current.DutyReminderEnabled = dutyReminderEnabled ?? current.DutyReminderEnabled;
             current.DutyReminderTimes = dutyReminderTimes ?? current.DutyReminderTimes;
-            current.DutyReminderTemplates = dutyReminderTemplates ?? current.DutyReminderTemplates;
             current.EnableMcp = enableMcp ?? current.EnableMcp;
             current.EnableWebViewDebugLayer = enableWebViewDebugLayer ?? current.EnableWebViewDebugLayer;
         }
@@ -1166,10 +1152,9 @@ public sealed class DutyLocalPreviewHostedService : IHostedService, IDisposable
                 per_day = saved.PerDay,
                 duty_rule = saved.DutyRule,
                 component_refresh_time = saved.ComponentRefreshTime,
-                notification_templates = _backendService.GetNotificationTemplates(),
+                notification_duration_seconds = saved.NotificationDurationSeconds,
                 duty_reminder_enabled = saved.DutyReminderEnabled,
-                duty_reminder_times = _backendService.GetDutyReminderTimes(),
-                duty_reminder_templates = _backendService.GetDutyReminderTemplates()
+                duty_reminder_times = _backendService.GetDutyReminderTimes()
             }
         };
         return true;

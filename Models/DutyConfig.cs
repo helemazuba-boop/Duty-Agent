@@ -108,9 +108,8 @@ public partial class DutyConfig : ObservableObject
     private string _componentRefreshTime = "08:00";
 
     [ObservableProperty]
-    [property: JsonPropertyName("notification_templates")]
-    private List<string> _notificationTemplates =
-        ["{scene}{status}\uFF0C\u65E5\u671F\uFF1A{date}\uFF0C\u533A\u57DF\uFF1A{areas}"];
+    [property: JsonPropertyName("notification_duration_seconds")]
+    private int _notificationDurationSeconds = 8;
 
     [ObservableProperty]
     [property: JsonPropertyName("duty_reminder_enabled")]
@@ -120,8 +119,5 @@ public partial class DutyConfig : ObservableObject
     [property: JsonPropertyName("duty_reminder_times")]
     private List<string> _dutyReminderTimes = ["07:40"];
 
-    [ObservableProperty]
-    [property: JsonPropertyName("duty_reminder_templates")]
-    private List<string> _dutyReminderTemplates =
-        ["\u503C\u65E5\u63D0\u9192\uFF1A{date} {time}\uFF0C{assignments}"];
+
 }

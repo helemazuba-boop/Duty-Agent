@@ -342,7 +342,7 @@ public partial class DutyWebSettingsPage : SettingsPageBase
             return;
         }
 
-        _notificationService.Publish(text, request?.DurationSeconds ?? 6);
+        _notificationService.Publish(text, string.Empty, request?.DurationSeconds ?? 6);
         DutyDiagnosticsLogger.Info("Notification", "Published host notification.",
             new
             {
@@ -467,10 +467,8 @@ public partial class DutyWebSettingsPage : SettingsPageBase
             config.AutoRunTriggerNotificationEnabled ?? current.AutoRunTriggerNotificationEnabled;
         var componentRefreshTime = config.ComponentRefreshTime ?? current.ComponentRefreshTime;
         var pythonPath = config.PythonPath ?? current.PythonPath;
-        var notificationTemplates = config.NotificationTemplates ?? current.NotificationTemplates;
         var dutyReminderEnabled = config.DutyReminderEnabled ?? current.DutyReminderEnabled;
         var dutyReminderTimes = config.DutyReminderTimes ?? current.DutyReminderTimes;
-        var dutyReminderTemplates = config.DutyReminderTemplates ?? current.DutyReminderTemplates;
 
         current.DecryptedApiKey = apiKey;
         current.BaseUrl = baseUrl;
@@ -483,12 +481,10 @@ public partial class DutyWebSettingsPage : SettingsPageBase
         current.ComponentRefreshTime = DutyBackendService.NormalizeTimeOrThrow(componentRefreshTime);
         current.DutyReminderEnabled = dutyReminderEnabled;
         current.DutyReminderTimes = dutyReminderTimes;
-        current.DutyReminderTemplates = dutyReminderTemplates;
         current.EnableMcp = enableMcp;
         current.EnableWebViewDebugLayer = enableWebViewDebugLayer;
         current.AutoRunTriggerNotificationEnabled = autoRunTriggerNotificationEnabled;
         current.PythonPath = pythonPath;
-        current.NotificationTemplates = DutyBackendService.NormalizeNotificationTemplates(notificationTemplates);
     }
 
     private async Task SendSnapshotAsync()
@@ -515,10 +511,9 @@ public partial class DutyWebSettingsPage : SettingsPageBase
                 PerDay = config.PerDay,
                 DutyRule = config.DutyRule,
                 ComponentRefreshTime = config.ComponentRefreshTime,
-                NotificationTemplates = _backendService.GetNotificationTemplates(),
+                NotificationDurationSeconds = config.NotificationDurationSeconds,
                 DutyReminderEnabled = config.DutyReminderEnabled,
-                DutyReminderTimes = _backendService.GetDutyReminderTimes(),
-                DutyReminderTemplates = _backendService.GetDutyReminderTemplates()
+                DutyReminderTimes = _backendService.GetDutyReminderTimes()
             },
             Roster = _backendService.LoadRosterEntries()
                 .Select(x => new WebRosterEntryDto
@@ -871,17 +866,14 @@ public partial class DutyWebSettingsPage : SettingsPageBase
         [JsonPropertyName("component_refresh_time")]
         public string? ComponentRefreshTime { get; set; }
 
-        [JsonPropertyName("notification_templates")]
-        public List<string>? NotificationTemplates { get; set; }
+        [JsonPropertyName("notification_duration_seconds")]
+        public int? NotificationDurationSeconds { get; set; }
 
         [JsonPropertyName("duty_reminder_enabled")]
         public bool? DutyReminderEnabled { get; set; }
 
         [JsonPropertyName("duty_reminder_times")]
         public List<string>? DutyReminderTimes { get; set; }
-
-        [JsonPropertyName("duty_reminder_templates")]
-        public List<string>? DutyReminderTemplates { get; set; }
     }
 
     private sealed class WebRosterEntryDto

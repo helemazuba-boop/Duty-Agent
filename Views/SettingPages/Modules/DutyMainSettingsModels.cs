@@ -17,6 +17,7 @@ internal sealed class DutySettingsFormModel
     public bool EnableWebViewDebugLayer { get; init; }
     public string ComponentRefreshTime { get; init; } = "08:00";
     public string DutyRule { get; init; } = string.Empty;
+    public int NotificationDurationSeconds { get; init; } = 8;
 }
 
 internal sealed class DutySettingsApplyRequest
@@ -34,6 +35,7 @@ internal sealed class DutySettingsApplyRequest
     public bool EnableMcp { get; init; }
     public bool EnableWebViewDebugLayer { get; init; }
     public string? DutyRule { get; init; }
+    public int NotificationDurationSeconds { get; init; } = 8;
 }
 
 internal readonly record struct DutySettingsApplyResult(bool RestartRequired);

@@ -30,7 +30,8 @@ internal sealed class DutyMainSettingsConfigModule
             EnableMcp = config.EnableMcp,
             EnableWebViewDebugLayer = config.EnableWebViewDebugLayer,
             ComponentRefreshTime = config.ComponentRefreshTime,
-            DutyRule = config.DutyRule
+            DutyRule = config.DutyRule,
+            NotificationDurationSeconds = config.NotificationDurationSeconds
         };
     }
 
@@ -59,6 +60,7 @@ internal sealed class DutyMainSettingsConfigModule
         current.EnableMcp = request.EnableMcp;
         current.EnableWebViewDebugLayer = request.EnableWebViewDebugLayer;
         current.AutoRunTriggerNotificationEnabled = request.AutoRunTriggerNotificationEnabled;
+        current.NotificationDurationSeconds = Math.Clamp(request.NotificationDurationSeconds, 3, 15);
 
         var restartRequired = previousEnableMcp != request.EnableMcp ||
                               previousEnableWebViewDebugLayer != request.EnableWebViewDebugLayer;
