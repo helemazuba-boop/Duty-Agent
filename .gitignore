@@ -27,3 +27,11 @@ Thumbs.db
 .gitnexus
 .claude/
 *.html
+
+# Useless Tracking Files
+.dotnet/
+.dotnet-home/
+.tmp/
+CLAUDE.md
+deploy.bat
+gitignore

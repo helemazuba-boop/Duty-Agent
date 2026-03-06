@@ -12,6 +12,15 @@ public class DutyState
 
     [JsonPropertyName("schedule_pool")]
     public List<SchedulePoolItem> SchedulePool { get; set; } = [];
+
+    [JsonPropertyName("debt_list")]
+    public List<int> DebtList { get; set; } = [];
+
+    [JsonPropertyName("credit_list")]
+    public List<int> CreditList { get; set; } = [];
+
+    [JsonPropertyName("last_pointer")]
+    public int LastPointer { get; set; }
 }
 
 public class SchedulePoolItem

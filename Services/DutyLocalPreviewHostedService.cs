@@ -1084,21 +1084,10 @@ public sealed class DutyLocalPreviewHostedService : IHostedService, IDisposable
             errorMessage = parseError ?? "Invalid params.";
             return false;
         }
-        if (!TryReadOptionalBooleanArgument(argumentsElement, "start_from_today", out var startFromToday, out parseError))
-        {
-            errorMessage = parseError ?? "Invalid params.";
-            return false;
-        }
         if (!TryReadOptionalStringArgument(argumentsElement, "component_refresh_time", out var componentRefreshTime,
                 out parseError))
         {
             errorMessage = parseError ?? "Invalid params.";
-            return false;
-        }
-        if (!TryReadStringListArgument(argumentsElement, "notification_templates", required: false,
-                out var notificationTemplates, out var listParseError))
-        {
-            errorMessage = listParseError;
             return false;
         }
         if (!TryReadOptionalBooleanArgument(argumentsElement, "duty_reminder_enabled", out var dutyReminderEnabled,
@@ -1108,13 +1097,7 @@ public sealed class DutyLocalPreviewHostedService : IHostedService, IDisposable
             return false;
         }
         if (!TryReadStringListArgument(argumentsElement, "duty_reminder_times", required: false, out var dutyReminderTimes,
-                out listParseError))
-        {
-            errorMessage = listParseError;
-            return false;
-        }
-        if (!TryReadStringListArgument(argumentsElement, "duty_reminder_templates", required: false,
-                out var dutyReminderTemplates, out listParseError))
+                out var listParseError))
         {
             errorMessage = listParseError;
             return false;
@@ -1124,24 +1107,20 @@ public sealed class DutyLocalPreviewHostedService : IHostedService, IDisposable
         var current = _backendService.Config;
         try
         {
-            _backendService.SaveUserConfig(
-                apiKey: DutyBackendService.ResolveApiKeyInput(apiKey, current.DecryptedApiKey),
-                baseUrl: baseUrl ?? current.BaseUrl,
-                model: model ?? current.Model,
-                autoRunMode: autoRunMode ?? current.AutoRunMode,
-                autoRunParameter: autoRunParameter ?? current.AutoRunParameter,
-                autoRunTime: autoRunTime ?? current.AutoRunTime,
-                perDay: perDay ?? current.PerDay,
-                dutyRule: dutyRule ?? current.DutyRule,
-                startFromToday: startFromToday ?? current.StartFromToday,
-                componentRefreshTime: componentRefreshTime ?? current.ComponentRefreshTime,
-                pythonPath: pythonPath ?? current.PythonPath,
-                notificationTemplates: notificationTemplates ?? current.NotificationTemplates,
-                dutyReminderEnabled: dutyReminderEnabled ?? current.DutyReminderEnabled,
-                dutyReminderTimes: dutyReminderTimes ?? current.DutyReminderTimes,
-                dutyReminderTemplates: dutyReminderTemplates ?? current.DutyReminderTemplates,
-                enableMcp: enableMcp,
-                enableWebViewDebugLayer: enableWebViewDebugLayer);
+            current.DecryptedApiKey = DutyBackendService.ResolveApiKeyInput(apiKey, current.DecryptedApiKey);
+            current.BaseUrl = baseUrl ?? current.BaseUrl;
+            current.Model = model ?? current.Model;
+            current.AutoRunMode = autoRunMode ?? current.AutoRunMode;
+            current.AutoRunParameter = autoRunParameter ?? current.AutoRunParameter;
+            current.AutoRunTime = autoRunTime ?? current.AutoRunTime;
+            current.PerDay = perDay ?? current.PerDay;
+            current.DutyRule = dutyRule ?? current.DutyRule;
+            current.ComponentRefreshTime = componentRefreshTime ?? current.ComponentRefreshTime;
+            current.PythonPath = pythonPath ?? current.PythonPath;
+            current.DutyReminderEnabled = dutyReminderEnabled ?? current.DutyReminderEnabled;
+            current.DutyReminderTimes = dutyReminderTimes ?? current.DutyReminderTimes;
+            current.EnableMcp = enableMcp ?? current.EnableMcp;
+            current.EnableWebViewDebugLayer = enableWebViewDebugLayer ?? current.EnableWebViewDebugLayer;
         }
         catch (Exception ex)
         {
@@ -1172,12 +1151,10 @@ public sealed class DutyLocalPreviewHostedService : IHostedService, IDisposable
                 auto_run_time = saved.AutoRunTime,
                 per_day = saved.PerDay,
                 duty_rule = saved.DutyRule,
-                start_from_today = saved.StartFromToday,
                 component_refresh_time = saved.ComponentRefreshTime,
-                notification_templates = _backendService.GetNotificationTemplates(),
+                notification_duration_seconds = saved.NotificationDurationSeconds,
                 duty_reminder_enabled = saved.DutyReminderEnabled,
-                duty_reminder_times = _backendService.GetDutyReminderTimes(),
-                duty_reminder_templates = _backendService.GetDutyReminderTemplates()
+                duty_reminder_times = _backendService.GetDutyReminderTimes()
             }
         };
         return true;
@@ -1929,26 +1906,14 @@ public sealed class DutyLocalPreviewHostedService : IHostedService, IDisposable
         var model = config.Model ?? current.Model;
         var perDay = config.PerDay ?? current.PerDay;
         var dutyRule = config.DutyRule ?? current.DutyRule;
-        var startFromToday = config.StartFromToday ?? current.StartFromToday;
         var pythonPath = config.PythonPath ?? current.PythonPath;
 
-        _backendService.SaveUserConfig(
-            apiKey: apiKey,
-            baseUrl: baseUrl,
-            model: model,
-            autoRunMode: current.AutoRunMode,
-            autoRunParameter: current.AutoRunParameter,
-            autoRunTime: current.AutoRunTime,
-            perDay: perDay,
-            dutyRule: dutyRule,
-            startFromToday: startFromToday,
-            componentRefreshTime: current.ComponentRefreshTime,
-            pythonPath: pythonPath,
-            notificationTemplates: current.NotificationTemplates,
-            dutyReminderEnabled: current.DutyReminderEnabled,
-            dutyReminderTimes: current.DutyReminderTimes,
-            dutyReminderTemplates: current.DutyReminderTemplates,
-            enableMcp: current.EnableMcp);
+        current.DecryptedApiKey = apiKey;
+        current.BaseUrl = baseUrl;
+        current.Model = model;
+        current.PerDay = perDay;
+        current.DutyRule = dutyRule;
+        current.PythonPath = pythonPath;
     }
 
     private bool IsMcpEnabled()
@@ -2084,9 +2049,6 @@ public sealed class DutyLocalPreviewHostedService : IHostedService, IDisposable
 
         [JsonPropertyName("duty_rule")]
         public string? DutyRule { get; set; }
-
-        [JsonPropertyName("start_from_today")]
-        public bool? StartFromToday { get; set; }
 
         [JsonPropertyName("python_path")]
         public string? PythonPath { get; set; }

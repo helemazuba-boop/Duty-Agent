@@ -9,6 +9,7 @@ using DutyAgent.Views.SettingPages;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using System.Text.Json;
+using DutyAgent.Shared;
 
 namespace DutyAgent;
 
@@ -22,7 +23,7 @@ public class Plugin : PluginBase
     {
         services.AddSingleton<DutyBackendService>();
         services.AddSingleton<DutyNotificationService>();
-        services.AddComponent<DutyComponent, DutyComponentSettings>();
+        services.AddComponent<DutyComponent, DutyComponentSettingsControl>();
         services.AddNotificationProvider<DutyNotificationProvider>();
         services.AddSettingsPage<DutyMainSettingsPage>();
 
@@ -37,6 +38,22 @@ public class Plugin : PluginBase
         {
             services.AddSettingsPage<DutyWebSettingsPage>();
         }
+
+        // 动态反射，实现在低 PluginSdk 上使用高版本的分组功能
+        var registeredSettingsPageInfos = ClassIsland.Core.Services.Registry.SettingsWindowRegistryService.Registered
+            .Where(info => info.Id.StartsWith("duty-agent"))
+            .ToList();
+
+        if (InjectService.TryGetAddSettingsPageGroupMethod(out var addSettingsPageGroupMethod))
+        {
+            addSettingsPageGroupMethod.Invoke(typeof(SettingsWindowRegistryExtensions), [services, "duty-agent.group", "\uE31E", "Duty-Agent"]);
+            var groupIdProperty = InjectService.GetSettingsPageInfoGroupIdProperty();
+            foreach (var info in registeredSettingsPageInfos)
+            {
+                groupIdProperty.SetValue(info, "duty-agent.group");
+            }
+        }
+        // fallback: 低版本 SDK 无分组 API 时不修改名称
 
         AppDomain.CurrentDomain.ProcessExit += (_, _) => CleanupPythonProcesses();
     }

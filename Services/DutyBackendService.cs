@@ -4,6 +4,8 @@ using System.Text.Json;
 using Avalonia.Threading;
 using DutyAgent.Models;
 using Timer = System.Timers.Timer;
+using ClassIsland.Shared.Helpers;
+using System.ComponentModel;
 
 namespace DutyAgent.Services;
 
@@ -16,10 +18,6 @@ public class DutyBackendService : IDisposable
     private const string CoreProgressPrefix = "__DUTY_PROGRESS__:";
     private const string DefaultAreaClassroom = "\u6559\u5BA4";
     private const string DefaultAreaCleaning = "\u6E05\u6D01\u533A";
-    private const string DefaultNotificationTemplate =
-        "{scene}{status}\uFF0C\u65E5\u671F\uFF1A{date}\uFF0C\u533A\u57DF\uFF1A{areas}";
-    private const string DefaultDutyReminderTemplate =
-        "\u503C\u65E5\u63D0\u9192\uFF1A{date} {time}\uFF0C{assignments}";
     private const string DefaultDutyReminderTime = "07:40";
     private static readonly string PluginBaseDirectory =
         Path.GetDirectoryName(typeof(DutyBackendService).Assembly.Location) ?? AppContext.BaseDirectory;
@@ -115,109 +113,59 @@ public class DutyBackendService : IDisposable
     {
         lock (_configLock)
         {
+            if (Config != null)
+            {
+                Config.PropertyChanged -= OnConfigPropertyChanged;
+            }
+
             if (!File.Exists(_configPath))
             {
                 Config = new DutyConfig();
-                Config.NotificationTemplates = NormalizeNotificationTemplates(Config.NotificationTemplates);
                 Config.DutyReminderTimes = NormalizeDutyReminderTimes(Config.DutyReminderTimes);
-                Config.DutyReminderTemplates = NormalizeDutyReminderTemplates(Config.DutyReminderTemplates);
                 SaveConfig();
-                return;
             }
-
-            try
+            else
             {
-                var json = File.ReadAllText(_configPath, Encoding.UTF8);
-                var config = JsonSerializer.Deserialize<DutyConfig>(json) ?? new DutyConfig();
-                config.NotificationTemplates = NormalizeNotificationTemplates(config.NotificationTemplates);
-                config.DutyReminderTimes = NormalizeDutyReminderTimes(config.DutyReminderTimes);
-                config.DutyReminderTemplates = NormalizeDutyReminderTemplates(config.DutyReminderTemplates);
-
-                if (!string.IsNullOrWhiteSpace(config.EncryptedApiKey))
+                try
                 {
-                    if (!SecurityHelper.IsCurrentEncryptionFormat(config.EncryptedApiKey))
+                    var config = ConfigureFileHelper.LoadConfig<DutyConfig>(_configPath);
+                    config.DutyReminderTimes = NormalizeDutyReminderTimes(config.DutyReminderTimes);
+                    
+                    if (!string.IsNullOrWhiteSpace(config.EncryptedApiKey) && 
+                        !SecurityHelper.IsCurrentEncryptionFormat(config.EncryptedApiKey))
                     {
-                        // Migrate legacy plaintext API keys to encrypted storage.
                         config.DecryptedApiKey = config.EncryptedApiKey;
                         Config = config;
                         SaveConfig();
-                        return;
                     }
-
-                    _ = config.DecryptedApiKey;
+                    else
+                    {
+                        Config = config;
+                    }
                 }
-
-                Config = config;
+                catch (Exception ex)
+                {
+                    Debug.WriteLine($"LoadConfig Error: {ex.Message}");
+                    Config = new DutyConfig();
+                    Config.DutyReminderTimes = NormalizeDutyReminderTimes(Config.DutyReminderTimes);
+                    SaveConfig();
+                }
             }
-            catch (Exception ex)
-            {
-                Debug.WriteLine($"LoadConfig Error: {ex.Message}");
-                Config = new DutyConfig();
-                Config.NotificationTemplates = NormalizeNotificationTemplates(Config.NotificationTemplates);
-                Config.DutyReminderTimes = NormalizeDutyReminderTimes(Config.DutyReminderTimes);
-                Config.DutyReminderTemplates = NormalizeDutyReminderTemplates(Config.DutyReminderTemplates);
-                SaveConfig();
-            }
+            
+            Config.PropertyChanged += OnConfigPropertyChanged;
         }
+    }
+
+    private void OnConfigPropertyChanged(object? sender, PropertyChangedEventArgs e)
+    {
+        SaveConfig();
     }
 
     public void SaveConfig()
     {
         lock (_configLock)
         {
-            var options = new JsonSerializerOptions
-            {
-                WriteIndented = true
-            };
-            var json = JsonSerializer.Serialize(Config, options);
-            File.WriteAllText(_configPath, json, Utf8NoBom);
-        }
-    }
-
-    public void SaveUserConfig(
-        string apiKey,
-        string baseUrl,
-        string model,
-        string autoRunMode,
-        string autoRunParameter,
-        string autoRunTime,
-        int perDay,
-        string dutyRule,
-        bool startFromToday,
-        string componentRefreshTime,
-        string pythonPath,
-        IEnumerable<string>? notificationTemplates = null,
-        bool? dutyReminderEnabled = null,
-        IEnumerable<string>? dutyReminderTimes = null,
-        IEnumerable<string>? dutyReminderTemplates = null,
-        bool? enableMcp = null,
-        bool? enableWebViewDebugLayer = null,
-        bool? autoRunTriggerNotificationEnabled = null)
-    {
-        lock (_configLock)
-        {
-            Config.DecryptedApiKey = ResolveApiKeyInput(apiKey, Config.DecryptedApiKey);
-            Config.BaseUrl = baseUrl;
-            Config.Model = model;
-            Config.AutoRunMode = NormalizeAutoRunMode(autoRunMode);
-            Config.AutoRunParameter = (autoRunParameter ?? Config.AutoRunParameter).Trim();
-            Config.EnableMcp = enableMcp ?? Config.EnableMcp;
-            Config.EnableWebViewDebugLayer = enableWebViewDebugLayer ?? Config.EnableWebViewDebugLayer;
-            Config.AutoRunTime = NormalizeTimeOrThrow(autoRunTime);
-            Config.PerDay = Math.Clamp(perDay, 1, 30);
-            Config.DutyRule = dutyRule;
-            Config.StartFromToday = startFromToday;
-            Config.ComponentRefreshTime = NormalizeTimeOrThrow(componentRefreshTime);
-            Config.AutoRunTriggerNotificationEnabled =
-                autoRunTriggerNotificationEnabled ?? Config.AutoRunTriggerNotificationEnabled;
-            Config.PythonPath = string.IsNullOrWhiteSpace(pythonPath) ? Config.PythonPath : pythonPath.Trim();
-            Config.NotificationTemplates =
-                NormalizeNotificationTemplates(notificationTemplates ?? Config.NotificationTemplates);
-            Config.DutyReminderEnabled = dutyReminderEnabled ?? Config.DutyReminderEnabled;
-            Config.DutyReminderTimes = NormalizeDutyReminderTimes(dutyReminderTimes ?? Config.DutyReminderTimes);
-            Config.DutyReminderTemplates =
-                NormalizeDutyReminderTemplates(dutyReminderTemplates ?? Config.DutyReminderTemplates);
-            SaveConfig();
+            ConfigureFileHelper.SaveConfig(_configPath, Config);
         }
     }
 
@@ -280,10 +228,10 @@ public class DutyBackendService : IDisposable
         {
             instruction = effectiveInstruction,
             apply_mode = applyMode,
-            start_from_today = Config.StartFromToday,
             per_day = Config.PerDay,
             duty_rule = Config.DutyRule,
             base_url = Config.BaseUrl,
+            prompt_mode = Config.PromptMode,
             model = overrideModel ?? Config.Model
         };
         File.WriteAllText(inputPath, JsonSerializer.Serialize(inputData), Utf8NoBom);
@@ -579,27 +527,11 @@ public class DutyBackendService : IDisposable
         return InferAreaNamesFromState(state);
     }
 
-    public List<string> GetNotificationTemplates()
-    {
-        lock (_configLock)
-        {
-            return NormalizeNotificationTemplates(Config.NotificationTemplates);
-        }
-    }
-
     public List<string> GetDutyReminderTimes()
     {
         lock (_configLock)
         {
             return NormalizeDutyReminderTimes(Config.DutyReminderTimes);
-        }
-    }
-
-    public List<string> GetDutyReminderTemplates()
-    {
-        lock (_configLock)
-        {
-            return NormalizeDutyReminderTemplates(Config.DutyReminderTemplates);
         }
     }
 
@@ -817,10 +749,68 @@ public class DutyBackendService : IDisposable
             return false;
         }
 
+        // --- Debt/Credit Diff: Extract OLD names before overwriting ---
+        var oldNames = new HashSet<string>(StringComparer.Ordinal);
+        if (item.AreaAssignments is { Count: > 0 })
+        {
+            foreach (var names in item.AreaAssignments.Values)
+            {
+                if (names == null) continue;
+                foreach (var n in names) oldNames.Add(n.Trim());
+            }
+        }
+
         item.Date = normalizedTargetDate;
         item.Day = normalizedDay;
         item.AreaAssignments = normalizedAssignments;
         item.Note = normalizedNote;
+
+        // --- Debt/Credit Diff: Extract NEW names and reconcile ---
+        var newNames = new HashSet<string>(StringComparer.Ordinal);
+        if (normalizedAssignments is { Count: > 0 })
+        {
+            foreach (var names in normalizedAssignments.Values)
+            {
+                if (names == null) continue;
+                foreach (var n in names) newNames.Add(n.Trim());
+            }
+        }
+
+        var removedNames = oldNames.Except(newNames).ToArray();
+        var addedNames = newNames.Except(oldNames).ToArray();
+
+        if (removedNames.Length > 0 || addedNames.Length > 0)
+        {
+            var roster = LoadRosterEntries();
+            var nameToId = new Dictionary<string, int>(StringComparer.Ordinal);
+            foreach (var r in roster)
+            {
+                if (r.Active && !string.IsNullOrWhiteSpace(r.Name))
+                    nameToId.TryAdd(r.Name.Trim(), r.Id);
+            }
+
+            var debtSet = new HashSet<int>(state.DebtList ?? []);
+            var creditSet = new HashSet<int>(state.CreditList ?? []);
+
+            // Removed people: they escaped duty
+            foreach (var name in removedNames)
+            {
+                if (!nameToId.TryGetValue(name, out var id)) continue;
+                if (creditSet.Remove(id)) { /* had credit, consume it */ }
+                else { debtSet.Add(id); /* no credit, they owe */ }
+            }
+
+            // Added people: they did extra work
+            foreach (var name in addedNames)
+            {
+                if (!nameToId.TryGetValue(name, out var id)) continue;
+                if (debtSet.Remove(id)) { /* had debt, pay it off */ }
+                else { creditSet.Add(id); /* no debt, earn credit */ }
+            }
+
+            state.DebtList = debtSet.OrderBy(x => x).ToList();
+            state.CreditList = creditSet.OrderBy(x => x).ToList();
+        }
 
         state.SchedulePool = state.SchedulePool
             .OrderBy(x => x.Date, StringComparer.Ordinal)
@@ -933,7 +923,7 @@ public class DutyBackendService : IDisposable
         return Path.GetFullPath(Path.Combine(pluginBasePath, normalized));
     }
 
-    private static string NormalizeTimeOrThrow(string? time)
+    public static string NormalizeTimeOrThrow(string? time)
     {
         if (TimeSpan.TryParse(time, out var ts)) return ts.ToString(@"hh\:mm");
         throw new ArgumentException("Invalid time format.");
@@ -980,7 +970,7 @@ public class DutyBackendService : IDisposable
         }
     }
 
-    private static string NormalizeAutoRunMode(string mode)
+    public static string NormalizeAutoRunMode(string mode)
     {
         var trimmed = (mode ?? "Off").Trim();
         return trimmed.ToLowerInvariant() switch
@@ -1099,31 +1089,7 @@ public class DutyBackendService : IDisposable
         return areas;
     }
 
-    private static List<string> NormalizeNotificationTemplates(IEnumerable<string>? rawTemplates)
-    {
-        var templates = new List<string>();
-        var seen = new HashSet<string>(StringComparer.Ordinal);
-        if (rawTemplates != null)
-        {
-            foreach (var raw in rawTemplates)
-            {
-                var template = (raw ?? string.Empty).Trim();
-                if (template.Length == 0 || !seen.Add(template))
-                {
-                    continue;
-                }
 
-                templates.Add(template);
-            }
-        }
-
-        if (templates.Count == 0)
-        {
-            templates.Add(DefaultNotificationTemplate);
-        }
-
-        return templates;
-    }
 
     private static Dictionary<string, List<string>> NormalizeAreaAssignmentsForState(
         IEnumerable<KeyValuePair<string, List<string>>>? rawAssignments)
@@ -1205,7 +1171,7 @@ public class DutyBackendService : IDisposable
         try
         {
             LoadConfig();
-            var config = Config;
+            var duration = Math.Clamp(Config.NotificationDurationSeconds, 3, 15);
             var now = DateTime.Now;
             var today = now.ToString("yyyy-MM-dd");
             var areaNames = GetAreaNames();
@@ -1226,46 +1192,12 @@ public class DutyBackendService : IDisposable
 
             var scene = isAutoRun ? "\u81EA\u52A8\u6392\u73ED" : "\u6392\u73ED\u4EFB\u52A1";
             var status = success ? "\u5DF2\u5B8C\u6210" : "\u6267\u884C\u5931\u8D25";
-            var mode = string.IsNullOrWhiteSpace(applyMode)
-                ? (isAutoRun ? "auto_run" : "manual")
-                : applyMode.Trim();
-            var messageText = (resultMessage ?? string.Empty).Trim();
-            if (messageText.Length == 0)
-            {
-                messageText = success
-                    ? "\u6392\u73ED\u5DF2\u5B8C\u6210\u3002"
-                    : "\u6392\u73ED\u672A\u6210\u529F\u5B8C\u6210\u3002";
-            }
+            var primaryText = $"{scene}{status}";
+            var scrollingText = segments.Count > 0
+                ? string.Join("\uFF1B", segments)
+                : "\u6682\u65E0\u5B89\u6392";
 
-            var instructionText = (instruction ?? string.Empty).Trim();
-            if (instructionText.Length == 0 && isAutoRun)
-            {
-                instructionText = AutoRunInstruction;
-            }
-
-            var placeholders = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
-            {
-                ["scene"] = scene,
-                ["status"] = status,
-                ["date"] = today,
-                ["areas"] = string.Join("\u3001", areaNames),
-
-                ["per_day"] = config.PerDay.ToString(),
-                ["mode"] = mode,
-                ["instruction"] = instructionText,
-                ["message"] = messageText,
-                ["time"] = now.ToString("HH:mm"),
-                ["assignments"] = segments.Count > 0
-                    ? string.Join("\uFF1B", segments)
-                    : "\u6682\u65E0\u5B89\u6392"
-            };
-
-            var fallback = $"{scene}{status}\uFF1A{today} {now:HH:mm}\uFF0C{messageText}";
-            _notificationService.PublishFromTemplates(
-                GetNotificationTemplates(),
-                placeholders,
-                fallback,
-                durationSeconds: 8);
+            _notificationService.Publish(primaryText, scrollingText, duration);
         }
         catch (Exception ex)
         {
@@ -1282,32 +1214,11 @@ public class DutyBackendService : IDisposable
                 return;
             }
 
-            var dateText = now.ToString("yyyy-MM-dd");
-            var timeText = now.ToString("HH:mm");
-            var areaNames = GetAreaNames();
-            var scene = "\u81EA\u52A8\u6392\u73ED";
-            var status = "\u5F00\u59CB\u6267\u884C";
-            var placeholders = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
-            {
-                ["scene"] = scene,
-                ["status"] = status,
-                ["date"] = dateText,
-                ["areas"] = string.Join("\u3001", areaNames),
+            var duration = Math.Clamp(Config.NotificationDurationSeconds, 3, 15);
+            var primaryText = "\u81EA\u52A8\u6392\u73ED\u5F00\u59CB\u6267\u884C";
+            var scrollingText = $"{now:yyyy-MM-dd HH:mm} \u4EFB\u52A1\u5DF2\u52A0\u5165\u961F\u5217";
 
-                ["per_day"] = Config.PerDay.ToString(),
-                ["mode"] = "auto_run",
-                ["instruction"] = AutoRunInstruction,
-                ["message"] = "\u5DF2\u89E6\u53D1\u81EA\u52A8\u6392\u73ED",
-                ["time"] = timeText,
-                ["assignments"] = string.Empty
-            };
-
-            var fallback = $"{scene}{status}\uFF1A{dateText} {timeText}";
-            _notificationService.PublishFromTemplates(
-                GetNotificationTemplates(),
-                placeholders,
-                fallback,
-                durationSeconds: 6);
+            _notificationService.Publish(primaryText, scrollingText, duration);
         }
         catch (Exception ex)
         {
@@ -1383,6 +1294,7 @@ public class DutyBackendService : IDisposable
 
     private void PublishDutyReminderNotification(string dateText, string timeText)
     {
+        var duration = Math.Clamp(Config.NotificationDurationSeconds, 3, 15);
         var state = LoadState();
         var areaNames = GetAreaNames();
         var item = state.SchedulePool.LastOrDefault(x => string.Equals(x.Date, dateText, StringComparison.Ordinal));
@@ -1399,76 +1311,17 @@ public class DutyBackendService : IDisposable
             })
             .ToList();
 
-        var dutyStudents = assignments
-            .Values
-            .SelectMany(x => x ?? [])
-            .Select(x => (x ?? string.Empty).Trim())
-            .Where(x => x.Length > 0)
-            .Distinct(StringComparer.Ordinal)
-            .ToList();
+        var primaryText = item is null
+            ? $"\u503C\u65E5\u63D0\u9192 {dateText} {timeText}"
+            : $"\u4ECA\u65E5\u503C\u65E5\u63D0\u9192 {timeText}";
+        var scrollingText = item is null
+            ? "\u4ECA\u65E5\u6682\u65E0\u503C\u65E5\u5B89\u6392"
+            : string.Join("\uFF1B", assignmentSegments);
 
-        var scene = "\u503C\u65E5\u63D0\u9192";
-        var status = item is null ? "\u65E0\u5B89\u6392" : "\u8BF7\u5230\u5C97";
-        var note = item is null ? string.Empty : (item.Note ?? string.Empty).Trim();
-        var noteSuffix = note.Length > 0 ? $", {note}" : string.Empty;
-        var assignmentText = assignmentSegments.Count > 0
-            ? string.Join("\uFF1B", assignmentSegments)
-            : "\u6682\u65E0\u503C\u65E5\u5B89\u6392";
-        var fallbackText = item is null
-            ? $"{scene}\uFF1A{dateText} {timeText}\uFF0C\u4ECA\u65E5\u6682\u65E0\u503C\u65E5\u5B89\u6392\u3002"
-            : $"{scene}\uFF1A{dateText} {timeText}\uFF0C{assignmentText}{noteSuffix}";
-
-        var placeholders = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
-        {
-            ["scene"] = scene,
-            ["status"] = status,
-            ["date"] = dateText,
-            ["time"] = timeText,
-            ["areas"] = string.Join("\u3001", areaNames),
-            ["duty_students"] = dutyStudents.Count > 0 ? string.Join("\u3001", dutyStudents) : "\u6682\u65E0",
-            ["assignments"] = $"{assignmentText}{noteSuffix}",
-            ["note"] = note,
-
-            ["per_day"] = Config.PerDay.ToString(),
-            ["mode"] = "duty_reminder",
-            ["instruction"] = string.Empty,
-            ["message"] = item is null
-                ? "\u4ECA\u65E5\u6682\u65E0\u503C\u65E5\u5B89\u6392"
-                : $"\u8BF7\u6309\u5B89\u6392\u5B8C\u6210\u503C\u65E5{noteSuffix}"
-        };
-
-        _notificationService.PublishFromTemplates(
-            NormalizeDutyReminderTemplates(Config.DutyReminderTemplates),
-            placeholders,
-            fallbackText,
-            durationSeconds: 8);
+        _notificationService.Publish(primaryText, scrollingText, duration);
     }
 
-    private static List<string> NormalizeDutyReminderTemplates(IEnumerable<string>? rawTemplates)
-    {
-        var templates = new List<string>();
-        var seen = new HashSet<string>(StringComparer.Ordinal);
-        if (rawTemplates != null)
-        {
-            foreach (var raw in rawTemplates)
-            {
-                var template = (raw ?? string.Empty).Trim();
-                if (template.Length == 0 || !seen.Add(template))
-                {
-                    continue;
-                }
 
-                templates.Add(template);
-            }
-        }
-
-        if (templates.Count == 0)
-        {
-            templates.Add(DefaultDutyReminderTemplate);
-        }
-
-        return templates;
-    }
 
     private static List<string> NormalizeDutyReminderTimes(IEnumerable<string>? rawTimes)
     {

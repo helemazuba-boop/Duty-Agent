@@ -11,6 +11,7 @@ using ClassIsland.Core.Attributes;
 using ClassIsland.Shared;
 using DutyAgent.Models;
 using DutyAgent.Services;
+using DutyAgent.Views.SettingPages.Modules;
 
 namespace DutyAgent.Views.SettingPages;
 
@@ -20,6 +21,10 @@ namespace DutyAgent.Views.SettingPages;
 public partial class DutyMainSettingsPage : SettingsPageBase
 {
     private DutyBackendService Service { get; } = IAppHost.GetService<DutyBackendService>();
+    private DutyNotificationService NotificationService { get; } = IAppHost.GetService<DutyNotificationService>();
+    private readonly DutyMainSettingsConfigModule _configModule;
+    private readonly DutyMainSettingsRosterModule _rosterModule;
+    private readonly DutyMainSettingsScheduleModule _scheduleModule;
     private bool _isLoadingConfig;
     private bool _isApplyingConfig;
     private string _lastConfigState = "未应用";
@@ -32,11 +37,13 @@ public partial class DutyMainSettingsPage : SettingsPageBase
     private bool _hasPendingConfigApply;
     private string _pendingScheduleSelectionDate = string.Empty;
     private bool _isPopulatingEditor;
-    private bool _isEditorDirty;
 
     public DutyMainSettingsPage()
     {
         InitializeComponent();
+        _configModule = new DutyMainSettingsConfigModule(Service);
+        _rosterModule = new DutyMainSettingsRosterModule(Service);
+        _scheduleModule = new DutyMainSettingsScheduleModule(Service);
         _configApplyDebounceTimer = new DispatcherTimer
         {
             Interval = TimeSpan.FromMilliseconds(500)
@@ -277,54 +284,36 @@ public partial class DutyMainSettingsPage : SettingsPageBase
             return false;
         }
 
-        Service.LoadConfig();
-        var current = Service.Config;
-        var requestedEnableMcp = EnableMcpSwitch.IsChecked == true;
-        var requestedEnableWebDebugLayer = EnableWebDebugLayerSwitch.IsChecked == true;
-        var previousEnableMcp = current.EnableMcp;
-        var previousEnableWebDebugLayer = current.EnableWebViewDebugLayer;
-
-        var dutyReminderEnabled = DutyReminderEnabledSwitch.IsChecked == true;
-        var dutyReminderTimes = new List<string> { GetSelectedDutyReminderTime() };
-
-        var perDay = Math.Clamp(current.PerDay, 1, 30);
-
-        var autoRunTime = GetSelectedAutoRunTime();
-        var componentRefreshTime = GetSelectedComponentRefreshTime();
-
         try
         {
             _isApplyingConfig = true;
-            var resolvedApiKey = DutyBackendService.ResolveApiKeyInput(ApiKeyBox.Text, current.DecryptedApiKey);
-            Service.SaveUserConfig(
-                apiKey: resolvedApiKey,
-                baseUrl: BaseUrlBox.Text?.Trim() ?? string.Empty,
-                model: ModelBox.Text?.Trim() ?? string.Empty,
-                autoRunMode: GetSelectedAutoRunMode(),
-                autoRunParameter: GetSelectedAutoRunParameter(),
-                autoRunTime: autoRunTime,
-                perDay: perDay,
-                dutyRule: DutyRuleBox.Text ?? string.Empty,
-                startFromToday: StartFromTodaySwitch.IsChecked == true,
-                componentRefreshTime: componentRefreshTime,
-                // 普通用户页不提供 Python 路径编辑。
-                pythonPath: current.PythonPath,
-                dutyReminderEnabled: dutyReminderEnabled,
-                dutyReminderTimes: dutyReminderTimes,
-                enableMcp: requestedEnableMcp,
-                enableWebViewDebugLayer: requestedEnableWebDebugLayer,
-                autoRunTriggerNotificationEnabled: AutoRunTriggerNotificationSwitch.IsChecked == true);
+            var request = new DutySettingsApplyRequest
+            {
+                ApiKeyInput = ApiKeyBox.Text,
+                BaseUrl = BaseUrlBox.Text,
+                Model = ModelBox.Text,
+                AutoRunMode = GetSelectedAutoRunMode(),
+                AutoRunParameter = GetSelectedAutoRunParameter(),
+                AutoRunTime = GetSelectedAutoRunTime(),
+                ComponentRefreshTime = GetSelectedComponentRefreshTime(),
+                AutoRunTriggerNotificationEnabled = AutoRunTriggerNotificationSwitch.IsChecked == true,
+                DutyReminderEnabled = DutyReminderEnabledSwitch.IsChecked == true,
+                DutyReminderTime = GetSelectedDutyReminderTime(),
+                EnableMcp = EnableMcpSwitch.IsChecked == true,
+                EnableWebViewDebugLayer = EnableWebDebugLayerSwitch.IsChecked == true,
+                DutyRule = DutyRuleBox.Text,
+                NotificationDurationSeconds = (int)NotificationDurationSlider.Value
+            };
+            var result = _configModule.Apply(request);
 
-            var restartRequired = previousEnableMcp != requestedEnableMcp ||
-                                  previousEnableWebDebugLayer != requestedEnableWebDebugLayer;
             SetStatus(
-                restartRequired
+                result.RestartRequired
                     ? "✓ 设置已自动保存。调试层/MCP 服务变更将在重启 ClassIsland 后生效。"
                     : "✓ 设置已自动保存。",
                 Brushes.Green);
 
             UpdateConfigTracking(
-                restartRequired
+                result.RestartRequired
                     ? "✓ 自动保存（重启后调试层/MCP生效）"
                     : "✓ 自动保存");
 
@@ -346,81 +335,54 @@ public partial class DutyMainSettingsPage : SettingsPageBase
 
     private void OnAddStudentClick(object? sender, RoutedEventArgs e)
     {
-        var name = (NewStudentNameBox.Text ?? string.Empty).Trim();
-        if (name.Length == 0)
+        var result = _rosterModule.AddStudent(NewStudentNameBox.Text);
+        if (!result.Success)
         {
-            SetStatus("请输入学生姓名。", Brushes.Orange);
+            SetStatus(result.Message, Brushes.Orange);
             return;
         }
 
-        var roster = Service.LoadRosterEntries();
-        var nextId = roster.Count == 0 ? 1 : roster.Max(x => x.Id) + 1;
-        
-        var isDuplicate = roster.Any(x => string.Equals(x.Name, name, StringComparison.OrdinalIgnoreCase));
-        
-        roster.Add(new RosterEntry
-        {
-            Id = nextId,
-            Name = name,
-            Active = true
-        });
-        Service.SaveRosterEntries(roster);
-
         NewStudentNameBox.Text = string.Empty;
         LoadData("名单变更");
-        
-        if (isDuplicate)
-        {
-            SetStatus($"已添加学生：{name} (库中存在同名，已分配新ID)。", Brushes.Orange);
-        }
-        else
-        {
-            SetStatus($"已添加学生：{name}", Brushes.Green);
-        }
+        SetStatus(result.Message, result.IsDuplicate ? Brushes.Orange : Brushes.Green);
     }
 
     private void OnToggleStudentActiveClick(object? sender, RoutedEventArgs e)
     {
-        if (RosterListBox.SelectedItem is not RosterListItem selected)
+        if (RosterListBox.SelectedItem is not DutyRosterRow selected)
         {
             SetStatus("请先选择要操作的学生。", Brushes.Orange);
             return;
         }
 
-        var roster = Service.LoadRosterEntries();
-        var index = roster.FindIndex(x => x.Id == selected.Id);
-        if (index < 0)
+        var result = _rosterModule.ToggleStudentActive(selected.Id);
+        if (!result.Success)
         {
-            SetStatus("未找到选中的学生记录。", Brushes.Orange);
+            SetStatus(result.Message, Brushes.Orange);
             return;
         }
 
-        roster[index].Active = !roster[index].Active;
-        Service.SaveRosterEntries(roster);
         LoadData("名单变更");
-        var statusText = roster[index].Active ? "启用" : "停用";
-        SetStatus($"已{statusText}学生：{roster[index].Name}", Brushes.Green);
+        SetStatus(result.Message, Brushes.Green);
     }
 
     private void OnDeleteStudentClick(object? sender, RoutedEventArgs e)
     {
-        if (RosterListBox.SelectedItem is not RosterListItem selected)
+        if (RosterListBox.SelectedItem is not DutyRosterRow selected)
         {
             SetStatus("请先选择要删除的学生。", Brushes.Orange);
             return;
         }
 
-        var roster = Service.LoadRosterEntries();
-        var removed = roster.RemoveAll(x => x.Id == selected.Id);
-        if (removed == 0)
+        var result = _rosterModule.DeleteStudent(selected.Id);
+        if (!result.Success)
         {
-            SetStatus("未找到选中的学生记录。", Brushes.Orange);
+            SetStatus(result.Message, Brushes.Orange);
             return;
         }
 
-        Service.SaveRosterEntries(roster);
         LoadData("名单变更");
-        SetStatus($"已删除学生：{selected.Name}", Brushes.Green);
+        SetStatus(result.Message, Brushes.Green);
     }
 
     private async void OnImportRosterFromFileClick(object? sender, RoutedEventArgs e)
@@ -465,21 +427,15 @@ public partial class DutyMainSettingsPage : SettingsPageBase
                 return;
             }
 
-            var roster = Service.LoadRosterEntries();
-            var nextId = roster.Count == 0 ? 1 : roster.Max(x => x.Id) + 1;
-            foreach (var name in parsedNames)
+            var result = _rosterModule.ImportStudents(parsedNames);
+            if (!result.Success)
             {
-                roster.Add(new RosterEntry
-                {
-                    Id = nextId++,
-                    Name = name,
-                    Active = true
-                });
+                SetStatus(result.Message, Brushes.Orange);
+                return;
             }
 
-            Service.SaveRosterEntries(roster);
             LoadData("名单导入");
-            SetStatus($"导入完成：新增 {parsedNames.Count} 名（同名将保留并分配不同 ID）。", Brushes.Green);
+            SetStatus(result.Message, Brushes.Green);
         }
         catch (Exception ex)
         {
@@ -511,23 +467,25 @@ public partial class DutyMainSettingsPage : SettingsPageBase
         _isLoadingConfig = true;
         try
         {
-            Service.LoadConfig();
-            var config = Service.Config;
+            var formModel = _configModule.Load();
 
-            ApiKeyBox.Text = Service.GetApiKeyMaskForUi();
-            BaseUrlBox.Text = config.BaseUrl;
-            ModelBox.Text = config.Model;
-            SetAutoRunModeSelection(config.AutoRunMode);
-            SetAutoRunParameterSelection(config.AutoRunMode, config.AutoRunParameter);
-            SetAutoRunTimeSelection(config.AutoRunTime);
-            StartFromTodaySwitch.IsChecked = config.StartFromToday;
-            AutoRunTriggerNotificationSwitch.IsChecked = config.AutoRunTriggerNotificationEnabled;
-            DutyReminderEnabledSwitch.IsChecked = config.DutyReminderEnabled;
-            SetDutyReminderTimeSelection(Service.GetDutyReminderTimes().FirstOrDefault());
-            EnableMcpSwitch.IsChecked = config.EnableMcp;
-            EnableWebDebugLayerSwitch.IsChecked = config.EnableWebViewDebugLayer;
-            SetComponentRefreshTimeSelection(config.ComponentRefreshTime);
-            DutyRuleBox.Text = config.DutyRule;
+            ApiKeyBox.Text = formModel.ApiKeyMask;
+            BaseUrlBox.Text = formModel.BaseUrl;
+            ModelBox.Text = formModel.Model;
+            SetPromptModeSelection(formModel.PromptMode);
+            SetAutoRunModeSelection(formModel.AutoRunMode);
+            SetAutoRunParameterSelection(formModel.AutoRunMode, formModel.AutoRunParameter);
+            SetAutoRunTimeSelection(formModel.AutoRunTime);
+            AutoRunTriggerNotificationSwitch.IsChecked = formModel.AutoRunTriggerNotificationEnabled;
+            DutyReminderEnabledSwitch.IsChecked = formModel.DutyReminderEnabled;
+            SetDutyReminderTimeSelection(formModel.DutyReminderTime);
+            EnableMcpSwitch.IsChecked = formModel.EnableMcp;
+            EnableWebDebugLayerSwitch.IsChecked = formModel.EnableWebViewDebugLayer;
+            SetComponentRefreshTimeSelection(formModel.ComponentRefreshTime);
+            DutyRuleBox.Text = formModel.DutyRule;
+
+            NotificationDurationSlider.Value = formModel.NotificationDurationSeconds;
+            NotificationDurationLabel.Text = $"{formModel.NotificationDurationSeconds} 秒";
         }
         finally
         {
@@ -547,7 +505,7 @@ public partial class DutyMainSettingsPage : SettingsPageBase
 
     private void UpdateStudentActionButtons()
     {
-        if (RosterListBox.SelectedItem is RosterListItem selected)
+        if (RosterListBox.SelectedItem is DutyRosterRow selected)
         {
             ToggleStudentActiveBtn.IsEnabled = true;
             ToggleStudentActiveBtn.Content = selected.Active ? "停用选中" : "启用选中";
@@ -560,124 +518,38 @@ public partial class DutyMainSettingsPage : SettingsPageBase
 
     private void BuildRosterList(List<RosterEntry> roster, DutyState state)
     {
-        var previousSelectedId = (RosterListBox.SelectedItem as RosterListItem)?.Id;
-        var today = DateTime.Today;
-        var dutyCountByName = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
-        var nextDutyByName = new Dictionary<string, DateTime>(StringComparer.OrdinalIgnoreCase);
+        var previousSelectedId = (RosterListBox.SelectedItem as DutyRosterRow)?.Id;
+        var preview = _rosterModule.BuildPreview(roster, state, DateTime.Today);
 
-        foreach (var item in state.SchedulePool)
-        {
-            if (!TryParseScheduleDate(item.Date, out var date))
-            {
-                continue;
-            }
-
-            var namesInDay = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            var assignments = Service.GetAreaAssignments(item);
-            foreach (var name in assignments.Values.SelectMany(x => x))
-            {
-                var normalized = (name ?? string.Empty).Trim();
-                if (normalized.Length == 0)
-                {
-                    continue;
-                }
-
-                namesInDay.Add(normalized);
-            }
-
-            foreach (var name in namesInDay)
-            {
-                dutyCountByName[name] = dutyCountByName.TryGetValue(name, out var count) ? count + 1 : 1;
-                if (date < today)
-                {
-                    continue;
-                }
-
-                if (!nextDutyByName.TryGetValue(name, out var currentNext) || date < currentNext)
-                {
-                    nextDutyByName[name] = date;
-                }
-            }
-        }
-
-        var rows = roster.Select(r =>
-            {
-                var normalizedName = (r.Name ?? string.Empty).Trim();
-                nextDutyByName.TryGetValue(normalizedName, out var nextDate);
-                var hasNext = nextDate != default;
-                var dutyCount = dutyCountByName.TryGetValue(normalizedName, out var count) ? count : 0;
-                return new RosterListItem
-                {
-                    Id = r.Id,
-                    Name = normalizedName,
-                    NextDutyDate = hasNext ? nextDate : null,
-                    NextDutyDisplay = hasNext ? FormatDutyDate(nextDate) : "未安排",
-                    DutyCount = dutyCount,
-                    Active = r.Active,
-                    ActiveDisplay = r.Active ? "启用" : "停用"
-                };
-            })
-            .OrderBy(x => x.NextDutyDate.HasValue ? 0 : 1)
-            .ThenBy(x => x.NextDutyDate)
-            .ThenBy(x => x.Id)
-            .ToList();
-
-        RosterListBox.ItemsSource = rows;
+        RosterListBox.ItemsSource = preview.Rows;
         if (previousSelectedId.HasValue)
         {
-            RosterListBox.SelectedItem = rows.FirstOrDefault(x => x.Id == previousSelectedId.Value);
+            RosterListBox.SelectedItem = preview.Rows.FirstOrDefault(x => x.Id == previousSelectedId.Value);
         }
 
-        var scheduledCount = rows.Count(x => x.NextDutyDate.HasValue);
-        var activeCount = rows.Count(x => x.Active);
-        RosterSummaryText.Text = $"共 {rows.Count} 名学生（启用 {activeCount} 名），已安排下一次值日 {scheduledCount} 名。";
-        RosterEmptyStatePanel.IsVisible = rows.Count == 0;
+        RosterSummaryText.Text = preview.Summary;
+        RosterEmptyStatePanel.IsVisible = preview.Rows.Count == 0;
     }
 
     private void BuildSchedulePreview(DutyState state)
     {
         var previousSelectedDate = string.IsNullOrWhiteSpace(_pendingScheduleSelectionDate)
-            ? (ScheduleListBox.SelectedItem as ScheduleRowItem)?.Date
+            ? (ScheduleListBox.SelectedItem as DutyScheduleRow)?.Date
             : _pendingScheduleSelectionDate;
-        var rows = state.SchedulePool
-            .OrderBy(x => x.Date, StringComparer.Ordinal)
-            .Select(item =>
-            {
-                var assignments = Service.GetAreaAssignments(item);
-                var segments = assignments
-                    .Where(x => !string.IsNullOrWhiteSpace(x.Key))
-                    .Select(x =>
-                    {
-                        var students = x.Value?.Where(n => !string.IsNullOrWhiteSpace(n)).ToList() ?? [];
-                        var text = students.Count > 0 ? string.Join("、", students) : "无";
-                        return $"{x.Key}: {text}";
-                    })
-                    .ToList();
 
-                var summary = segments.Count > 0 ? string.Join("；", segments) : "无安排";
-                return new ScheduleRowItem
-                {
-                    Date = item.Date,
-                    Day = item.Day,
-                    AssignmentSummary = summary,
-                    Note = (item.Note ?? string.Empty).Trim()
-                };
-            })
-            .ToList();
+        var preview = _scheduleModule.BuildPreview(state);
 
-        ScheduleListBox.ItemsSource = rows;
+        ScheduleListBox.ItemsSource = preview.Rows;
         if (!string.IsNullOrWhiteSpace(previousSelectedDate))
         {
-            ScheduleListBox.SelectedItem = rows.LastOrDefault(x =>
+            ScheduleListBox.SelectedItem = preview.Rows.LastOrDefault(x =>
                 string.Equals(x.Date, previousSelectedDate, StringComparison.Ordinal));
         }
         _pendingScheduleSelectionDate = string.Empty;
 
         PopulateScheduleEditorFromSelection();
-        ScheduleSummaryText.Text = rows.Count == 0
-            ? "暂无排班数据。"
-            : $"共 {rows.Count} 条排班记录。";
-        ScheduleEmptyStatePanel.IsVisible = rows.Count == 0;
+        ScheduleSummaryText.Text = preview.Summary;
+        ScheduleEmptyStatePanel.IsVisible = preview.Rows.Count == 0;
     }
 
     private void OnScheduleSelectionChanged(object? sender, SelectionChangedEventArgs e)
@@ -692,7 +564,7 @@ public partial class DutyMainSettingsPage : SettingsPageBase
 
     private void OnSaveScheduleEditClick(object? sender, RoutedEventArgs e)
     {
-        if (ScheduleListBox.SelectedItem is not ScheduleRowItem selected)
+        if (ScheduleListBox.SelectedItem is not DutyScheduleRow selected)
         {
             SetStatus("请先选择要编辑的排班记录。", Brushes.Orange);
             return;
@@ -783,7 +655,7 @@ public partial class DutyMainSettingsPage : SettingsPageBase
         _isPopulatingEditor = true;
         try
         {
-            if (ScheduleListBox.SelectedItem is not ScheduleRowItem selected)
+            if (ScheduleListBox.SelectedItem is not DutyScheduleRow selected)
             {
                 SelectedScheduleMetaText.Text = "请先在上方列表选择一条排班记录。";
                 ScheduleDateEditorBox.Text = DateTime.Today.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
@@ -794,9 +666,8 @@ public partial class DutyMainSettingsPage : SettingsPageBase
                 return;
             }
 
-            var state = Service.LoadState();
-            var item = state.SchedulePool.LastOrDefault(x => string.Equals(x.Date, selected.Date, StringComparison.Ordinal));
-            if (item == null)
+            var editorData = _scheduleModule.GetEditorData(selected.Date);
+            if (!editorData.Exists)
             {
                 SelectedScheduleMetaText.Text = "当前记录不存在，可能已被刷新。";
                 ScheduleDateEditorBox.Text = string.Empty;
@@ -807,17 +678,15 @@ public partial class DutyMainSettingsPage : SettingsPageBase
                 return;
             }
 
-            var assignments = Service.GetAreaAssignments(item);
-            ScheduleDateEditorBox.Text = (item.Date ?? string.Empty).Trim();
-            ScheduleDayEditorComboBox.SelectedItem = ResolveScheduleDaySelection(item.Day, item.Date);
-            ScheduleAssignmentsEditorBox.Text = FormatAreaAssignmentsForEditor(assignments);
-            ScheduleNoteEditorBox.Text = (item.Note ?? string.Empty).Trim();
+            ScheduleDateEditorBox.Text = editorData.Date;
+            ScheduleDayEditorComboBox.SelectedItem = ResolveScheduleDaySelection(editorData.Day, editorData.Date);
+            ScheduleAssignmentsEditorBox.Text = FormatAreaAssignmentsForEditor(editorData.AreaAssignments);
+            ScheduleNoteEditorBox.Text = editorData.Note;
             SelectedScheduleMetaText.Text = $"当前编辑：{selected.Date} {selected.Day}";
             SaveScheduleEditBtn.IsEnabled = true;
         }
         finally
         {
-            _isEditorDirty = false;
             ScheduleListBox.IsEnabled = true;
             _isPopulatingEditor = false;
         }
@@ -836,26 +705,11 @@ public partial class DutyMainSettingsPage : SettingsPageBase
     private void HandleScheduleEditorChanged()
     {
         if (_isPopulatingEditor) return;
-        _isEditorDirty = true;
         ScheduleListBox.IsEnabled = false;
         SelectedScheduleMetaText.Text = "（您有未保存的修改。若想切换日期，请先保存或点击【重新载入】）";
     }
 
-    private static bool TryParseScheduleDate(string? rawDate, out DateTime date)
-    {
-        if (DateTime.TryParseExact(rawDate, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out date))
-        {
-            return true;
-        }
-
-        return DateTime.TryParse(rawDate, out date);
-    }
-
-    private static string FormatDutyDate(DateTime date)
-    {
-        return $"{date:yyyy-MM-dd} ({ToChineseWeekday(date.DayOfWeek)})";
-    }
-
+    // 保留：仍被 UI 排班编辑器（默认天数预填）特殊流程依赖
     private static string ToChineseWeekday(DayOfWeek dayOfWeek)
     {
         return dayOfWeek switch
@@ -894,6 +748,23 @@ public partial class DutyMainSettingsPage : SettingsPageBase
 
         value = min;
         return false;
+    }
+
+    private void OnNotificationDurationChanged(object? sender, Avalonia.Controls.Primitives.RangeBaseValueChangedEventArgs e)
+    {
+        if (_isLoadingConfig) return;
+        var val = (int)e.NewValue;
+        NotificationDurationLabel.Text = $"{val} \u79d2";
+        QueueConfigApply();
+    }
+
+    private void OnTestNotificationClicked(object? sender, RoutedEventArgs e)
+    {
+        var duration = (int)NotificationDurationSlider.Value;
+        NotificationService.Publish(
+            "\u6D4B\u8BD5\u901A\u77E5",
+            "\u6559\u5BA4\uFF1A\u5F20\u4E09\u3001\u674E\u56DB\uFF1B\u6E05\u6D01\u533A\uFF1A\u738B\u4E94\u3001\u8D75\u516D",
+            duration);
     }
 
     private string GetSelectedDutyReminderTime()
@@ -1017,6 +888,18 @@ public partial class DutyMainSettingsPage : SettingsPageBase
         }
 
         return true;
+    }
+
+    private string GetSelectedPromptMode()
+    {
+        return PromptModeComboBox.SelectedItem is ComboBoxItem { Tag: string tag } ? tag : "Regular";
+    }
+
+    private void SetPromptModeSelection(string mode)
+    {
+        var targetTag = (mode ?? "Regular").Trim();
+        var item = PromptModeComboBox.Items.Cast<ComboBoxItem>().FirstOrDefault(x => string.Equals(x.Tag as string, targetTag, StringComparison.OrdinalIgnoreCase));
+        PromptModeComboBox.SelectedItem = item ?? PromptModeComboBox.Items.Cast<ComboBoxItem>().First();
     }
 
     private string GetSelectedAutoRunTime()
@@ -1176,22 +1059,4 @@ public partial class DutyMainSettingsPage : SettingsPageBase
         StatusText.Foreground = brush;
     }
 
-    public sealed class RosterListItem
-    {
-        public int Id { get; init; }
-        public string Name { get; init; } = string.Empty;
-        public DateTime? NextDutyDate { get; init; }
-        public string NextDutyDisplay { get; init; } = "未安排";
-        public int DutyCount { get; init; }
-        public bool Active { get; init; }
-        public string ActiveDisplay { get; init; } = "启用";
-    }
-
-    public sealed class ScheduleRowItem
-    {
-        public string Date { get; init; } = string.Empty;
-        public string Day { get; init; } = string.Empty;
-        public string AssignmentSummary { get; init; } = "无安排";
-        public string Note { get; init; } = string.Empty;
-    }
 }

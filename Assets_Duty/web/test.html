@@ -742,20 +742,13 @@
       per_day: 2,
       duty_rule: '',
       component_refresh_time: '08:00',
-      area_names: ['教室', '清洁区'],
-      area_per_day_counts: { '教室': 2, '清洁区': 2 },
+      area_names: [],
+      area_per_day_counts: {},
       notification_templates: ['{scene}{status}，日期：{date}，区域：{areas}'],
       start_from_today: false
     };
 
-    const DEFAULT_ROSTER = [
-      { id: 101, name: '张三', active: true },
-      { id: 102, name: '李四', active: true },
-      { id: 103, name: '王五', active: true },
-      { id: 104, name: '赵六', active: true },
-      { id: 105, name: '孙七', active: false },
-      { id: 106, name: '周八', active: true }
-    ];
+    const DEFAULT_ROSTER = [];
 
     const DEFAULT_STATE = { seed_anchor: '', schedule_pool: [] };
     const DAY = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
@@ -829,7 +822,7 @@
         .replaceAll('"', '&quot;')
         .replaceAll("'", '&#39;');
     }
-    function list(input, fallback) {
+    function list(input, fallback, allowEmpty = false) {
       const seen = new Set();
       const out = [];
       if (Array.isArray(input)) {
@@ -840,9 +833,10 @@
           out.push(t);
         }
       }
-      return out.length ? out : clone(fallback);
+      if (out.length || allowEmpty) return out;
+      return clone(fallback);
     }
-    function names(v) { return list(v, []); }
+    function names(v) { return list(v, [], true); }
     function parseAreaCountsText(raw) {
       const out = {};
       for (const lineRaw of String(raw ?? '').split(/\r?\n/g)) {
@@ -892,22 +886,12 @@
       root.setAttribute('data-host-theme', String(payload.mode || 'light'));
     }
 
-    function toUniqueStudentName(baseName) {
-      const normalized = String(baseName ?? '').trim();
-      if (!normalized) return '';
 
-      const existing = new Set(store.roster.map((x) => String(x?.name ?? '').trim()).filter(Boolean));
-      if (!existing.has(normalized)) return normalized;
-
-      let suffix = 2;
-      while (existing.has(`${normalized}${suffix}`)) suffix += 1;
-      return `${normalized}${suffix}`;
-    }
 
     function normalizeConfig(input) {
       const raw = input && typeof input === 'object' ? input : {};
       const perDay = clamp(int(raw.per_day, DEFAULT_CONFIG.per_day), 1, 30);
-      const areaNames = list(raw.area_names, DEFAULT_CONFIG.area_names);
+      const areaNames = list(raw.area_names, DEFAULT_CONFIG.area_names, true);
       const areaCounts = normalizeAreaCounts(areaNames, raw.area_per_day_counts, perDay);
       return {
         python_path: String(raw.python_path ?? DEFAULT_CONFIG.python_path).trim() || DEFAULT_CONFIG.python_path,
@@ -962,11 +946,6 @@
       const cls = names(item.classroom_students);
       const cln = names(item.cleaning_area_students);
       const stu = names(item.students);
-      if (!Object.keys(map).length) {
-        if (cls.length) map['教室'] = cls;
-        if (cln.length) map['清洁区'] = cln;
-        if (!cls.length && !cln.length && stu.length) map['教室'] = stu;
-      }
       return {
         date: String(item.date ?? '').trim(),
         day: String(item.day ?? '').trim(),
@@ -995,14 +974,6 @@
       const ordered = {};
       for (const area of areaOrder) if (map[area]) ordered[area] = [...map[area]];
       for (const [k, v] of Object.entries(map)) if (!ordered[k]) ordered[k] = [...v];
-      if (!Object.keys(ordered).length) {
-        const cls = names(item?.classroom_students);
-        const cln = names(item?.cleaning_area_students);
-        const stu = names(item?.students);
-        if (cls.length) ordered['教室'] = cls;
-        if (cln.length) ordered['清洁区'] = cln;
-        if (!cls.length && !cln.length && stu.length) ordered[areaOrder[0] || '教室'] = stu;
-      }
       return ordered;
     }
 
@@ -1465,7 +1436,7 @@
 
     function runMockInternal(daysToGenerate, applyMode, instruction, detailText) {
       syncConfigFromForm();
-      const areas = list(store.config.area_names, DEFAULT_CONFIG.area_names);
+      const areas = list(store.config.area_names, DEFAULT_CONFIG.area_names, true);
       const per = clamp(int(store.config.per_day, 2), 1, 30);
       const areaCounts = normalizeAreaCounts(areas, store.config.area_per_day_counts, per);
       const totalPerDay = Object.values(areaCounts).reduce((sum, value) => sum + value, 0);
@@ -1866,18 +1837,22 @@
         log('ERROR', '新增学生失败：姓名为空。');
         return;
       }
-      const name = toUniqueStudentName(baseName);
+
+      const existing = store.roster.some((x) => String(x?.name ?? '').trim() === baseName);
+      if (existing) {
+        setStatus('err', `添加失败：检测到同名学生 "${baseName}"`);
+        log('ERROR', '添加学生失败：同名冲突。');
+        return;
+      }
+
       const nextId = store.roster.length ? Math.max(...store.roster.map((x) => x.id)) + 1 : 1;
-      store.roster.push({ id: nextId, name, active: true });
+      store.roster.push({ id: nextId, name: baseName, active: true });
       $('newStudent').value = '';
       selectedRosterId = nextId;
       renderRoster();
       applyRosterImmediate('add_student', { quiet: true });
-      const renamed = name !== baseName;
-      setStatus('ok', renamed
-        ? `检测到同名，已自动命名为：${name} (ID ${nextId})`
-        : `已添加学生：${name} (ID ${nextId})`);
-      log('OK', renamed ? '已添加学生（同名自动重命名）。' : '已添加学生。', { id: nextId, requested: baseName, final: name });
+      setStatus('ok', `已添加学生：${baseName} (ID ${nextId})`);
+      log('OK', '已添加学生。', { id: nextId, requested: baseName });
     }
 
     function delStudent() {
