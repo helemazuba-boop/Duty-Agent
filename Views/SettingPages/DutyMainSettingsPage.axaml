@@ -314,7 +314,7 @@
                     <ui:FontIconSource Glyph="&#xE8D2;" FontFamily="Segoe MDL2 Assets" />
                 </ui:SettingsExpander.IconSource>
                 <StackPanel Spacing="10" Margin="12,0,12,12">
-                        <Grid ColumnDefinitions="Auto,*" RowDefinitions="Auto,Auto,Auto" RowSpacing="12">
+                        <Grid ColumnDefinitions="Auto,*" RowDefinitions="Auto,Auto,Auto,Auto" RowSpacing="12">
                             <StackPanel Grid.Row="0" Grid.Column="0" VerticalAlignment="Center" Spacing="2" Margin="0,0,32,0">
                                 <TextBlock Text="API Key" FontSize="14" VerticalAlignment="Center"/>
                                 <TextBlock Text="用于访问大模型接口的鉴权密钥" FontSize="12" Opacity="0.55" VerticalAlignment="Center" />
@@ -328,10 +328,19 @@
                             <TextBox x:Name="ModelBox" Grid.Row="1" Grid.Column="1" VerticalAlignment="Center" Watermark="moonshotai/kimi-k2-thinking" LostFocus="OnConfigInputLostFocus" KeyDown="OnConfigInputKeyDown" />
 
                             <StackPanel Grid.Row="2" Grid.Column="0" VerticalAlignment="Center" Spacing="2" Margin="0,0,32,0">
+                                <TextBlock Text="提示词分支" FontSize="14" VerticalAlignment="Center"/>
+                                <TextBlock Text="大模型推荐常规，本地小尺寸模式选增量" FontSize="12" Opacity="0.55" VerticalAlignment="Center" />
+                            </StackPanel>
+                            <ComboBox x:Name="PromptModeComboBox" Grid.Row="2" Grid.Column="1" HorizontalAlignment="Stretch" VerticalAlignment="Center" SelectionChanged="OnConfigSelectionChanged">
+                                <ComboBoxItem Content="常规 (高智商大模型)" Tag="Regular" />
+                                <ComboBoxItem Content="增量 (本地小尺寸模型)" Tag="Incremental" />
+                            </ComboBox>
+
+                            <StackPanel Grid.Row="3" Grid.Column="0" VerticalAlignment="Center" Spacing="2" Margin="0,0,32,0">
                                 <TextBlock Text="Base URL" FontSize="14" VerticalAlignment="Center"/>
                                 <TextBlock Text="提供与 OpenAI 兼容格式的转发层地址" FontSize="12" Opacity="0.55" VerticalAlignment="Center" />
                             </StackPanel>
-                            <TextBox x:Name="BaseUrlBox" Grid.Row="2" Grid.Column="1" VerticalAlignment="Center" Watermark="https://integrate.api.nvidia.com/v1" LostFocus="OnConfigInputLostFocus" KeyDown="OnConfigInputKeyDown" />
+                            <TextBox x:Name="BaseUrlBox" Grid.Row="3" Grid.Column="1" VerticalAlignment="Center" Watermark="https://integrate.api.nvidia.com/v1" LostFocus="OnConfigInputLostFocus" KeyDown="OnConfigInputKeyDown" />
                         </Grid>
                     </StackPanel>
             </ui:SettingsExpander>

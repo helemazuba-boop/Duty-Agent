@@ -288,13 +288,43 @@ def build_prompt_messages(
     debt_list: List[int],
     credit_list: List[int],
     previous_context: str = "",
+    prompt_mode: str = "Regular",
 ) -> List[dict]:
-    """Build the 3-part prompt messages for the LLM."""
+    """Build the prompt messages for the LLM based on mode."""
+
+    if prompt_mode.lower() == "incremental":
+        # Ultra-simplified prompt for local light models
+        system_content = f"""# Role
+You are the Duty-Agent. Your task is to generate a basic duty schedule.
+
+# Output Schema (Strict JSON)
+```json
+{{
+  "schedule": [
+    {{
+      "date": "YYYY-MM-DD",
+      "area_ids": {{ "区域名称": "逗号分隔的ID" }},
+      "note": "简短备注"
+    }}
+  ]
+}}
+```
+"""
+        user_parts = [
+            f"All Roster IDs: {','.join(map(str, all_ids))}",
+            f"Current Time: {current_time}",
+            f'Instruction: "{instruction}"'
+        ]
+        return [
+            {"role": "system", "content": system_content},
+            {"role": "user", "content": "\n".join(user_parts)},
+        ]
+
 
     if area_names:
-        area_schema_items = [f'{json.dumps(name)}: [101, 102]' for name in area_names]
+        area_schema_items = [f'{json.dumps(name)}: "101,102"' for name in area_names]
     else:
-        area_schema_items = ['"<dynamic_area_name>": [101, 102]']
+        area_schema_items = ['"<dynamic_area_name>": "101,102"']
     area_schema = ", ".join(area_schema_items)
 
     inactive_ids = [pid for pid, active in id_to_active.items() if active == 0]
@@ -345,15 +375,15 @@ For each scheduling request, perform these steps in your `thinking_trace`:
       "note": "Brief reason (e.g., 'Backfilled ID 6')"
     }}
   ],
-  "next_run_note": "CRITICAL: Scheduled Tuesday and Wednesday. The last ID assigned was 16. Current Debt: [12]. Current Credit: [5].",
-  "new_debt_ids": [12],
-  "new_credit_ids": [5]
+  "next_run_note": "CRITICAL: Scheduled Tuesday and Wednesday. The last ID assigned was 16. Current Debt: 12. Current Credit: 5.",
+  "new_debt_ids": "12",
+  "new_credit_ids": "5"
 }}
 ```
 **Important**:
 1. The `next_run_note` is your "Memory" for the next time you run. You MUST strictly record the LAST DATE generated, the LAST ID assigned, and any remaining Debt/Credit List here.
-2. `new_debt_ids`: If you added anyone to the Debt Queue (or if anyone remains in it), output their IDs here.
-3. `new_credit_ids`: If anyone remains in the Credit Queue after this run (i.e. their immunity was NOT consumed), output their IDs here. If a credit was consumed, remove them from this list.
+2. `new_debt_ids`: If you added anyone to the Debt Queue (or if anyone remains in it), output their IDs here as a comma-separated string.
+3. `new_credit_ids`: If anyone remains in the Credit Queue after this run (i.e. their immunity was NOT consumed), output their IDs here as a comma-separated string. If a credit was consumed, remove them from this list.
 """
 
     duty_rule = (duty_rule or "").strip()
@@ -361,18 +391,18 @@ For each scheduling request, perform these steps in your `thinking_trace`:
         system_content += f"\n\n--- User Defined Rules ---\n{duty_rule}"
 
     user_parts = [
-        f"All Roster IDs: {all_ids}",
-        f"Inactive IDs (DO NOT SCHEDULE): {inactive_ids}",
+        f"All Roster IDs: {','.join(map(str, all_ids))}",
+        f"Inactive IDs (DO NOT SCHEDULE): {','.join(map(str, inactive_ids))}",
     ]
 
     if previous_context:
         user_parts.append(f"PREVIOUS RUN MEMORY (IMPORTANT): {previous_context}")
 
     if debt_list:
-        user_parts.append(f"CURRENT DEBT LIST (PRIORITY HIGH): {debt_list}. You MUST schedule these IDs first.")
+        user_parts.append(f"CURRENT DEBT LIST (PRIORITY HIGH): {','.join(map(str, debt_list))}. You MUST schedule these IDs first.")
 
     if credit_list:
-        user_parts.append(f"CURRENT CREDIT LIST (IMMUNITY): {credit_list}. When you naturally reach these IDs, SKIP them once (free pass) and remove from Credit.")
+        user_parts.append(f"CURRENT CREDIT LIST (IMMUNITY): {','.join(map(str, credit_list))}. When you naturally reach these IDs, SKIP them once (free pass) and remove from Credit.")
 
     user_parts.append(f"Current Time: {current_time}")
 
@@ -835,11 +865,20 @@ def call_llm(
 
 
 def extract_ids_from_value(value, active_set: set, limit: Optional[int] = None) -> List[int]:
-    if not isinstance(value, list):
+    if isinstance(value, str):
+        value = value.strip(" []")
+        if not value:
+            return []
+        items = [part.strip() for part in value.split(",")]
+    elif isinstance(value, list):
+        items = value
+    elif isinstance(value, (int, float)):
+        items = [value]
+    else:
         return []
 
     result: List[int] = []
-    for raw in value:
+    for raw in items:
         try:
             pid = int(raw)
         except Exception:
@@ -1135,6 +1174,7 @@ def main():
         )
         duty_rule = str(input_data.get("duty_rule", ctx.config.get("duty_rule", ""))).strip()
         apply_mode = str(input_data.get("apply_mode", "append")).strip().lower()
+        prompt_mode = str(input_data.get("prompt_mode", "Regular")).strip()
         existing_notes = input_data.get("existing_notes", {})
         if not isinstance(existing_notes, dict):
             existing_notes = {}
@@ -1170,6 +1210,7 @@ def main():
             previous_context=previous_context,
             debt_list=debt_list,
             credit_list=credit_list,
+            prompt_mode=prompt_mode,
         )
 
         llm_result, llm_response_text = call_llm(

@@ -7,6 +7,7 @@ internal sealed class DutySettingsFormModel
     public string ApiKeyMask { get; init; } = string.Empty;
     public string BaseUrl { get; init; } = string.Empty;
     public string Model { get; init; } = string.Empty;
+    public string PromptMode { get; init; } = "Regular";
     public string AutoRunMode { get; init; } = "Off";
     public string AutoRunParameter { get; init; } = "Monday";
     public string AutoRunTime { get; init; } = "08:00";
@@ -25,6 +26,7 @@ internal sealed class DutySettingsApplyRequest
     public string? ApiKeyInput { get; init; }
     public string? BaseUrl { get; init; }
     public string? Model { get; init; }
+    public string PromptMode { get; init; } = "Regular";
     public string AutoRunMode { get; init; } = "Off";
     public string AutoRunParameter { get; init; } = "Monday";
     public string AutoRunTime { get; init; } = "08:00";

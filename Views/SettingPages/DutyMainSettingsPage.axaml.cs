@@ -472,6 +472,7 @@ public partial class DutyMainSettingsPage : SettingsPageBase
             ApiKeyBox.Text = formModel.ApiKeyMask;
             BaseUrlBox.Text = formModel.BaseUrl;
             ModelBox.Text = formModel.Model;
+            SetPromptModeSelection(formModel.PromptMode);
             SetAutoRunModeSelection(formModel.AutoRunMode);
             SetAutoRunParameterSelection(formModel.AutoRunMode, formModel.AutoRunParameter);
             SetAutoRunTimeSelection(formModel.AutoRunTime);
@@ -887,6 +888,18 @@ public partial class DutyMainSettingsPage : SettingsPageBase
         }
 
         return true;
+    }
+
+    private string GetSelectedPromptMode()
+    {
+        return PromptModeComboBox.SelectedItem is ComboBoxItem { Tag: string tag } ? tag : "Regular";
+    }
+
+    private void SetPromptModeSelection(string mode)
+    {
+        var targetTag = (mode ?? "Regular").Trim();
+        var item = PromptModeComboBox.Items.Cast<ComboBoxItem>().FirstOrDefault(x => string.Equals(x.Tag as string, targetTag, StringComparison.OrdinalIgnoreCase));
+        PromptModeComboBox.SelectedItem = item ?? PromptModeComboBox.Items.Cast<ComboBoxItem>().First();
     }
 
     private string GetSelectedAutoRunTime()

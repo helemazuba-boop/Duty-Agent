@@ -21,6 +21,7 @@ internal sealed class DutyMainSettingsConfigModule
             ApiKeyMask = _service.GetApiKeyMaskForUi(),
             BaseUrl = config.BaseUrl,
             Model = config.Model,
+            PromptMode = config.PromptMode,
             AutoRunMode = config.AutoRunMode,
             AutoRunParameter = config.AutoRunParameter,
             AutoRunTime = config.AutoRunTime,
@@ -49,6 +50,7 @@ internal sealed class DutyMainSettingsConfigModule
         current.DecryptedApiKey = resolvedApiKey;
         current.BaseUrl = request.BaseUrl?.Trim() ?? string.Empty;
         current.Model = request.Model?.Trim() ?? string.Empty;
+        current.PromptMode = request.PromptMode;
         current.AutoRunMode = DutyBackendService.NormalizeAutoRunMode(request.AutoRunMode);
         current.AutoRunParameter = (request.AutoRunParameter ?? current.AutoRunParameter).Trim();
         current.AutoRunTime = DutyBackendService.NormalizeTimeOrThrow(request.AutoRunTime);

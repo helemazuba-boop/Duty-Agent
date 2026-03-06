@@ -60,6 +60,10 @@ public partial class DutyConfig : ObservableObject
     private string _model = "moonshotai/kimi-k2-thinking";
 
     [ObservableProperty]
+    [property: JsonPropertyName("prompt_mode")]
+    private string _promptMode = "Regular";
+
+    [ObservableProperty]
     [property: JsonPropertyName("auto_run_mode")]
     private string _autoRunMode = "Off";
 

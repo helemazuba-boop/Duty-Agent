@@ -231,6 +231,7 @@ public class DutyBackendService : IDisposable
             per_day = Config.PerDay,
             duty_rule = Config.DutyRule,
             base_url = Config.BaseUrl,
+            prompt_mode = Config.PromptMode,
             model = overrideModel ?? Config.Model
         };
         File.WriteAllText(inputPath, JsonSerializer.Serialize(inputData), Utf8NoBom);
