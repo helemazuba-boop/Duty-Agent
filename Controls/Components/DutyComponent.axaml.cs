@@ -14,7 +14,7 @@ namespace DutyAgent.Controls.Components;
 public partial class DutyComponent : ComponentBase<DutyComponentSettings>
 {
     private readonly DispatcherTimer _timer;
-    private readonly DutyBackendService _service = IAppHost.GetService<DutyBackendService>();
+    private readonly DutyScheduleOrchestrator _service = IAppHost.GetService<DutyScheduleOrchestrator>();
 
     public DutyComponent()
     {

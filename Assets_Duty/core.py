@@ -11,8 +11,13 @@ import socket
 import sys
 import time
 import traceback
+import io
 import urllib.error
 import urllib.request
+from http.server import BaseHTTPRequestHandler, HTTPServer
+import threading
+from prompt_config import PROMPTS
+from build_prompt import build_prompt_messages
 from datetime import datetime, timedelta, date
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
@@ -290,130 +295,20 @@ def build_prompt_messages(
     previous_context: str = "",
     prompt_mode: str = "Regular",
 ) -> List[dict]:
-    """Build the prompt messages for the LLM based on mode."""
-
-    if prompt_mode.lower() == "incremental":
-        # Ultra-simplified prompt for local light models
-        system_content = f"""# Role
-You are the Duty-Agent. Your task is to generate a basic duty schedule.
-
-# Output Schema (Strict JSON)
-```json
-{{
-  "schedule": [
-    {{
-      "date": "YYYY-MM-DD",
-      "area_ids": {{ "区域名称": "逗号分隔的ID" }},
-      "note": "简短备注"
-    }}
-  ]
-}}
-```
-"""
-        user_parts = [
-            f"All Roster IDs: {','.join(map(str, all_ids))}",
-            f"Current Time: {current_time}",
-            f'Instruction: "{instruction}"'
-        ]
-        return [
-            {"role": "system", "content": system_content},
-            {"role": "user", "content": "\n".join(user_parts)},
-        ]
-
-
-    if area_names:
-        area_schema_items = [f'{json.dumps(name)}: "101,102"' for name in area_names]
-    else:
-        area_schema_items = ['"<dynamic_area_name>": "101,102"']
-    area_schema = ", ".join(area_schema_items)
-
-    inactive_ids = [pid for pid, active in id_to_active.items() if active == 0]
-
-    system_content = f"""# Role
-You are the Duty-Agent, an intelligent scheduling assistant.
-Your goal is to generate a schedule that balances **Hard Constraints** (Sick leave, Inactive status), **Soft Constraints** (Team training), and **Fairness** (Debt repayment).
-
-# Input Context
-- You will be given the entire Roster IDs.
-- You must dynamically decide the Schedule Dates and the Scheduling Pointer order purely based on the **User Instruction** and the **PREVIOUS RUN MEMORY**.
-
-# The "Three-Queue" Protocol
-1. **Debt Queue**: Stores IDs who owe duty. These MUST be cleared first (Backfill).
-2. **Credit Queue**: Stores IDs who did extra volunteer work. When you naturally reach them in your scheduling order, SKIP them once and remove from Credit. They earned immunity.
-3. **Inactive IDs**: Students who are currently suspended or unavailable. DO NOT SCHEDULE THEM unless explicitly requested.
-
-# The "Patch" Principle (CRITICAL)
-Your output acts as a JSON PATCH to an existing live scheduling database.
-1. ONLY generate schedule entries for the specific dates requested by the User Instruction.
-2. OVER-GENERATION IS FATAL. If the user asks for 2 days, strictly output 2 days.
-3. When in doubt, generate FEWER days rather than more.
-
-# Process (Chain of Thought)
-For each scheduling request, perform these steps in your `thinking_trace`:
-0. **Intent Parsing**: Count exactly how many days are requested. List target dates.
-1. **Context Deduce**: Read PREVIOUS RUN MEMORY. Decide which date comes next and whose turn it is next.
-2. **Check Debt**: Is anyone in `Debt Queue` available today?
-   - YES: Schedule them first.
-3. **Regular Roster**: Pick the next IDs in sequence.
-   - If New ID is in `Credit Queue` -> SKIP them (immunity), allocate to next person.
-   - If New ID is Sick/Inactive -> Skip permanently.
-4. **Final Check**: Verify schedule array length matches requested day count.
-
-# Output Schema (Strict JSON)
-```json
-{{
-  "thinking_trace": {{
-    "intent_parsing": "User requested Thursday and Friday. Target day count: 2. I will generate exactly 2 entries.",
-    "context_deduce": "Last scheduled date was Monday. I will generate for Tue and Wed. Last assigned ID was 12, so I start from 13.",
-    "step_3_action": "Scheduled 13. 14 is Inactive, skipped. 15 is in Credit Queue, skipped and immunity consumed.",
-    "final_check": "Output has 2 entries. Safe to submit."
-  }},
-  "schedule": [
-    {{
-      "date": "YYYY-MM-DD",
-      "area_ids": {{ {area_schema} }},
-      "note": "Brief reason (e.g., 'Backfilled ID 6')"
-    }}
-  ],
-  "next_run_note": "CRITICAL: Scheduled Tuesday and Wednesday. The last ID assigned was 16. Current Debt: 12. Current Credit: 5.",
-  "new_debt_ids": "12",
-  "new_credit_ids": "5"
-}}
-```
-**Important**:
-1. The `next_run_note` is your "Memory" for the next time you run. You MUST strictly record the LAST DATE generated, the LAST ID assigned, and any remaining Debt/Credit List here.
-2. `new_debt_ids`: If you added anyone to the Debt Queue (or if anyone remains in it), output their IDs here as a comma-separated string.
-3. `new_credit_ids`: If anyone remains in the Credit Queue after this run (i.e. their immunity was NOT consumed), output their IDs here as a comma-separated string. If a credit was consumed, remove them from this list.
-"""
-
-    duty_rule = (duty_rule or "").strip()
-    if duty_rule:
-        system_content += f"\n\n--- User Defined Rules ---\n{duty_rule}"
-
-    user_parts = [
-        f"All Roster IDs: {','.join(map(str, all_ids))}",
-        f"Inactive IDs (DO NOT SCHEDULE): {','.join(map(str, inactive_ids))}",
-    ]
-
-    if previous_context:
-        user_parts.append(f"PREVIOUS RUN MEMORY (IMPORTANT): {previous_context}")
-
-    if debt_list:
-        user_parts.append(f"CURRENT DEBT LIST (PRIORITY HIGH): {','.join(map(str, debt_list))}. You MUST schedule these IDs first.")
-
-    if credit_list:
-        user_parts.append(f"CURRENT CREDIT LIST (IMMUNITY): {','.join(map(str, credit_list))}. When you naturally reach these IDs, SKIP them once (free pass) and remove from Credit.")
-
-    user_parts.append(f"Current Time: {current_time}")
-
-    user_parts.append(f'Instruction: "{instruction}"')
-    
-    user_prompt = "\n".join(user_parts)
-
-    return [
-        {"role": "system", "content": system_content},
-        {"role": "user", "content": user_prompt},
-    ]
+    # implementation moved to build_prompt.py
+    from build_prompt import build_prompt_messages as rpm
+    return rpm(
+        all_ids=all_ids,
+        current_time=current_time,
+        id_to_active=id_to_active,
+        instruction=instruction,
+        duty_rule=duty_rule,
+        area_names=area_names,
+        debt_list=debt_list,
+        credit_list=credit_list,
+        previous_context=previous_context,
+        prompt_mode=prompt_mode
+    )
 
 
 def recover_missing_debts(
@@ -831,37 +726,84 @@ def call_llm(
     if not content.strip():
         raise RuntimeError("LLM returned empty content.")
 
-    # Parse JSON with application-level retry (re-call LLM on format hallucination)
-    last_parse_error: Optional[Exception] = None
+    # Parse XML/CSV with application-level retry (re-call LLM on format hallucination)
+    last_parse_error: Optional[BaseException] = None
     original_msg_count = len(payload["messages"])
     for parse_attempt in range(LLM_PARSE_MAX_RETRIES + 1):
         try:
-            parsed = json.loads(clean_json_response(content))
+            # 1. Apply RESET logic to handle mid-generation corrections
+            if "RESET" in content:
+                content = content.split("RESET")[-1].strip()
+            
+            # 2. Extract <csv>
+            csv_match = re.search(r'<csv>(.*?)</csv>', content, re.DOTALL)
+            if not csv_match:
+                raise ValueError("LLM returned malformed structure: missing <csv> tags.")
+            csv_text = csv_match.group(1).strip()
+            
+            # 3. Parse CSV to list of dicts
+            schedule_raw = []
+            if csv_text:
+                reader = csv.DictReader(io.StringIO(csv_text))
+                for row in reader:
+                    date_str = str(row.get("Date", "")).strip()
+                    assigned_ids = str(row.get("Assigned_IDs", "")).strip()
+                    note = str(row.get("Note", "")).strip()
+                    if date_str and assigned_ids:
+                        schedule_raw.append({
+                            "date": date_str,
+                            "area_ids": {"默认区域": assigned_ids},
+                            "note": note
+                        })
+            
+            # 4. Extract State Tags
+            next_run_note = ""
+            nrn_match = re.search(r'<next_run_note>(.*?)</next_run_note>', content, re.DOTALL)
+            if nrn_match:
+                next_run_note = nrn_match.group(1).strip()
+                
+            new_debt_ids = ""
+            nd_match = re.search(r'<new_debt_ids>(.*?)</new_debt_ids>', content, re.DOTALL)
+            if nd_match:
+                new_debt_ids = nd_match.group(1).strip()
+                
+            new_credit_ids = ""
+            nc_match = re.search(r'<new_credit_ids>(.*?)</new_credit_ids>', content, re.DOTALL)
+            if nc_match:
+                new_credit_ids = nc_match.group(1).strip()
+            
+            parsed = {
+                "schedule": schedule_raw,
+                "next_run_note": next_run_note,
+                "new_debt_ids": new_debt_ids,
+                "new_credit_ids": new_credit_ids
+            }
             return parsed, content
-        except json.JSONDecodeError as je:
-            last_parse_error = je
+            
+        except Exception as e:
+            last_parse_error = e
             if parse_attempt < LLM_PARSE_MAX_RETRIES:
                 invoke_progress_callback(
                     progress_callback,
                     "parse_retry",
-                    f"AI output JSON format error, retrying ({parse_attempt + 1}/{LLM_PARSE_MAX_RETRIES})...",
+                    f"AI output format error, retrying ({parse_attempt + 1}/{LLM_PARSE_MAX_RETRIES})...",
                 )
                 
-                # Revert to the original message count to prevent context bloat
+                # Revert context bloat
                 del payload["messages"][original_msg_count:]
                 
                 # Append failed output + error context so the LLM can self-correct
                 payload["messages"].append({"role": "assistant", "content": content})
                 payload["messages"].append({
                     "role": "user",
-                    "content": f"你的上一次输出无法解析为JSON。报错信息：{str(je)}。请检查是否遗漏了逗号或括号，纠正格式并重新输出。严格要求只输出合法的JSON格式。"
+                    "content": f"你的上一次输出无法解析为规范数据。报错信息：{str(e)}。请检查是否遗漏了<csv>标签，确保严格输出。"
                 })
                 # Re-call LLM to get a corrected response
                 content = execute_with_retries(
                     lambda: request_llm_non_stream(url, payload, api_key),
                     mode="non_stream",
                 )
-    raise RuntimeError(f"LLM returned malformed JSON after {LLM_PARSE_MAX_RETRIES + 1} attempts: {last_parse_error}") from last_parse_error
+    raise RuntimeError(f"LLM returned malformed XML/CSV after {LLM_PARSE_MAX_RETRIES + 1} attempts: {last_parse_error}") from last_parse_error
 
 
 def extract_ids_from_value(value, active_set: set, limit: Optional[int] = None) -> List[int]:
@@ -1117,17 +1059,11 @@ def merge_input_config(input_data: dict) -> dict:
     return input_data
 
 
-def main():
-    parser = argparse.ArgumentParser(description="Duty-Agent Core")
-    parser.add_argument("--data-dir", type=str, default="data")
-    args = parser.parse_args()
 
-    data_dir = Path(args.data_dir).resolve()
-    data_dir.mkdir(parents=True, exist_ok=True)
-    ctx = Context(data_dir)
+def run_duty_agent(ctx, input_data, emit_progress_fn=None):
     state_lock_path = ctx.paths["state"].with_suffix(ctx.paths["state"].suffix + ".lock")
     state_lock_acquired = False
-
+    
     try:
         run_now = datetime.now()
         ctx.config = load_config(ctx)
@@ -1135,11 +1071,6 @@ def main():
         acquire_state_file_lock(state_lock_path)
         state_lock_acquired = True
         state_data = load_state(ctx.paths["state"])
-
-        input_data = {}
-        if ctx.paths["input"].exists():
-            with open(ctx.paths["input"], "r", encoding="utf-8-sig") as f:
-                input_data = json.load(f)
 
         input_data = merge_input_config(input_data)
 
@@ -1216,7 +1147,7 @@ def main():
         llm_result, llm_response_text = call_llm(
             messages,
             ctx.config,
-            progress_callback=emit_progress_line,
+            progress_callback=emit_progress_fn if emit_progress_fn else emit_progress_line,
         )
         schedule_raw = llm_result.get("schedule", [])
         validate_llm_schedule_entries(schedule_raw)
@@ -1264,20 +1195,18 @@ def main():
         state_data["schedule_pool"] = merge_schedule_pool(state_data, restored, apply_mode, start_date)
 
         save_json_atomic(ctx.paths["state"], state_data)
-        write_result(
-            ctx.paths["result"],
-            "success",
-            extra={
-                "ai_response": (llm_response_text or "")[:AI_RESPONSE_MAX_CHARS],
-            },
-        )
+        
+        return {
+            "status": "success",
+            "message": "",
+            "ai_response": (llm_response_text or "")[:AI_RESPONSE_MAX_CHARS]
+        }
     except Exception as ex:
         traceback.print_exc()
-        try:
-            write_result(ctx.paths["result"], "error", str(ex))
-        except Exception:
-            pass
-        sys.exit(1)
+        return {
+            "status": "error",
+            "message": str(ex)
+        }
     finally:
         if state_lock_acquired:
             try:
@@ -1285,6 +1214,101 @@ def main():
             except Exception:
                 pass
 
+class ServerHandler(BaseHTTPRequestHandler):
+    data_dir = None
+    
+    def log_message(self, format, *args):
+        pass
+
+    def do_POST(self):
+        if self.path == '/schedule':
+            content_length = int(self.headers.get('Content-Length', 0))
+            if content_length > 0:
+                body = self.rfile.read(content_length).decode('utf-8')
+                try:
+                    input_data = json.loads(body)
+                except:
+                    input_data = {}
+            else:
+                input_data = {}
+            
+            ctx = Context(self.data_dir)
+            
+            self.send_response(200)
+            self.send_header('Content-Type', 'text/event-stream; charset=utf-8')
+            self.send_header('Cache-Control', 'no-cache')
+            self.send_header('Connection', 'close')
+            self.end_headers()
+            
+            def sse_progress(phase, message, stream_chunk=None):
+                event_data = {
+                    "phase": phase,
+                    "message": message
+                }
+                if stream_chunk:
+                    event_data["stream_chunk"] = stream_chunk
+                
+                payload = json.dumps(event_data, ensure_ascii=False)
+                try:
+                    self.wfile.write(f"data: {payload}\n\n".encode('utf-8'))
+                    self.wfile.flush()
+                except Exception:
+                    pass
+            
+            result = run_duty_agent(ctx, input_data, sse_progress)
+            
+            try:
+                final_payload = json.dumps(result, ensure_ascii=False)
+                self.wfile.write(f"event: complete\ndata: {final_payload}\n\n".encode('utf-8'))
+                self.wfile.flush()
+            except Exception:
+                pass
+                
+        elif self.path == '/shutdown':
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json; charset=utf-8')
+            self.end_headers()
+            self.wfile.write(b'{"status":"shutting down"}')
+            self.wfile.flush()
+            threading.Thread(target=self.server.shutdown, daemon=True).start()
+        else:
+            self.send_response(404)
+            self.end_headers()
+
+def main():
+    parser = argparse.ArgumentParser(description="Duty-Agent Core")
+    parser.add_argument("--data-dir", type=str, default="data")
+    parser.add_argument("--server", action="store_true", help="Run in HTTP server mode")
+    parser.add_argument("--port", type=int, default=0, help="Port to listen on (0 for random)")
+    args = parser.parse_args()
+
+    data_dir = Path(args.data_dir).resolve()
+    data_dir.mkdir(parents=True, exist_ok=True)
+    
+    if args.server:
+        ServerHandler.data_dir = data_dir
+        httpd = HTTPServer(('127.0.0.1', args.port), ServerHandler)
+        print(f"__DUTY_SERVER_PORT__:{httpd.server_port}", flush=True)
+        httpd.serve_forever()
+    else:
+        ctx = Context(data_dir)
+        input_data = {}
+        if ctx.paths["input"].exists():
+            with open(ctx.paths["input"], "r", encoding="utf-8-sig") as f:
+                input_data = json.load(f)
+                
+        result = run_duty_agent(ctx, input_data)
+        
+        extra = {}
+        if "ai_response" in result:
+            extra["ai_response"] = result["ai_response"]
+        
+        write_result(
+            ctx.paths["result"],
+            result["status"],
+            result["message"],
+            extra=extra
+        )
 
 if __name__ == "__main__":
     main()

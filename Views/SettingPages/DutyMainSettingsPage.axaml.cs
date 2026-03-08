@@ -20,7 +20,7 @@ namespace DutyAgent.Views.SettingPages;
 [SettingsPageInfo("duty-agent.settings", "Duty-Agent", "\uE31E", "\uE31E")]
 public partial class DutyMainSettingsPage : SettingsPageBase
 {
-    private DutyBackendService Service { get; } = IAppHost.GetService<DutyBackendService>();
+    private DutyScheduleOrchestrator Service { get; } = IAppHost.GetService<DutyScheduleOrchestrator>();
     private DutyNotificationService NotificationService { get; } = IAppHost.GetService<DutyNotificationService>();
     private readonly DutyMainSettingsConfigModule _configModule;
     private readonly DutyMainSettingsRosterModule _rosterModule;

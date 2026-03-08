@@ -21,7 +21,10 @@ public class Plugin : PluginBase
 
     public override void Initialize(HostBuilderContext context, IServiceCollection services)
     {
-        services.AddSingleton<DutyBackendService>();
+        services.AddSingleton<IConfigManager, DutyConfigManager>();
+        services.AddSingleton<IStateAndRosterManager, DutyStateManager>();
+        services.AddSingleton<IPythonIpcService, DutyPythonIpcService>();
+        services.AddSingleton<DutyScheduleOrchestrator>();
         services.AddSingleton<DutyNotificationService>();
         services.AddComponent<DutyComponent, DutyComponentSettingsControl>();
         services.AddNotificationProvider<DutyNotificationProvider>();

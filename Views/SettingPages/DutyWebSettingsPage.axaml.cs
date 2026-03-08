@@ -29,7 +29,7 @@ public partial class DutyWebSettingsPage : SettingsPageBase
         PropertyNameCaseInsensitive = true
     };
 
-    private readonly DutyBackendService _backendService;
+    private readonly DutyScheduleOrchestrator _backendService;
     private readonly DutyNotificationService _notificationService;
     private readonly DutyLocalPreviewHostedService _localPreviewHostedService;
     private readonly DutyWebViewHost _webViewHost;
@@ -37,14 +37,14 @@ public partial class DutyWebSettingsPage : SettingsPageBase
 
     public DutyWebSettingsPage()
         : this(
-            IAppHost.GetService<DutyBackendService>(),
+            IAppHost.GetService<DutyScheduleOrchestrator>(),
             IAppHost.GetService<DutyNotificationService>(),
             IAppHost.GetService<DutyLocalPreviewHostedService>())
     {
     }
 
     public DutyWebSettingsPage(
-        DutyBackendService backendService,
+        DutyScheduleOrchestrator backendService,
         DutyNotificationService notificationService,
         DutyLocalPreviewHostedService localPreviewHostedService)
     {
@@ -453,7 +453,7 @@ public partial class DutyWebSettingsPage : SettingsPageBase
         _backendService.LoadConfig();
         var current = _backendService.Config;
 
-        var apiKey = DutyBackendService.ResolveApiKeyInput(config.ApiKey, current.DecryptedApiKey);
+        var apiKey = DutyScheduleOrchestrator.ResolveApiKeyInput(config.ApiKey, current.DecryptedApiKey);
         var baseUrl = config.BaseUrl ?? current.BaseUrl;
         var model = config.Model ?? current.Model;
         var autoRunMode = config.AutoRunMode ?? current.AutoRunMode;
@@ -473,12 +473,12 @@ public partial class DutyWebSettingsPage : SettingsPageBase
         current.DecryptedApiKey = apiKey;
         current.BaseUrl = baseUrl;
         current.Model = model;
-        current.AutoRunMode = DutyBackendService.NormalizeAutoRunMode(autoRunMode);
+        current.AutoRunMode = DutyScheduleOrchestrator.NormalizeAutoRunMode(autoRunMode);
         current.AutoRunParameter = (autoRunParameter ?? current.AutoRunParameter).Trim();
-        current.AutoRunTime = DutyBackendService.NormalizeTimeOrThrow(autoRunTime);
+        current.AutoRunTime = DutyScheduleOrchestrator.NormalizeTimeOrThrow(autoRunTime);
         current.PerDay = Math.Clamp(perDay, 1, 30);
         current.DutyRule = dutyRule;
-        current.ComponentRefreshTime = DutyBackendService.NormalizeTimeOrThrow(componentRefreshTime);
+        current.ComponentRefreshTime = DutyScheduleOrchestrator.NormalizeTimeOrThrow(componentRefreshTime);
         current.DutyReminderEnabled = dutyReminderEnabled;
         current.DutyReminderTimes = dutyReminderTimes;
         current.EnableMcp = enableMcp;

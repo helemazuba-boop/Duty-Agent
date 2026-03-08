@@ -5,9 +5,9 @@ namespace DutyAgent.Views.SettingPages.Modules;
 
 internal sealed class DutyMainSettingsScheduleModule
 {
-    private readonly DutyBackendService _service;
+    private readonly DutyScheduleOrchestrator _service;
 
-    public DutyMainSettingsScheduleModule(DutyBackendService service)
+    public DutyMainSettingsScheduleModule(DutyScheduleOrchestrator service)
     {
         _service = service;
     }
@@ -24,7 +24,7 @@ internal sealed class DutyMainSettingsScheduleModule
                     .Select(x =>
                     {
                         var students = x.Value?.Where(n => !string.IsNullOrWhiteSpace(n)).ToList() ?? [];
-                        var text = students.Count > 0 ? string.Join("、", students) : "无";
+                        var text = students.Count > 0 ? string.Join("、", students) : "休";
                         return $"{x.Key}: {text}";
                     })
                     .ToList();

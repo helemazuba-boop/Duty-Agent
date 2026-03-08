@@ -22,7 +22,7 @@ public sealed class DutyLocalPreviewHostedService : IHostedService, IDisposable
         WriteIndented = true
     };
 
-    private readonly DutyBackendService _backendService;
+    private readonly DutyScheduleOrchestrator _backendService;
     private readonly string _testFilePath;
     private HttpListener? _listener;
     private CancellationTokenSource? _cts;
@@ -57,7 +57,7 @@ public sealed class DutyLocalPreviewHostedService : IHostedService, IDisposable
         }
     }
 
-    public DutyLocalPreviewHostedService(DutyBackendService backendService)
+    public DutyLocalPreviewHostedService(DutyScheduleOrchestrator backendService)
     {
         _backendService = backendService;
         var baseDir = Path.GetDirectoryName(typeof(DutyLocalPreviewHostedService).Assembly.Location) ?? AppContext.BaseDirectory;
@@ -1107,7 +1107,7 @@ public sealed class DutyLocalPreviewHostedService : IHostedService, IDisposable
         var current = _backendService.Config;
         try
         {
-            current.DecryptedApiKey = DutyBackendService.ResolveApiKeyInput(apiKey, current.DecryptedApiKey);
+            current.DecryptedApiKey = DutyScheduleOrchestrator.ResolveApiKeyInput(apiKey, current.DecryptedApiKey);
             current.BaseUrl = baseUrl ?? current.BaseUrl;
             current.Model = model ?? current.Model;
             current.AutoRunMode = autoRunMode ?? current.AutoRunMode;
@@ -1901,7 +1901,7 @@ public sealed class DutyLocalPreviewHostedService : IHostedService, IDisposable
         _backendService.LoadConfig();
         var current = _backendService.Config;
 
-        var apiKey = DutyBackendService.ResolveApiKeyInput(config.ApiKey, current.DecryptedApiKey);
+        var apiKey = DutyScheduleOrchestrator.ResolveApiKeyInput(config.ApiKey, current.DecryptedApiKey);
         var baseUrl = config.BaseUrl ?? current.BaseUrl;
         var model = config.Model ?? current.Model;
         var perDay = config.PerDay ?? current.PerDay;

@@ -311,10 +311,10 @@ class TestCallLlmPayloadIsolation(unittest.TestCase):
         }
         with patch(
             "core.request_llm_non_stream",
-            side_effect=['{"bad": ]}', '{"ok": true}'],
+            side_effect=['no csv here', '<csv>\nDate,Assigned_IDs,Note\n2023-10-10,4,ok\n</csv>'],
         ):
             parsed, _ = call_llm(messages, config)
-        self.assertEqual(parsed, {"ok": True})
+        self.assertEqual(parsed["schedule"][0]["date"], "2023-10-10")
         self.assertEqual(messages, [{"role": "user", "content": "hello"}])
 
 

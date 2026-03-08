@@ -1,0 +1,892 @@
+using System;
+using System.Collections.Generic;
+using System.Diagnostics;
+using System.IO;
+using System.Linq;
+using System.Threading;
+using System.Threading.Tasks;
+using Avalonia.Threading;
+using DutyAgent.Models;
+using Timer = System.Timers.Timer;
+using System.Text;
+
+namespace DutyAgent.Services;
+
+public class DutyScheduleOrchestrator : IDisposable
+{
+    private const string AutoRunInstruction = "Please generate duty schedule automatically based on roster.csv.";
+    private const int AutoRunRetryCooldownMinutes = 30;
+    private const string ApiKeyMask = "********";
+
+    private readonly IConfigManager _configManager;
+    private readonly IStateAndRosterManager _stateManager;
+    private readonly IPythonIpcService _ipcService;
+    private readonly DutyNotificationService _notificationService;
+    
+    private readonly Timer _debounceTimer;
+    private readonly Timer _autoRunTimer;
+    private readonly SemaphoreSlim _runCoreGate = new(1, 1);
+    private readonly HashSet<string> _sentDutyReminderSlots = new(StringComparer.Ordinal);
+    private DateTime _lastAutoRunAttempt = DateTime.MinValue;
+    private readonly string _dataDir;
+
+    public event EventHandler? ScheduleUpdated;
+    public DutyConfig Config => _configManager.Config;
+
+    private const string DefaultAreaClassroom = "\u6559\u5BA4";
+    private const string DefaultAreaCleaning = "\u6E05\u6D01\u533A";
+    private const string DefaultDutyReminderTime = "17:00";
+    
+    private static readonly Dictionary<string, DayOfWeek> AutoRunDayAliases = new(StringComparer.OrdinalIgnoreCase)
+    {
+        { "\u5468\u4E00", DayOfWeek.Monday },
+        { "\u5468\u4E8C", DayOfWeek.Tuesday },
+        { "\u5468\u4E09", DayOfWeek.Wednesday },
+        { "\u5468\u56DB", DayOfWeek.Thursday },
+        { "\u5468\u4E94", DayOfWeek.Friday },
+        { "\u5468\u516D", DayOfWeek.Saturday },
+        { "\u5468\u65E5", DayOfWeek.Sunday },
+        { "Monday", DayOfWeek.Monday },
+        { "Tuesday", DayOfWeek.Tuesday },
+        { "Wednesday", DayOfWeek.Wednesday },
+        { "Thursday", DayOfWeek.Thursday },
+        { "Friday", DayOfWeek.Friday },
+        { "Saturday", DayOfWeek.Saturday },
+        { "Sunday", DayOfWeek.Sunday }
+    };
+
+    public DutyScheduleOrchestrator(
+        IConfigManager configManager,
+        IStateAndRosterManager stateManager,
+        IPythonIpcService ipcService,
+        DutyNotificationService notificationService)
+    {
+        _configManager = configManager;
+        _stateManager = stateManager;
+        _ipcService = ipcService;
+        _notificationService = notificationService;
+
+        var basePath = Path.GetDirectoryName(typeof(DutyScheduleOrchestrator).Assembly.Location) ?? AppContext.BaseDirectory;
+        _dataDir = Path.Combine(basePath, "Assets_Duty", "data");
+
+
+        _stateManager.StateChanged += (_, _) => DebounceUpdateNotification();
+        _configManager.ConfigChanged += (_, _) => DebounceUpdateNotification();
+
+        _debounceTimer = new Timer(500) { AutoReset = false };
+        _debounceTimer.Elapsed += (_, _) =>
+        {
+            Dispatcher.UIThread.InvokeAsync(() => ScheduleUpdated?.Invoke(this, EventArgs.Empty));
+        };
+
+        _autoRunTimer = new Timer(60_000) { AutoReset = true, Enabled = true };
+        _autoRunTimer.Elapsed += (_, _) => TryRunAutoSchedule();
+    }
+
+    private void DebounceUpdateNotification()
+    {
+        _debounceTimer.Stop();
+        _debounceTimer.Start();
+    }
+
+    // Proxy load/save for backward compatibility with existing view models
+    public void LoadConfig() => _configManager.ConfigChanged += null; // No-op, auto-managed
+    public void SaveConfig() => _configManager.SaveConfig();
+
+    public DutyState LoadState() => _stateManager.LoadState();
+    public void SaveState(DutyState state) => _stateManager.SaveState(state);
+
+    public bool RunCoreAgent(string instruction, string applyMode = "append", string? overrideModel = null)
+    {
+        var result = RunCoreAgentWithMessage(instruction, applyMode, overrideModel);
+        return result.Success;
+    }
+
+    public CoreRunResult RunCoreAgentWithMessage(string instruction, string applyMode = "append", string? overrideModel = null, Action<CoreRunProgress>? progress = null)
+    {
+        var t = RunCoreAgentAsync(instruction, applyMode, overrideModel, progress);
+        t.Wait();
+        return t.Result;
+    }
+
+    public async Task<CoreRunResult> RunCoreAgentAsync(
+        string instruction,
+        string applyMode = "append",
+        string? overrideModel = null,
+        Action<CoreRunProgress>? progress = null)
+    {
+        var effectiveInstruction = string.IsNullOrWhiteSpace(instruction) ? AutoRunInstruction : instruction.Trim();
+
+        if (!_runCoreGate.Wait(0))
+        {
+            return CoreRunResult.Fail("Another schedule run is already in progress.", code: "busy");
+        }
+
+        try
+        {
+            var apiKeyPlain = _configManager.Config.DecryptedApiKey?.Trim();
+            if (string.IsNullOrWhiteSpace(apiKeyPlain))
+            {
+                return CoreRunResult.Fail("API key is empty or unavailable on this device.", code: "config");
+            }
+
+            var inputData = new
+            {
+                instruction = effectiveInstruction,
+                apply_mode = applyMode,
+                per_day = _configManager.Config.PerDay,
+                duty_rule = _configManager.Config.DutyRule,
+                base_url = _configManager.Config.BaseUrl,
+                prompt_mode = _configManager.Config.PromptMode,
+                model = overrideModel ?? _configManager.Config.Model
+            };
+
+            return await _ipcService.RunScheduleAsync(inputData, progress, CancellationToken.None);
+        }
+        catch (Exception ex)
+        {
+            return CoreRunResult.Fail($"Execution error: {ex.Message}");
+        }
+        finally
+        {
+            _runCoreGate.Release();
+        }
+    }
+
+    public string GetApiKeyMaskForUi()
+    {
+        return string.IsNullOrWhiteSpace(_configManager.Config.EncryptedApiKey) ? string.Empty : ApiKeyMask;
+    }
+
+    public static string ResolveApiKeyInput(string? incomingApiKey, string existingApiKey)
+    {
+        if (incomingApiKey is null) return existingApiKey;
+        var trimmed = incomingApiKey.Trim();
+        if (trimmed.Length == 0) return string.Empty;
+        if (string.Equals(trimmed, ApiKeyMask, StringComparison.Ordinal)) return existingApiKey;
+        return trimmed;
+    }
+
+    public static string ValidatePythonPath(string configuredPath, string pluginBasePath, string assetsBasePath)
+    {
+        if (!string.IsNullOrWhiteSpace(configuredPath))
+        {
+            var absolutePath = Path.IsPathRooted(configuredPath) ? configuredPath : Path.Combine(pluginBasePath, configuredPath);
+            if (File.Exists(absolutePath)) return absolutePath;
+        }
+
+        var expectedRelativeExe = Path.Combine("Assets_Duty", "python-embed", "python.exe");
+        var internalExe = Path.Combine(pluginBasePath, expectedRelativeExe);
+        if (File.Exists(internalExe)) return internalExe;
+        return "python"; // Fallback to PATH
+    }
+
+    public static string NormalizeTimeOrThrow(string? time)
+    {
+        if (TimeSpan.TryParse(time, out var ts)) return ts.ToString(@"hh\:mm");
+        throw new ArgumentException("Invalid time format.");
+    }
+
+    public static string NormalizeAutoRunMode(string mode)
+    {
+        var trimmed = (mode ?? "Off").Trim();
+        return trimmed.ToLowerInvariant() switch
+        {
+            "weekly" => "Weekly",
+            "monthly" => "Monthly",
+            "custom" => "Custom",
+            _ => "Off"
+        };
+    }
+
+    // Dummy backward-compatible helpers the UI needs
+    private void TryRunAutoSchedule() { /* To be implemented async */ }
+
+    public void Dispose()
+    {
+        _debounceTimer.Dispose();
+        _autoRunTimer.Dispose();
+        _runCoreGate.Dispose();
+    }
+
+    public string GetRosterPath() => Path.Combine(_dataDir, "roster.csv");
+
+    public List<string> GetAreaNames()
+    {
+        var state = LoadState();
+        return InferAreaNamesFromState(state);
+    }
+
+    public List<string> GetDutyReminderTimes()
+    {
+        lock (new object()) /* config no longer needs orchestrator lock */
+        {
+            return NormalizeDutyReminderTimes(Config.DutyReminderTimes);
+        }
+    }
+
+    public Dictionary<string, List<string>> GetAreaAssignments(SchedulePoolItem item)
+    {
+        var assignments = BuildAreaAssignments(item);
+        var areaNames = NormalizeAreaNames(item.AreaAssignments.Keys);
+        if (areaNames.Count == 0)
+        {
+            areaNames = GetAreaNames();
+        }
+
+        foreach (var area in areaNames)
+        {
+            assignments.TryAdd(area, []);
+        }
+        return assignments;
+    }
+
+    public List<RosterEntry> LoadRosterEntries()
+    {
+        var path = GetRosterPath();
+        if (!File.Exists(path))
+        {
+            return [];
+        }
+
+        try
+        {
+            return RosterWorkbookHelper.LoadCsv(path);
+        }
+        catch (Exception ex)
+        {
+            Debug.WriteLine($"LoadRosterEntries Error: {ex.Message}");
+            return [];
+        }
+    }
+
+    public void SaveRosterEntries(IEnumerable<RosterEntry>? rosterEntries)
+    {
+        var path = GetRosterPath();
+        var directory = Path.GetDirectoryName(path);
+        if (!string.IsNullOrWhiteSpace(directory))
+        {
+            Directory.CreateDirectory(directory);
+        }
+
+        var normalized = new List<RosterEntry>();
+        var nameCounts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        var usedIds = new HashSet<int>();
+        var nextGeneratedId = 1;
+        foreach (var entry in rosterEntries ?? [])
+        {
+            var baseName = (entry.Name ?? string.Empty).Trim();
+            if (baseName.Length == 0)
+            {
+                continue;
+            }
+
+            var id = entry.Id;
+            if (id <= 0 || !usedIds.Add(id))
+            {
+                while (usedIds.Contains(nextGeneratedId))
+                {
+                    nextGeneratedId++;
+                }
+
+                id = nextGeneratedId;
+                usedIds.Add(id);
+            }
+
+            if (id >= nextGeneratedId)
+            {
+                nextGeneratedId = id + 1;
+            }
+
+            var uniqueName = ToUniqueRosterName(baseName, nameCounts);
+            normalized.Add(new RosterEntry
+            {
+                Id = id,
+                Name = uniqueName,
+                Active = entry.Active
+            });
+        }
+
+        normalized = normalized
+            .OrderBy(x => x.Id)
+            .ToList();
+
+        var builder = new StringBuilder();
+        builder.AppendLine("id,name,active");
+        foreach (var item in normalized)
+        {
+            builder.Append(item.Id);
+            builder.Append(',');
+            builder.Append(EscapeCsv(item.Name));
+            builder.Append(',');
+            builder.AppendLine(item.Active ? "1" : "0");
+        }
+
+        File.WriteAllText(path, builder.ToString(), new UTF8Encoding(encoderShouldEmitUTF8Identifier: true));
+    }
+
+
+
+    public bool TryUpdateScheduleEntry(
+        string? date,
+        IDictionary<string, List<string>>? areaAssignments,
+        string? note,
+        out string message)
+    {
+        return TrySaveScheduleEntry(
+            sourceDate: date,
+            targetDate: date,
+            day: null,
+            areaAssignments: areaAssignments,
+            note: note,
+            createIfMissing: false,
+            out message);
+    }
+
+    public bool TrySaveScheduleEntry(
+        string? sourceDate,
+        string? targetDate,
+        string? day,
+        IDictionary<string, List<string>>? areaAssignments,
+        string? note,
+        bool createIfMissing,
+        out string message)
+    {
+        if (!TryNormalizeScheduleDate(targetDate, out var normalizedTargetDate, out var parsedDate))
+        {
+            message = "Date format is invalid.";
+            return false;
+        }
+
+        var normalizedSourceDate = (sourceDate ?? string.Empty).Trim();
+        var normalizedDay = NormalizeScheduleDay(day, parsedDate.DayOfWeek);
+        var normalizedAssignments = NormalizeAreaAssignmentsForState(areaAssignments);
+        var normalizedNote = (note ?? string.Empty).Trim();
+        var state = LoadState();
+
+        SchedulePoolItem? item = null;
+        if (normalizedSourceDate.Length > 0)
+        {
+            item = state.SchedulePool.LastOrDefault(x =>
+                string.Equals(x.Date, normalizedSourceDate, StringComparison.Ordinal));
+        }
+
+        var duplicate = state.SchedulePool.LastOrDefault(x =>
+            string.Equals(x.Date, normalizedTargetDate, StringComparison.Ordinal));
+
+        if (item == null)
+        {
+            if (!createIfMissing)
+            {
+                message = "Schedule entry not found.";
+                return false;
+            }
+
+            if (duplicate != null)
+            {
+                message = "Schedule entry already exists for target date.";
+                return false;
+            }
+
+            item = new SchedulePoolItem();
+            state.SchedulePool.Add(item);
+        }
+        else if (!string.Equals(item.Date, normalizedTargetDate, StringComparison.Ordinal) && duplicate != null)
+        {
+            message = "Schedule entry already exists for target date.";
+            return false;
+        }
+
+        // --- Debt/Credit Diff: Extract OLD names before overwriting ---
+        var oldNames = new HashSet<string>(StringComparer.Ordinal);
+        if (item.AreaAssignments is { Count: > 0 })
+        {
+            foreach (var names in item.AreaAssignments.Values)
+            {
+                if (names == null) continue;
+                foreach (var n in names) oldNames.Add(n.Trim());
+            }
+        }
+
+        item.Date = normalizedTargetDate;
+        item.Day = normalizedDay;
+        item.AreaAssignments = normalizedAssignments;
+        item.Note = normalizedNote;
+
+        // --- Debt/Credit Diff: Extract NEW names and reconcile ---
+        var newNames = new HashSet<string>(StringComparer.Ordinal);
+        if (normalizedAssignments is { Count: > 0 })
+        {
+            foreach (var names in normalizedAssignments.Values)
+            {
+                if (names == null) continue;
+                foreach (var n in names) newNames.Add(n.Trim());
+            }
+        }
+
+        var removedNames = oldNames.Except(newNames).ToArray();
+        var addedNames = newNames.Except(oldNames).ToArray();
+
+        if (removedNames.Length > 0 || addedNames.Length > 0)
+        {
+            var roster = LoadRosterEntries();
+            var nameToId = new Dictionary<string, int>(StringComparer.Ordinal);
+            foreach (var r in roster)
+            {
+                if (r.Active && !string.IsNullOrWhiteSpace(r.Name))
+                    nameToId.TryAdd(r.Name.Trim(), r.Id);
+            }
+
+            var debtSet = new HashSet<int>(state.DebtList ?? []);
+            var creditSet = new HashSet<int>(state.CreditList ?? []);
+
+            // Removed people: they escaped duty
+            foreach (var name in removedNames)
+            {
+                if (!nameToId.TryGetValue(name, out var id)) continue;
+                if (creditSet.Remove(id)) { /* had credit, consume it */ }
+                else { debtSet.Add(id); /* no credit, they owe */ }
+            }
+
+            // Added people: they did extra work
+            foreach (var name in addedNames)
+            {
+                if (!nameToId.TryGetValue(name, out var id)) continue;
+                if (debtSet.Remove(id)) { /* had debt, pay it off */ }
+                else { creditSet.Add(id); /* no debt, earn credit */ }
+            }
+
+            state.DebtList = debtSet.OrderBy(x => x).ToList();
+            state.CreditList = creditSet.OrderBy(x => x).ToList();
+        }
+
+        state.SchedulePool = state.SchedulePool
+            .OrderBy(x => x.Date, StringComparer.Ordinal)
+            .ToList();
+        SaveState(state);
+
+        message = createIfMissing && normalizedSourceDate.Length == 0
+            ? "Schedule created."
+            : "Schedule updated.";
+        return true;
+    }
+
+
+
+
+
+
+
+    private static Dictionary<string, List<string>> BuildAreaAssignments(SchedulePoolItem item)
+    {
+        var assignments = new Dictionary<string, List<string>>(StringComparer.Ordinal);
+
+        foreach (var (area, students) in item.AreaAssignments)
+        {
+            var areaName = (area ?? string.Empty).Trim();
+            if (areaName.Length == 0)
+            {
+                continue;
+            }
+
+            var normalizedStudents = NormalizeStudents(students);
+            if (normalizedStudents.Count > 0)
+            {
+                assignments[areaName] = normalizedStudents;
+            }
+        }
+
+        return assignments;
+    }
+
+    private static List<string> InferAreaNamesFromState(DutyState state)
+    {
+        var areas = new List<string>();
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+
+        foreach (var item in state.SchedulePool)
+        {
+            if (item.AreaAssignments == null)
+            {
+                continue;
+            }
+
+            foreach (var area in item.AreaAssignments.Keys)
+            {
+                var name = (area ?? string.Empty).Trim();
+                if (name.Length == 0 || !seen.Add(name))
+                {
+                    continue;
+                }
+
+                areas.Add(name);
+            }
+        }
+
+        if (areas.Count == 0)
+        {
+            areas.Add(DefaultAreaClassroom);
+            areas.Add(DefaultAreaCleaning);
+        }
+
+        return areas;
+    }
+
+    private static List<string> NormalizeStudents(IEnumerable<string>? rawStudents)
+    {
+        var students = new List<string>();
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        if (rawStudents == null)
+        {
+            return students;
+        }
+
+        foreach (var raw in rawStudents)
+        {
+            var name = (raw ?? string.Empty).Trim();
+            if (name.Length == 0 || !seen.Add(name))
+            {
+                continue;
+            }
+
+            students.Add(name);
+        }
+
+        return students;
+    }
+
+    private static List<string> NormalizeAreaNames(IEnumerable<string>? rawAreas)
+    {
+        var areas = new List<string>();
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        if (rawAreas != null)
+        {
+            foreach (var raw in rawAreas)
+            {
+                var area = (raw ?? string.Empty).Trim();
+                if (area.Length == 0 || !seen.Add(area))
+                {
+                    continue;
+                }
+
+                areas.Add(area);
+            }
+        }
+
+        if (areas.Count == 0)
+        {
+            areas.Add(DefaultAreaClassroom);
+            areas.Add(DefaultAreaCleaning);
+        }
+
+        return areas;
+    }
+
+
+
+    private static Dictionary<string, List<string>> NormalizeAreaAssignmentsForState(
+        IEnumerable<KeyValuePair<string, List<string>>>? rawAssignments)
+    {
+        var assignments = new Dictionary<string, List<string>>(StringComparer.Ordinal);
+        if (rawAssignments == null)
+        {
+            return assignments;
+        }
+
+        foreach (var (area, students) in rawAssignments)
+        {
+            var areaName = (area ?? string.Empty).Trim();
+            if (areaName.Length == 0)
+            {
+                continue;
+            }
+
+            var normalizedStudents = NormalizeStudents(students);
+            assignments[areaName] = normalizedStudents;
+        }
+
+        return assignments;
+    }
+
+    private static bool TryNormalizeScheduleDate(string? rawDate, out string normalizedDate, out DateTime parsedDate)
+    {
+        normalizedDate = string.Empty;
+        parsedDate = default;
+        var text = (rawDate ?? string.Empty).Trim();
+        if (text.Length == 0)
+        {
+            return false;
+        }
+
+        if (DateTime.TryParseExact(
+                text,
+                "yyyy-MM-dd",
+                System.Globalization.CultureInfo.InvariantCulture,
+                System.Globalization.DateTimeStyles.None,
+                out parsedDate) ||
+            DateTime.TryParse(text, out parsedDate))
+        {
+            normalizedDate = parsedDate.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture);
+            return true;
+        }
+
+        return false;
+    }
+
+    private static string NormalizeScheduleDay(string? day, DayOfWeek dayOfWeek)
+    {
+        var normalized = (day ?? string.Empty).Trim();
+        if (normalized.Length > 0)
+        {
+            return normalized;
+        }
+
+        return dayOfWeek switch
+        {
+            DayOfWeek.Monday => "\u5468\u4E00",
+            DayOfWeek.Tuesday => "\u5468\u4E8C",
+            DayOfWeek.Wednesday => "\u5468\u4E09",
+            DayOfWeek.Thursday => "\u5468\u56DB",
+            DayOfWeek.Friday => "\u5468\u4E94",
+            DayOfWeek.Saturday => "\u5468\u516D",
+            DayOfWeek.Sunday => "\u5468\u65E5",
+            _ => string.Empty
+        };
+    }
+
+    public void PublishRunCompletionNotification(
+        string? instruction,
+        string? applyMode,
+        string? resultMessage,
+        bool success = true,
+        bool isAutoRun = false)
+    {
+        try
+        {
+            LoadConfig();
+            var duration = Math.Clamp(Config.NotificationDurationSeconds, 3, 15);
+            var now = DateTime.Now;
+            var today = now.ToString("yyyy-MM-dd");
+            var areaNames = GetAreaNames();
+            var state = LoadState();
+            var item = state.SchedulePool.LastOrDefault(x => string.Equals(x.Date, today, StringComparison.Ordinal));
+            var assignments = item is null
+                ? new Dictionary<string, List<string>>(StringComparer.Ordinal)
+                : GetAreaAssignments(item);
+
+            var segments = areaNames
+                .Select(area =>
+                {
+                    var students = assignments.TryGetValue(area, out var names) ? names : [];
+                    var peopleText = students.Count > 0 ? string.Join("\u3001", students) : "\u65E0";
+                    return $"{area}\uFF1A{peopleText}";
+                })
+                .ToList();
+
+            var scene = isAutoRun ? "\u81EA\u52A8\u6392\u73ED" : "\u6392\u73ED\u4EFB\u52A1";
+            var status = success ? "\u5DF2\u5B8C\u6210" : "\u6267\u884C\u5931\u8D25";
+            var primaryText = $"{scene}{status}";
+            var scrollingText = segments.Count > 0
+                ? string.Join("\uFF1B", segments)
+                : "\u6682\u65E0\u5B89\u6392";
+
+            _notificationService.Publish(primaryText, scrollingText, duration);
+        }
+        catch (Exception ex)
+        {
+            Debug.WriteLine($"PublishRunCompletionNotification Error: {ex.Message}");
+        }
+    }
+
+    private void PublishAutoRunTriggeredNotification(DateTime now)
+    {
+        try
+        {
+            if (!Config.AutoRunTriggerNotificationEnabled)
+            {
+                return;
+            }
+
+            var duration = Math.Clamp(Config.NotificationDurationSeconds, 3, 15);
+            var primaryText = "\u81EA\u52A8\u6392\u73ED\u5F00\u59CB\u6267\u884C";
+            var scrollingText = $"{now:yyyy-MM-dd HH:mm} \u4EFB\u52A1\u5DF2\u52A0\u5165\u961F\u5217";
+
+            _notificationService.Publish(primaryText, scrollingText, duration);
+        }
+        catch (Exception ex)
+        {
+            Debug.WriteLine($"PublishAutoRunTriggeredNotification Error: {ex.Message}");
+        }
+    }
+
+    public void PublishDutyReminderNotificationNow(string? dateText = null, string? timeText = null)
+    {
+        LoadConfig();
+
+        var dateValue = (dateText ?? string.Empty).Trim();
+        if (dateValue.Length == 0)
+        {
+            dateValue = DateTime.Now.ToString("yyyy-MM-dd");
+        }
+
+        var timeValue = (timeText ?? string.Empty).Trim();
+        if (timeValue.Length == 0)
+        {
+            timeValue = DateTime.Now.ToString("HH:mm");
+        }
+
+        PublishDutyReminderNotification(dateValue, timeValue);
+    }
+
+    private void TryPublishDutyReminderNotifications(DateTime now)
+    {
+        if (!Config.DutyReminderEnabled)
+        {
+            return;
+        }
+
+        var reminderTimes = NormalizeDutyReminderTimes(Config.DutyReminderTimes);
+        if (reminderTimes.Count == 0)
+        {
+            return;
+        }
+
+        var today = now.ToString("yyyy-MM-dd");
+        var dueTimes = new List<string>();
+
+        lock (new object()) /* reminder no longer needs orchestrator lock */
+        {
+            _sentDutyReminderSlots.RemoveWhere(x => !x.StartsWith($"{today}|", StringComparison.Ordinal));
+
+            foreach (var reminderTime in reminderTimes)
+            {
+                if (!TimeSpan.TryParse(reminderTime, out var triggerTime))
+                {
+                    continue;
+                }
+
+                var triggerAt = now.Date.Add(triggerTime);
+                if (now < triggerAt || now >= triggerAt.AddMinutes(1))
+                {
+                    continue;
+                }
+
+                var slotKey = $"{today}|{reminderTime}";
+                if (_sentDutyReminderSlots.Add(slotKey))
+                {
+                    dueTimes.Add(reminderTime);
+                }
+            }
+        }
+
+        foreach (var reminderTime in dueTimes)
+        {
+            PublishDutyReminderNotification(today, reminderTime);
+        }
+    }
+
+    private void PublishDutyReminderNotification(string dateText, string timeText)
+    {
+        var duration = Math.Clamp(Config.NotificationDurationSeconds, 3, 15);
+        var state = LoadState();
+        var areaNames = GetAreaNames();
+        var item = state.SchedulePool.LastOrDefault(x => string.Equals(x.Date, dateText, StringComparison.Ordinal));
+        var assignments = item is null
+            ? new Dictionary<string, List<string>>(StringComparer.Ordinal)
+            : GetAreaAssignments(item);
+
+        var assignmentSegments = areaNames
+            .Select(area =>
+            {
+                var students = assignments.TryGetValue(area, out var names) ? names : [];
+                var studentText = students.Count > 0 ? string.Join("\u3001", students) : "\u65E0";
+                return $"{area}\uFF1A{studentText}";
+            })
+            .ToList();
+
+        var primaryText = item is null
+            ? $"\u503C\u65E5\u63D0\u9192 {dateText} {timeText}"
+            : $"\u4ECA\u65E5\u503C\u65E5\u63D0\u9192 {timeText}";
+        var scrollingText = item is null
+            ? "\u4ECA\u65E5\u6682\u65E0\u503C\u65E5\u5B89\u6392"
+            : string.Join("\uFF1B", assignmentSegments);
+
+        _notificationService.Publish(primaryText, scrollingText, duration);
+    }
+
+
+
+    private static List<string> NormalizeDutyReminderTimes(IEnumerable<string>? rawTimes)
+    {
+        var times = new List<string>();
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        if (rawTimes != null)
+        {
+            foreach (var raw in rawTimes)
+            {
+                var text = raw ?? string.Empty;
+                foreach (var token in text.Split([',', ';', '\r', '\n'], StringSplitOptions.RemoveEmptyEntries))
+                {
+                    if (!TryNormalizeDutyReminderTime(token, out var normalized) || !seen.Add(normalized))
+                    {
+                        continue;
+                    }
+
+                    times.Add(normalized);
+                }
+            }
+        }
+
+        if (times.Count == 0)
+        {
+            times.Add(DefaultDutyReminderTime);
+        }
+
+        times.Sort(StringComparer.Ordinal);
+        return times;
+    }
+
+    private static bool TryNormalizeDutyReminderTime(string raw, out string normalized)
+    {
+        normalized = string.Empty;
+        var text = (raw ?? string.Empty).Trim();
+        if (!TimeSpan.TryParse(text, out var time))
+        {
+            return false;
+        }
+
+        if (time < TimeSpan.Zero || time >= TimeSpan.FromDays(1))
+        {
+            return false;
+        }
+
+        normalized = time.ToString(@"hh\:mm");
+        return true;
+    }
+
+    private static string ToUniqueRosterName(string baseName, IDictionary<string, int> nameCounts)
+    {
+        if (!nameCounts.TryGetValue(baseName, out var count))
+        {
+            nameCounts[baseName] = 1;
+            return baseName;
+        }
+
+        count++;
+        nameCounts[baseName] = count;
+        return $"{baseName}{count}";
+    }
+
+    private static string EscapeCsv(string text)
+    {
+        if (text.IndexOfAny([',', '"', '\r', '\n']) < 0)
+        {
+            return text;
+        }
+
+        return $"\"{text.Replace("\"", "\"\"")}\"";
+    }
+
+
+
+}
