@@ -16,7 +16,21 @@ import urllib.error
 import urllib.request
 from http.server import BaseHTTPRequestHandler, HTTPServer
 import threading
-from prompt_config import PROMPTS
+import signal
+from typing import List, Dict, Any, Optional, Union, Callable
+
+# Add current directory to path for local module imports
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+
+try:
+    import prompt_config
+except ImportError:
+    from . import prompt_config
+
+try:
+    import build_prompt
+except ImportError:
+    from . import build_prompt
 from build_prompt import build_prompt_messages
 from datetime import datetime, timedelta, date
 from pathlib import Path
@@ -678,7 +692,10 @@ def execute_with_retries(
             reason = getattr(ex, "reason", ex)
             raise RuntimeError(f"Network error: {reason}") from ex
 
-    raise RuntimeError(f"Network request failed: {last_error}") from last_error
+    if last_error:
+        raise RuntimeError(f"LLM request failed after retries: {last_error}") from last_error
+    else:
+        raise RuntimeError("LLM request failed after retries with no captured error.")
 
 
 def call_llm(
@@ -803,7 +820,11 @@ def call_llm(
                     lambda: request_llm_non_stream(url, payload, api_key),
                     mode="non_stream",
                 )
-    raise RuntimeError(f"LLM returned malformed XML/CSV after {LLM_PARSE_MAX_RETRIES + 1} attempts: {last_parse_error}") from last_parse_error
+    err_msg = str(last_parse_error) if last_parse_error else "Unknown parse error"
+    if last_parse_error:
+        raise RuntimeError(f"LLM returned malformed XML/CSV after {LLM_PARSE_MAX_RETRIES + 1} attempts: {err_msg}") from last_parse_error
+    else:
+        raise RuntimeError(f"LLM returned malformed XML/CSV after {LLM_PARSE_MAX_RETRIES + 1} attempts: {err_msg}")
 
 
 def extract_ids_from_value(value, active_set: set, limit: Optional[int] = None) -> List[int]:
@@ -1214,66 +1235,37 @@ def run_duty_agent(ctx, input_data, emit_progress_fn=None):
             except Exception:
                 pass
 
-class ServerHandler(BaseHTTPRequestHandler):
-    data_dir = None
-    
-    def log_message(self, format, *args):
-        pass
+from fastapi import FastAPI, BackgroundTasks
+from fastapi.middleware.cors import CORSMiddleware
+from routers import duty
+import uvicorn
+import signal
 
-    def do_POST(self):
-        if self.path == '/schedule':
-            content_length = int(self.headers.get('Content-Length', 0))
-            if content_length > 0:
-                body = self.rfile.read(content_length).decode('utf-8')
-                try:
-                    input_data = json.loads(body)
-                except:
-                    input_data = {}
-            else:
-                input_data = {}
-            
-            ctx = Context(self.data_dir)
-            
-            self.send_response(200)
-            self.send_header('Content-Type', 'text/event-stream; charset=utf-8')
-            self.send_header('Cache-Control', 'no-cache')
-            self.send_header('Connection', 'close')
-            self.end_headers()
-            
-            def sse_progress(phase, message, stream_chunk=None):
-                event_data = {
-                    "phase": phase,
-                    "message": message
-                }
-                if stream_chunk:
-                    event_data["stream_chunk"] = stream_chunk
-                
-                payload = json.dumps(event_data, ensure_ascii=False)
-                try:
-                    self.wfile.write(f"data: {payload}\n\n".encode('utf-8'))
-                    self.wfile.flush()
-                except Exception:
-                    pass
-            
-            result = run_duty_agent(ctx, input_data, sse_progress)
-            
-            try:
-                final_payload = json.dumps(result, ensure_ascii=False)
-                self.wfile.write(f"event: complete\ndata: {final_payload}\n\n".encode('utf-8'))
-                self.wfile.flush()
-            except Exception:
-                pass
-                
-        elif self.path == '/shutdown':
-            self.send_response(200)
-            self.send_header('Content-Type', 'application/json; charset=utf-8')
-            self.end_headers()
-            self.wfile.write(b'{"status":"shutting down"}')
-            self.wfile.flush()
-            threading.Thread(target=self.server.shutdown, daemon=True).start()
-        else:
-            self.send_response(404)
-            self.end_headers()
+app = FastAPI(title="Duty-Agent IPC Engine", version="0.40.0")
+
+# Enable CORS for future-proofing (Web UI support)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Register modular routers
+app.include_router(duty.router)
+
+@app.get("/")
+async def root():
+    return {"status": "running", "engine": "Duty-Agent FastAPI", "version": "0.40.0"}
+
+@app.post("/shutdown")
+async def shutdown(background_tasks: BackgroundTasks):
+    def exit_process():
+        time.sleep(0.5)
+        os.kill(os.getpid(), signal.SIGTERM)
+    
+    background_tasks.add_task(exit_process)
+    return {"status": "shutting down"}
 
 def main():
     parser = argparse.ArgumentParser(description="Duty-Agent Core")
@@ -1286,10 +1278,27 @@ def main():
     data_dir.mkdir(parents=True, exist_ok=True)
     
     if args.server:
-        ServerHandler.data_dir = data_dir
-        httpd = HTTPServer(('127.0.0.1', args.port), ServerHandler)
-        print(f"__DUTY_SERVER_PORT__:{httpd.server_port}", flush=True)
-        httpd.serve_forever()
+        app.state.data_dir = data_dir
+        # Config uvicorn to print the port to stdout
+        config = uvicorn.Config(app, host="127.0.0.1", port=args.port, log_level="info")
+        server = uvicorn.Server(config)
+        
+        # We need a small hack to print the port in the same format as before for C# capture
+        # Uvicorn starts the loop in run(), so we'll use a lifespan or similar if needed.
+        # But we can also just let it print its own logs if C# can parse them,
+        # or manually print before serve.
+        
+        # Let's find an available port if args.port is 0 manually to be sure
+        actual_port = args.port
+        if actual_port == 0:
+            import socket
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.bind(('127.0.0.1', 0))
+            actual_port = sock.getsockname()[1]
+            sock.close()
+        
+        print(f"__DUTY_SERVER_PORT__:{actual_port}", flush=True)
+        uvicorn.run(app, host="127.0.0.1", port=actual_port, log_level="warning")
     else:
         ctx = Context(data_dir)
         input_data = {}
@@ -1300,15 +1309,23 @@ def main():
         result = run_duty_agent(ctx, input_data)
         
         extra = {}
-        if "ai_response" in result:
+        if result and "ai_response" in result:
             extra["ai_response"] = result["ai_response"]
         
-        write_result(
-            ctx.paths["result"],
-            result["status"],
-            result["message"],
-            extra=extra
-        )
+        if result:
+            write_result(
+                ctx.paths["result"],
+                result.get("status", "error"),
+                result.get("message", "No message"),
+                extra=extra
+            )
+        else:
+            write_result(
+                ctx.paths["result"],
+                "error",
+                "Internal error: No result generated.",
+                extra=extra
+            )
 
 if __name__ == "__main__":
     main()

@@ -85,3 +85,4 @@ IDs listed in <inactive_ids> are currently unavailable (e.g., sick leave, suspen
 [PATCH PRINCIPLE] 
 The user is requesting a schedule spanning multiple days. Count exactly how many days are requested. ONLY generate schedule entries for these specific dates. OVER-GENERATION IS FATAL.
 </rule_multi_day>"""
+}

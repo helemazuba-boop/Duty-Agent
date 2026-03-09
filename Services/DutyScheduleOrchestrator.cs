@@ -167,6 +167,10 @@ public class DutyScheduleOrchestrator : IDisposable
         return trimmed;
     }
 
+    public EngineState EngineStatus => _pythonIpcService is DutyPythonIpcService s ? s.IsReady ? EngineState.Ready : s.LastErrorMessage != null ? EngineState.Faulted : EngineState.Initializing : EngineState.Ready;
+
+    public string? EngineLastError => _pythonIpcService is DutyPythonIpcService s ? s.LastErrorMessage : null;
+
     public static string ValidatePythonPath(string configuredPath, string pluginBasePath, string assetsBasePath)
     {
         if (!string.IsNullOrWhiteSpace(configuredPath))
@@ -176,6 +180,11 @@ public class DutyScheduleOrchestrator : IDisposable
         }
 
         var expectedRelativeExe = Path.Combine("Assets_Duty", "python-embed", "python.exe");
+        var expectedPath = Path.Combine(pluginBasePath, expectedRelativeExe);
+        if (File.Exists(expectedPath)) return expectedPath;
+
+        return "python"; // Fallback to system python
+    }
         var internalExe = Path.Combine(pluginBasePath, expectedRelativeExe);
         if (File.Exists(internalExe)) return internalExe;
         return "python"; // Fallback to PATH

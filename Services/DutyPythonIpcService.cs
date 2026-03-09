@@ -11,21 +11,36 @@ using DutyAgent.Models;
 
 namespace DutyAgent.Services;
 
-public interface IPythonIpcService
+public interface IPythonIpcService: IDisposable
 {
     Task<CoreRunResult> RunScheduleAsync(object requestPayload, Action<CoreRunProgress>? progressCallback, CancellationToken cancellationToken = default);
+    Task EnsureReadyAsync(CancellationToken cancellationToken = default);
+    bool IsReady { get; }
+    string? LastErrorMessage { get; }
 }
 
-public class DutyPythonIpcService : IPythonIpcService, IDisposable
+public enum EngineState
+{
+    NotStarted,
+    Initializing,
+    Ready,
+    Faulted
+}
+
+public class DutyPythonIpcService : IPythonIpcService
 {
     private readonly IConfigManager _configManager;
     private readonly string _basePath;
     private readonly string _dataDir;
     private Process? _pythonProcess;
     private int _serverPort = 0;
-    private readonly SemaphoreSlim _processLock = new(1, 1);
     private readonly HttpClient _httpClient;
     private bool _disposed;
+
+    private readonly TaskCompletionSource<int> _portTcs = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private EngineState _state = EngineState.NotStarted;
+    public bool IsReady => _state == EngineState.Ready;
+    public string? LastErrorMessage { get; private set; }
 
     public DutyPythonIpcService(IConfigManager configManager)
     {
@@ -35,26 +50,24 @@ public class DutyPythonIpcService : IPythonIpcService, IDisposable
         _httpClient = new HttpClient { Timeout = TimeSpan.FromMinutes(5) };
         
         AppDomain.CurrentDomain.ProcessExit += (_, _) => ShutdownPythonServer();
+        
+        // Background initialization - Fire and forget
+        _ = InitializeBackgroundAsync();
     }
 
-    private async Task EnsureServerRunningAsync(CancellationToken cancellationToken)
+    private async Task InitializeBackgroundAsync()
     {
-        await _processLock.WaitAsync(cancellationToken);
+        if (_state != EngineState.NotStarted) return;
+        _state = EngineState.Initializing;
+
         try
         {
-            if (_pythonProcess != null && !_pythonProcess.HasExited && _serverPort > 0)
-            {
-                return;
-            }
-
-            ShutdownPythonServer(); // Clean up any zombie or partially started process
-
             var pythonPath = DutyScheduleOrchestrator.ValidatePythonPath(_configManager.Config.PythonPath, _basePath, _basePath);
             var scriptPath = Path.Combine(_basePath, "Assets_Duty", "core.py");
             
             if (!File.Exists(scriptPath))
             {
-                throw new FileNotFoundException($"Core script not found: {scriptPath}");
+                throw new FileNotFoundException($"Core script not found at {scriptPath}");
             }
 
             var startInfo = new ProcessStartInfo
@@ -64,73 +77,80 @@ public class DutyPythonIpcService : IPythonIpcService, IDisposable
                 UseShellExecute = false,
                 CreateNoWindow = true,
                 RedirectStandardOutput = true,
-                RedirectStandardError = true
+                RedirectStandardError = true,
+                StandardOutputEncoding = Encoding.UTF8
             };
 
-            _pythonProcess = new Process { StartInfo = startInfo };
+            _pythonProcess = new Process { StartInfo = startInfo, EnableRaisingEvents = true };
             
-            var tcs = new TaskCompletionSource<int>();
-            _pythonProcess.OutputDataReceived += (sender, args) =>
+            _pythonProcess.OutputDataReceived += (s, e) =>
             {
-                if (args.Data != null)
+                if (string.IsNullOrEmpty(e.Data)) return;
+                Debug.WriteLine($"[Python] {e.Data}");
+                if (e.Data.StartsWith("__DUTY_SERVER_PORT__:"))
                 {
-                    if (args.Data.StartsWith("__DUTY_SERVER_PORT__:"))
+                    if (int.TryParse(e.Data.Split(':')[1], out var port))
                     {
-                        if (int.TryParse(args.Data.Substring("__DUTY_SERVER_PORT__:".Length), out var port))
-                        {
-                            tcs.TrySetResult(port);
-                        }
-                    }
-                    else
-                    {
-                        Debug.WriteLine($"[Python] {args.Data}");
+                        _serverPort = port;
+                        _portTcs.TrySetResult(port);
                     }
                 }
             };
-            
-            _pythonProcess.ErrorDataReceived += (sender, args) =>
+
+            _pythonProcess.ErrorDataReceived += (s, e) =>
             {
-                if (args.Data != null)
+                if (!string.IsNullOrEmpty(e.Data))
                 {
-                    Debug.WriteLine($"[Python ERR] {args.Data}");
+                    Debug.WriteLine($"[Python ERR] {e.Data}");
                 }
+            };
+
+            _pythonProcess.Exited += (s, e) =>
+            {
+                _portTcs.TrySetException(new Exception($"Python engine process exited unexpectedly with code {_pythonProcess?.ExitCode ?? -1}"));
             };
 
             if (!_pythonProcess.Start())
             {
-                throw new Exception("Failed to start Python IPC Server process.");
+                throw new Exception("Failed to start Python process.");
             }
 
             _pythonProcess.BeginOutputReadLine();
             _pythonProcess.BeginErrorReadLine();
             PythonProcessTracker.Register(_pythonProcess);
 
-            // Wait for port mapping with timeout
-            using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            cts.CancelAfter(TimeSpan.FromSeconds(10));
-            
-            try
+            // Wait for port mapping with 15s timeout
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+            using (cts.Token.Register(() => _portTcs.TrySetException(new TimeoutException("Python engine initialization timed out (15s)."))))
             {
-                _serverPort = await tcs.Task.WaitAsync(cts.Token);
-                Debug.WriteLine($"Python server started on port {_serverPort}");
+                await _portTcs.Task;
             }
-            catch (OperationCanceledException)
-            {
-                ShutdownPythonServer();
-                throw new Exception("Python server process failed to report its port within 10 seconds.");
-            }
+
+            _state = EngineState.Ready;
+            Debug.WriteLine($"Python Engine effectively ready on port {_serverPort}");
         }
-        finally
+        catch (Exception ex)
         {
-            _processLock.Release();
+            _state = EngineState.Faulted;
+            LastErrorMessage = ex.Message;
+            _portTcs.TrySetException(ex);
+            ShutdownPythonServer();
         }
+    }
+
+    public async Task EnsureReadyAsync(CancellationToken cancellationToken = default)
+    {
+        if (_state == EngineState.Ready) return;
+        if (_state == EngineState.Faulted) throw new Exception($"AI Engine failed to start: {LastErrorMessage}");
+        
+        await _portTcs.Task.WaitAsync(cancellationToken);
     }
 
     public async Task<CoreRunResult> RunScheduleAsync(object requestPayload, Action<CoreRunProgress>? progressCallback, CancellationToken cancellationToken = default)
     {
-        await EnsureServerRunningAsync(cancellationToken);
+        await EnsureReadyAsync(cancellationToken);
 
-        var url = $"http://127.0.0.1:{_serverPort}/schedule";
+        var url = $"http://127.0.0.1:{_serverPort}/api/v1/duty/schedule";
         var jsonPayload = JsonSerializer.Serialize(requestPayload);
         using var request = new HttpRequestMessage(HttpMethod.Post, url);
         request.Content = new StringContent(jsonPayload, Encoding.UTF8, "application/json");
@@ -153,77 +173,65 @@ public class DutyPythonIpcService : IPythonIpcService, IDisposable
 
                 if (line.StartsWith("data: "))
                 {
-                    var dataContent = line.Substring("data: ".Length);
+                    var dataContent = line.Substring(6);
                     try
                     {
                         var evt = JsonSerializer.Deserialize<JsonElement>(dataContent);
-                        if (evt.TryGetProperty("phase", out var phaseProp) && evt.TryGetProperty("message", out var msgProp))
-                        {
-                            var phase = phaseProp.GetString() ?? "";
-                            var message = msgProp.GetString() ?? "";
-                            var chunk = evt.TryGetProperty("stream_chunk", out var chunkProp) ? chunkProp.GetString() : null;
-                            progressCallback?.Invoke(new CoreRunProgress(phase, message, chunk));
-                        }
+                        var phase = evt.GetProperty("phase").GetString() ?? "";
+                        var message = evt.GetProperty("message").GetString() ?? "";
+                        var chunk = evt.TryGetProperty("stream_chunk", out var cp) ? cp.GetString() : null;
+                        progressCallback?.Invoke(new CoreRunProgress(phase, message, chunk));
                     }
-                    catch
-                    {
-                        // Ignore malformed progress json
-                    }
+                    catch { }
                 }
                 else if (line.StartsWith("event: complete"))
                 {
                     var dataLine = await reader.ReadLineAsync();
                     if (dataLine != null && dataLine.StartsWith("data: "))
                     {
-                        var dataContent = dataLine.Substring("data: ".Length);
+                        var dataContent = dataLine.Substring(6);
                         var evt = JsonSerializer.Deserialize<JsonElement>(dataContent);
-                        
-                        var status = evt.TryGetProperty("status", out var sProp) ? sProp.GetString() : "error";
-                        var msg = evt.TryGetProperty("message", out var mProp) ? mProp.GetString() : "";
-                        
+                        var status = evt.GetProperty("status").GetString();
                         if (status == "success")
                         {
-                            var aiResponse = evt.TryGetProperty("ai_response", out var aiProp) ? aiProp.GetString() : null;
+                            var aiResponse = evt.TryGetProperty("ai_response", out var ap) ? ap.GetString() : null;
                             finalResult = CoreRunResult.Ok("Success", aiResponse);
                         }
                         else
                         {
-                            finalResult = CoreRunResult.Fail(msg ?? "Unknown error");
+                            var msg = evt.GetProperty("message").GetString() ?? "Unknown error";
+                            finalResult = CoreRunResult.Fail(msg);
                         }
                     }
                 }
             }
 
-            return finalResult ?? CoreRunResult.Fail("Connection ended without complete event.");
+            return finalResult ?? CoreRunResult.Fail("Engine stream closed prematurely.");
         }
-        catch (HttpRequestException ex)
+        catch (Exception ex)
         {
-            Debug.WriteLine($"HTTP Request failed: {ex.Message}");
-            
-            // If connection failed entirely, the python process might have crashed
             if (_pythonProcess == null || _pythonProcess.HasExited)
             {
-                ShutdownPythonServer();
-                throw new Exception("The native Python engine crashed unexpectedly.", ex);
+                _state = EngineState.Faulted;
+                LastErrorMessage = "Engine process lost during request.";
+                throw new Exception(LastErrorMessage, ex);
             }
-            
-            return CoreRunResult.Fail($"Network communication error: {ex.Message}");
+            return CoreRunResult.Fail($"Network error: {ex.Message}");
         }
     }
 
     private void ShutdownPythonServer()
     {
         if (_pythonProcess == null || _pythonProcess.HasExited) return;
-
         try
         {
             if (_serverPort > 0)
             {
-                using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(2) };
-                client.PostAsync($"http://127.0.0.1:{_serverPort}/shutdown", null).Wait(TimeSpan.FromSeconds(2));
+                using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(1) };
+                _ = client.PostAsync($"http://127.0.0.1:{_serverPort}/shutdown", null);
             }
         }
-        catch { } // Ignore shutdown request errors
+        catch { }
         
         try
         {
@@ -245,9 +253,7 @@ public class DutyPythonIpcService : IPythonIpcService, IDisposable
     {
         if (_disposed) return;
         _disposed = true;
-
         ShutdownPythonServer();
         _httpClient.Dispose();
-        _processLock.Dispose();
     }
 }
