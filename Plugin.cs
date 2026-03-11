@@ -1,11 +1,18 @@
+using ClassIsland.Core;
 using ClassIsland.Core.Abstractions;
 using ClassIsland.Core.Attributes;
 using ClassIsland.Core.Extensions.Registry;
+using DutyAgent.Controls.Automations.ActionSettingsControls;
+using DutyAgent.Controls.Automations.RuleSettingsControls;
 using DutyAgent.Controls.Components;
 using DutyAgent.Models;
+using DutyAgent.Models.Automations.Rules;
 using DutyAgent.Services;
 using DutyAgent.Services.NotificationProviders;
+using DutyAgent.Services.Automations.Actions;
+using DutyAgent.Services.Automations.Triggers;
 using DutyAgent.Views.SettingPages;
+using ClassIsland.Shared;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using System.Text.Json;
@@ -16,25 +23,36 @@ namespace DutyAgent;
 [PluginEntrance]
 public class Plugin : PluginBase
 {
-    private static readonly string PluginBaseDirectory =
-        Path.GetDirectoryName(typeof(Plugin).Assembly.Location) ?? AppContext.BaseDirectory;
-
     public override void Initialize(HostBuilderContext context, IServiceCollection services)
     {
+        var pluginPaths = DutyPluginPaths.CreatePrepared(PluginConfigFolder, Info.PluginFolderPath);
+        DutyDiagnosticsLogger.Configure(pluginPaths.LogsDirectory);
+
+        services.AddSingleton(pluginPaths);
         services.AddSingleton<IConfigManager, DutyConfigManager>();
         services.AddSingleton<IStateAndRosterManager, DutyStateManager>();
         services.AddSingleton<IPythonIpcService, DutyPythonIpcService>();
         services.AddSingleton<DutyScheduleOrchestrator>();
+        services.AddSingleton<DutyAutomationBridgeService>();
+        services.AddSingleton<DutyRuleHandlerService>();
+        services.AddSingleton<DutyPluginLifecycle>();
         services.AddSingleton<DutyNotificationService>();
         services.AddComponent<DutyComponent, DutyComponentSettingsControl>();
         services.AddNotificationProvider<DutyNotificationProvider>();
         services.AddSettingsPage<DutyMainSettingsPage>();
+        services.AddAction<RunDutyScheduleAction, RunDutyScheduleActionSettingsControl>();
+        services.AddTrigger<DutyScheduleRunSucceededTrigger>();
+        services.AddTrigger<DutyScheduleRunFailedTrigger>();
+        services.AddTrigger<DutyScheduleUpdatedTrigger>();
+        services.AddRule<DutyAssignedStudentRuleSettings, DutyAssignedStudentRuleSettingsControl>(
+            DutyAutomationIds.TodayAssignedRule,
+            "\u4eca\u65e5\u503c\u65e5\u5339\u914d",
+            "\uE8D4");
 
-        var bootstrap = ReadBootstrapFlags();
+        var bootstrap = ReadBootstrapFlags(pluginPaths);
         if (bootstrap.EnableMcp || bootstrap.EnableWebViewDebugLayer)
         {
             services.AddSingleton<DutyLocalPreviewHostedService>();
-            services.AddSingleton<IHostedService>(sp => sp.GetRequiredService<DutyLocalPreviewHostedService>());
         }
 
         if (bootstrap.EnableWebViewDebugLayer)
@@ -58,14 +76,30 @@ public class Plugin : PluginBase
         }
         // fallback: 低版本 SDK 无分组 API 时不修改名称
 
-        AppDomain.CurrentDomain.ProcessExit += (_, _) => CleanupPythonProcesses();
+        AppBase.Current.AppStarted += (_, _) =>
+        {
+            _ = IAppHost.GetService<DutyPluginLifecycle>().StartAsync();
+            IAppHost.GetService<DutyRuleHandlerService>().Register();
+        };
+
+        AppBase.Current.AppStopping += (_, _) =>
+        {
+            try
+            {
+                IAppHost.GetService<DutyPluginLifecycle>().StopAsync().GetAwaiter().GetResult();
+            }
+            catch
+            {
+                CleanupPythonProcesses();
+            }
+        };
     }
 
-    private static BootstrapFlags ReadBootstrapFlags()
+    private static BootstrapFlags ReadBootstrapFlags(DutyPluginPaths pluginPaths)
     {
         try
         {
-            var configPath = Path.Combine(PluginBaseDirectory, "Assets_Duty", "data", "config.json");
+            var configPath = pluginPaths.ConfigPath;
             if (!File.Exists(configPath))
             {
                 return BootstrapFlags.Disabled;

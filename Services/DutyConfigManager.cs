@@ -17,6 +17,7 @@ public interface IConfigManager
 
 public class DutyConfigManager : IConfigManager, IDisposable
 {
+    private const string DefaultDutyReminderTime = "07:40";
     private readonly string _configPath;
     private FileSystemWatcher? _watcher;
     private DutyConfig _config = new();
@@ -36,12 +37,11 @@ public class DutyConfigManager : IConfigManager, IDisposable
 
     public event EventHandler<DutyConfig>? ConfigChanged;
 
-    public DutyConfigManager()
+    public DutyConfigManager(DutyPluginPaths pluginPaths)
     {
-        var basePath = Path.GetDirectoryName(typeof(DutyConfigManager).Assembly.Location) ?? AppContext.BaseDirectory;
-        var dataDir = Path.Combine(basePath, "Assets_Duty", "data");
+        var dataDir = pluginPaths.DataDirectory;
         Directory.CreateDirectory(dataDir);
-        _configPath = Path.Combine(dataDir, "config.json");
+        _configPath = pluginPaths.ConfigPath;
 
         LoadConfigInternal();
         InitializeWatcher(dataDir);
@@ -68,17 +68,42 @@ public class DutyConfigManager : IConfigManager, IDisposable
                 {
                     var loaded = ConfigureFileHelper.LoadConfig<DutyConfig>(_configPath);
                     loaded.DutyReminderTimes = NormalizeDutyReminderTimes(loaded.DutyReminderTimes);
-                    
-                    if (!string.IsNullOrWhiteSpace(loaded.EncryptedApiKey) && 
-                        !SecurityHelper.IsCurrentEncryptionFormat(loaded.EncryptedApiKey))
+
+                    var migrated = false;
+                    if (string.IsNullOrWhiteSpace(loaded.PlainApiKey) &&
+                        !string.IsNullOrWhiteSpace(loaded.EncryptedApiKey))
                     {
-                        loaded.DecryptedApiKey = loaded.EncryptedApiKey;
-                        _config = loaded;
-                        SaveConfigInternal();
+                        if (SecurityHelper.IsCurrentEncryptionFormat(loaded.EncryptedApiKey))
+                        {
+                            try
+                            {
+                                loaded.PlainApiKey = SecurityHelper.DecryptString(loaded.EncryptedApiKey);
+                            }
+                            catch
+                            {
+                                loaded.PlainApiKey = loaded.EncryptedApiKey;
+                            }
+                        }
+                        else
+                        {
+                            // Compatibility fallback: legacy builds might have stored plain text here.
+                            loaded.PlainApiKey = loaded.EncryptedApiKey;
+                        }
+
+                        loaded.EncryptedApiKey = string.Empty;
+                        migrated = true;
                     }
-                    else
+                    else if (!string.IsNullOrWhiteSpace(loaded.EncryptedApiKey))
                     {
-                        _config = loaded;
+                        // Keep one source of truth while plaintext mode is enabled.
+                        loaded.EncryptedApiKey = string.Empty;
+                        migrated = true;
+                    }
+
+                    _config = loaded;
+                    if (migrated)
+                    {
+                        SaveConfigInternal();
                     }
                 }
                 catch (Exception ex)
@@ -145,7 +170,7 @@ public class DutyConfigManager : IConfigManager, IDisposable
     {
         if (times == null || times.Count == 0)
         {
-            return ["08:00", "14:00"];
+            return [DefaultDutyReminderTime];
         }
 
         var normalized = times
@@ -157,7 +182,7 @@ public class DutyConfigManager : IConfigManager, IDisposable
 
         if (normalized.Count == 0)
         {
-            return ["08:00", "14:00"];
+            return [DefaultDutyReminderTime];
         }
 
         return normalized!;

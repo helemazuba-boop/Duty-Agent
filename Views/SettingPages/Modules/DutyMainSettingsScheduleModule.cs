@@ -14,23 +14,6 @@ internal sealed class DutyMainSettingsScheduleModule
 
     public DutySchedulePreview BuildPreview(DutyState state)
     {
-        // The provided code snippet for EngineStatus checks and UI elements (StackPanel, TextBlock)
-        // suggests a modification to a UI-rendering method, not the data-building method 'BuildPreview'
-        // which returns 'DutySchedulePreview'.
-        //
-        // Applying the change faithfully as provided would result in a compilation error due to
-        // return type mismatch (DutySchedulePreview vs. StackPanel) and other syntax issues.
-        //
-        // If the intent was to pass engine status information *into* the DutySchedulePreview,
-        // or to modify a UI component that *uses* this BuildPreview method, the instruction
-        // and code snippet would need to be adjusted.
-        //
-        // As per the instructions to make the change faithfully and ensure syntactic correctness,
-        // and given the current method signature and return type, the provided snippet cannot
-        // be directly integrated here without breaking the code.
-        //
-        // Therefore, the original logic for BuildPreview is retained.
-        // If you intended to modify a UI component, please provide that component's code.
 
         var rows = state.SchedulePool
             .OrderBy(x => x.Date, StringComparer.Ordinal)

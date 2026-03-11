@@ -10,80 +10,94 @@
                      d:DataContext="{d:DesignInstance local:DutyMainSettingsPage}"
                      mc:Ignorable="d">
 
-    <ScrollViewer>
-        <StackPanel Margin="16,8,16,32" Spacing="2">
+    <ScrollViewer HorizontalScrollBarVisibility="Disabled">
+        <Grid Margin="12,12,18,24">
+        <StackPanel Classes="animated-intro" Spacing="0">
             
-            <!-- 控制面板分组 -->
-            <TextBlock Text="控制面板" Margin="0,12,0,8" FontWeight="SemiBold" Opacity="0.8" />
-            
-            <ui:SettingsExpander Header="Duty-Agent 状态表" 
-                                 Description="面向普通用户：配置排班、执行任务、管理名单。">
-                <ui:SettingsExpander.IconSource>
-                    <ui:FontIconSource Glyph="&#xE713;" FontFamily="Segoe MDL2 Assets" />
-                </ui:SettingsExpander.IconSource>
-                <ui:SettingsExpander.Footer>
-                    <StackPanel Spacing="4" HorizontalAlignment="Right" VerticalAlignment="Center">
-                        <TextBlock x:Name="StatusText" Text="就绪" FontWeight="SemiBold" Foreground="Gray" HorizontalAlignment="Right" />
-                        <TextBlock x:Name="StatusMetaText" Text="配置状态：未应用" Opacity="0.75" FontSize="12" HorizontalAlignment="Right" />
-                        <TextBlock x:Name="RuntimeMetaText" Text="运行状态：待命 | 数据状态：未刷新" Opacity="0.75" FontSize="12" HorizontalAlignment="Right" />
+            <ui:InfoBar x:Name="StatusInfoBar"
+                        Margin="0,8,0,16"
+                        IsOpen="True"
+                        IsClosable="False"
+                        Severity="Informational">
+                <Grid ColumnDefinitions="*,Auto" ColumnSpacing="16">
+                    <StackPanel Grid.Column="0" Spacing="4" Margin="0,2,0,2">
+                        <TextBlock x:Name="StatusText" Text="就绪" FontWeight="SemiBold" />
+                        <TextBlock x:Name="StatusMetaText" Text="配置状态：未应用" Opacity="0.78" FontSize="12" />
+                        <TextBlock x:Name="RuntimeMetaText" Text="运行状态：待命 | 数据状态：未刷新" Opacity="0.78" FontSize="12" />
                     </StackPanel>
-                </ui:SettingsExpander.Footer>
-            </ui:SettingsExpander>
+                    <Button x:Name="RefreshDataBtn"
+                            Grid.Column="1"
+                            Content="刷新数据"
+                            Click="OnRefreshDataClick"
+                            VerticalAlignment="Center" />
+                </Grid>
+            </ui:InfoBar>
 
-            <ui:SettingsExpander Header="执行排班" 
-                                 Description="使用提示词驱动进行一次全量或增量排班预测" 
-                                 IsExpanded="True"
-                                 Margin="0,4,0,0">
-                <ui:SettingsExpander.IconSource>
-                    <ui:FontIconSource Glyph="&#xE7C3;" FontFamily="Segoe MDL2 Assets" />
-                </ui:SettingsExpander.IconSource>
-                <ui:SettingsExpander.Footer>
-                    <Button x:Name="RunAgentBtn" Classes="accent" Click="OnRunAgentClick">
-                        <StackPanel Orientation="Horizontal" Spacing="8">
-                            <TextBlock FontFamily="Segoe MDL2 Assets, Segoe Fluent Icons, Segoe UI Symbol" Text="&#xE768;" FontSize="16" VerticalAlignment="Center" />
-                            <TextBlock Text="开始排班（覆盖）" VerticalAlignment="Center" />
+            <StackPanel Margin="0,4,0,6" Orientation="Horizontal" Spacing="8">
+                <TextBlock FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" Text="&#xE8FD;" FontSize="16" Foreground="#6F6F6F" VerticalAlignment="Center" />
+                <TextBlock Text="排班" FontSize="18" FontWeight="SemiBold" VerticalAlignment="Center" />
+            </StackPanel>
+            <Border Margin="0,0,0,12"
+                    Padding="16"
+                    Background="#08000000"
+                    BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}"
+                    BorderThickness="1"
+                    CornerRadius="10">
+                <StackPanel Spacing="10">
+                    <Grid ColumnDefinitions="*,Auto" ColumnSpacing="12">
+                        <StackPanel Grid.Column="0" Spacing="2">
+                            <TextBlock Text="执行排班" FontWeight="SemiBold" />
+                            <TextBlock Text="留空时按当前配置执行；填写指令时会覆盖本次排班上下文。"
+                                       FontSize="12"
+                                       Opacity="0.62"
+                                       TextWrapping="Wrap" />
                         </StackPanel>
-                    </Button>
-                </ui:SettingsExpander.Footer>
-                <StackPanel Spacing="10" Margin="12,0,12,12">
-                        <TextBox x:Name="InstructionBox"
-                                 Height="76"
-                                 AcceptsReturn="True"
-                                 TextWrapping="Wrap"
-                                 Watermark="请输入本次排班指令；留空将按当前配置执行默认排班。" />
-                        <!-- [新] AI 思考黑板 -->
-                        <Border x:Name="ReasoningBoardContainer" 
-                                IsVisible="False"
-                                Background="#08000000" 
-                                BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}"
-                                BorderThickness="1"
-                                CornerRadius="6"
-                                Margin="0,4,0,0">
-                            <ScrollViewer x:Name="ReasoningBoardScrollViewer" MaxHeight="250" Padding="12">
-                                <TextBlock x:Name="ReasoningBoardText"
-                                           TextWrapping="Wrap"
-                                           FontFamily="Consolas, Courier New, monospace"
-                                           FontSize="13"
-                                           Opacity="0.85" />
-                            </ScrollViewer>
-                        </Border>
-                    </StackPanel>
-            </ui:SettingsExpander>
+                        <Button x:Name="RunAgentBtn" Grid.Column="1" Classes="accent" Click="OnRunAgentClick" VerticalAlignment="Top">
+                            <StackPanel Orientation="Horizontal" Spacing="8">
+                                <TextBlock FontFamily="Segoe MDL2 Assets, Segoe Fluent Icons, Segoe UI Symbol" Text="&#xE768;" FontSize="16" VerticalAlignment="Center" />
+                                <TextBlock Text="开始排班（覆盖）" VerticalAlignment="Center" />
+                            </StackPanel>
+                        </Button>
+                    </Grid>
 
-            <!-- 数据管理分组 -->
-            <TextBlock Text="排班与名单" Margin="0,24,0,8" FontWeight="SemiBold" Opacity="0.8" />
-            
-            <ui:SettingsExpander Header="排班预览" 
-                                 Description="查看预期的排班结果或手工调整细节" 
-                                 IsExpanded="True">
-                <ui:SettingsExpander.IconSource>
-                    <ui:FontIconSource Glyph="&#xE8A5;" FontFamily="Segoe MDL2 Assets" />
-                </ui:SettingsExpander.IconSource>
-                <ui:SettingsExpander.Footer>
-                    <Button x:Name="RefreshDataBtn" Content="刷新预览" Click="OnRefreshDataClick" />
-                </ui:SettingsExpander.Footer>
-                <StackPanel Spacing="10" Margin="12,0,12,12">
-                        <Border BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}" BorderThickness="1" CornerRadius="8">
+                    <TextBox x:Name="InstructionBox"
+                             Height="76"
+                             AcceptsReturn="True"
+                             TextWrapping="Wrap"
+                             Watermark="请输入本次排班指令；留空将按当前配置执行默认排班。" />
+
+                    <Border x:Name="ReasoningBoardContainer"
+                            IsVisible="False"
+                            Background="#08000000"
+                            BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}"
+                            BorderThickness="1"
+                            CornerRadius="6"
+                            Margin="0,2,0,0">
+                        <ScrollViewer x:Name="ReasoningBoardScrollViewer" MaxHeight="250" Padding="12">
+                            <TextBlock x:Name="ReasoningBoardText"
+                                       TextWrapping="Wrap"
+                                       FontFamily="Consolas, Courier New, monospace"
+                                       FontSize="13"
+                                       Opacity="0.85" />
+                        </ScrollViewer>
+                    </Border>
+                </StackPanel>
+            </Border>
+
+            <Border Margin="0,0,0,12"
+                    Padding="16"
+                    Background="#08000000"
+                    BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}"
+                    BorderThickness="1"
+                    CornerRadius="10">
+                <StackPanel Spacing="10">
+                    <StackPanel Spacing="2">
+                        <TextBlock Text="排班与名单" FontWeight="SemiBold" />
+                    </StackPanel>
+                    <TabControl x:Name="DataViewTabControl">
+                        <TabItem Header="排班预览">
+                            <StackPanel x:Name="ScheduleViewPanel" Spacing="10" Margin="0,12,0,0">
+                                <Border BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}" BorderThickness="1" CornerRadius="8" Background="#03000000">
                             <Grid RowDefinitions="Auto,*">
                                 <Border BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}" BorderThickness="0,0,0,1" Padding="10,8">
                                     <Grid ColumnDefinitions="120,80,2.4*,1.4*" ColumnSpacing="8">
@@ -94,13 +108,13 @@
                                     </Grid>
                                 </Border>
                                 <ListBox x:Name="ScheduleListBox"
-                                          Grid.Row="1"
-                                          MinHeight="220"
-                                          MaxHeight="320"
-                                          SelectionChanged="OnScheduleSelectionChanged">
+                                         Grid.Row="1"
+                                         MinHeight="220"
+                                         MaxHeight="360"
+                                         SelectionChanged="OnScheduleSelectionChanged">
                                     <ListBox.ItemTemplate>
                                         <DataTemplate>
-                                            <Border Padding="10,8" BorderBrush="#14000000" BorderThickness="0,0,0,1">
+                                            <Border Padding="12,12" BorderBrush="#10000000" BorderThickness="0,0,0,1">
                                                 <Grid ColumnDefinitions="120,80,2.4*,1.4*" ColumnSpacing="8">
                                                     <TextBlock Grid.Column="0" Text="{Binding Date}" VerticalAlignment="Center" />
                                                     <TextBlock Grid.Column="1" Text="{Binding Day}" VerticalAlignment="Center" />
@@ -114,13 +128,12 @@
                                 <StackPanel x:Name="ScheduleEmptyStatePanel" Grid.Row="1" VerticalAlignment="Center" HorizontalAlignment="Center" Spacing="8" IsVisible="False">
                                     <TextBlock FontFamily="Segoe MDL2 Assets, Segoe Fluent Icons, Segoe UI Symbol" Text="&#xE8A5;" FontSize="48" Opacity="0.4" HorizontalAlignment="Center" />
                                     <TextBlock Text="暂无排班预期数据" Opacity="0.6" FontSize="14" FontWeight="SemiBold" HorizontalAlignment="Center" />
-                                    <TextBlock Text="点击上方【刷新预览】或【开始排班】生成" Opacity="0.5" FontSize="12" HorizontalAlignment="Center" />
+                                    <TextBlock Text="点击顶部【刷新数据】或【开始排班】生成" Opacity="0.5" FontSize="12" HorizontalAlignment="Center" />
                                 </StackPanel>
                             </Grid>
                         </Border>
-                        
-                        <!-- 极简排班编辑器 -->
-                        <Border Background="#08000000" CornerRadius="4" Padding="12,8" Margin="0,2,0,0">
+
+                        <Border Background="#04000000" CornerRadius="8" Padding="16,12" Margin="0,4,0,0" BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}" BorderThickness="1">
                             <StackPanel Spacing="8">
                                 <Grid ColumnDefinitions="Auto,*">
                                     <TextBlock Grid.Column="0" Text="编辑排班详情" FontWeight="SemiBold" VerticalAlignment="Center" />
@@ -152,17 +165,10 @@
                         </Border>
                         <TextBlock x:Name="ScheduleSummaryText" Text="暂无排班数据。" Opacity="0.75" />
                     </StackPanel>
-            </ui:SettingsExpander>
-
-            <ui:SettingsExpander Header="花名册管理" 
-                                 Description="维护组别与学生列表，控制人员参与状态" 
-                                 IsExpanded="False"
-                                 Margin="0,4,0,0">
-                <ui:SettingsExpander.IconSource>
-                    <ui:FontIconSource Glyph="&#xE125;" FontFamily="Segoe MDL2 Assets" />
-                </ui:SettingsExpander.IconSource>
-                <StackPanel Spacing="10" Margin="12,0,12,12">
-                        <Grid ColumnDefinitions="Auto,*,Auto">
+                        </TabItem>
+                        <TabItem Header="花名册管理">
+                            <StackPanel x:Name="RosterViewPanel" Spacing="10" Margin="0,12,0,0">
+                                <Grid ColumnDefinitions="Auto,*,Auto">
                             <StackPanel Grid.Column="0" Orientation="Horizontal" Spacing="8">
                                 <TextBox x:Name="NewStudentNameBox" Width="200" Watermark="输入学生姓名..." />
                                 <Button x:Name="AddStudentBtn" Content="添加" Classes="accent" Click="OnAddStudentClick" />
@@ -178,8 +184,8 @@
                                 </Button>
                             </StackPanel>
                         </Grid>
-                        
-                        <Border BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}" BorderThickness="1" CornerRadius="8">
+
+                        <Border BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}" BorderThickness="1" CornerRadius="8" Background="#03000000">
                             <Grid RowDefinitions="Auto,*">
                                 <Border BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}" BorderThickness="0,0,0,1" Padding="10,8">
                                     <Grid ColumnDefinitions="64,2*,1.8*,84,84" ColumnSpacing="8">
@@ -190,10 +196,10 @@
                                         <TextBlock Grid.Column="4" Text="状态" FontWeight="SemiBold" />
                                     </Grid>
                                 </Border>
-                                <ListBox x:Name="RosterListBox" Grid.Row="1" MinHeight="220" MaxHeight="300" SelectionChanged="OnRosterSelectionChanged">
+                                <ListBox x:Name="RosterListBox" Grid.Row="1" MinHeight="220" MaxHeight="320" SelectionChanged="OnRosterSelectionChanged">
                                     <ListBox.ItemTemplate>
                                         <DataTemplate>
-                                            <Border Padding="10,8" BorderBrush="#14000000" BorderThickness="0,0,0,1">
+                                            <Border Padding="12,12" BorderBrush="#10000000" BorderThickness="0,0,0,1">
                                                 <Grid ColumnDefinitions="64,2*,1.8*,84,84" ColumnSpacing="8">
                                                     <TextBlock Grid.Column="0" Text="{Binding Id}" VerticalAlignment="Center" Opacity="0.75" />
                                                     <TextBlock Grid.Column="1" Text="{Binding Name}" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
@@ -214,18 +220,25 @@
                         </Border>
                         <TextBlock x:Name="RosterSummaryText" Text="名单未加载。" Opacity="0.75" />
                     </StackPanel>
-            </ui:SettingsExpander>
+                        </TabItem>
+                    </TabControl>
+                </StackPanel>
+            </Border>
 
-            <!-- 策略与参数分组 -->
-            <TextBlock Text="策略与参数" Margin="0,24,0,8" FontWeight="SemiBold" Opacity="0.8" />
+            <Separator Margin="0,8,0,8" />
 
-            <ui:SettingsExpander Header="AI 长期规则" 
-                                 Description="作为硬性要求发送给大模型，配置特殊情境指导" 
+            <StackPanel Margin="0,4,0,6" Orientation="Horizontal" Spacing="8">
+                <TextBlock FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" Text="&#xE8B0;" FontSize="16" Foreground="#6F6F6F" VerticalAlignment="Center" />
+                <TextBlock Text="规则与自动化" FontSize="18" FontWeight="SemiBold" VerticalAlignment="Center" />
+            </StackPanel>
+
+            <ui:SettingsExpander Header="AI 长期规则"
+                                 Description="作为固定要求附加到每次排班请求。"
                                  IsExpanded="False">
                 <ui:SettingsExpander.IconSource>
                     <ui:FontIconSource Glyph="&#xE945;" FontFamily="Segoe MDL2 Assets" />
                 </ui:SettingsExpander.IconSource>
-                <StackPanel Spacing="10" Margin="12,0,12,12">
+                <StackPanel Spacing="8" Margin="12,0,12,12">
                         <TextBox x:Name="DutyRuleBox"
                                  Height="100"
                                  AcceptsReturn="True"
@@ -236,8 +249,8 @@
                     </StackPanel>
             </ui:SettingsExpander>
 
-            <ui:SettingsExpander Header="自动与通知调度" 
-                                 Description="配置计划任务与值日提醒，自动滚动生成下一周期" 
+            <ui:SettingsExpander Header="自动排班"
+                                 Description="按设定周期自动生成下一轮排班。"
                                  IsExpanded="False"
                                  Margin="0,4,0,0">
                 <ui:SettingsExpander.IconSource>
@@ -246,7 +259,7 @@
                 <StackPanel Spacing="10" Margin="12,0,12,12">
                         <Grid ColumnDefinitions="*,*" ColumnSpacing="10">
                             <StackPanel Grid.Column="0" Spacing="6">
-                                <TextBlock Text="自动排班策略" />
+                                <TextBlock Text="触发策略" FontWeight="SemiBold" />
                                 <ComboBox x:Name="AutoRunModeComboBox" HorizontalAlignment="Stretch" SelectionChanged="OnConfigSelectionChanged">
                                     <ComboBoxItem Content="关闭" />
                                     <ComboBoxItem Content="每周" />
@@ -263,51 +276,80 @@
                                     <ComboBoxItem Content="周日" />
                                 </ComboBox>
                                 <ComboBox x:Name="AutoRunMonthDayComboBox" HorizontalAlignment="Stretch" SelectionChanged="OnConfigSelectionChanged" />
-                                <TextBox x:Name="AutoRunIntervalBox" Watermark="间隔天数（例如 14）" HorizontalAlignment="Stretch" />
+                                <TextBox x:Name="AutoRunIntervalBox"
+                                         Watermark="间隔天数（例如 14）"
+                                         HorizontalAlignment="Stretch"
+                                         LostFocus="OnConfigInputLostFocus"
+                                         KeyDown="OnConfigInputKeyDown" />
                             </StackPanel>
-                            <StackPanel Grid.Column="1" Spacing="6">
-                                <TextBlock Text="自动排班时间" />
-                                <StackPanel Orientation="Horizontal" Spacing="6">
-                                    <ComboBox x:Name="AutoRunHourComboBox" Width="88" HorizontalAlignment="Left" SelectionChanged="OnConfigSelectionChanged" />
-                                    <TextBlock VerticalAlignment="Center" Text="时" />
-                                    <ComboBox x:Name="AutoRunMinuteComboBox" Width="88" HorizontalAlignment="Left" SelectionChanged="OnConfigSelectionChanged" />
-                                    <TextBlock VerticalAlignment="Center" Text="分" />
+                            <StackPanel Grid.Column="1" Spacing="10">
+                                <StackPanel Spacing="6">
+                                    <TextBlock Text="自动排班时间" FontWeight="SemiBold" />
+                                    <StackPanel Orientation="Horizontal" Spacing="6">
+                                        <ComboBox x:Name="AutoRunHourComboBox" Width="88" HorizontalAlignment="Left" SelectionChanged="OnConfigSelectionChanged" />
+                                        <TextBlock VerticalAlignment="Center" Text="时" />
+                                        <ComboBox x:Name="AutoRunMinuteComboBox" Width="88" HorizontalAlignment="Left" SelectionChanged="OnConfigSelectionChanged" />
+                                        <TextBlock VerticalAlignment="Center" Text="分" />
+                                    </StackPanel>
+                                </StackPanel>
+                                <StackPanel Spacing="6">
+                                    <TextBlock Text="组件刷新时间" FontWeight="SemiBold" />
+                                    <StackPanel Orientation="Horizontal" Spacing="6">
+                                        <ComboBox x:Name="ComponentRefreshHourComboBox" Width="88" HorizontalAlignment="Left" SelectionChanged="OnConfigSelectionChanged" />
+                                        <TextBlock VerticalAlignment="Center" Text="时" />
+                                        <ComboBox x:Name="ComponentRefreshMinuteComboBox" Width="88" HorizontalAlignment="Left" SelectionChanged="OnConfigSelectionChanged" />
+                                        <TextBlock VerticalAlignment="Center" Text="分" />
+                                    </StackPanel>
                                 </StackPanel>
                             </StackPanel>
                         </Grid>
 
-                        <TextBlock Text="组件刷新时间" Margin="0,8,0,0"/>
-                        <StackPanel Orientation="Horizontal" Spacing="6">
-                            <ComboBox x:Name="ComponentRefreshHourComboBox" Width="88" HorizontalAlignment="Left" SelectionChanged="OnConfigSelectionChanged" />
-                            <TextBlock VerticalAlignment="Center" Text="时" />
-                            <ComboBox x:Name="ComponentRefreshMinuteComboBox" Width="88" HorizontalAlignment="Left" SelectionChanged="OnConfigSelectionChanged" />
-                            <TextBlock VerticalAlignment="Center" Text="分" />
-                        </StackPanel>
+                        <ToggleSwitch x:Name="AutoRunTriggerNotificationSwitch" Content="自动排班触发通知" Checked="OnConfigToggleChanged" Unchecked="OnConfigToggleChanged" />
+                    </StackPanel>
+            </ui:SettingsExpander>
 
-                        <Grid ColumnDefinitions="*,*" RowDefinitions="Auto" ColumnSpacing="10" RowSpacing="8" Margin="0,8,0,0">
-                            <ToggleSwitch x:Name="AutoRunTriggerNotificationSwitch" Grid.Column="0" Content="自动排班触发通知" Checked="OnConfigToggleChanged" Unchecked="OnConfigToggleChanged" />
-                            <ToggleSwitch x:Name="DutyReminderEnabledSwitch" Grid.Column="1" Content="启用值日定时通知" Checked="OnConfigToggleChanged" Unchecked="OnConfigToggleChanged" />
-                        </Grid>
-                        
-                        <TextBlock Text="值日通知时间" Margin="0,8,0,0"/>
+            <ui:SettingsExpander Header="值日提醒"
+                                 Description="在设定时间提醒当天值日安排。"
+                                 IsExpanded="False"
+                                 Margin="0,4,0,0">
+                <ui:SettingsExpander.IconSource>
+                    <ui:FontIconSource Glyph="&#xE7F4;" FontFamily="Segoe MDL2 Assets" />
+                </ui:SettingsExpander.IconSource>
+                <ui:SettingsExpander.Footer>
+                    <ToggleSwitch x:Name="DutyReminderEnabledSwitch" Content="启用值日定时通知" Checked="OnConfigToggleChanged" Unchecked="OnConfigToggleChanged" />
+                </ui:SettingsExpander.Footer>
+                <StackPanel Spacing="10" Margin="12,0,12,12">
+                    <StackPanel Spacing="6">
+                        <TextBlock Text="提醒时间" FontWeight="SemiBold" />
                         <StackPanel Orientation="Horizontal" Spacing="6">
                             <ComboBox x:Name="DutyReminderHourComboBox" Width="88" HorizontalAlignment="Left" SelectionChanged="OnConfigSelectionChanged" />
                             <TextBlock VerticalAlignment="Center" Text="时" />
                             <ComboBox x:Name="DutyReminderMinuteComboBox" Width="88" HorizontalAlignment="Left" SelectionChanged="OnConfigSelectionChanged" />
                             <TextBlock VerticalAlignment="Center" Text="分" />
                         </StackPanel>
-                        
-                        <TextBlock Text="通知显示时长" Margin="0,8,0,0" />
+                    </StackPanel>
+
+                    <StackPanel Spacing="6">
+                        <TextBlock Text="通知显示时长" FontWeight="SemiBold" />
                         <StackPanel Orientation="Horizontal" Spacing="8">
                             <Slider x:Name="NotificationDurationSlider" Minimum="3" Maximum="15" TickFrequency="1" IsSnapToTickEnabled="True" Width="240" ValueChanged="OnNotificationDurationChanged" />
                             <TextBlock x:Name="NotificationDurationLabel" VerticalAlignment="Center" Text="8 秒" />
                         </StackPanel>
-                        <Button x:Name="TestNotificationButton" Content="&#xE7F4;  测试通知" FontFamily="Segoe MDL2 Assets, Segoe Fluent Icons, Segoe UI Symbol" Click="OnTestNotificationClicked" HorizontalAlignment="Left" Margin="0,8,0,0" />
                     </StackPanel>
+
+                    <Button x:Name="TestNotificationButton" Content="&#xE7F4;  测试通知" FontFamily="Segoe MDL2 Assets, Segoe Fluent Icons, Segoe UI Symbol" Click="OnTestNotificationClicked" HorizontalAlignment="Left" />
+                </StackPanel>
             </ui:SettingsExpander>
 
-            <ui:SettingsExpander Header="连接与模型" 
-                                 Description="API Key 及 AI 运行时环境配置" 
+            <Separator Margin="0,8,0,8" />
+
+            <StackPanel Margin="0,4,0,6" Orientation="Horizontal" Spacing="8">
+                <TextBlock FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" Text="&#xE774;" FontSize="16" Foreground="#6F6F6F" VerticalAlignment="Center" />
+                <TextBlock Text="连接与高级" FontSize="18" FontWeight="SemiBold" VerticalAlignment="Center" />
+            </StackPanel>
+
+            <ui:SettingsExpander Header="模型服务"
+                                 Description="配置调用 AI 排班所需的模型接口。"
                                  IsExpanded="False"
                                  Margin="0,4,0,0">
                 <ui:SettingsExpander.IconSource>
@@ -317,19 +359,19 @@
                         <Grid ColumnDefinitions="Auto,*" RowDefinitions="Auto,Auto,Auto,Auto" RowSpacing="12">
                             <StackPanel Grid.Row="0" Grid.Column="0" VerticalAlignment="Center" Spacing="2" Margin="0,0,32,0">
                                 <TextBlock Text="API Key" FontSize="14" VerticalAlignment="Center"/>
-                                <TextBlock Text="用于访问大模型接口的鉴权密钥" FontSize="12" Opacity="0.55" VerticalAlignment="Center" />
+                                <TextBlock Text="用于访问模型接口；留空时无法执行 AI 排班。" FontSize="12" Opacity="0.55" VerticalAlignment="Center" />
                             </StackPanel>
                             <TextBox x:Name="ApiKeyBox" Grid.Row="0" Grid.Column="1" VerticalAlignment="Center" PasswordChar="*" LostFocus="OnConfigInputLostFocus" KeyDown="OnConfigInputKeyDown" />
 
                             <StackPanel Grid.Row="1" Grid.Column="0" VerticalAlignment="Center" Spacing="2" Margin="0,0,32,0">
                                 <TextBlock Text="模型名称" FontSize="14" VerticalAlignment="Center"/>
-                                <TextBlock Text="例如: moonshotai/kimi-k2-thinking" FontSize="12" Opacity="0.55" VerticalAlignment="Center" />
+                                <TextBlock Text="例如：moonshotai/kimi-k2-thinking。" FontSize="12" Opacity="0.55" VerticalAlignment="Center" />
                             </StackPanel>
                             <TextBox x:Name="ModelBox" Grid.Row="1" Grid.Column="1" VerticalAlignment="Center" Watermark="moonshotai/kimi-k2-thinking" LostFocus="OnConfigInputLostFocus" KeyDown="OnConfigInputKeyDown" />
 
                             <StackPanel Grid.Row="2" Grid.Column="0" VerticalAlignment="Center" Spacing="2" Margin="0,0,32,0">
-                                <TextBlock Text="提示词分支" FontSize="14" VerticalAlignment="Center"/>
-                                <TextBlock Text="大模型推荐常规，本地小尺寸模式选增量" FontSize="12" Opacity="0.55" VerticalAlignment="Center" />
+                                <TextBlock Text="提示词模式" FontSize="14" VerticalAlignment="Center"/>
+                                <TextBlock Text="高性能模型通常选常规，本地小模型更适合增量。" FontSize="12" Opacity="0.55" VerticalAlignment="Center" />
                             </StackPanel>
                             <ComboBox x:Name="PromptModeComboBox" Grid.Row="2" Grid.Column="1" HorizontalAlignment="Stretch" VerticalAlignment="Center" SelectionChanged="OnConfigSelectionChanged">
                                 <ComboBoxItem Content="常规 (高智商大模型)" Tag="Regular" />
@@ -338,27 +380,38 @@
 
                             <StackPanel Grid.Row="3" Grid.Column="0" VerticalAlignment="Center" Spacing="2" Margin="0,0,32,0">
                                 <TextBlock Text="Base URL" FontSize="14" VerticalAlignment="Center"/>
-                                <TextBlock Text="提供与 OpenAI 兼容格式的转发层地址" FontSize="12" Opacity="0.55" VerticalAlignment="Center" />
+                                <TextBlock Text="提供 OpenAI 兼容接口时再填写；官方直连可保持默认。" FontSize="12" Opacity="0.55" VerticalAlignment="Center" />
                             </StackPanel>
                             <TextBox x:Name="BaseUrlBox" Grid.Row="3" Grid.Column="1" VerticalAlignment="Center" Watermark="https://integrate.api.nvidia.com/v1" LostFocus="OnConfigInputLostFocus" KeyDown="OnConfigInputKeyDown" />
                         </Grid>
                     </StackPanel>
             </ui:SettingsExpander>
 
-            <ui:SettingsExpander Header="调试与集成" 
-                                 Description="测试专用后门及开发环境层开启选项" 
+            <ui:SettingsExpander Header="MCP 导入接口"
+                                 Description="允许外部通过 MCP 导入值日相关数据。"
                                  IsExpanded="False"
                                  Margin="0,4,0,0">
                 <ui:SettingsExpander.IconSource>
                     <ui:FontIconSource Glyph="&#xE943;" FontFamily="Segoe MDL2 Assets" />
                 </ui:SettingsExpander.IconSource>
-                <StackPanel Spacing="10" Margin="12,0,12,12">
-                        <ToggleSwitch x:Name="EnableMcpSwitch" Content="启用 MCP 导入接口" Checked="OnConfigToggleChanged" Unchecked="OnConfigToggleChanged" />
-                        <ToggleSwitch x:Name="EnableWebDebugLayerSwitch" Content="启用 WebView2 调试层" Checked="OnConfigToggleChanged" Unchecked="OnConfigToggleChanged" />
-                        <TextBlock Text="说明：启用“WebView2 调试层”后，重启 ClassIsland 才会显示调试页面并启动对应本地调试服务。" Opacity="0.75" TextWrapping="Wrap" />
-                    </StackPanel>
+                <ui:SettingsExpander.Footer>
+                    <ToggleSwitch x:Name="EnableMcpSwitch" Content="启用" Checked="OnConfigToggleChanged" Unchecked="OnConfigToggleChanged" />
+                </ui:SettingsExpander.Footer>
+            </ui:SettingsExpander>
+
+            <ui:SettingsExpander Header="WebView2 调试层"
+                                 Description="为内嵌 WebView2 启用本地调试支持。"
+                                 IsExpanded="False"
+                                 Margin="0,4,0,0">
+                <ui:SettingsExpander.IconSource>
+                    <ui:FontIconSource Glyph="&#xE943;" FontFamily="Segoe MDL2 Assets" />
+                </ui:SettingsExpander.IconSource>
+                <ui:SettingsExpander.Footer>
+                    <ToggleSwitch x:Name="EnableWebDebugLayerSwitch" Content="启用" Checked="OnConfigToggleChanged" Unchecked="OnConfigToggleChanged" />
+                </ui:SettingsExpander.Footer>
             </ui:SettingsExpander>
 
         </StackPanel>
+        </Grid>
     </ScrollViewer>
 </ci:SettingsPageBase>

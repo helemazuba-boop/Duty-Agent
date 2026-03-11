@@ -14,6 +14,10 @@ public partial class DutyConfig : ObservableObject
 
     [ObservableProperty]
     [property: JsonPropertyName("api_key")]
+    private string _plainApiKey = string.Empty;
+
+    [ObservableProperty]
+    [property: JsonPropertyName("api_key_encrypted")]
     private string _encryptedApiKey = string.Empty;
 
     [JsonIgnore]
@@ -23,6 +27,12 @@ public partial class DutyConfig : ObservableObject
         {
             if (!string.IsNullOrEmpty(_decryptedApiKey))
             {
+                return _decryptedApiKey;
+            }
+
+            if (!string.IsNullOrWhiteSpace(PlainApiKey))
+            {
+                _decryptedApiKey = PlainApiKey;
                 return _decryptedApiKey;
             }
 
@@ -37,7 +47,8 @@ public partial class DutyConfig : ObservableObject
             }
             catch
             {
-                _decryptedApiKey = string.Empty;
+                // Compatibility fallback: some historical builds stored plain text in legacy field.
+                _decryptedApiKey = EncryptedApiKey;
             }
 
             return _decryptedApiKey;
@@ -45,9 +56,9 @@ public partial class DutyConfig : ObservableObject
         set
         {
             _decryptedApiKey = value ?? string.Empty;
-            EncryptedApiKey = string.IsNullOrWhiteSpace(_decryptedApiKey)
-                ? string.Empty
-                : SecurityHelper.EncryptString(_decryptedApiKey);
+            PlainApiKey = _decryptedApiKey;
+            // Temporarily disable encrypted persistence.
+            EncryptedApiKey = string.Empty;
         }
     }
 

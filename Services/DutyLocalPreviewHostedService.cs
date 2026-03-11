@@ -57,11 +57,10 @@ public sealed class DutyLocalPreviewHostedService : IHostedService, IDisposable
         }
     }
 
-    public DutyLocalPreviewHostedService(DutyScheduleOrchestrator backendService)
+    public DutyLocalPreviewHostedService(DutyScheduleOrchestrator backendService, DutyPluginPaths pluginPaths)
     {
         _backendService = backendService;
-        var baseDir = Path.GetDirectoryName(typeof(DutyLocalPreviewHostedService).Assembly.Location) ?? AppContext.BaseDirectory;
-        _testFilePath = Path.Combine(baseDir, "Assets_Duty", "web", "test.html");
+        _testFilePath = pluginPaths.WebTestHtmlPath;
     }
 
     public Task StartAsync(CancellationToken cancellationToken)
@@ -349,7 +348,7 @@ public sealed class DutyLocalPreviewHostedService : IHostedService, IDisposable
             Code = string.IsNullOrWhiteSpace(result.Code) ? (result.Success ? "ok" : "run_failed") : result.Code,
             Message = result.Message,
             ApplyMode = "replace_all",
-            AiResponse = result.AiResponse,
+            AiResponse = result.AiResponse ?? string.Empty,
             StartedAt = startedAt.ToString("O"),
             FinishedAt = finishedAt.ToString("O"),
             DurationMs = Math.Max(0L, (long)(finishedAt - startedAt).TotalMilliseconds),

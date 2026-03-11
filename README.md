@@ -2,9 +2,10 @@
   <img src="icon.png" width="128" alt="Duty-Agent Logo" />
   <h1>Duty-Agent</h1>
   <p><em>"Reasoning via LLM, Reliability via Code." —— 面向 ClassIsland 的下一代混合智能排班系统</em></p>
-  <p><strong>当前版本: v0.50.0 alpha</strong></p>
+  <p><strong>当前版本: v0.50.0 alpha 1</strong></p>
 </div>
 
+> **警告：当前版本正在测试名为“混合智能 V4”的新功能，极其不稳定，存在崩溃风险。**
 > **注意：项目理论上的逻辑已经通过，正在真实环境下测试以验证稳定性和优化细节。如果您需要在生产环境中应用，请稍等正式版。**
 
 `Duty-Agent` 是一个专为 **[ClassIsland](https://github.com/ClassIsland/ClassIsland)** 设计的下一代智能排班插件。它首创了 **“混合智能”** 架构——将大语言模型 (LLM) 的**灵活性**（理解自然语言指令）与 Python 代码的**确定性**（算法兜底、状态持久化）深度融合，彻底解决了传统排班算法（如轮询、随机）僵硬且无法处理复杂人事变动的痛点。
@@ -42,7 +43,8 @@
 
 ### 4. 🔒 隐私与安全
 *   **数据脱敏**: 在发送给 LLM 之前，所有学生/员工的名字都会被替换为无意义的 ID (例: `张三 -> ID 15`)，本地接收后再还原。花名册详情最大程度避免泄露给云端。
-*   **高强度加密保护**: API Key 采用 `AES-256-CBC` 加密，并与本机**物理网卡 MAC 地址绑定**。即使配置文件被盗，在其他设备上也难以解密。Key 仅通过内存管道传输，尽量避免落地。
+*   **高强度加密保护**: API Key 采用 `AES-256-CBC` 加密，并与本机**物理网卡 MAC 地址绑定**。即使配置文件被盗，在其他设备上也难以解密。
+    *   **重要说明 (alpha 1)**: 当前测试版本为了实验稳定性，允许 API Key 以明文形式保存在 `config.json` 中并随 Local IPC 传输。稳定版本将恢复全链路加密隐身。
 
 ### 5. 🔌 开放标准支持
 实现了 **Streamable HTTP MCP** 标准，不仅是一个插件，更是一个 **Tool Provider**。外部高级 AI（如 Cursor, Windsurf，CherryStudio）可通过 MCP 直接读取和操作排班。

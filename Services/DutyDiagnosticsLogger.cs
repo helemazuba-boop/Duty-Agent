@@ -15,7 +15,7 @@ internal static class DutyDiagnosticsLogger
     };
 
     private static readonly string SessionId = DateTime.Now.ToString("yyyyMMdd-HHmmss");
-    private static readonly string LogDirectory = ResolveLogDirectory();
+    private static string? _configuredLogDirectory;
     private static string _currentLogPath = BuildDefaultLogPath();
     private static bool _initialized;
 
@@ -28,6 +28,16 @@ internal static class DutyDiagnosticsLogger
                 EnsureInitialized();
                 return _currentLogPath;
             }
+        }
+    }
+
+    public static void Configure(string? logDirectory)
+    {
+        lock (SyncRoot)
+        {
+            _configuredLogDirectory = string.IsNullOrWhiteSpace(logDirectory) ? null : logDirectory;
+            _initialized = false;
+            _currentLogPath = BuildDefaultLogPath();
         }
     }
 
@@ -75,7 +85,7 @@ internal static class DutyDiagnosticsLogger
             return;
         }
 
-        Directory.CreateDirectory(LogDirectory);
+        Directory.CreateDirectory(ResolveLogDirectory());
         PruneExpiredLogs();
         _currentLogPath = BuildDefaultLogPath();
         _initialized = true;
@@ -96,7 +106,7 @@ internal static class DutyDiagnosticsLogger
                 return;
             }
 
-            _currentLogPath = Path.Combine(LogDirectory, $"duty-webview-{DateTime.Now:yyyyMMdd-HHmmss}.log");
+            _currentLogPath = Path.Combine(ResolveLogDirectory(), $"duty-webview-{DateTime.Now:yyyyMMdd-HHmmss}.log");
         }
         catch (Exception ex)
         {
@@ -109,7 +119,7 @@ internal static class DutyDiagnosticsLogger
         try
         {
             var cutoff = DateTime.Now.AddDays(-KeepDays);
-            foreach (var file in Directory.EnumerateFiles(LogDirectory, "duty-webview-*.log"))
+            foreach (var file in Directory.EnumerateFiles(ResolveLogDirectory(), "duty-webview-*.log"))
             {
                 var info = new FileInfo(file);
                 if (info.LastWriteTime < cutoff)
@@ -126,11 +136,16 @@ internal static class DutyDiagnosticsLogger
 
     private static string BuildDefaultLogPath()
     {
-        return Path.Combine(LogDirectory, $"duty-webview-{DateTime.Now:yyyyMMdd}.log");
+        return Path.Combine(ResolveLogDirectory(), $"duty-webview-{DateTime.Now:yyyyMMdd}.log");
     }
 
     private static string ResolveLogDirectory()
     {
+        if (!string.IsNullOrWhiteSpace(_configuredLogDirectory))
+        {
+            return _configuredLogDirectory;
+        }
+
         try
         {
             var baseDir = Path.GetDirectoryName(typeof(DutyDiagnosticsLogger).Assembly.Location) ?? AppContext.BaseDirectory;

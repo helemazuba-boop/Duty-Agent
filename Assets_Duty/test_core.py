@@ -14,7 +14,7 @@ from unittest.mock import patch, MagicMock
 # Ensure the module under test is importable
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from core import (
+from engine import (
     merge_schedule_pool,
     reconcile_credit_list,
     call_llm,
@@ -310,7 +310,7 @@ class TestCallLlmPayloadIsolation(unittest.TestCase):
             "llm_stream": False,
         }
         with patch(
-            "core.request_llm_non_stream",
+            "engine.request_llm_non_stream",
             side_effect=['no csv here', '<csv>\nDate,Assigned_IDs,Note\n2023-10-10,4,ok\n</csv>'],
         ):
             parsed, _ = call_llm(messages, config)

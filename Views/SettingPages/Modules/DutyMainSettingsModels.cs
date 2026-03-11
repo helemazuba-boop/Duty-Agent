@@ -1,4 +1,5 @@
 ﻿using DutyAgent.Models;
+using DutyAgent.Services;
 
 namespace DutyAgent.Views.SettingPages.Modules;
 
@@ -78,6 +79,8 @@ internal sealed class DutySchedulePreview
 {
     public List<DutyScheduleRow> Rows { get; init; } = [];
     public string Summary { get; init; } = "暂无排班数据。";
+    public EngineState EngineStatus { get; init; }
+    public string? EngineLastError { get; init; }
 }
 
 internal sealed class DutyScheduleEditorData

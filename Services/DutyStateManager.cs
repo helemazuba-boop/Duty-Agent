@@ -29,12 +29,11 @@ public class DutyStateManager : IStateAndRosterManager, IDisposable
 
     public event EventHandler<DutyState>? StateChanged;
 
-    public DutyStateManager()
+    public DutyStateManager(DutyPluginPaths pluginPaths)
     {
-        var basePath = Path.GetDirectoryName(typeof(DutyStateManager).Assembly.Location) ?? AppContext.BaseDirectory;
-        var dataDir = Path.Combine(basePath, "Assets_Duty", "data");
+        var dataDir = pluginPaths.DataDirectory;
         Directory.CreateDirectory(dataDir);
-        _statePath = Path.Combine(dataDir, "state.json");
+        _statePath = pluginPaths.StatePath;
 
         InitializeWatcher(dataDir);
     }

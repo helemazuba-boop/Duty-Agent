@@ -32,6 +32,7 @@ public partial class DutyWebSettingsPage : SettingsPageBase
     private readonly DutyScheduleOrchestrator _backendService;
     private readonly DutyNotificationService _notificationService;
     private readonly DutyLocalPreviewHostedService _localPreviewHostedService;
+    private readonly DutyPluginPaths _pluginPaths;
     private readonly DutyWebViewHost _webViewHost;
     private Size _lastLoggedContainerSize;
 
@@ -39,18 +40,21 @@ public partial class DutyWebSettingsPage : SettingsPageBase
         : this(
             IAppHost.GetService<DutyScheduleOrchestrator>(),
             IAppHost.GetService<DutyNotificationService>(),
-            IAppHost.GetService<DutyLocalPreviewHostedService>())
+            IAppHost.GetService<DutyLocalPreviewHostedService>(),
+            IAppHost.GetService<DutyPluginPaths>())
     {
     }
 
     public DutyWebSettingsPage(
         DutyScheduleOrchestrator backendService,
         DutyNotificationService notificationService,
-        DutyLocalPreviewHostedService localPreviewHostedService)
+        DutyLocalPreviewHostedService localPreviewHostedService,
+        DutyPluginPaths pluginPaths)
     {
         _backendService = backendService;
         _notificationService = notificationService;
         _localPreviewHostedService = localPreviewHostedService;
+        _pluginPaths = pluginPaths;
 
         InitializeComponent();
 
@@ -452,6 +456,8 @@ public partial class DutyWebSettingsPage : SettingsPageBase
     {
         _backendService.LoadConfig();
         var current = _backendService.Config;
+        var previousEnableMcp = current.EnableMcp;
+        var previousEnableWebViewDebugLayer = current.EnableWebViewDebugLayer;
 
         var apiKey = DutyScheduleOrchestrator.ResolveApiKeyInput(config.ApiKey, current.DecryptedApiKey);
         var baseUrl = config.BaseUrl ?? current.BaseUrl;
@@ -485,6 +491,12 @@ public partial class DutyWebSettingsPage : SettingsPageBase
         current.EnableWebViewDebugLayer = enableWebViewDebugLayer;
         current.AutoRunTriggerNotificationEnabled = autoRunTriggerNotificationEnabled;
         current.PythonPath = pythonPath;
+
+        if (previousEnableMcp != enableMcp ||
+            previousEnableWebViewDebugLayer != enableWebViewDebugLayer)
+        {
+            RequestRestart();
+        }
     }
 
     private async Task SendSnapshotAsync()
@@ -636,16 +648,15 @@ public partial class DutyWebSettingsPage : SettingsPageBase
         };
     }
 
-    private static string ResolveWebEntryPath()
+    private string ResolveWebEntryPath()
     {
-        var baseDir = Path.GetDirectoryName(typeof(DutyWebSettingsPage).Assembly.Location) ?? AppContext.BaseDirectory;
-        var releasePath = Path.Combine(baseDir, "Assets_Duty", "web", "index.html");
+        var releasePath = _pluginPaths.WebIndexPath;
         if (File.Exists(releasePath))
         {
             return releasePath;
         }
 
-        return Path.Combine(baseDir, "Assets_Duty", "web", "test.html");
+        return _pluginPaths.WebTestHtmlPath;
     }
 
     private static string TruncateForLog(string value, int maxLength)

@@ -12,6 +12,7 @@ using ClassIsland.Shared;
 using DutyAgent.Models;
 using DutyAgent.Services;
 using DutyAgent.Views.SettingPages.Modules;
+using FluentAvalonia.UI.Controls;
 
 namespace DutyAgent.Views.SettingPages;
 
@@ -55,6 +56,7 @@ public partial class DutyMainSettingsPage : SettingsPageBase
         InitializeComponentRefreshTimeOptions();
         InitializeDutyReminderTimeOptions();
         InitializeScheduleDayOptions();
+        SetDataView(showScheduleView: true);
         LoadConfigForm();
         UpdateConfigTracking("已加载");
         UpdateRunTracking("待命");
@@ -292,6 +294,7 @@ public partial class DutyMainSettingsPage : SettingsPageBase
                 ApiKeyInput = ApiKeyBox.Text,
                 BaseUrl = BaseUrlBox.Text,
                 Model = ModelBox.Text,
+                PromptMode = GetSelectedPromptMode(),
                 AutoRunMode = GetSelectedAutoRunMode(),
                 AutoRunParameter = GetSelectedAutoRunParameter(),
                 AutoRunTime = GetSelectedAutoRunTime(),
@@ -308,14 +311,19 @@ public partial class DutyMainSettingsPage : SettingsPageBase
 
             SetStatus(
                 result.RestartRequired
-                    ? "✓ 设置已自动保存。调试层/MCP 服务变更将在重启 ClassIsland 后生效。"
-                    : "✓ 设置已自动保存。",
-                Brushes.Green);
+                    ? "设置已自动保存，调试层/MCP 将在重启后生效。"
+                    : "设置已自动保存。",
+                Brushes.Gray);
 
             UpdateConfigTracking(
                 result.RestartRequired
-                    ? "✓ 自动保存（重启后调试层/MCP生效）"
-                    : "✓ 自动保存");
+                    ? "自动保存（需重启）"
+                    : "自动保存");
+
+            if (result.RestartRequired)
+            {
+                RequestRestart();
+            }
 
             return true;
         }
@@ -328,8 +336,6 @@ public partial class DutyMainSettingsPage : SettingsPageBase
         finally
         {
             _isApplyingConfig = false;
-            LoadConfigForm();
-            LoadData("配置应用");
         }
     }
 
@@ -446,6 +452,16 @@ public partial class DutyMainSettingsPage : SettingsPageBase
     private void OnRosterSelectionChanged(object? sender, SelectionChangedEventArgs e)
     {
         UpdateStudentActionButtons();
+    }
+
+    private void OnShowScheduleViewClick(object? sender, RoutedEventArgs e)
+    {
+        SetDataView(showScheduleView: true);
+    }
+
+    private void OnShowRosterViewClick(object? sender, RoutedEventArgs e)
+    {
+        SetDataView(showScheduleView: false);
     }
 
     private void OnRefreshDataClick(object? sender, RoutedEventArgs e)
@@ -1057,6 +1073,41 @@ public partial class DutyMainSettingsPage : SettingsPageBase
     {
         StatusText.Text = text;
         StatusText.Foreground = brush;
+        StatusInfoBar.Severity = GetStatusSeverity(brush);
+    }
+
+    private void SetDataView(bool showScheduleView)
+    {
+        if (DataViewTabControl is null)
+        {
+            return;
+        }
+
+        var targetIndex = showScheduleView ? 0 : 1;
+        if (DataViewTabControl.SelectedIndex != targetIndex)
+        {
+            DataViewTabControl.SelectedIndex = targetIndex;
+        }
+    }
+
+    private static InfoBarSeverity GetStatusSeverity(IBrush brush)
+    {
+        if (ReferenceEquals(brush, Brushes.Red))
+        {
+            return InfoBarSeverity.Error;
+        }
+
+        if (ReferenceEquals(brush, Brushes.Green))
+        {
+            return InfoBarSeverity.Success;
+        }
+
+        if (ReferenceEquals(brush, Brushes.Orange))
+        {
+            return InfoBarSeverity.Warning;
+        }
+
+        return InfoBarSeverity.Informational;
     }
 
 }

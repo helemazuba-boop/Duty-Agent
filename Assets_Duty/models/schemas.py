@@ -1,25 +1,25 @@
-from pydantic import BaseModel, Field
-from typing import List, Optional, Any
+from typing import Any, Dict, List, Optional
+
+from pydantic import BaseModel, ConfigDict
+
 
 class DutyRequest(BaseModel):
+    # Keep extra fields instead of silently dropping host payload fields.
+    model_config = ConfigDict(extra="allow")
+
     instruction: str
-    apply_mode: str = "append"
-    per_day: int = 2
+    apply_mode: Optional[str] = None
+    api_key: Optional[str] = None
+    config: Optional[Dict[str, Any]] = None
+
+    # Common top-level fields sent by C# host.
+    per_day: Optional[int] = None
     duty_rule: Optional[str] = None
     base_url: Optional[str] = None
-    prompt_mode: str = "Regular"
-    model: str = "gpt-4o"
-    api_key: str
-    proxy: Optional[str] = None
-    start_date: Optional[str] = None
-    end_date: Optional[str] = None
-
-class CoreProgressResponse(BaseModel):
-    phase: str
-    message: str
-    stream_chunk: Optional[str] = None
-
-class CoreCompleteResponse(BaseModel):
-    status: str
-    message: str
-    ai_response: Optional[str] = None
+    prompt_mode: Optional[str] = None
+    model: Optional[str] = None
+    llm_stream: Optional[bool] = None
+    stream: Optional[bool] = None
+    area_names: Optional[List[str]] = None
+    area_per_day_counts: Optional[Dict[str, int]] = None
+    existing_notes: Optional[Dict[str, str]] = None

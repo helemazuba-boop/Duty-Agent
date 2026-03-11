@@ -22,20 +22,24 @@ public class DutyScheduleOrchestrator : IDisposable
     private readonly IStateAndRosterManager _stateManager;
     private readonly IPythonIpcService _ipcService;
     private readonly DutyNotificationService _notificationService;
+    private readonly DutyAutomationBridgeService _automationBridge;
     
     private readonly Timer _debounceTimer;
     private readonly Timer _autoRunTimer;
     private readonly SemaphoreSlim _runCoreGate = new(1, 1);
+    private readonly object _dutyReminderLock = new();
     private readonly HashSet<string> _sentDutyReminderSlots = new(StringComparer.Ordinal);
     private DateTime _lastAutoRunAttempt = DateTime.MinValue;
-    private readonly string _dataDir;
+    private readonly DutyPluginPaths _pluginPaths;
+    private bool _runtimeStarted;
+    private bool _pendingAutomationStateChange;
 
     public event EventHandler? ScheduleUpdated;
     public DutyConfig Config => _configManager.Config;
 
     private const string DefaultAreaClassroom = "\u6559\u5BA4";
     private const string DefaultAreaCleaning = "\u6E05\u6D01\u533A";
-    private const string DefaultDutyReminderTime = "17:00";
+    private const string DefaultDutyReminderTime = "07:40";
     
     private static readonly Dictionary<string, DayOfWeek> AutoRunDayAliases = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -59,38 +63,52 @@ public class DutyScheduleOrchestrator : IDisposable
         IConfigManager configManager,
         IStateAndRosterManager stateManager,
         IPythonIpcService ipcService,
-        DutyNotificationService notificationService)
+        DutyNotificationService notificationService,
+        DutyAutomationBridgeService automationBridge,
+        DutyPluginPaths pluginPaths)
     {
         _configManager = configManager;
         _stateManager = stateManager;
         _ipcService = ipcService;
         _notificationService = notificationService;
+        _automationBridge = automationBridge;
+        _pluginPaths = pluginPaths;
 
-        var basePath = Path.GetDirectoryName(typeof(DutyScheduleOrchestrator).Assembly.Location) ?? AppContext.BaseDirectory;
-        _dataDir = Path.Combine(basePath, "Assets_Duty", "data");
-
-
-        _stateManager.StateChanged += (_, _) => DebounceUpdateNotification();
+        _stateManager.StateChanged += (_, _) => DebounceUpdateNotification(notifyAutomationBridge: true);
         _configManager.ConfigChanged += (_, _) => DebounceUpdateNotification();
 
         _debounceTimer = new Timer(500) { AutoReset = false };
         _debounceTimer.Elapsed += (_, _) =>
         {
-            Dispatcher.UIThread.InvokeAsync(() => ScheduleUpdated?.Invoke(this, EventArgs.Empty));
+            Dispatcher.UIThread.InvokeAsync(() =>
+            {
+                if (_pendingAutomationStateChange)
+                {
+                    _pendingAutomationStateChange = false;
+                    _automationBridge.PublishScheduleStateChanged("schedule-state-updated");
+                }
+
+                ScheduleUpdated?.Invoke(this, EventArgs.Empty);
+            });
         };
 
-        _autoRunTimer = new Timer(60_000) { AutoReset = true, Enabled = true };
+        _autoRunTimer = new Timer(60_000) { AutoReset = true };
         _autoRunTimer.Elapsed += (_, _) => TryRunAutoSchedule();
     }
 
-    private void DebounceUpdateNotification()
+    private void DebounceUpdateNotification(bool notifyAutomationBridge = false)
     {
+        if (notifyAutomationBridge)
+        {
+            _pendingAutomationStateChange = true;
+        }
+
         _debounceTimer.Stop();
         _debounceTimer.Start();
     }
 
     // Proxy load/save for backward compatibility with existing view models
-    public void LoadConfig() => _configManager.ConfigChanged += null; // No-op, auto-managed
+    public void LoadConfig() => _ = _configManager.Config;
     public void SaveConfig() => _configManager.SaveConfig();
 
     public DutyState LoadState() => _stateManager.LoadState();
@@ -102,9 +120,14 @@ public class DutyScheduleOrchestrator : IDisposable
         return result.Success;
     }
 
-    public CoreRunResult RunCoreAgentWithMessage(string instruction, string applyMode = "append", string? overrideModel = null, Action<CoreRunProgress>? progress = null)
+    public CoreRunResult RunCoreAgentWithMessage(
+        string instruction,
+        string applyMode = "append",
+        string? overrideModel = null,
+        Action<CoreRunProgress>? progress = null,
+        bool isAutoRun = false)
     {
-        var t = RunCoreAgentAsync(instruction, applyMode, overrideModel, progress);
+        var t = RunCoreAgentAsync(instruction, applyMode, overrideModel, progress, isAutoRun);
         t.Wait();
         return t.Result;
     }
@@ -113,7 +136,8 @@ public class DutyScheduleOrchestrator : IDisposable
         string instruction,
         string applyMode = "append",
         string? overrideModel = null,
-        Action<CoreRunProgress>? progress = null)
+        Action<CoreRunProgress>? progress = null,
+        bool isAutoRun = false)
     {
         var effectiveInstruction = string.IsNullOrWhiteSpace(instruction) ? AutoRunInstruction : instruction.Trim();
 
@@ -141,11 +165,15 @@ public class DutyScheduleOrchestrator : IDisposable
                 model = overrideModel ?? _configManager.Config.Model
             };
 
-            return await _ipcService.RunScheduleAsync(inputData, progress, CancellationToken.None);
+            var result = await _ipcService.RunScheduleAsync(inputData, progress, CancellationToken.None);
+            PublishAutomationRunResult(effectiveInstruction, applyMode, result, isAutoRun);
+            return result;
         }
         catch (Exception ex)
         {
-            return CoreRunResult.Fail($"Execution error: {ex.Message}");
+            var result = CoreRunResult.Fail($"Execution error: {ex.Message}");
+            PublishAutomationRunResult(effectiveInstruction, applyMode, result, isAutoRun);
+            return result;
         }
         finally
         {
@@ -155,7 +183,7 @@ public class DutyScheduleOrchestrator : IDisposable
 
     public string GetApiKeyMaskForUi()
     {
-        return string.IsNullOrWhiteSpace(_configManager.Config.EncryptedApiKey) ? string.Empty : ApiKeyMask;
+        return string.IsNullOrWhiteSpace(_configManager.Config.DecryptedApiKey) ? string.Empty : ApiKeyMask;
     }
 
     public static string ResolveApiKeyInput(string? incomingApiKey, string existingApiKey)
@@ -167,9 +195,36 @@ public class DutyScheduleOrchestrator : IDisposable
         return trimmed;
     }
 
-    public EngineState EngineStatus => _pythonIpcService is DutyPythonIpcService s ? s.IsReady ? EngineState.Ready : s.LastErrorMessage != null ? EngineState.Faulted : EngineState.Initializing : EngineState.Ready;
+    public EngineState EngineStatus => _ipcService.State;
+    public string? EngineLastError => _ipcService.LastErrorMessage;
 
-    public string? EngineLastError => _pythonIpcService is DutyPythonIpcService s ? s.LastErrorMessage : null;
+    public async Task RestartAIEngineAsync()
+    {
+        await _ipcService.RestartEngineAsync();
+    }
+
+    public void StartRuntime()
+    {
+        if (_runtimeStarted)
+        {
+            return;
+        }
+
+        _runtimeStarted = true;
+        _autoRunTimer.Start();
+    }
+
+    public void StopRuntime()
+    {
+        if (!_runtimeStarted)
+        {
+            return;
+        }
+
+        _runtimeStarted = false;
+        _autoRunTimer.Stop();
+        _debounceTimer.Stop();
+    }
 
     public static string ValidatePythonPath(string configuredPath, string pluginBasePath, string assetsBasePath)
     {
@@ -179,15 +234,10 @@ public class DutyScheduleOrchestrator : IDisposable
             if (File.Exists(absolutePath)) return absolutePath;
         }
 
-        var expectedRelativeExe = Path.Combine("Assets_Duty", "python-embed", "python.exe");
-        var expectedPath = Path.Combine(pluginBasePath, expectedRelativeExe);
+        var expectedPath = Path.Combine(assetsBasePath, "python-embed", "python.exe");
         if (File.Exists(expectedPath)) return expectedPath;
 
         return "python"; // Fallback to system python
-    }
-        var internalExe = Path.Combine(pluginBasePath, expectedRelativeExe);
-        if (File.Exists(internalExe)) return internalExe;
-        return "python"; // Fallback to PATH
     }
 
     public static string NormalizeTimeOrThrow(string? time)
@@ -208,17 +258,117 @@ public class DutyScheduleOrchestrator : IDisposable
         };
     }
 
-    // Dummy backward-compatible helpers the UI needs
-    private void TryRunAutoSchedule() { /* To be implemented async */ }
+    private void TryRunAutoSchedule()
+    {
+        try
+        {
+            LoadConfig();
+            var now = DateTime.Now;
+            TryPublishDutyReminderNotifications(now);
+
+            var mode = (Config.AutoRunMode ?? "Off").Trim();
+            if (string.Equals(mode, "Off", StringComparison.OrdinalIgnoreCase))
+            {
+                return;
+            }
+
+            var today = now.ToString("yyyy-MM-dd");
+            if (string.Equals(Config.LastAutoRunDate, today, StringComparison.Ordinal))
+            {
+                return;
+            }
+
+            if ((now - _lastAutoRunAttempt).TotalMinutes < AutoRunRetryCooldownMinutes)
+            {
+                return;
+            }
+
+            if (!IsAutoRunTriggered(mode, Config.AutoRunParameter, Config.LastAutoRunDate, now))
+            {
+                return;
+            }
+
+            if (!TimeSpan.TryParse(Config.AutoRunTime, out var targetTime) || now.TimeOfDay < targetTime)
+            {
+                return;
+            }
+
+            if (_runCoreGate.CurrentCount == 0)
+            {
+                return;
+            }
+
+            PublishAutoRunTriggeredNotification(now);
+            var result = RunCoreAgentWithMessage(AutoRunInstruction, applyMode: "replace_all", isAutoRun: true);
+            if (string.Equals(result.Code, "busy", StringComparison.Ordinal))
+            {
+                return;
+            }
+
+            _lastAutoRunAttempt = now;
+            PublishRunCompletionNotification(
+                instruction: AutoRunInstruction,
+                applyMode: "replace_all",
+                resultMessage: result.Message,
+                success: result.Success,
+                isAutoRun: true);
+
+            if (result.Success)
+            {
+                Config.LastAutoRunDate = today;
+                Config.AiConsecutiveFailures = 0;
+            }
+            else
+            {
+                Config.AiConsecutiveFailures++;
+            }
+        }
+        catch
+        {
+        }
+    }
 
     public void Dispose()
     {
+        StopRuntime();
         _debounceTimer.Dispose();
         _autoRunTimer.Dispose();
         _runCoreGate.Dispose();
     }
 
-    public string GetRosterPath() => Path.Combine(_dataDir, "roster.csv");
+    public string GetRosterPath() => _pluginPaths.RosterPath;
+
+    public DateTime GetCurrentScheduleDate(DateTime? now = null)
+    {
+        LoadConfig();
+        var current = now ?? DateTime.Now;
+        var targetDate = current.Date;
+
+        if (TimeSpan.TryParse(Config.ComponentRefreshTime, out var refreshTime) &&
+            current.TimeOfDay < refreshTime)
+        {
+            targetDate = targetDate.AddDays(-1);
+        }
+
+        return targetDate;
+    }
+
+    public SchedulePoolItem? GetScheduleItem(string? dateText)
+    {
+        var normalizedDate = (dateText ?? string.Empty).Trim();
+        if (normalizedDate.Length == 0)
+        {
+            return null;
+        }
+
+        return LoadState().SchedulePool.LastOrDefault(x =>
+            string.Equals(x.Date, normalizedDate, StringComparison.Ordinal));
+    }
+
+    public SchedulePoolItem? GetCurrentScheduleItem(DateTime? now = null)
+    {
+        return GetScheduleItem(GetCurrentScheduleDate(now).ToString("yyyy-MM-dd"));
+    }
 
     public List<string> GetAreaNames()
     {
@@ -228,7 +378,7 @@ public class DutyScheduleOrchestrator : IDisposable
 
     public List<string> GetDutyReminderTimes()
     {
-        lock (new object()) /* config no longer needs orchestrator lock */
+        lock (_dutyReminderLock)
         {
             return NormalizeDutyReminderTimes(Config.DutyReminderTimes);
         }
@@ -663,6 +813,27 @@ public class DutyScheduleOrchestrator : IDisposable
         };
     }
 
+    private void PublishAutomationRunResult(
+        string instruction,
+        string applyMode,
+        CoreRunResult result,
+        bool isAutoRun)
+    {
+        if (string.Equals(result.Code, "busy", StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        _automationBridge.PublishRunCompleted(new DutyScheduleRunEvent(
+            DateTimeOffset.Now,
+            result.Success,
+            instruction,
+            applyMode,
+            result.Message,
+            result.Code,
+            isAutoRun));
+    }
+
     public void PublishRunCompletionNotification(
         string? instruction,
         string? applyMode,
@@ -763,7 +934,7 @@ public class DutyScheduleOrchestrator : IDisposable
         var today = now.ToString("yyyy-MM-dd");
         var dueTimes = new List<string>();
 
-        lock (new object()) /* reminder no longer needs orchestrator lock */
+        lock (_dutyReminderLock)
         {
             _sentDutyReminderSlots.RemoveWhere(x => !x.StartsWith($"{today}|", StringComparison.Ordinal));
 
@@ -871,6 +1042,61 @@ public class DutyScheduleOrchestrator : IDisposable
 
         normalized = time.ToString(@"hh\:mm");
         return true;
+    }
+
+    private static bool IsAutoRunTriggered(string mode, string parameter, string lastAutoRunDate, DateTime now)
+    {
+        var param = (parameter ?? string.Empty).Trim();
+        switch (mode.ToLowerInvariant())
+        {
+            case "weekly":
+                if (AutoRunDayAliases.TryGetValue(param, out var dow) || Enum.TryParse(param, true, out dow))
+                {
+                    return now.DayOfWeek == dow;
+                }
+                return false;
+
+            case "monthly":
+            {
+                var daysInMonth = DateTime.DaysInMonth(now.Year, now.Month);
+                int targetDay;
+                if (string.Equals(param, "L", StringComparison.OrdinalIgnoreCase))
+                {
+                    targetDay = daysInMonth;
+                }
+                else if (int.TryParse(param, out var parsed))
+                {
+                    targetDay = Math.Clamp(parsed, 1, daysInMonth);
+                }
+                else
+                {
+                    return false;
+                }
+
+                return now.Day == targetDay;
+            }
+
+            case "custom":
+                if (!int.TryParse(param, out var intervalDays) || intervalDays <= 0)
+                {
+                    return false;
+                }
+
+                if (string.IsNullOrWhiteSpace(lastAutoRunDate))
+                {
+                    return true;
+                }
+
+                if (!DateTime.TryParse(lastAutoRunDate, out var lastDate))
+                {
+                    return true;
+                }
+
+                return (now.Date - lastDate.Date).TotalDays >= intervalDays;
+
+            default:
+                return false;
+        }
     }
 
     private static string ToUniqueRosterName(string baseName, IDictionary<string, int> nameCounts)
