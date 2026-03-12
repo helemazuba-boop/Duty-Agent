@@ -3,21 +3,22 @@ import asyncio
 import threading
 from fastapi import APIRouter, Request
 from fastapi.responses import StreamingResponse
-from typing import Optional
 
 try:
     from models.schemas import DutyRequest
 except ImportError:
     from ..models.schemas import DutyRequest
 
-from engine import run_duty_agent, Context
-
 router = APIRouter(prefix="/api/v1/duty", tags=["Duty"])
 
 @router.post("/schedule")
 async def schedule(request_data: DutyRequest, request: Request):
-    data_dir = getattr(request.app.state, "data_dir", "data")
-    ctx = Context(data_dir)
+    runtime = getattr(request.app.state, "runtime", None)
+    if runtime is None:
+        return StreamingResponse(
+            iter(['event: complete\ndata: {"status":"error","message":"Runtime is not initialized."}\n\n']),
+            media_type="text/event-stream",
+        )
     stop_event = threading.Event()
     
     async def event_generator():
@@ -33,7 +34,7 @@ async def schedule(request_data: DutyRequest, request: Request):
         def run_task():
             try:
                 payload = request_data.model_dump(exclude_none=True, exclude_unset=True)
-                result = run_duty_agent(ctx, payload, put_progress, stop_event)
+                result = runtime.command_service.run_schedule(payload, put_progress, stop_event)
                 loop.call_soon_threadsafe(queue.put_nowait, {"type": "done", "data": result})
             except InterruptedError:
                 loop.call_soon_threadsafe(queue.put_nowait, {"type": "error", "message": "Cancelled by user."})

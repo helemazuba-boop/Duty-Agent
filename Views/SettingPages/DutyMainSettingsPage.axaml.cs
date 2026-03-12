@@ -294,7 +294,8 @@ public partial class DutyMainSettingsPage : SettingsPageBase
                 ApiKeyInput = ApiKeyBox.Text,
                 BaseUrl = BaseUrlBox.Text,
                 Model = ModelBox.Text,
-                PromptMode = GetSelectedPromptMode(),
+                ModelProfile = GetSelectedModelProfile(),
+                OrchestrationMode = GetSelectedOrchestrationMode(),
                 AutoRunMode = GetSelectedAutoRunMode(),
                 AutoRunParameter = GetSelectedAutoRunParameter(),
                 AutoRunTime = GetSelectedAutoRunTime(),
@@ -488,7 +489,8 @@ public partial class DutyMainSettingsPage : SettingsPageBase
             ApiKeyBox.Text = formModel.ApiKeyMask;
             BaseUrlBox.Text = formModel.BaseUrl;
             ModelBox.Text = formModel.Model;
-            SetPromptModeSelection(formModel.PromptMode);
+            SetModelProfileSelection(formModel.ModelProfile);
+            SetOrchestrationModeSelection(formModel.OrchestrationMode);
             SetAutoRunModeSelection(formModel.AutoRunMode);
             SetAutoRunParameterSelection(formModel.AutoRunMode, formModel.AutoRunParameter);
             SetAutoRunTimeSelection(formModel.AutoRunTime);
@@ -906,16 +908,28 @@ public partial class DutyMainSettingsPage : SettingsPageBase
         return true;
     }
 
-    private string GetSelectedPromptMode()
+    private string GetSelectedModelProfile()
     {
-        return PromptModeComboBox.SelectedItem is ComboBoxItem { Tag: string tag } ? tag : "Regular";
+        return ModelProfileComboBox.SelectedItem is ComboBoxItem { Tag: string tag } ? tag : "auto";
     }
 
-    private void SetPromptModeSelection(string mode)
+    private void SetModelProfileSelection(string modelProfile)
     {
-        var targetTag = (mode ?? "Regular").Trim();
-        var item = PromptModeComboBox.Items.Cast<ComboBoxItem>().FirstOrDefault(x => string.Equals(x.Tag as string, targetTag, StringComparison.OrdinalIgnoreCase));
-        PromptModeComboBox.SelectedItem = item ?? PromptModeComboBox.Items.Cast<ComboBoxItem>().First();
+        var targetTag = (modelProfile ?? "auto").Trim();
+        var item = ModelProfileComboBox.Items.Cast<ComboBoxItem>().FirstOrDefault(x => string.Equals(x.Tag as string, targetTag, StringComparison.OrdinalIgnoreCase));
+        ModelProfileComboBox.SelectedItem = item ?? ModelProfileComboBox.Items.Cast<ComboBoxItem>().First();
+    }
+
+    private string GetSelectedOrchestrationMode()
+    {
+        return OrchestrationModeComboBox.SelectedItem is ComboBoxItem { Tag: string tag } ? tag : "auto";
+    }
+
+    private void SetOrchestrationModeSelection(string orchestrationMode)
+    {
+        var targetTag = (orchestrationMode ?? "auto").Trim();
+        var item = OrchestrationModeComboBox.Items.Cast<ComboBoxItem>().FirstOrDefault(x => string.Equals(x.Tag as string, targetTag, StringComparison.OrdinalIgnoreCase));
+        OrchestrationModeComboBox.SelectedItem = item ?? OrchestrationModeComboBox.Items.Cast<ComboBoxItem>().First();
     }
 
     private string GetSelectedAutoRunTime()

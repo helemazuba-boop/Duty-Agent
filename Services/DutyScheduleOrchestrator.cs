@@ -161,8 +161,10 @@ public class DutyScheduleOrchestrator : IDisposable
                 per_day = _configManager.Config.PerDay,
                 duty_rule = _configManager.Config.DutyRule,
                 base_url = _configManager.Config.BaseUrl,
-                prompt_mode = _configManager.Config.PromptMode,
-                model = overrideModel ?? _configManager.Config.Model
+                model = overrideModel ?? _configManager.Config.Model,
+                model_profile = _configManager.Config.ModelProfile,
+                orchestration_mode = _configManager.Config.OrchestrationMode,
+                provider_hint = _configManager.Config.ProviderHint
             };
 
             var result = await _ipcService.RunScheduleAsync(inputData, progress, CancellationToken.None);
@@ -255,6 +257,30 @@ public class DutyScheduleOrchestrator : IDisposable
             "monthly" => "Monthly",
             "custom" => "Custom",
             _ => "Off"
+        };
+    }
+
+    public static string NormalizeModelProfile(string? modelProfile)
+    {
+        var trimmed = (modelProfile ?? "auto").Trim();
+        return trimmed.ToLowerInvariant() switch
+        {
+            "cloud" or "cloud_general" => "cloud",
+            "campus" or "campus_small" or "school_small" => "campus_small",
+            "edge" or "edge_tuned" or "edge_finetuned" => "edge",
+            "custom" => "custom",
+            _ => "auto"
+        };
+    }
+
+    public static string NormalizeOrchestrationMode(string? orchestrationMode)
+    {
+        var trimmed = (orchestrationMode ?? "auto").Trim();
+        return trimmed.ToLowerInvariant() switch
+        {
+            "single" or "single_pass" or "unified" => "single_pass",
+            "multi_agent" or "multi-agent" or "staged" => "multi_agent",
+            _ => "auto"
         };
     }
 

@@ -3,6 +3,7 @@ using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Text.Json;
 using ClassIsland.Shared.Helpers;
 using DutyAgent.Models;
 
@@ -66,10 +67,12 @@ public class DutyConfigManager : IConfigManager, IDisposable
             {
                 try
                 {
+                    var rawConfigText = File.ReadAllText(_configPath);
                     var loaded = ConfigureFileHelper.LoadConfig<DutyConfig>(_configPath);
                     loaded.DutyReminderTimes = NormalizeDutyReminderTimes(loaded.DutyReminderTimes);
 
                     var migrated = false;
+                    var migrationInfo = ReadPromptModeMigration(rawConfigText);
                     if (string.IsNullOrWhiteSpace(loaded.PlainApiKey) &&
                         !string.IsNullOrWhiteSpace(loaded.EncryptedApiKey))
                     {
@@ -97,6 +100,23 @@ public class DutyConfigManager : IConfigManager, IDisposable
                     {
                         // Keep one source of truth while plaintext mode is enabled.
                         loaded.EncryptedApiKey = string.Empty;
+                        migrated = true;
+                    }
+
+                    if (migrationInfo.ShouldMigrateLegacyPromptMode)
+                    {
+                        ApplyLegacyPromptModeMigration(loaded, migrationInfo.LegacyPromptMode);
+                        migrated = true;
+                    }
+                    else
+                    {
+                        loaded.ModelProfile = DutyScheduleOrchestrator.NormalizeModelProfile(loaded.ModelProfile);
+                        loaded.OrchestrationMode = DutyScheduleOrchestrator.NormalizeOrchestrationMode(loaded.OrchestrationMode);
+                    }
+
+                    if (!string.IsNullOrWhiteSpace(loaded.LegacyPromptMode))
+                    {
+                        loaded.LegacyPromptMode = null;
                         migrated = true;
                     }
 
@@ -201,6 +221,52 @@ public class DutyConfigManager : IConfigManager, IDisposable
         return val;
     }
 
+    private static void ApplyLegacyPromptModeMigration(DutyConfig config, string? legacyPromptMode)
+    {
+        var normalized = (legacyPromptMode ?? string.Empty).Trim();
+        if (string.Equals(normalized, "Incremental", StringComparison.OrdinalIgnoreCase))
+        {
+            config.ModelProfile = "campus_small";
+            config.OrchestrationMode = "single_pass";
+        }
+        else
+        {
+            config.ModelProfile = "auto";
+            config.OrchestrationMode = "auto";
+        }
+
+        config.LegacyPromptMode = null;
+    }
+
+    private static PromptModeMigrationInfo ReadPromptModeMigration(string rawConfigText)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(rawConfigText);
+            var root = doc.RootElement;
+            if (root.ValueKind != JsonValueKind.Object)
+            {
+                return PromptModeMigrationInfo.None;
+            }
+
+            var hasLegacyPromptMode = root.TryGetProperty("prompt_mode", out var legacyElement);
+            var hasModelProfile = root.TryGetProperty("model_profile", out _);
+            var hasOrchestrationMode = root.TryGetProperty("orchestration_mode", out _);
+            if (!hasLegacyPromptMode || hasModelProfile || hasOrchestrationMode)
+            {
+                return PromptModeMigrationInfo.None;
+            }
+
+            return new PromptModeMigrationInfo(
+                ShouldMigrateLegacyPromptMode: true,
+                LegacyPromptMode: legacyElement.GetString());
+        }
+        catch
+        {
+            return PromptModeMigrationInfo.None;
+        }
+    }
+
     public void Dispose()
     {
         if (_disposed) return;
@@ -213,5 +279,10 @@ public class DutyConfigManager : IConfigManager, IDisposable
             _watcher.Created -= OnConfigFileChanged;
             _watcher.Dispose();
         }
+    }
+
+    private readonly record struct PromptModeMigrationInfo(bool ShouldMigrateLegacyPromptMode, string? LegacyPromptMode)
+    {
+        public static PromptModeMigrationInfo None => new(false, null);
     }
 }

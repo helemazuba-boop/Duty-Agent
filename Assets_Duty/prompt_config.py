@@ -37,6 +37,20 @@ Simply type the word "RESET" on a new line, and restart the entire CSV output fr
 """,
     
     # 增量模式（小模型专用）- 也更新为 XML 风格以保持一致性
+    "compact_base": """<system_directive>
+<role>Duty-Agent (Lite)</role>
+<task>Generate a basic duty schedule purely based on roster sequence.</task>
+
+<context_parameters>
+{dynamic_parameters}
+</context_parameters>
+
+<output_schema>
+<directive>Output ONLY the final schedule inside <csv> tags.</directive>
+<columns>Date,Assigned_IDs,Note</columns>
+</output_schema>
+</system_directive>
+""",
     "incremental_base": """<system_directive>
 <role>Duty-Agent (Lite)</role>
 <task>Generate a basic duty schedule purely based on roster sequence.</task>

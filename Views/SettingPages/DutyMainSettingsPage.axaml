@@ -356,7 +356,7 @@
                     <ui:FontIconSource Glyph="&#xE8D2;" FontFamily="Segoe MDL2 Assets" />
                 </ui:SettingsExpander.IconSource>
                 <StackPanel Spacing="10" Margin="12,0,12,12">
-                        <Grid ColumnDefinitions="Auto,*" RowDefinitions="Auto,Auto,Auto,Auto" RowSpacing="12">
+                        <Grid ColumnDefinitions="Auto,*" RowDefinitions="Auto,Auto,Auto,Auto,Auto" RowSpacing="12">
                             <StackPanel Grid.Row="0" Grid.Column="0" VerticalAlignment="Center" Spacing="2" Margin="0,0,32,0">
                                 <TextBlock Text="API Key" FontSize="14" VerticalAlignment="Center"/>
                                 <TextBlock Text="用于访问模型接口；留空时无法执行 AI 排班。" FontSize="12" Opacity="0.55" VerticalAlignment="Center" />
@@ -370,19 +370,32 @@
                             <TextBox x:Name="ModelBox" Grid.Row="1" Grid.Column="1" VerticalAlignment="Center" Watermark="moonshotai/kimi-k2-thinking" LostFocus="OnConfigInputLostFocus" KeyDown="OnConfigInputKeyDown" />
 
                             <StackPanel Grid.Row="2" Grid.Column="0" VerticalAlignment="Center" Spacing="2" Margin="0,0,32,0">
-                                <TextBlock Text="提示词模式" FontSize="14" VerticalAlignment="Center"/>
-                                <TextBlock Text="高性能模型通常选常规，本地小模型更适合增量。" FontSize="12" Opacity="0.55" VerticalAlignment="Center" />
+                                <TextBlock Text="模型画像" FontSize="14" VerticalAlignment="Center"/>
+                                <TextBlock Text="定义当前模型的大致能力类型，用于后端选择 Prompt 打包策略。" FontSize="12" Opacity="0.55" VerticalAlignment="Center" />
                             </StackPanel>
-                            <ComboBox x:Name="PromptModeComboBox" Grid.Row="2" Grid.Column="1" HorizontalAlignment="Stretch" VerticalAlignment="Center" SelectionChanged="OnConfigSelectionChanged">
-                                <ComboBoxItem Content="常规 (高智商大模型)" Tag="Regular" />
-                                <ComboBoxItem Content="增量 (本地小尺寸模型)" Tag="Incremental" />
+                            <ComboBox x:Name="ModelProfileComboBox" Grid.Row="2" Grid.Column="1" HorizontalAlignment="Stretch" VerticalAlignment="Center" SelectionChanged="OnConfigSelectionChanged">
+                                <ComboBoxItem Content="自动" Tag="auto" />
+                                <ComboBoxItem Content="云模型" Tag="cloud" />
+                                <ComboBoxItem Content="校内小模型" Tag="campus_small" />
+                                <ComboBoxItem Content="边缘模型" Tag="edge" />
+                                <ComboBoxItem Content="自定义" Tag="custom" />
                             </ComboBox>
 
                             <StackPanel Grid.Row="3" Grid.Column="0" VerticalAlignment="Center" Spacing="2" Margin="0,0,32,0">
+                                <TextBlock Text="编排模式" FontSize="14" VerticalAlignment="Center"/>
+                                <TextBlock Text="当前阶段统一走单次兼容链，但会记录未来多 Agent 的任务规划。" FontSize="12" Opacity="0.55" VerticalAlignment="Center" />
+                            </StackPanel>
+                            <ComboBox x:Name="OrchestrationModeComboBox" Grid.Row="3" Grid.Column="1" HorizontalAlignment="Stretch" VerticalAlignment="Center" SelectionChanged="OnConfigSelectionChanged">
+                                <ComboBoxItem Content="自动" Tag="auto" />
+                                <ComboBoxItem Content="单次兼容执行" Tag="single_pass" />
+                                <ComboBoxItem Content="多 Agent 预留" Tag="multi_agent" />
+                            </ComboBox>
+
+                            <StackPanel Grid.Row="4" Grid.Column="0" VerticalAlignment="Center" Spacing="2" Margin="0,0,32,0">
                                 <TextBlock Text="Base URL" FontSize="14" VerticalAlignment="Center"/>
                                 <TextBlock Text="提供 OpenAI 兼容接口时再填写；官方直连可保持默认。" FontSize="12" Opacity="0.55" VerticalAlignment="Center" />
                             </StackPanel>
-                            <TextBox x:Name="BaseUrlBox" Grid.Row="3" Grid.Column="1" VerticalAlignment="Center" Watermark="https://integrate.api.nvidia.com/v1" LostFocus="OnConfigInputLostFocus" KeyDown="OnConfigInputKeyDown" />
+                            <TextBox x:Name="BaseUrlBox" Grid.Row="4" Grid.Column="1" VerticalAlignment="Center" Watermark="https://integrate.api.nvidia.com/v1" LostFocus="OnConfigInputLostFocus" KeyDown="OnConfigInputKeyDown" />
                         </Grid>
                     </StackPanel>
             </ui:SettingsExpander>

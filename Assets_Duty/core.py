@@ -15,8 +15,9 @@ from contextlib import asynccontextmanager
 # Add current directory to path for local module imports
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
-from fastapi import FastAPI, BackgroundTasks
+from fastapi import FastAPI, BackgroundTasks, Request
 from fastapi.middleware.cors import CORSMiddleware
+from runtime import create_runtime
 from routers import duty
 import uvicorn
 
@@ -42,8 +43,27 @@ app.add_middleware(
 app.include_router(duty.router)
 
 @app.get("/")
-async def root():
-    return {"status": "running", "engine": "Duty-Agent FastAPI", "version": "0.50.0"}
+async def root(request: Request):
+    runtime = getattr(request.app.state, "runtime", None)
+    if runtime is None:
+        return {"status": "running", "engine": "Duty-Agent FastAPI", "version": "0.50.0"}
+    payload = runtime.query_service.health()
+    payload["engine"] = "Duty-Agent FastAPI"
+    return payload
+
+@app.get("/health")
+async def health(request: Request):
+    runtime = getattr(request.app.state, "runtime", None)
+    if runtime is None:
+        return {"status": "ok", "version": "0.50.0"}
+    return runtime.query_service.health()
+
+@app.get("/engine/info")
+async def engine_info(request: Request):
+    runtime = getattr(request.app.state, "runtime", None)
+    if runtime is None:
+        return {"engine": "Duty-Agent Unified Scheduling Engine", "version": "0.50.0"}
+    return runtime.query_service.engine_info()
 
 @app.post("/shutdown")
 async def shutdown(background_tasks: BackgroundTasks):
@@ -109,7 +129,7 @@ def main():
     data_dir.mkdir(parents=True, exist_ok=True)
     
     if args.server:
-        app.state.data_dir = data_dir
+        app.state.runtime = create_runtime(data_dir)
         
         # Determine actual port
         import socket
@@ -133,7 +153,8 @@ def main():
         uvicorn.run(app, host="127.0.0.1", port=actual_port, log_level="warning")
     else:
         # CLI fallback mode (e.g. for debug or isolated run)
-        from engine import run_duty_agent, Context, save_json_atomic
+        from engine import run_schedule
+        from state_ops import Context, save_json_atomic
         ctx = Context(data_dir)
         input_data = {}
         if ctx.paths["input"].exists():
@@ -142,7 +163,7 @@ def main():
                     input_data = json.load(f)
             except: pass
                 
-        result = run_duty_agent(ctx, input_data)
+        result = run_schedule(ctx, input_data)
         
         payload = {"status": result.get("status", "error")}
         if "message" in result: payload["message"] = result["message"]

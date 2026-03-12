@@ -1,6 +1,7 @@
 # build_prompt.py
-from typing import List, Dict, Any
-from prompt_config import PROMPTS, KEYWORD_REGISTRY
+from typing import Dict, List
+
+from prompt_config import KEYWORD_REGISTRY, PROMPTS
 
 def is_module_active(module_name: str, instruction: str, data_present: bool) -> bool:
     """Determine if a functional module should be injected into the prompt."""
@@ -23,26 +24,27 @@ def build_prompt_messages(
     debt_list: List[int],
     credit_list: List[int],
     previous_context: str = "",
-    prompt_mode: str = "Regular",
+    model_profile: str = "auto",
+    orchestration_mode: str = "auto",
 ) -> List[Dict[str, str]]:
-    """Build the XML-based prompt messages for the LLM."""
+    """Build prompt messages for the unified scheduling engine."""
 
     inactive_ids = [pid for pid, active in id_to_active.items() if active == 0]
+    compact_mode = model_profile in {"campus_small", "edge"} or orchestration_mode == "multi_agent"
 
-    if prompt_mode.lower() == "incremental":
-        # Incremental mode: Minimal parameters
+    if compact_mode:
         params = [
             f"<all_roster_ids>{','.join(map(str, all_ids))}</all_roster_ids>",
             f"<inactive_ids>{','.join(map(str, inactive_ids))}</inactive_ids>",
             f"<current_time>{current_time}</current_time>",
-            f"<user_instruction>{instruction}</user_instruction>"
+            f"<user_instruction>{instruction}</user_instruction>",
         ]
+        if previous_context:
+            params.append(f"<previous_run_memory>{previous_context}</previous_run_memory>")
         dynamic_parameters = "\n".join(params)
-        system_content = PROMPTS["incremental_base"].format(dynamic_parameters=dynamic_parameters)
+        system_content = PROMPTS["compact_base"].format(dynamic_parameters=dynamic_parameters)
         return [{"role": "user", "content": system_content}]
 
-    # Regular Mode: Dynamic XML Assembly
-    # 1. Standard Parameters (Always Injected)
     params_list = [
         f"<all_roster_ids>{','.join(map(str, all_ids))}</all_roster_ids>",
         f"<current_time>{current_time}</current_time>",
@@ -51,7 +53,6 @@ def build_prompt_messages(
     if previous_context:
         params_list.append(f"<previous_run_memory>{previous_context}</previous_run_memory>")
 
-    # 2. Conditional Parameters & Methods
     methods_list = []
     
     # Debt Logic
@@ -69,16 +70,13 @@ def build_prompt_messages(
         params_list.append(PROMPTS["param_inactive"].format(inactive_ids=','.join(map(str, inactive_ids))))
         methods_list.append(PROMPTS["rule_inactive"])
         
-    # Multi-day Logic (No specific params yet, just rule)
     if is_module_active("multi_day", instruction, False):
         methods_list.append(PROMPTS["rule_multi_day"])
 
-    # User defined custom rules
     duty_rule = (duty_rule or "").strip()
     if duty_rule:
         methods_list.append(f"<user_defined_rule>\n{duty_rule}\n</user_defined_rule>")
 
-    # Assembly
     dynamic_parameters = "\n".join(params_list)
     dynamic_methods = "\n".join(methods_list) if methods_list else "<!-- No specific processing rules triggered. Follow basic sequence. -->"
 

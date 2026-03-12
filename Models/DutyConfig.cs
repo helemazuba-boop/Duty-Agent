@@ -71,8 +71,16 @@ public partial class DutyConfig : ObservableObject
     private string _model = "moonshotai/kimi-k2-thinking";
 
     [ObservableProperty]
-    [property: JsonPropertyName("prompt_mode")]
-    private string _promptMode = "Regular";
+    [property: JsonPropertyName("model_profile")]
+    private string _modelProfile = "auto";
+
+    [ObservableProperty]
+    [property: JsonPropertyName("orchestration_mode")]
+    private string _orchestrationMode = "auto";
+
+    [ObservableProperty]
+    [property: JsonPropertyName("provider_hint")]
+    private string _providerHint = string.Empty;
 
     [ObservableProperty]
     [property: JsonPropertyName("auto_run_mode")]
@@ -134,5 +142,8 @@ public partial class DutyConfig : ObservableObject
     [property: JsonPropertyName("duty_reminder_times")]
     private List<string> _dutyReminderTimes = ["07:40"];
 
+    [JsonPropertyName("prompt_mode")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? LegacyPromptMode { get; set; }
 
 }
