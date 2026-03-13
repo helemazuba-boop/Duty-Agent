@@ -296,6 +296,7 @@ public partial class DutyMainSettingsPage : SettingsPageBase
                 Model = ModelBox.Text,
                 ModelProfile = GetSelectedModelProfile(),
                 OrchestrationMode = GetSelectedOrchestrationMode(),
+                MultiAgentExecutionMode = GetSelectedMultiAgentExecutionMode(),
                 AutoRunMode = GetSelectedAutoRunMode(),
                 AutoRunParameter = GetSelectedAutoRunParameter(),
                 AutoRunTime = GetSelectedAutoRunTime(),
@@ -496,6 +497,7 @@ public partial class DutyMainSettingsPage : SettingsPageBase
             ModelBox.Text = formModel.Model;
             SetModelProfileSelection(formModel.ModelProfile);
             SetOrchestrationModeSelection(formModel.OrchestrationMode);
+            SetMultiAgentExecutionModeSelection(formModel.MultiAgentExecutionMode);
             SetAutoRunModeSelection(formModel.AutoRunMode);
             SetAutoRunParameterSelection(formModel.AutoRunMode, formModel.AutoRunParameter);
             SetAutoRunTimeSelection(formModel.AutoRunTime);
@@ -529,6 +531,7 @@ public partial class DutyMainSettingsPage : SettingsPageBase
         ModelBox.IsEnabled = enabled;
         ModelProfileComboBox.IsEnabled = enabled;
         OrchestrationModeComboBox.IsEnabled = enabled;
+        MultiAgentExecutionModeComboBox.IsEnabled = enabled;
         DutyRuleBox.IsEnabled = enabled;
         RunAgentBtn.IsEnabled = enabled;
     }
@@ -952,6 +955,19 @@ public partial class DutyMainSettingsPage : SettingsPageBase
         var targetTag = (orchestrationMode ?? "auto").Trim();
         var item = OrchestrationModeComboBox.Items.Cast<ComboBoxItem>().FirstOrDefault(x => string.Equals(x.Tag as string, targetTag, StringComparison.OrdinalIgnoreCase));
         OrchestrationModeComboBox.SelectedItem = item ?? OrchestrationModeComboBox.Items.Cast<ComboBoxItem>().First();
+    }
+
+    private string GetSelectedMultiAgentExecutionMode()
+    {
+        return MultiAgentExecutionModeComboBox.SelectedItem is ComboBoxItem { Tag: string tag } ? tag : "auto";
+    }
+
+    private void SetMultiAgentExecutionModeSelection(string executionMode)
+    {
+        var targetTag = (executionMode ?? "auto").Trim();
+        var item = MultiAgentExecutionModeComboBox.Items.Cast<ComboBoxItem>()
+            .FirstOrDefault(x => string.Equals(x.Tag as string, targetTag, StringComparison.OrdinalIgnoreCase));
+        MultiAgentExecutionModeComboBox.SelectedItem = item ?? MultiAgentExecutionModeComboBox.Items.Cast<ComboBoxItem>().First();
     }
 
     private string GetSelectedAutoRunTime()

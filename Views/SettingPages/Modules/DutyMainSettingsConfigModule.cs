@@ -28,6 +28,7 @@ internal sealed class DutyMainSettingsConfigModule
                 Model = backendConfig.Model,
                 ModelProfile = backendConfig.ModelProfile,
                 OrchestrationMode = backendConfig.OrchestrationMode,
+                MultiAgentExecutionMode = backendConfig.MultiAgentExecutionMode,
                 ProviderHint = backendConfig.ProviderHint,
                 AutoRunMode = hostConfig.AutoRunMode,
                 AutoRunParameter = hostConfig.AutoRunParameter,
@@ -53,6 +54,7 @@ internal sealed class DutyMainSettingsConfigModule
                 Model = string.Empty,
                 ModelProfile = "auto",
                 OrchestrationMode = "auto",
+                MultiAgentExecutionMode = "auto",
                 ProviderHint = string.Empty,
                 AutoRunMode = hostConfig.AutoRunMode,
                 AutoRunParameter = hostConfig.AutoRunParameter,
@@ -102,6 +104,7 @@ internal sealed class DutyMainSettingsConfigModule
                 Model = request.Model?.Trim() ?? currentBackend.Model,
                 ModelProfile = DutyScheduleOrchestrator.NormalizeModelProfile(request.ModelProfile),
                 OrchestrationMode = DutyScheduleOrchestrator.NormalizeOrchestrationMode(request.OrchestrationMode),
+                MultiAgentExecutionMode = DutyScheduleOrchestrator.NormalizeMultiAgentExecutionMode(request.MultiAgentExecutionMode),
                 ProviderHint = request.ProviderHint?.Trim() ?? currentBackend.ProviderHint,
                 DutyRule = request.DutyRule ?? string.Empty
             };

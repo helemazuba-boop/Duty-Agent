@@ -12,6 +12,7 @@ internal sealed class DutySettingsFormModel
     public string Model { get; init; } = string.Empty;
     public string ModelProfile { get; init; } = "auto";
     public string OrchestrationMode { get; init; } = "auto";
+    public string MultiAgentExecutionMode { get; init; } = "auto";
     public string ProviderHint { get; init; } = string.Empty;
     public string AutoRunMode { get; init; } = "Off";
     public string AutoRunParameter { get; init; } = "Monday";
@@ -33,6 +34,7 @@ internal sealed class DutySettingsApplyRequest
     public string? Model { get; init; }
     public string ModelProfile { get; init; } = "auto";
     public string OrchestrationMode { get; init; } = "auto";
+    public string MultiAgentExecutionMode { get; init; } = "auto";
     public string? ProviderHint { get; init; }
     public string AutoRunMode { get; init; } = "Off";
     public string AutoRunParameter { get; init; } = "Monday";

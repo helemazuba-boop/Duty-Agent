@@ -356,7 +356,7 @@
                     <ui:FontIconSource Glyph="&#xE8D2;" FontFamily="Segoe MDL2 Assets" />
                 </ui:SettingsExpander.IconSource>
                 <StackPanel Spacing="10" Margin="12,0,12,12">
-                        <Grid ColumnDefinitions="Auto,*" RowDefinitions="Auto,Auto,Auto,Auto,Auto" RowSpacing="12">
+                        <Grid ColumnDefinitions="Auto,*" RowDefinitions="Auto,Auto,Auto,Auto,Auto,Auto" RowSpacing="12">
                             <StackPanel Grid.Row="0" Grid.Column="0" VerticalAlignment="Center" Spacing="2" Margin="0,0,32,0">
                                 <TextBlock Text="API Key" FontSize="14" VerticalAlignment="Center"/>
                                 <TextBlock Text="用于访问模型接口；留空时无法执行 AI 排班。" FontSize="12" Opacity="0.55" VerticalAlignment="Center" />
@@ -383,19 +383,29 @@
 
                             <StackPanel Grid.Row="3" Grid.Column="0" VerticalAlignment="Center" Spacing="2" Margin="0,0,32,0">
                                 <TextBlock Text="编排模式" FontSize="14" VerticalAlignment="Center"/>
-                                <TextBlock Text="当前阶段统一走单次兼容链，但会记录未来多 Agent 的任务规划。" FontSize="12" Opacity="0.55" VerticalAlignment="Center" />
+                                <TextBlock Text="控制本次排班走单次执行还是 6Agent DAG。" FontSize="12" Opacity="0.55" VerticalAlignment="Center" />
                             </StackPanel>
                             <ComboBox x:Name="OrchestrationModeComboBox" Grid.Row="3" Grid.Column="1" HorizontalAlignment="Stretch" VerticalAlignment="Center" SelectionChanged="OnConfigSelectionChanged">
                                 <ComboBoxItem Content="自动" Tag="auto" />
-                                <ComboBoxItem Content="单次兼容执行" Tag="single_pass" />
-                                <ComboBoxItem Content="多 Agent 预留" Tag="multi_agent" />
+                                <ComboBoxItem Content="单次执行" Tag="single_pass" />
+                                <ComboBoxItem Content="6Agent" Tag="multi_agent" />
                             </ComboBox>
 
                             <StackPanel Grid.Row="4" Grid.Column="0" VerticalAlignment="Center" Spacing="2" Margin="0,0,32,0">
+                                <TextBlock Text="多 Agent 执行顺序" FontSize="14" VerticalAlignment="Center"/>
+                                <TextBlock Text="仅在 6Agent 模式下生效，可选并发或串行。" FontSize="12" Opacity="0.55" VerticalAlignment="Center" />
+                            </StackPanel>
+                            <ComboBox x:Name="MultiAgentExecutionModeComboBox" Grid.Row="4" Grid.Column="1" HorizontalAlignment="Stretch" VerticalAlignment="Center" SelectionChanged="OnConfigSelectionChanged">
+                                <ComboBoxItem Content="自动" Tag="auto" />
+                                <ComboBoxItem Content="并发执行" Tag="parallel" />
+                                <ComboBoxItem Content="串行执行" Tag="serial" />
+                            </ComboBox>
+
+                            <StackPanel Grid.Row="5" Grid.Column="0" VerticalAlignment="Center" Spacing="2" Margin="0,0,32,0">
                                 <TextBlock Text="Base URL" FontSize="14" VerticalAlignment="Center"/>
                                 <TextBlock Text="提供 OpenAI 兼容接口时再填写；官方直连可保持默认。" FontSize="12" Opacity="0.55" VerticalAlignment="Center" />
                             </StackPanel>
-                            <TextBox x:Name="BaseUrlBox" Grid.Row="4" Grid.Column="1" VerticalAlignment="Center" Watermark="https://integrate.api.nvidia.com/v1" LostFocus="OnConfigInputLostFocus" KeyDown="OnConfigInputKeyDown" />
+                            <TextBox x:Name="BaseUrlBox" Grid.Row="5" Grid.Column="1" VerticalAlignment="Center" Watermark="https://integrate.api.nvidia.com/v1" LostFocus="OnConfigInputLostFocus" KeyDown="OnConfigInputKeyDown" />
                         </Grid>
                     </StackPanel>
             </ui:SettingsExpander>

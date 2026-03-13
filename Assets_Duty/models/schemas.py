@@ -22,6 +22,7 @@ class DutyBackendConfigModel(BaseModel):
     model: str = "moonshotai/kimi-k2-thinking"
     model_profile: str = "auto"
     orchestration_mode: str = "auto"
+    multi_agent_execution_mode: str = "auto"
     provider_hint: str = ""
     per_day: int = 2
     duty_rule: str = ""
@@ -35,6 +36,7 @@ class DutyBackendConfigPatch(BaseModel):
     model: Optional[str] = None
     model_profile: Optional[str] = None
     orchestration_mode: Optional[str] = None
+    multi_agent_execution_mode: Optional[str] = None
     provider_hint: Optional[str] = None
     per_day: Optional[int] = None
     duty_rule: Optional[str] = None

@@ -182,13 +182,30 @@ def request_llm_stream(url: str, payload: dict, api_key: str, progress_callback=
     return content
 
 
-def call_llm(messages: List[dict], config: dict, progress_callback=None, stop_event=None) -> Tuple[dict, str]:
+def _build_llm_target(config: dict, messages: List[dict], transport_overrides: Optional[dict] = None) -> Tuple[str, dict, str]:
     base_url = str(config["base_url"]).rstrip("/")
     url = f"{base_url}/chat/completions"
-    payload = {"model": config["model"], "messages": list(messages), "temperature": 0.1}
+    payload = {
+        "model": config["model"],
+        "messages": list(messages),
+        "temperature": 0.1,
+    }
+    if transport_overrides:
+        payload.update({key: value for key, value in transport_overrides.items() if value is not None})
     api_key = str(config.get("api_key", "")).strip()
     if not api_key:
         raise ValueError("Missing API key.")
+    return url, payload, api_key
+
+
+def call_llm_raw(
+    messages: List[dict],
+    config: dict,
+    progress_callback=None,
+    stop_event=None,
+    transport_overrides: Optional[dict] = None,
+) -> str:
+    url, payload, api_key = _build_llm_target(config, messages, transport_overrides)
 
     stream_enabled = _parse_bool(
         config.get("llm_stream", config.get("stream", LLM_STREAM_ENABLED_DEFAULT)),
@@ -213,6 +230,88 @@ def call_llm(messages: List[dict], config: dict, progress_callback=None, stop_ev
             lambda: request_llm_non_stream(url, payload, api_key, stop_event),
             mode="non_stream",
         )
+    return content
+
+
+def _extract_json_candidate(content: str) -> dict:
+    text = (content or "").strip()
+    if not text:
+        raise ValueError("empty JSON content")
+
+    candidates = [text]
+    fenced = re.findall(r"```(?:json)?\s*(.*?)```", text, re.DOTALL | re.IGNORECASE)
+    candidates.extend(fragment.strip() for fragment in fenced if fragment and fragment.strip())
+
+    first_brace = text.find("{")
+    last_brace = text.rfind("}")
+    if first_brace >= 0 and last_brace > first_brace:
+        candidates.append(text[first_brace:last_brace + 1].strip())
+
+    for candidate in candidates:
+        if not candidate:
+            continue
+        try:
+            parsed = json.loads(candidate)
+        except Exception:
+            continue
+        if isinstance(parsed, dict):
+            return parsed
+    raise ValueError("unable to locate valid JSON object")
+
+
+def call_llm_json(
+    messages: List[dict],
+    config: dict,
+    validator: Optional[Callable[[dict], dict]] = None,
+    stop_event=None,
+    transport_overrides: Optional[dict] = None,
+    max_parse_retries: int = 2,
+) -> Tuple[dict, str]:
+    url, payload, api_key = _build_llm_target(config, messages, transport_overrides)
+    content = call_llm_raw(messages, config, None, stop_event, transport_overrides)
+    original_message_count = len(payload["messages"])
+    last_parse_error: Optional[Exception] = None
+
+    for attempt in range(max_parse_retries + 1):
+        try:
+            parsed = _extract_json_candidate(content)
+            if validator:
+                parsed = validator(parsed)
+            return parsed, content
+        except Exception as ex:
+            last_parse_error = ex
+            if attempt >= max_parse_retries:
+                break
+            del payload["messages"][original_message_count:]
+            payload["messages"].extend(
+                [
+                    {"role": "assistant", "content": content},
+                    {
+                        "role": "user",
+                        "content": (
+                            "Return ONLY one valid JSON object. "
+                            f"Fix this error: {ex}"
+                        ),
+                    },
+                ]
+            )
+            content = execute_with_retries(
+                lambda: request_llm_non_stream(url, payload, api_key, stop_event),
+                mode="non_stream",
+            )
+
+    raise RuntimeError(f"JSON parse failed: {last_parse_error}")
+
+
+def call_llm(
+    messages: List[dict],
+    config: dict,
+    progress_callback=None,
+    stop_event=None,
+    transport_overrides: Optional[dict] = None,
+) -> Tuple[dict, str]:
+    url, payload, api_key = _build_llm_target(config, messages, transport_overrides)
+    content = call_llm_raw(messages, config, progress_callback, stop_event, transport_overrides)
 
     last_parse_error = None
     original_message_count = len(payload["messages"])

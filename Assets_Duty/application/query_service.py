@@ -23,7 +23,8 @@ class QueryService:
             "version": self._runtime.version,
             "supported_model_profiles": ["auto", "cloud", "campus_small", "edge", "custom"],
             "supported_orchestration_modes": ["auto", "single_pass", "multi_agent"],
-            "current_runtime_mode": "single_pass_compat",
+            "supported_multi_agent_execution_modes": ["auto", "parallel", "serial"],
+            "current_runtime_mode": "dynamic_dispatch",
         }
 
     def get_config(self) -> dict:
@@ -35,7 +36,7 @@ class QueryService:
         roster = []
         try:
             roster = load_roster_entries(context.paths["roster"])
-        except FileNotFoundError:
+        except (FileNotFoundError, ValueError):
             roster = []
 
         return {

@@ -26,11 +26,12 @@ def build_prompt_messages(
     previous_context: str = "",
     model_profile: str = "auto",
     orchestration_mode: str = "auto",
+    single_pass_strategy: str = "cloud_standard",
 ) -> List[Dict[str, str]]:
     """Build prompt messages for the unified scheduling engine."""
 
     inactive_ids = [pid for pid, active in id_to_active.items() if active == 0]
-    compact_mode = model_profile in {"campus_small", "edge"} or orchestration_mode == "multi_agent"
+    compact_mode = model_profile == "campus_small" or orchestration_mode == "multi_agent"
 
     if compact_mode:
         params = [
@@ -38,6 +39,7 @@ def build_prompt_messages(
             f"<inactive_ids>{','.join(map(str, inactive_ids))}</inactive_ids>",
             f"<current_time>{current_time}</current_time>",
             f"<user_instruction>{instruction}</user_instruction>",
+            f"<single_pass_strategy>{single_pass_strategy}</single_pass_strategy>",
         ]
         if previous_context:
             params.append(f"<previous_run_memory>{previous_context}</previous_run_memory>")
@@ -49,6 +51,7 @@ def build_prompt_messages(
         f"<all_roster_ids>{','.join(map(str, all_ids))}</all_roster_ids>",
         f"<current_time>{current_time}</current_time>",
         f"<user_instruction>{instruction}</user_instruction>",
+        f"<single_pass_strategy>{single_pass_strategy}</single_pass_strategy>",
     ]
     if previous_context:
         params_list.append(f"<previous_run_memory>{previous_context}</previous_run_memory>")

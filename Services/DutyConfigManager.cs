@@ -152,6 +152,7 @@ public class DutyConfigManager : IConfigManager, IDisposable
             Model = ReadString(root, "model", "moonshotai/kimi-k2-thinking"),
             ModelProfile = DutyScheduleOrchestrator.NormalizeModelProfile(ReadString(root, "model_profile", "auto")),
             OrchestrationMode = DutyScheduleOrchestrator.NormalizeOrchestrationMode(ReadString(root, "orchestration_mode", "auto")),
+            MultiAgentExecutionMode = ReadString(root, "multi_agent_execution_mode", "auto"),
             ProviderHint = ReadString(root, "provider_hint", string.Empty),
             PerDay = Math.Clamp(ReadInt(root, "per_day", 2), 1, 30),
             DutyRule = ReadString(root, "duty_rule", string.Empty)

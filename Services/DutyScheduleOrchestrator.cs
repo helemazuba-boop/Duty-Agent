@@ -277,6 +277,17 @@ public class DutyScheduleOrchestrator : IDisposable
         };
     }
 
+    public static string NormalizeMultiAgentExecutionMode(string? executionMode)
+    {
+        var trimmed = (executionMode ?? "auto").Trim();
+        return trimmed.ToLowerInvariant() switch
+        {
+            "parallel" => "parallel",
+            "serial" or "sequential" => "serial",
+            _ => "auto"
+        };
+    }
+
     private void TryRunAutoSchedule()
     {
         try

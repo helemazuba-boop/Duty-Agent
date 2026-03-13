@@ -1008,6 +1008,7 @@ public sealed class DutyLocalPreviewHostedService : IHostedService, IDisposable
             "model",
             "model_profile",
             "orchestration_mode",
+            "multi_agent_execution_mode",
             "provider_hint",
             "python_path",
             "auto_run_mode",
@@ -1050,6 +1051,11 @@ public sealed class DutyLocalPreviewHostedService : IHostedService, IDisposable
             return false;
         }
         if (!TryReadOptionalStringArgument(argumentsElement, "orchestration_mode", out var orchestrationMode, out parseError))
+        {
+            errorMessage = parseError ?? "Invalid params.";
+            return false;
+        }
+        if (!TryReadOptionalStringArgument(argumentsElement, "multi_agent_execution_mode", out var multiAgentExecutionMode, out parseError))
         {
             errorMessage = parseError ?? "Invalid params.";
             return false;
@@ -1147,6 +1153,9 @@ public sealed class DutyLocalPreviewHostedService : IHostedService, IDisposable
                 OrchestrationMode = orchestrationMode is null
                     ? currentBackend.OrchestrationMode
                     : DutyScheduleOrchestrator.NormalizeOrchestrationMode(orchestrationMode),
+                MultiAgentExecutionMode = multiAgentExecutionMode is null
+                    ? currentBackend.MultiAgentExecutionMode
+                    : DutyScheduleOrchestrator.NormalizeMultiAgentExecutionMode(multiAgentExecutionMode),
                 ProviderHint = providerHint ?? currentBackend.ProviderHint,
                 PerDay = perDay ?? currentBackend.PerDay,
                 DutyRule = dutyRule ?? currentBackend.DutyRule
@@ -1196,6 +1205,7 @@ public sealed class DutyLocalPreviewHostedService : IHostedService, IDisposable
                 model = savedBackend.Model,
                 model_profile = savedBackend.ModelProfile,
                 orchestration_mode = savedBackend.OrchestrationMode,
+                multi_agent_execution_mode = savedBackend.MultiAgentExecutionMode,
                 provider_hint = savedBackend.ProviderHint,
                 auto_run_mode = savedHost.AutoRunMode,
                 enable_mcp = savedHost.EnableMcp,
@@ -1627,6 +1637,7 @@ public sealed class DutyLocalPreviewHostedService : IHostedService, IDisposable
                             model = new { type = "string" },
                             model_profile = new { type = "string" },
                             orchestration_mode = new { type = "string" },
+                            multi_agent_execution_mode = new { type = "string" },
                             provider_hint = new { type = "string" },
                             python_path = new { type = "string" },
                             auto_run_mode = new { type = "string" },
@@ -1940,6 +1951,16 @@ public sealed class DutyLocalPreviewHostedService : IHostedService, IDisposable
             ApiKey = DutyScheduleOrchestrator.ResolveApiKeyInput(config.ApiKey, backendConfig.ApiKey),
             BaseUrl = config.BaseUrl ?? backendConfig.BaseUrl,
             Model = config.Model ?? backendConfig.Model,
+            ModelProfile = config.ModelProfile is null
+                ? backendConfig.ModelProfile
+                : DutyScheduleOrchestrator.NormalizeModelProfile(config.ModelProfile),
+            OrchestrationMode = config.OrchestrationMode is null
+                ? backendConfig.OrchestrationMode
+                : DutyScheduleOrchestrator.NormalizeOrchestrationMode(config.OrchestrationMode),
+            MultiAgentExecutionMode = config.MultiAgentExecutionMode is null
+                ? backendConfig.MultiAgentExecutionMode
+                : DutyScheduleOrchestrator.NormalizeMultiAgentExecutionMode(config.MultiAgentExecutionMode),
+            ProviderHint = config.ProviderHint ?? backendConfig.ProviderHint,
             PerDay = config.PerDay ?? backendConfig.PerDay,
             DutyRule = config.DutyRule ?? backendConfig.DutyRule
         };
@@ -2074,8 +2095,17 @@ public sealed class DutyLocalPreviewHostedService : IHostedService, IDisposable
         [JsonPropertyName("model")]
         public string? Model { get; set; }
 
+        [JsonPropertyName("model_profile")]
+        public string? ModelProfile { get; set; }
 
+        [JsonPropertyName("orchestration_mode")]
+        public string? OrchestrationMode { get; set; }
 
+        [JsonPropertyName("multi_agent_execution_mode")]
+        public string? MultiAgentExecutionMode { get; set; }
+
+        [JsonPropertyName("provider_hint")]
+        public string? ProviderHint { get; set; }
         [JsonPropertyName("per_day")]
         public int? PerDay { get; set; }
 

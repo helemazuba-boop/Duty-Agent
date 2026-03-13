@@ -19,6 +19,9 @@ public sealed class DutyBackendConfig
     [JsonPropertyName("orchestration_mode")]
     public string OrchestrationMode { get; set; } = "auto";
 
+    [JsonPropertyName("multi_agent_execution_mode")]
+    public string MultiAgentExecutionMode { get; set; } = "auto";
+
     [JsonPropertyName("provider_hint")]
     public string ProviderHint { get; set; } = string.Empty;
 
@@ -50,6 +53,10 @@ public sealed class DutyBackendConfigPatch
     [JsonPropertyName("orchestration_mode")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? OrchestrationMode { get; set; }
+
+    [JsonPropertyName("multi_agent_execution_mode")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? MultiAgentExecutionMode { get; set; }
 
     [JsonPropertyName("provider_hint")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]

@@ -484,6 +484,9 @@ public partial class DutyWebSettingsPage : SettingsPageBase
             OrchestrationMode = config.OrchestrationMode is null
                 ? currentBackend.OrchestrationMode
                 : DutyScheduleOrchestrator.NormalizeOrchestrationMode(config.OrchestrationMode),
+            MultiAgentExecutionMode = config.MultiAgentExecutionMode is null
+                ? currentBackend.MultiAgentExecutionMode
+                : DutyScheduleOrchestrator.NormalizeMultiAgentExecutionMode(config.MultiAgentExecutionMode),
             ProviderHint = config.ProviderHint ?? currentBackend.ProviderHint,
             PerDay = config.PerDay ?? currentBackend.PerDay,
             DutyRule = config.DutyRule ?? currentBackend.DutyRule
@@ -531,6 +534,7 @@ public partial class DutyWebSettingsPage : SettingsPageBase
                 Model = backendSnapshot.Config.Model,
                 ModelProfile = backendSnapshot.Config.ModelProfile,
                 OrchestrationMode = backendSnapshot.Config.OrchestrationMode,
+                MultiAgentExecutionMode = backendSnapshot.Config.MultiAgentExecutionMode,
                 ProviderHint = backendSnapshot.Config.ProviderHint,
                 AutoRunMode = hostConfig.AutoRunMode,
                 EnableMcp = hostConfig.EnableMcp,
@@ -875,6 +879,9 @@ public partial class DutyWebSettingsPage : SettingsPageBase
 
         [JsonPropertyName("provider_hint")]
         public string? ProviderHint { get; set; }
+
+        [JsonPropertyName("multi_agent_execution_mode")]
+        public string? MultiAgentExecutionMode { get; set; }
 
         [JsonPropertyName("auto_run_mode")]
         public string? AutoRunMode { get; set; }

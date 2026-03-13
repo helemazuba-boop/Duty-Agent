@@ -15,6 +15,7 @@ DEFAULT_BASE_URL = "https://integrate.api.nvidia.com/v1"
 DEFAULT_MODEL = "moonshotai/kimi-k2-thinking"
 DEFAULT_MODEL_PROFILE = "auto"
 DEFAULT_ORCHESTRATION_MODE = "auto"
+DEFAULT_MULTI_AGENT_EXECUTION_MODE = "auto"
 STATE_LOCK_TIMEOUT_SECONDS = 360
 STATE_LOCK_RETRY_INTERVAL_SECONDS = 0.2
 
@@ -53,6 +54,16 @@ def normalize_orchestration_mode(value) -> str:
     }.get(normalized, normalized if normalized in {"auto", "single_pass", "multi_agent"} else DEFAULT_ORCHESTRATION_MODE)
 
 
+def normalize_multi_agent_execution_mode(value) -> str:
+    normalized = str(value or "").strip().lower()
+    return {
+        "parallel": "parallel",
+        "concurrent": "parallel",
+        "serial": "serial",
+        "sequential": "serial",
+    }.get(normalized, normalized if normalized in {"auto", "parallel", "serial"} else DEFAULT_MULTI_AGENT_EXECUTION_MODE)
+
+
 def create_default_config() -> dict:
     return {
         "api_key": "",
@@ -60,6 +71,7 @@ def create_default_config() -> dict:
         "model": DEFAULT_MODEL,
         "model_profile": DEFAULT_MODEL_PROFILE,
         "orchestration_mode": DEFAULT_ORCHESTRATION_MODE,
+        "multi_agent_execution_mode": DEFAULT_MULTI_AGENT_EXECUTION_MODE,
         "provider_hint": "",
         "per_day": DEFAULT_PER_DAY,
         "duty_rule": "",
@@ -78,6 +90,9 @@ def normalize_config(config: dict | None) -> dict:
     normalized["model_profile"] = normalize_model_profile(source.get("model_profile", DEFAULT_MODEL_PROFILE))
     normalized["orchestration_mode"] = normalize_orchestration_mode(
         source.get("orchestration_mode", DEFAULT_ORCHESTRATION_MODE)
+    )
+    normalized["multi_agent_execution_mode"] = normalize_multi_agent_execution_mode(
+        source.get("multi_agent_execution_mode", DEFAULT_MULTI_AGENT_EXECUTION_MODE)
     )
     normalized["provider_hint"] = str(source.get("provider_hint", "") or "").strip()
     normalized["per_day"] = parse_int(source.get("per_day"), DEFAULT_PER_DAY, 1, 30)
@@ -219,11 +234,24 @@ def load_roster_entries(csv_path: Path) -> List[dict]:
 
 def load_state(path: Path) -> dict:
     if not path.exists():
-        return {"schedule_pool": []}
+        return {
+            "schedule_pool": [],
+            "next_run_note": "",
+            "debt_list": [],
+            "credit_list": [],
+            "last_pointer": 0,
+        }
     with open(path, "r", encoding="utf-8-sig") as file:
         data = json.load(file)
     if "schedule_pool" not in data or not isinstance(data["schedule_pool"], list):
         data["schedule_pool"] = []
+    if "next_run_note" not in data or not isinstance(data["next_run_note"], str):
+        data["next_run_note"] = ""
+    if "debt_list" not in data or not isinstance(data["debt_list"], list):
+        data["debt_list"] = []
+    if "credit_list" not in data or not isinstance(data["credit_list"], list):
+        data["credit_list"] = []
+    data["last_pointer"] = parse_int(data.get("last_pointer"), 0, 0, 1_000_000_000)
     return data
 
 
