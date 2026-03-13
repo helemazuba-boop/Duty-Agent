@@ -1,4 +1,4 @@
-namespace DutyAgent.Services;
+﻿namespace DutyAgent.Services;
 
 public sealed class DutyPluginPaths
 {
@@ -10,6 +10,7 @@ public sealed class DutyPluginPaths
     public string LogsDirectory => Path.Combine(PluginConfigFolder, "logs");
 
     public string ConfigPath => Path.Combine(DataDirectory, "config.json");
+    public string HostConfigPath => Path.Combine(DataDirectory, "host-config.json");
     public string StatePath => Path.Combine(DataDirectory, "state.json");
     public string RosterPath => Path.Combine(DataDirectory, "roster.csv");
     public string ProcessSnapshotPath => Path.Combine(DataDirectory, ".engine-process.json");

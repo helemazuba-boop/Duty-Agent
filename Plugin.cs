@@ -99,7 +99,9 @@ public class Plugin : PluginBase
     {
         try
         {
-            var configPath = pluginPaths.ConfigPath;
+            var configPath = File.Exists(pluginPaths.HostConfigPath)
+                ? pluginPaths.HostConfigPath
+                : pluginPaths.ConfigPath;
             if (!File.Exists(configPath))
             {
                 return BootstrapFlags.Disabled;

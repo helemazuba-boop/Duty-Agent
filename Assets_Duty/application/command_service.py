@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any, Callable, Dict, Optional
 
 from engine import run_schedule
-from state_ops import Context
+from state_ops import Context, patch_config
 
 
 class CommandService:
@@ -19,3 +19,7 @@ class CommandService:
         result = run_schedule(context, request_payload, progress_callback, stop_event)
         result.setdefault("trace_id", request_payload["trace_id"])
         return result
+
+    def update_config(self, patch_payload: Dict[str, Any]) -> Dict[str, Any]:
+        context = Context(self._runtime.data_dir)
+        return patch_config(context, patch_payload)

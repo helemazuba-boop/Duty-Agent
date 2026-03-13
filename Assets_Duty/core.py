@@ -18,7 +18,7 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from fastapi import FastAPI, BackgroundTasks, Request
 from fastapi.middleware.cors import CORSMiddleware
 from runtime import create_runtime
-from routers import duty
+from routers import config, duty
 import uvicorn
 
 @asynccontextmanager
@@ -41,6 +41,7 @@ app.add_middleware(
 
 # Register modular routers
 app.include_router(duty.router)
+app.include_router(config.router)
 
 @app.get("/")
 async def root(request: Request):

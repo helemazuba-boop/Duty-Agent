@@ -310,10 +310,15 @@ public partial class DutyMainSettingsPage : SettingsPageBase
             };
             var result = _configModule.Apply(request);
 
+            if (!result.Success)
+            {
+                UpdateConfigTracking("应用失败");
+                SetStatus(result.Message, Brushes.Red);
+                return false;
+            }
+
             SetStatus(
-                result.RestartRequired
-                    ? "设置已自动保存，调试层/MCP 将在重启后生效。"
-                    : "设置已自动保存。",
+                result.Message,
                 Brushes.Gray);
 
             UpdateConfigTracking(
@@ -504,11 +509,28 @@ public partial class DutyMainSettingsPage : SettingsPageBase
 
             NotificationDurationSlider.Value = formModel.NotificationDurationSeconds;
             NotificationDurationLabel.Text = $"{formModel.NotificationDurationSeconds} 秒";
+            SetBackendConfigControlsEnabled(formModel.BackendConfigAvailable);
+            if (!formModel.BackendConfigAvailable)
+            {
+                UpdateConfigTracking("后端不可用");
+                SetStatus($"后端配置不可用：{formModel.BackendConfigError}", Brushes.Orange);
+            }
         }
         finally
         {
             _isLoadingConfig = false;
         }
+    }
+
+    private void SetBackendConfigControlsEnabled(bool enabled)
+    {
+        ApiKeyBox.IsEnabled = enabled;
+        BaseUrlBox.IsEnabled = enabled;
+        ModelBox.IsEnabled = enabled;
+        ModelProfileComboBox.IsEnabled = enabled;
+        OrchestrationModeComboBox.IsEnabled = enabled;
+        DutyRuleBox.IsEnabled = enabled;
+        RunAgentBtn.IsEnabled = enabled;
     }
 
     private void LoadData(string reason = "数据刷新")

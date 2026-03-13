@@ -28,10 +28,8 @@ from state_ops import (
     load_config,
     load_roster,
     load_state,
-    merge_input_config,
     normalize_area_names,
     normalize_area_per_day_counts,
-    parse_bool,
     release_state_file_lock,
     save_json_atomic,
 )
@@ -54,43 +52,25 @@ def run_schedule(ctx: Context, input_data: dict, emit_progress_fn=None, stop_eve
         state_lock_acquired = True
 
         state_data = load_state(ctx.paths["state"])
-        input_data = merge_input_config(input_data)
+        input_data = dict(input_data or {})
         instruction = str(input_data.get("instruction", "Generate duty schedule")).strip()
         trace_id = str(input_data.get("trace_id", "")).strip()
 
-        base_url = str(input_data.get("base_url", ctx.config.get("base_url", ""))).strip()
-        model = str(input_data.get("model", ctx.config.get("model", ""))).strip()
         api_key = (
-            str(input_data.get("api_key", "")).strip()
-            or str(ctx.config.get("api_key", "")).strip()
+            str(ctx.config.get("api_key", "")).strip()
             or load_api_key_from_env()
         )
-        if not base_url or not model or not api_key:
+        if not api_key:
             raise ValueError("Missing config/api_key.")
 
-        ctx.config.update(
-            {
-                "base_url": base_url,
-                "model": model,
-                "api_key": api_key,
-                "model_profile": input_data.get("model_profile", ctx.config.get("model_profile", "auto")),
-                "orchestration_mode": input_data.get(
-                    "orchestration_mode",
-                    ctx.config.get("orchestration_mode", "auto"),
-                ),
-                "provider_hint": input_data.get("provider_hint", ctx.config.get("provider_hint", "")),
-            }
-        )
-        ctx.config["llm_stream"] = parse_bool(
-            input_data.get("llm_stream", ctx.config.get("llm_stream", True)),
-            True,
-        )
+        ctx.config["api_key"] = api_key
+        ctx.config["llm_stream"] = True
 
-        area_names = normalize_area_names(input_data.get("area_names", ctx.config.get("area_names", [])))
+        area_names = normalize_area_names([])
         area_per_day_counts = normalize_area_per_day_counts(
             area_names,
-            input_data.get("area_per_day_counts", ctx.config.get("area_per_day_counts", {})),
-            input_data.get("per_day", DEFAULT_PER_DAY),
+            {},
+            ctx.config.get("per_day", DEFAULT_PER_DAY),
         )
         apply_mode = str(input_data.get("apply_mode", "append")).lower()
 
@@ -113,7 +93,7 @@ def run_schedule(ctx: Context, input_data: dict, emit_progress_fn=None, stop_eve
             id_to_active=id_to_active,
             current_time=run_now.strftime("%Y-%m-%d %H:%M"),
             instruction=anonymize_instruction(instruction, name_to_id),
-            duty_rule=anonymize_instruction(str(input_data.get("duty_rule", "")), name_to_id),
+            duty_rule=anonymize_instruction(str(ctx.config.get("duty_rule", "")), name_to_id),
             area_names=area_names,
             debt_list=extract_ids_from_value(state_data.get("debt_list", []), set(all_ids)),
             credit_list=extract_ids_from_value(state_data.get("credit_list", []), set(all_ids)),
@@ -151,7 +131,7 @@ def run_schedule(ctx: Context, input_data: dict, emit_progress_fn=None, stop_eve
             "new_credit_ids" in llm_result,
         )
 
-        restored = restore_schedule(normalized_ids, id_to_name, area_names, input_data.get("existing_notes", {}))
+        restored = restore_schedule(normalized_ids, id_to_name, area_names, {})
         if not restored:
             raise ValueError("No valid schedule entries.")
 
@@ -175,7 +155,3 @@ def run_schedule(ctx: Context, input_data: dict, emit_progress_fn=None, stop_eve
     finally:
         if state_lock_acquired:
             release_state_file_lock(state_lock_path)
-
-
-def run_duty_agent(ctx: Context, input_data: dict, emit_progress_fn=None, stop_event=None):
-    return run_schedule(ctx, input_data, emit_progress_fn, stop_event)

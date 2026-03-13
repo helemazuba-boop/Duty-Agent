@@ -86,9 +86,7 @@ def _normalize_text(value: Any, fallback: str) -> str:
 def _resolve_model_profile(input_data: Dict[str, Any], config: Dict[str, Any]) -> str:
     raw = (
         input_data.get("model_profile")
-        or input_data.get("model_capability_profile")
         or config.get("model_profile")
-        or config.get("model_capability_profile")
         or "auto"
     )
     normalized = _normalize_text(raw, "auto")
@@ -98,10 +96,7 @@ def _resolve_model_profile(input_data: Dict[str, Any], config: Dict[str, Any]) -
 def _resolve_orchestration_mode(input_data: Dict[str, Any], config: Dict[str, Any]) -> str:
     raw = (
         input_data.get("orchestration_mode")
-        or input_data.get("agent_orchestration_mode")
-        or input_data.get("execution_mode")
         or config.get("orchestration_mode")
-        or config.get("agent_orchestration_mode")
         or "auto"
     )
     normalized = _normalize_text(raw, "auto")
@@ -111,15 +106,6 @@ def _resolve_orchestration_mode(input_data: Dict[str, Any], config: Dict[str, An
 def resolve_execution_profile(input_data: Dict[str, Any], config: Dict[str, Any]) -> ExecutionProfile:
     model_profile = _resolve_model_profile(input_data, config)
     orchestration_mode = _resolve_orchestration_mode(input_data, config)
-    if model_profile == "auto" and orchestration_mode == "auto":
-        legacy_prompt_mode = str(
-            input_data.get("prompt_mode")
-            or config.get("prompt_mode")
-            or ""
-        ).strip().lower()
-        if legacy_prompt_mode == "incremental":
-            model_profile = "campus_small"
-            orchestration_mode = "single_pass"
     provider_hint = str(
         input_data.get("provider_hint")
         or config.get("provider_hint")

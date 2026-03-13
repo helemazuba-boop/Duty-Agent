@@ -110,6 +110,10 @@ public class DutyScheduleOrchestrator : IDisposable
     // Proxy load/save for backward compatibility with existing view models
     public void LoadConfig() => _ = _configManager.Config;
     public void SaveConfig() => _configManager.SaveConfig();
+    public DutyBackendConfig LoadBackendConfig() => _ipcService.GetBackendConfigAsync().GetAwaiter().GetResult();
+    public DutyBackendConfig SaveBackendConfig(DutyBackendConfigPatch patch) =>
+        _ipcService.UpdateBackendConfigAsync(patch).GetAwaiter().GetResult();
+    public DutyBackendSnapshot LoadBackendSnapshot() => _ipcService.GetBackendSnapshotAsync().GetAwaiter().GetResult();
 
     public DutyState LoadState() => _stateManager.LoadState();
     public void SaveState(DutyState state) => _stateManager.SaveState(state);
@@ -148,23 +152,11 @@ public class DutyScheduleOrchestrator : IDisposable
 
         try
         {
-            var apiKeyPlain = _configManager.Config.DecryptedApiKey?.Trim();
-            if (string.IsNullOrWhiteSpace(apiKeyPlain))
-            {
-                return CoreRunResult.Fail("API key is empty or unavailable on this device.", code: "config");
-            }
-
             var inputData = new
             {
                 instruction = effectiveInstruction,
                 apply_mode = applyMode,
-                per_day = _configManager.Config.PerDay,
-                duty_rule = _configManager.Config.DutyRule,
-                base_url = _configManager.Config.BaseUrl,
-                model = overrideModel ?? _configManager.Config.Model,
-                model_profile = _configManager.Config.ModelProfile,
-                orchestration_mode = _configManager.Config.OrchestrationMode,
-                provider_hint = _configManager.Config.ProviderHint
+                request_source = isAutoRun ? "automation" : "host"
             };
 
             var result = await _ipcService.RunScheduleAsync(inputData, progress, CancellationToken.None);
@@ -185,7 +177,8 @@ public class DutyScheduleOrchestrator : IDisposable
 
     public string GetApiKeyMaskForUi()
     {
-        return string.IsNullOrWhiteSpace(_configManager.Config.DecryptedApiKey) ? string.Empty : ApiKeyMask;
+        var backendConfig = LoadBackendConfig();
+        return string.IsNullOrWhiteSpace(backendConfig.ApiKey) ? string.Empty : ApiKeyMask;
     }
 
     public static string ResolveApiKeyInput(string? incomingApiKey, string existingApiKey)

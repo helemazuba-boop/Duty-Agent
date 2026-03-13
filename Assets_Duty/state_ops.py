@@ -11,6 +11,10 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 DEFAULT_PER_DAY = 2
+DEFAULT_BASE_URL = "https://integrate.api.nvidia.com/v1"
+DEFAULT_MODEL = "moonshotai/kimi-k2-thinking"
+DEFAULT_MODEL_PROFILE = "auto"
+DEFAULT_ORCHESTRATION_MODE = "auto"
 STATE_LOCK_TIMEOUT_SECONDS = 360
 STATE_LOCK_RETRY_INTERVAL_SECONDS = 0.2
 
@@ -26,6 +30,59 @@ class Context:
             "result": data_dir / "ipc_result.json",
         }
         self.config: dict = {}
+
+
+def normalize_model_profile(value) -> str:
+    normalized = str(value or "").strip().lower()
+    return {
+        "cloud_general": "cloud",
+        "campus": "campus_small",
+        "school_small": "campus_small",
+        "edge_tuned": "edge",
+        "edge_finetuned": "edge",
+    }.get(normalized, normalized if normalized in {"auto", "cloud", "campus_small", "edge", "custom"} else DEFAULT_MODEL_PROFILE)
+
+
+def normalize_orchestration_mode(value) -> str:
+    normalized = str(value or "").strip().lower()
+    return {
+        "single": "single_pass",
+        "unified": "single_pass",
+        "multi-agent": "multi_agent",
+        "staged": "multi_agent",
+    }.get(normalized, normalized if normalized in {"auto", "single_pass", "multi_agent"} else DEFAULT_ORCHESTRATION_MODE)
+
+
+def create_default_config() -> dict:
+    return {
+        "api_key": "",
+        "base_url": DEFAULT_BASE_URL,
+        "model": DEFAULT_MODEL,
+        "model_profile": DEFAULT_MODEL_PROFILE,
+        "orchestration_mode": DEFAULT_ORCHESTRATION_MODE,
+        "provider_hint": "",
+        "per_day": DEFAULT_PER_DAY,
+        "duty_rule": "",
+    }
+
+
+def normalize_config(config: dict | None) -> dict:
+    source = dict(create_default_config())
+    if isinstance(config, dict):
+        source.update(config)
+
+    normalized = create_default_config()
+    normalized["api_key"] = str(source.get("api_key", "") or "").strip()
+    normalized["base_url"] = str(source.get("base_url", "") or DEFAULT_BASE_URL).strip() or DEFAULT_BASE_URL
+    normalized["model"] = str(source.get("model", "") or DEFAULT_MODEL).strip() or DEFAULT_MODEL
+    normalized["model_profile"] = normalize_model_profile(source.get("model_profile", DEFAULT_MODEL_PROFILE))
+    normalized["orchestration_mode"] = normalize_orchestration_mode(
+        source.get("orchestration_mode", DEFAULT_ORCHESTRATION_MODE)
+    )
+    normalized["provider_hint"] = str(source.get("provider_hint", "") or "").strip()
+    normalized["per_day"] = parse_int(source.get("per_day"), DEFAULT_PER_DAY, 1, 30)
+    normalized["duty_rule"] = str(source.get("duty_rule", "") or "").strip()
+    return normalized
 
 
 def save_json_atomic(path: Path, data: dict):
@@ -70,13 +127,30 @@ def release_state_file_lock(lock_path: Path) -> None:
 def load_config(ctx: Context) -> dict:
     config_path = ctx.paths["config"]
     if not config_path.exists():
-        raise FileNotFoundError(f"Config file not found: {config_path}")
+        config = create_default_config()
+        save_json_atomic(config_path, config)
+        return config
     with open(config_path, "r", encoding="utf-8-sig") as file:
-        config = json.load(file)
-    for key in ("base_url", "model"):
-        if not str(config.get(key, "")).strip():
-            raise ValueError(f"Missing config field: {key}")
+        raw = json.load(file)
+    config = normalize_config(raw)
+    if raw != config:
+        save_json_atomic(config_path, config)
     return config
+
+
+def save_config(ctx: Context, config: dict) -> dict:
+    normalized = normalize_config(config)
+    save_json_atomic(ctx.paths["config"], normalized)
+    return normalized
+
+
+def patch_config(ctx: Context, patch: dict) -> dict:
+    current = load_config(ctx)
+    for key, value in (patch or {}).items():
+        if value is None:
+            continue
+        current[key] = value
+    return save_config(ctx, current)
 
 
 def load_api_key_from_env() -> str:
@@ -129,6 +203,18 @@ def load_roster(csv_path: Path) -> Tuple[Dict[str, int], Dict[int, str], List[in
     if not all_ids:
         raise ValueError("No people in roster.csv.")
     return name_to_id, id_to_name, all_ids, id_to_active
+
+
+def load_roster_entries(csv_path: Path) -> List[dict]:
+    _, id_to_name, all_ids, id_to_active = load_roster(csv_path)
+    return [
+        {
+            "id": person_id,
+            "name": id_to_name.get(person_id, ""),
+            "active": id_to_active.get(person_id, 1) != 0,
+        }
+        for person_id in all_ids
+    ]
 
 
 def load_state(path: Path) -> dict:
@@ -234,11 +320,3 @@ def extract_ids_from_value(value, active_set: set, limit: Optional[int] = None) 
             if limit is not None and len(result) >= limit:
                 break
     return result
-
-
-def merge_input_config(input_data: dict) -> dict:
-    if not isinstance(input_data, dict):
-        return {}
-    merged = dict(input_data.get("config", {}))
-    merged.update(input_data)
-    return merged

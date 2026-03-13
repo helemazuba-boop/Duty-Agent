@@ -15,6 +15,9 @@ namespace DutyAgent.Services;
 public interface IPythonIpcService: IDisposable
 {
     Task<CoreRunResult> RunScheduleAsync(object requestPayload, Action<CoreRunProgress>? progressCallback, CancellationToken cancellationToken = default);
+    Task<DutyBackendConfig> GetBackendConfigAsync(CancellationToken cancellationToken = default);
+    Task<DutyBackendConfig> UpdateBackendConfigAsync(DutyBackendConfigPatch patch, CancellationToken cancellationToken = default);
+    Task<DutyBackendSnapshot> GetBackendSnapshotAsync(CancellationToken cancellationToken = default);
     Task EnsureReadyAsync(CancellationToken cancellationToken = default);
     Task RestartEngineAsync();
     Task StopAsync();
@@ -43,6 +46,10 @@ public class DutyPythonIpcService : IPythonIpcService
     private bool _disposed;
     private readonly StringBuilder _errorBuffer = new();
     private const int EngineStartupTimeoutSeconds = 15;
+    private static readonly JsonSerializerOptions JsonOptions = new()
+    {
+        PropertyNameCaseInsensitive = true
+    };
 
     private TaskCompletionSource<int> _portTcs = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private volatile EngineState _state = EngineState.NotStarted;
@@ -379,6 +386,47 @@ public class DutyPythonIpcService : IPythonIpcService
             }
             return CoreRunResult.Fail($"Network error: {ex.Message}");
         }
+    }
+
+    public async Task<DutyBackendConfig> GetBackendConfigAsync(CancellationToken cancellationToken = default)
+    {
+        return await SendJsonAsync<DutyBackendConfig>(HttpMethod.Get, "/api/v1/config", null, cancellationToken);
+    }
+
+    public async Task<DutyBackendConfig> UpdateBackendConfigAsync(DutyBackendConfigPatch patch, CancellationToken cancellationToken = default)
+    {
+        return await SendJsonAsync<DutyBackendConfig>(HttpMethod.Patch, "/api/v1/config", patch, cancellationToken);
+    }
+
+    public async Task<DutyBackendSnapshot> GetBackendSnapshotAsync(CancellationToken cancellationToken = default)
+    {
+        return await SendJsonAsync<DutyBackendSnapshot>(HttpMethod.Get, "/api/v1/snapshot", null, cancellationToken);
+    }
+
+    private async Task<T> SendJsonAsync<T>(HttpMethod method, string relativePath, object? payload, CancellationToken cancellationToken)
+    {
+        await EnsureReadyAsync(cancellationToken);
+
+        using var request = new HttpRequestMessage(method, $"http://127.0.0.1:{_serverPort}{relativePath}");
+        if (payload != null)
+        {
+            request.Content = new StringContent(
+                JsonSerializer.Serialize(payload, JsonOptions),
+                Encoding.UTF8,
+                "application/json");
+        }
+
+        using var response = await _httpClient.SendAsync(request, cancellationToken);
+        var responseText = await response.Content.ReadAsStringAsync(cancellationToken);
+        response.EnsureSuccessStatusCode();
+
+        var parsed = JsonSerializer.Deserialize<T>(responseText, JsonOptions);
+        if (parsed == null)
+        {
+            throw new InvalidOperationException($"Failed to parse backend response for {relativePath}.");
+        }
+
+        return parsed;
     }
 
     private void ShutdownPythonServer()

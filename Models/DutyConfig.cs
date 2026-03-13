@@ -1,86 +1,13 @@
-using System.Text.Json.Serialization;
+﻿using System.Text.Json.Serialization;
 using CommunityToolkit.Mvvm.ComponentModel;
-using DutyAgent.Services;
 
 namespace DutyAgent.Models;
 
 public partial class DutyConfig : ObservableObject
 {
-    private string _decryptedApiKey = string.Empty;
-
     [ObservableProperty]
     [property: JsonPropertyName("python_path")]
     private string _pythonPath = @".\Assets_Duty\python-embed\python.exe";
-
-    [ObservableProperty]
-    [property: JsonPropertyName("api_key")]
-    private string _plainApiKey = string.Empty;
-
-    [ObservableProperty]
-    [property: JsonPropertyName("api_key_encrypted")]
-    private string _encryptedApiKey = string.Empty;
-
-    [JsonIgnore]
-    public string DecryptedApiKey
-    {
-        get
-        {
-            if (!string.IsNullOrEmpty(_decryptedApiKey))
-            {
-                return _decryptedApiKey;
-            }
-
-            if (!string.IsNullOrWhiteSpace(PlainApiKey))
-            {
-                _decryptedApiKey = PlainApiKey;
-                return _decryptedApiKey;
-            }
-
-            if (string.IsNullOrWhiteSpace(EncryptedApiKey))
-            {
-                return string.Empty;
-            }
-
-            try
-            {
-                _decryptedApiKey = SecurityHelper.DecryptString(EncryptedApiKey);
-            }
-            catch
-            {
-                // Compatibility fallback: some historical builds stored plain text in legacy field.
-                _decryptedApiKey = EncryptedApiKey;
-            }
-
-            return _decryptedApiKey;
-        }
-        set
-        {
-            _decryptedApiKey = value ?? string.Empty;
-            PlainApiKey = _decryptedApiKey;
-            // Temporarily disable encrypted persistence.
-            EncryptedApiKey = string.Empty;
-        }
-    }
-
-    [ObservableProperty]
-    [property: JsonPropertyName("base_url")]
-    private string _baseUrl = "https://integrate.api.nvidia.com/v1";
-
-    [ObservableProperty]
-    [property: JsonPropertyName("model")]
-    private string _model = "moonshotai/kimi-k2-thinking";
-
-    [ObservableProperty]
-    [property: JsonPropertyName("model_profile")]
-    private string _modelProfile = "auto";
-
-    [ObservableProperty]
-    [property: JsonPropertyName("orchestration_mode")]
-    private string _orchestrationMode = "auto";
-
-    [ObservableProperty]
-    [property: JsonPropertyName("provider_hint")]
-    private string _providerHint = string.Empty;
 
     [ObservableProperty]
     [property: JsonPropertyName("auto_run_mode")]
@@ -105,14 +32,6 @@ public partial class DutyConfig : ObservableObject
     [ObservableProperty]
     [property: JsonPropertyName("auto_run_trigger_notification_enabled")]
     private bool _autoRunTriggerNotificationEnabled = true;
-
-    [ObservableProperty]
-    [property: JsonPropertyName("per_day")]
-    private int _perDay = 2;
-
-    [ObservableProperty]
-    [property: JsonPropertyName("duty_rule")]
-    private string _dutyRule = string.Empty;
 
     [ObservableProperty]
     [property: JsonPropertyName("auto_run_retry_times")]
@@ -141,9 +60,4 @@ public partial class DutyConfig : ObservableObject
     [ObservableProperty]
     [property: JsonPropertyName("duty_reminder_times")]
     private List<string> _dutyReminderTimes = ["07:40"];
-
-    [JsonPropertyName("prompt_mode")]
-    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    public string? LegacyPromptMode { get; set; }
-
 }

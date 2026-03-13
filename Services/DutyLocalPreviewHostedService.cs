@@ -1006,20 +1006,22 @@ public sealed class DutyLocalPreviewHostedService : IHostedService, IDisposable
             "api_key",
             "base_url",
             "model",
+            "model_profile",
+            "orchestration_mode",
+            "provider_hint",
             "python_path",
-            "enable_auto_run",
+            "auto_run_mode",
             "enable_mcp",
             "enable_webview_debug_layer",
-            "auto_run_day",
+            "auto_run_parameter",
             "auto_run_time",
             "per_day",
             "duty_rule",
-            "start_from_today",
             "component_refresh_time",
-            "notification_templates",
+            "auto_run_trigger_notification_enabled",
+            "notification_duration_seconds",
             "duty_reminder_enabled",
-            "duty_reminder_times",
-            "duty_reminder_templates"
+            "duty_reminder_times"
         };
         if (!HasAnyToolArgument(argumentsElement, supportedFields))
         {
@@ -1038,6 +1040,21 @@ public sealed class DutyLocalPreviewHostedService : IHostedService, IDisposable
             return false;
         }
         if (!TryReadOptionalStringArgument(argumentsElement, "model", out var model, out parseError))
+        {
+            errorMessage = parseError ?? "Invalid params.";
+            return false;
+        }
+        if (!TryReadOptionalStringArgument(argumentsElement, "model_profile", out var modelProfile, out parseError))
+        {
+            errorMessage = parseError ?? "Invalid params.";
+            return false;
+        }
+        if (!TryReadOptionalStringArgument(argumentsElement, "orchestration_mode", out var orchestrationMode, out parseError))
+        {
+            errorMessage = parseError ?? "Invalid params.";
+            return false;
+        }
+        if (!TryReadOptionalStringArgument(argumentsElement, "provider_hint", out var providerHint, out parseError))
         {
             errorMessage = parseError ?? "Invalid params.";
             return false;
@@ -1089,6 +1106,18 @@ public sealed class DutyLocalPreviewHostedService : IHostedService, IDisposable
             errorMessage = parseError ?? "Invalid params.";
             return false;
         }
+        if (!TryReadOptionalBooleanArgument(argumentsElement, "auto_run_trigger_notification_enabled",
+                out var autoRunTriggerNotificationEnabled, out parseError))
+        {
+            errorMessage = parseError ?? "Invalid params.";
+            return false;
+        }
+        if (!TryReadOptionalIntArgument(argumentsElement, "notification_duration_seconds",
+                out var notificationDurationSeconds, out parseError))
+        {
+            errorMessage = parseError ?? "Invalid params.";
+            return false;
+        }
         if (!TryReadOptionalBooleanArgument(argumentsElement, "duty_reminder_enabled", out var dutyReminderEnabled,
                 out parseError))
         {
@@ -1103,23 +1132,42 @@ public sealed class DutyLocalPreviewHostedService : IHostedService, IDisposable
         }
 
         _backendService.LoadConfig();
-        var current = _backendService.Config;
+        var hostConfig = _backendService.Config;
         try
         {
-            current.DecryptedApiKey = DutyScheduleOrchestrator.ResolveApiKeyInput(apiKey, current.DecryptedApiKey);
-            current.BaseUrl = baseUrl ?? current.BaseUrl;
-            current.Model = model ?? current.Model;
-            current.AutoRunMode = autoRunMode ?? current.AutoRunMode;
-            current.AutoRunParameter = autoRunParameter ?? current.AutoRunParameter;
-            current.AutoRunTime = autoRunTime ?? current.AutoRunTime;
-            current.PerDay = perDay ?? current.PerDay;
-            current.DutyRule = dutyRule ?? current.DutyRule;
-            current.ComponentRefreshTime = componentRefreshTime ?? current.ComponentRefreshTime;
-            current.PythonPath = pythonPath ?? current.PythonPath;
-            current.DutyReminderEnabled = dutyReminderEnabled ?? current.DutyReminderEnabled;
-            current.DutyReminderTimes = dutyReminderTimes ?? current.DutyReminderTimes;
-            current.EnableMcp = enableMcp ?? current.EnableMcp;
-            current.EnableWebViewDebugLayer = enableWebViewDebugLayer ?? current.EnableWebViewDebugLayer;
+            var currentBackend = _backendService.LoadBackendConfig();
+            var backendPatch = new DutyBackendConfigPatch
+            {
+                ApiKey = DutyScheduleOrchestrator.ResolveApiKeyInput(apiKey, currentBackend.ApiKey),
+                BaseUrl = baseUrl ?? currentBackend.BaseUrl,
+                Model = model ?? currentBackend.Model,
+                ModelProfile = modelProfile is null
+                    ? currentBackend.ModelProfile
+                    : DutyScheduleOrchestrator.NormalizeModelProfile(modelProfile),
+                OrchestrationMode = orchestrationMode is null
+                    ? currentBackend.OrchestrationMode
+                    : DutyScheduleOrchestrator.NormalizeOrchestrationMode(orchestrationMode),
+                ProviderHint = providerHint ?? currentBackend.ProviderHint,
+                PerDay = perDay ?? currentBackend.PerDay,
+                DutyRule = dutyRule ?? currentBackend.DutyRule
+            };
+            _backendService.SaveBackendConfig(backendPatch);
+
+            hostConfig.AutoRunMode = autoRunMode ?? hostConfig.AutoRunMode;
+            hostConfig.AutoRunParameter = autoRunParameter ?? hostConfig.AutoRunParameter;
+            hostConfig.AutoRunTime = autoRunTime ?? hostConfig.AutoRunTime;
+            hostConfig.ComponentRefreshTime = componentRefreshTime ?? hostConfig.ComponentRefreshTime;
+            hostConfig.PythonPath = pythonPath ?? hostConfig.PythonPath;
+            hostConfig.DutyReminderEnabled = dutyReminderEnabled ?? hostConfig.DutyReminderEnabled;
+            hostConfig.DutyReminderTimes = dutyReminderTimes ?? hostConfig.DutyReminderTimes;
+            hostConfig.EnableMcp = enableMcp ?? hostConfig.EnableMcp;
+            hostConfig.EnableWebViewDebugLayer = enableWebViewDebugLayer ?? hostConfig.EnableWebViewDebugLayer;
+            hostConfig.AutoRunTriggerNotificationEnabled =
+                autoRunTriggerNotificationEnabled ?? hostConfig.AutoRunTriggerNotificationEnabled;
+            hostConfig.NotificationDurationSeconds = Math.Clamp(
+                notificationDurationSeconds ?? hostConfig.NotificationDurationSeconds,
+                3,
+                15);
         }
         catch (Exception ex)
         {
@@ -1128,7 +1176,8 @@ public sealed class DutyLocalPreviewHostedService : IHostedService, IDisposable
         }
 
         _backendService.LoadConfig();
-        var saved = _backendService.Config;
+        var savedHost = _backendService.Config;
+        var savedBackend = _backendService.LoadBackendConfig();
         result = new
         {
             content = new[]
@@ -1143,16 +1192,21 @@ public sealed class DutyLocalPreviewHostedService : IHostedService, IDisposable
             structuredContent = new
             {
                 applied_immediately = true,
-                auto_run_mode = saved.AutoRunMode,
-                enable_mcp = saved.EnableMcp,
-                enable_webview_debug_layer = saved.EnableWebViewDebugLayer,
-                auto_run_parameter = saved.AutoRunParameter,
-                auto_run_time = saved.AutoRunTime,
-                per_day = saved.PerDay,
-                duty_rule = saved.DutyRule,
-                component_refresh_time = saved.ComponentRefreshTime,
-                notification_duration_seconds = saved.NotificationDurationSeconds,
-                duty_reminder_enabled = saved.DutyReminderEnabled,
+                base_url = savedBackend.BaseUrl,
+                model = savedBackend.Model,
+                model_profile = savedBackend.ModelProfile,
+                orchestration_mode = savedBackend.OrchestrationMode,
+                provider_hint = savedBackend.ProviderHint,
+                auto_run_mode = savedHost.AutoRunMode,
+                enable_mcp = savedHost.EnableMcp,
+                enable_webview_debug_layer = savedHost.EnableWebViewDebugLayer,
+                auto_run_parameter = savedHost.AutoRunParameter,
+                auto_run_time = savedHost.AutoRunTime,
+                per_day = savedBackend.PerDay,
+                duty_rule = savedBackend.DutyRule,
+                component_refresh_time = savedHost.ComponentRefreshTime,
+                notification_duration_seconds = savedHost.NotificationDurationSeconds,
+                duty_reminder_enabled = savedHost.DutyReminderEnabled,
                 duty_reminder_times = _backendService.GetDutyReminderTimes()
             }
         };
@@ -1562,7 +1616,7 @@ public sealed class DutyLocalPreviewHostedService : IHostedService, IDisposable
                 new
                 {
                     name = McpToolConfigUpdateSettings,
-                    description = "Update duty settings including auto run, refresh time, and reminder rules. Changes are applied immediately without confirmation.",
+                    description = "Update backend scheduling config and host runtime settings. Changes are applied immediately without confirmation.",
                     inputSchema = new
                     {
                         type = "object",
@@ -1571,42 +1625,22 @@ public sealed class DutyLocalPreviewHostedService : IHostedService, IDisposable
                             api_key = new { type = "string" },
                             base_url = new { type = "string" },
                             model = new { type = "string" },
+                            model_profile = new { type = "string" },
+                            orchestration_mode = new { type = "string" },
+                            provider_hint = new { type = "string" },
                             python_path = new { type = "string" },
-                            enable_auto_run = new { type = "boolean" },
+                            auto_run_mode = new { type = "string" },
                             enable_mcp = new { type = "boolean" },
                             enable_webview_debug_layer = new { type = "boolean" },
-                            auto_run_day = new { type = "string" },
+                            auto_run_parameter = new { type = "string" },
                             auto_run_time = new { type = "string" },
                             per_day = new { type = "integer" },
                             duty_rule = new { type = "string" },
-                            start_from_today = new { type = "boolean" },
                             component_refresh_time = new { type = "string" },
-                            notification_templates = new
-                            {
-                                oneOf = new object[]
-                                {
-                                    new { type = "string" },
-                                    new
-                                    {
-                                        type = "array",
-                                        items = new { type = "string" }
-                                    }
-                                }
-                            },
+                            auto_run_trigger_notification_enabled = new { type = "boolean" },
+                            notification_duration_seconds = new { type = "integer" },
                             duty_reminder_enabled = new { type = "boolean" },
                             duty_reminder_times = new
-                            {
-                                oneOf = new object[]
-                                {
-                                    new { type = "string" },
-                                    new
-                                    {
-                                        type = "array",
-                                        items = new { type = "string" }
-                                    }
-                                }
-                            },
-                            duty_reminder_templates = new
                             {
                                 oneOf = new object[]
                                 {
@@ -1898,21 +1932,20 @@ public sealed class DutyLocalPreviewHostedService : IHostedService, IDisposable
     private void ApplyOverwriteConfig(OverwriteScheduleConfig config)
     {
         _backendService.LoadConfig();
-        var current = _backendService.Config;
+        var hostConfig = _backendService.Config;
+        var backendConfig = _backendService.LoadBackendConfig();
 
-        var apiKey = DutyScheduleOrchestrator.ResolveApiKeyInput(config.ApiKey, current.DecryptedApiKey);
-        var baseUrl = config.BaseUrl ?? current.BaseUrl;
-        var model = config.Model ?? current.Model;
-        var perDay = config.PerDay ?? current.PerDay;
-        var dutyRule = config.DutyRule ?? current.DutyRule;
-        var pythonPath = config.PythonPath ?? current.PythonPath;
+        var patch = new DutyBackendConfigPatch
+        {
+            ApiKey = DutyScheduleOrchestrator.ResolveApiKeyInput(config.ApiKey, backendConfig.ApiKey),
+            BaseUrl = config.BaseUrl ?? backendConfig.BaseUrl,
+            Model = config.Model ?? backendConfig.Model,
+            PerDay = config.PerDay ?? backendConfig.PerDay,
+            DutyRule = config.DutyRule ?? backendConfig.DutyRule
+        };
+        _backendService.SaveBackendConfig(patch);
 
-        current.DecryptedApiKey = apiKey;
-        current.BaseUrl = baseUrl;
-        current.Model = model;
-        current.PerDay = perDay;
-        current.DutyRule = dutyRule;
-        current.PythonPath = pythonPath;
+        hostConfig.PythonPath = config.PythonPath ?? hostConfig.PythonPath;
     }
 
     private bool IsMcpEnabled()

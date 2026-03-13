@@ -5,6 +5,8 @@ namespace DutyAgent.Views.SettingPages.Modules;
 
 internal sealed class DutySettingsFormModel
 {
+    public bool BackendConfigAvailable { get; init; }
+    public string BackendConfigError { get; init; } = string.Empty;
     public string ApiKeyMask { get; init; } = string.Empty;
     public string BaseUrl { get; init; } = string.Empty;
     public string Model { get; init; } = string.Empty;
@@ -45,7 +47,7 @@ internal sealed class DutySettingsApplyRequest
     public int NotificationDurationSeconds { get; init; } = 8;
 }
 
-internal readonly record struct DutySettingsApplyResult(bool RestartRequired);
+internal readonly record struct DutySettingsApplyResult(bool Success, bool RestartRequired, string Message, bool BackendConfigAvailable = true);
 
 public sealed class DutyRosterRow
 {

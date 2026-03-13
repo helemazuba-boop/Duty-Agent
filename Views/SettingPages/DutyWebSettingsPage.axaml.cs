@@ -207,7 +207,7 @@ public partial class DutyWebSettingsPage : SettingsPageBase
             return;
         }
 
-        ApplyConfig(request.Config);
+        await ApplyConfigAsync(request.Config);
         await SendSnapshotAsync();
     }
 
@@ -239,7 +239,7 @@ public partial class DutyWebSettingsPage : SettingsPageBase
             });
         if (request.Config != null)
         {
-            ApplyConfig(request.Config);
+            await ApplyConfigAsync(request.Config);
             DutyDiagnosticsLogger.Info("RunCore", "Applied config from run_core payload.");
         }
 
@@ -452,45 +452,58 @@ public partial class DutyWebSettingsPage : SettingsPageBase
     }
 
 
-    private void ApplyConfig(WebConfigDto config)
+    private async Task ApplyConfigAsync(WebConfigDto config)
     {
         _backendService.LoadConfig();
-        var current = _backendService.Config;
-        var previousEnableMcp = current.EnableMcp;
-        var previousEnableWebViewDebugLayer = current.EnableWebViewDebugLayer;
+        var currentHost = _backendService.Config;
+        var previousEnableMcp = currentHost.EnableMcp;
+        var previousEnableWebViewDebugLayer = currentHost.EnableWebViewDebugLayer;
+        var currentBackend = await Task.Run(() => _backendService.LoadBackendConfig());
 
-        var apiKey = DutyScheduleOrchestrator.ResolveApiKeyInput(config.ApiKey, current.DecryptedApiKey);
-        var baseUrl = config.BaseUrl ?? current.BaseUrl;
-        var model = config.Model ?? current.Model;
-        var autoRunMode = config.AutoRunMode ?? current.AutoRunMode;
-        var enableMcp = config.EnableMcp ?? current.EnableMcp;
-        var enableWebViewDebugLayer = config.EnableWebViewDebugLayer ?? current.EnableWebViewDebugLayer;
-        var autoRunParameter = config.AutoRunParameter ?? current.AutoRunParameter;
-        var autoRunTime = config.AutoRunTime ?? current.AutoRunTime;
-        var perDay = config.PerDay ?? current.PerDay;
-        var dutyRule = config.DutyRule ?? current.DutyRule;
+        var apiKey = DutyScheduleOrchestrator.ResolveApiKeyInput(config.ApiKey, currentBackend.ApiKey);
+        var enableMcp = config.EnableMcp ?? currentHost.EnableMcp;
+        var enableWebViewDebugLayer = config.EnableWebViewDebugLayer ?? currentHost.EnableWebViewDebugLayer;
+        var autoRunMode = config.AutoRunMode ?? currentHost.AutoRunMode;
+        var autoRunParameter = config.AutoRunParameter ?? currentHost.AutoRunParameter;
+        var autoRunTime = config.AutoRunTime ?? currentHost.AutoRunTime;
         var autoRunTriggerNotificationEnabled =
-            config.AutoRunTriggerNotificationEnabled ?? current.AutoRunTriggerNotificationEnabled;
-        var componentRefreshTime = config.ComponentRefreshTime ?? current.ComponentRefreshTime;
-        var pythonPath = config.PythonPath ?? current.PythonPath;
-        var dutyReminderEnabled = config.DutyReminderEnabled ?? current.DutyReminderEnabled;
-        var dutyReminderTimes = config.DutyReminderTimes ?? current.DutyReminderTimes;
+            config.AutoRunTriggerNotificationEnabled ?? currentHost.AutoRunTriggerNotificationEnabled;
+        var componentRefreshTime = config.ComponentRefreshTime ?? currentHost.ComponentRefreshTime;
+        var pythonPath = config.PythonPath ?? currentHost.PythonPath;
+        var dutyReminderEnabled = config.DutyReminderEnabled ?? currentHost.DutyReminderEnabled;
+        var dutyReminderTimes = config.DutyReminderTimes ?? currentHost.DutyReminderTimes;
 
-        current.DecryptedApiKey = apiKey;
-        current.BaseUrl = baseUrl;
-        current.Model = model;
-        current.AutoRunMode = DutyScheduleOrchestrator.NormalizeAutoRunMode(autoRunMode);
-        current.AutoRunParameter = (autoRunParameter ?? current.AutoRunParameter).Trim();
-        current.AutoRunTime = DutyScheduleOrchestrator.NormalizeTimeOrThrow(autoRunTime);
-        current.PerDay = Math.Clamp(perDay, 1, 30);
-        current.DutyRule = dutyRule;
-        current.ComponentRefreshTime = DutyScheduleOrchestrator.NormalizeTimeOrThrow(componentRefreshTime);
-        current.DutyReminderEnabled = dutyReminderEnabled;
-        current.DutyReminderTimes = dutyReminderTimes;
-        current.EnableMcp = enableMcp;
-        current.EnableWebViewDebugLayer = enableWebViewDebugLayer;
-        current.AutoRunTriggerNotificationEnabled = autoRunTriggerNotificationEnabled;
-        current.PythonPath = pythonPath;
+        var backendPatch = new DutyBackendConfigPatch
+        {
+            ApiKey = apiKey,
+            BaseUrl = config.BaseUrl ?? currentBackend.BaseUrl,
+            Model = config.Model ?? currentBackend.Model,
+            ModelProfile = config.ModelProfile is null
+                ? currentBackend.ModelProfile
+                : DutyScheduleOrchestrator.NormalizeModelProfile(config.ModelProfile),
+            OrchestrationMode = config.OrchestrationMode is null
+                ? currentBackend.OrchestrationMode
+                : DutyScheduleOrchestrator.NormalizeOrchestrationMode(config.OrchestrationMode),
+            ProviderHint = config.ProviderHint ?? currentBackend.ProviderHint,
+            PerDay = config.PerDay ?? currentBackend.PerDay,
+            DutyRule = config.DutyRule ?? currentBackend.DutyRule
+        };
+        await Task.Run(() => _backendService.SaveBackendConfig(backendPatch));
+
+        currentHost.AutoRunMode = DutyScheduleOrchestrator.NormalizeAutoRunMode(autoRunMode);
+        currentHost.AutoRunParameter = (autoRunParameter ?? currentHost.AutoRunParameter).Trim();
+        currentHost.AutoRunTime = DutyScheduleOrchestrator.NormalizeTimeOrThrow(autoRunTime);
+        currentHost.ComponentRefreshTime = DutyScheduleOrchestrator.NormalizeTimeOrThrow(componentRefreshTime);
+        currentHost.DutyReminderEnabled = dutyReminderEnabled;
+        currentHost.DutyReminderTimes = dutyReminderTimes;
+        currentHost.EnableMcp = enableMcp;
+        currentHost.EnableWebViewDebugLayer = enableWebViewDebugLayer;
+        currentHost.AutoRunTriggerNotificationEnabled = autoRunTriggerNotificationEnabled;
+        currentHost.PythonPath = pythonPath;
+        if (config.NotificationDurationSeconds.HasValue)
+        {
+            currentHost.NotificationDurationSeconds = Math.Clamp(config.NotificationDurationSeconds.Value, 3, 15);
+        }
 
         if (previousEnableMcp != enableMcp ||
             previousEnableWebViewDebugLayer != enableWebViewDebugLayer)
@@ -502,7 +515,8 @@ public partial class DutyWebSettingsPage : SettingsPageBase
     private async Task SendSnapshotAsync()
     {
         _backendService.LoadConfig();
-        var config = _backendService.Config;
+        var hostConfig = _backendService.Config;
+        var backendSnapshot = await Task.Run(() => _backendService.LoadBackendSnapshot());
 
         var snapshot = new BridgeSnapshot
         {
@@ -511,23 +525,26 @@ public partial class DutyWebSettingsPage : SettingsPageBase
             McpUrl = _localPreviewHostedService.McpUrl,
             Config = new WebConfigDto
             {
-                PythonPath = config.PythonPath,
-                ApiKey = _backendService.GetApiKeyMaskForUi(),
-                BaseUrl = config.BaseUrl,
-                Model = config.Model,
-                AutoRunMode = config.AutoRunMode,
-                EnableMcp = config.EnableMcp,
-                EnableWebViewDebugLayer = config.EnableWebViewDebugLayer,
-                AutoRunParameter = config.AutoRunParameter,
-                AutoRunTime = config.AutoRunTime,
-                PerDay = config.PerDay,
-                DutyRule = config.DutyRule,
-                ComponentRefreshTime = config.ComponentRefreshTime,
-                NotificationDurationSeconds = config.NotificationDurationSeconds,
-                DutyReminderEnabled = config.DutyReminderEnabled,
+                PythonPath = hostConfig.PythonPath,
+                ApiKey = string.IsNullOrWhiteSpace(backendSnapshot.Config.ApiKey) ? string.Empty : "********",
+                BaseUrl = backendSnapshot.Config.BaseUrl,
+                Model = backendSnapshot.Config.Model,
+                ModelProfile = backendSnapshot.Config.ModelProfile,
+                OrchestrationMode = backendSnapshot.Config.OrchestrationMode,
+                ProviderHint = backendSnapshot.Config.ProviderHint,
+                AutoRunMode = hostConfig.AutoRunMode,
+                EnableMcp = hostConfig.EnableMcp,
+                EnableWebViewDebugLayer = hostConfig.EnableWebViewDebugLayer,
+                AutoRunParameter = hostConfig.AutoRunParameter,
+                AutoRunTime = hostConfig.AutoRunTime,
+                PerDay = backendSnapshot.Config.PerDay,
+                DutyRule = backendSnapshot.Config.DutyRule,
+                ComponentRefreshTime = hostConfig.ComponentRefreshTime,
+                NotificationDurationSeconds = hostConfig.NotificationDurationSeconds,
+                DutyReminderEnabled = hostConfig.DutyReminderEnabled,
                 DutyReminderTimes = _backendService.GetDutyReminderTimes()
             },
-            Roster = _backendService.LoadRosterEntries()
+            Roster = backendSnapshot.Roster
                 .Select(x => new WebRosterEntryDto
                 {
                     Id = x.Id,
@@ -535,7 +552,7 @@ public partial class DutyWebSettingsPage : SettingsPageBase
                     Active = x.Active
                 })
                 .ToList(),
-            State = _backendService.LoadState()
+            State = backendSnapshot.State
         };
 
         DutyDiagnosticsLogger.Info("Bridge", "Sending snapshot to web.",
@@ -849,6 +866,15 @@ public partial class DutyWebSettingsPage : SettingsPageBase
 
         [JsonPropertyName("model")]
         public string? Model { get; set; }
+
+        [JsonPropertyName("model_profile")]
+        public string? ModelProfile { get; set; }
+
+        [JsonPropertyName("orchestration_mode")]
+        public string? OrchestrationMode { get; set; }
+
+        [JsonPropertyName("provider_hint")]
+        public string? ProviderHint { get; set; }
 
         [JsonPropertyName("auto_run_mode")]
         public string? AutoRunMode { get; set; }

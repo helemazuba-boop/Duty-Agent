@@ -1,4 +1,5 @@
-﻿using DutyAgent.Services;
+using DutyAgent.Models;
+using DutyAgent.Services;
 
 namespace DutyAgent.Views.SettingPages.Modules;
 
@@ -14,63 +15,112 @@ internal sealed class DutyMainSettingsConfigModule
     public DutySettingsFormModel Load()
     {
         _service.LoadConfig();
-        var config = _service.Config;
+        var hostConfig = _service.Config;
 
-        return new DutySettingsFormModel
+        try
         {
-            ApiKeyMask = _service.GetApiKeyMaskForUi(),
-            BaseUrl = config.BaseUrl,
-            Model = config.Model,
-            ModelProfile = config.ModelProfile,
-            OrchestrationMode = config.OrchestrationMode,
-            ProviderHint = config.ProviderHint,
-            AutoRunMode = config.AutoRunMode,
-            AutoRunParameter = config.AutoRunParameter,
-            AutoRunTime = config.AutoRunTime,
-            AutoRunTriggerNotificationEnabled = config.AutoRunTriggerNotificationEnabled,
-            DutyReminderEnabled = config.DutyReminderEnabled,
-            DutyReminderTime = _service.GetDutyReminderTimes().FirstOrDefault() ?? "07:40",
-            EnableMcp = config.EnableMcp,
-            EnableWebViewDebugLayer = config.EnableWebViewDebugLayer,
-            ComponentRefreshTime = config.ComponentRefreshTime,
-            DutyRule = config.DutyRule,
-            NotificationDurationSeconds = config.NotificationDurationSeconds
-        };
+            var backendConfig = _service.LoadBackendConfig();
+            return new DutySettingsFormModel
+            {
+                BackendConfigAvailable = true,
+                ApiKeyMask = _service.GetApiKeyMaskForUi(),
+                BaseUrl = backendConfig.BaseUrl,
+                Model = backendConfig.Model,
+                ModelProfile = backendConfig.ModelProfile,
+                OrchestrationMode = backendConfig.OrchestrationMode,
+                ProviderHint = backendConfig.ProviderHint,
+                AutoRunMode = hostConfig.AutoRunMode,
+                AutoRunParameter = hostConfig.AutoRunParameter,
+                AutoRunTime = hostConfig.AutoRunTime,
+                AutoRunTriggerNotificationEnabled = hostConfig.AutoRunTriggerNotificationEnabled,
+                DutyReminderEnabled = hostConfig.DutyReminderEnabled,
+                DutyReminderTime = _service.GetDutyReminderTimes().FirstOrDefault() ?? "07:40",
+                EnableMcp = hostConfig.EnableMcp,
+                EnableWebViewDebugLayer = hostConfig.EnableWebViewDebugLayer,
+                ComponentRefreshTime = hostConfig.ComponentRefreshTime,
+                DutyRule = backendConfig.DutyRule,
+                NotificationDurationSeconds = hostConfig.NotificationDurationSeconds
+            };
+        }
+        catch (Exception ex)
+        {
+            return new DutySettingsFormModel
+            {
+                BackendConfigAvailable = false,
+                BackendConfigError = ex.Message,
+                ApiKeyMask = string.Empty,
+                BaseUrl = string.Empty,
+                Model = string.Empty,
+                ModelProfile = "auto",
+                OrchestrationMode = "auto",
+                ProviderHint = string.Empty,
+                AutoRunMode = hostConfig.AutoRunMode,
+                AutoRunParameter = hostConfig.AutoRunParameter,
+                AutoRunTime = hostConfig.AutoRunTime,
+                AutoRunTriggerNotificationEnabled = hostConfig.AutoRunTriggerNotificationEnabled,
+                DutyReminderEnabled = hostConfig.DutyReminderEnabled,
+                DutyReminderTime = _service.GetDutyReminderTimes().FirstOrDefault() ?? "07:40",
+                EnableMcp = hostConfig.EnableMcp,
+                EnableWebViewDebugLayer = hostConfig.EnableWebViewDebugLayer,
+                ComponentRefreshTime = hostConfig.ComponentRefreshTime,
+                DutyRule = string.Empty,
+                NotificationDurationSeconds = hostConfig.NotificationDurationSeconds
+            };
+        }
     }
 
     public DutySettingsApplyResult Apply(DutySettingsApplyRequest request)
     {
         _service.LoadConfig();
-        var current = _service.Config;
+        var hostConfig = _service.Config;
 
-        var previousEnableMcp = current.EnableMcp;
-        var previousEnableWebViewDebugLayer = current.EnableWebViewDebugLayer;
+        var previousEnableMcp = hostConfig.EnableMcp;
+        var previousEnableWebViewDebugLayer = hostConfig.EnableWebViewDebugLayer;
 
-        var resolvedApiKey = DutyScheduleOrchestrator.ResolveApiKeyInput(request.ApiKeyInput, current.DecryptedApiKey);
-        var dutyReminderTimes = new List<string> { request.DutyReminderTime };
-
-        current.DecryptedApiKey = resolvedApiKey;
-        current.BaseUrl = request.BaseUrl?.Trim() ?? string.Empty;
-        current.Model = request.Model?.Trim() ?? string.Empty;
-        current.ModelProfile = DutyScheduleOrchestrator.NormalizeModelProfile(request.ModelProfile);
-        current.OrchestrationMode = DutyScheduleOrchestrator.NormalizeOrchestrationMode(request.OrchestrationMode);
-        current.ProviderHint = request.ProviderHint?.Trim() ?? current.ProviderHint;
-        current.AutoRunMode = DutyScheduleOrchestrator.NormalizeAutoRunMode(request.AutoRunMode);
-        current.AutoRunParameter = (request.AutoRunParameter ?? current.AutoRunParameter).Trim();
-        current.AutoRunTime = DutyScheduleOrchestrator.NormalizeTimeOrThrow(request.AutoRunTime);
-        current.PerDay = Math.Clamp(current.PerDay, 1, 30);
-        current.DutyRule = request.DutyRule ?? string.Empty;
-        current.ComponentRefreshTime = DutyScheduleOrchestrator.NormalizeTimeOrThrow(request.ComponentRefreshTime);
-        current.DutyReminderEnabled = request.DutyReminderEnabled;
-        current.DutyReminderTimes = dutyReminderTimes;
-        current.EnableMcp = request.EnableMcp;
-        current.EnableWebViewDebugLayer = request.EnableWebViewDebugLayer;
-        current.AutoRunTriggerNotificationEnabled = request.AutoRunTriggerNotificationEnabled;
-        current.NotificationDurationSeconds = Math.Clamp(request.NotificationDurationSeconds, 3, 15);
+        hostConfig.AutoRunMode = DutyScheduleOrchestrator.NormalizeAutoRunMode(request.AutoRunMode);
+        hostConfig.AutoRunParameter = (request.AutoRunParameter ?? hostConfig.AutoRunParameter).Trim();
+        hostConfig.AutoRunTime = DutyScheduleOrchestrator.NormalizeTimeOrThrow(request.AutoRunTime);
+        hostConfig.ComponentRefreshTime = DutyScheduleOrchestrator.NormalizeTimeOrThrow(request.ComponentRefreshTime);
+        hostConfig.DutyReminderEnabled = request.DutyReminderEnabled;
+        hostConfig.DutyReminderTimes = [request.DutyReminderTime];
+        hostConfig.EnableMcp = request.EnableMcp;
+        hostConfig.EnableWebViewDebugLayer = request.EnableWebViewDebugLayer;
+        hostConfig.AutoRunTriggerNotificationEnabled = request.AutoRunTriggerNotificationEnabled;
+        hostConfig.NotificationDurationSeconds = Math.Clamp(request.NotificationDurationSeconds, 3, 15);
 
         var restartRequired = previousEnableMcp != request.EnableMcp ||
                               previousEnableWebViewDebugLayer != request.EnableWebViewDebugLayer;
-        return new DutySettingsApplyResult(restartRequired);
+
+        try
+        {
+            var currentBackend = _service.LoadBackendConfig();
+            var resolvedApiKey = DutyScheduleOrchestrator.ResolveApiKeyInput(request.ApiKeyInput, currentBackend.ApiKey);
+            var patch = new DutyBackendConfigPatch
+            {
+                ApiKey = resolvedApiKey,
+                BaseUrl = request.BaseUrl?.Trim() ?? currentBackend.BaseUrl,
+                Model = request.Model?.Trim() ?? currentBackend.Model,
+                ModelProfile = DutyScheduleOrchestrator.NormalizeModelProfile(request.ModelProfile),
+                OrchestrationMode = DutyScheduleOrchestrator.NormalizeOrchestrationMode(request.OrchestrationMode),
+                ProviderHint = request.ProviderHint?.Trim() ?? currentBackend.ProviderHint,
+                DutyRule = request.DutyRule ?? string.Empty
+            };
+
+            _service.SaveBackendConfig(patch);
+            return new DutySettingsApplyResult(
+                Success: true,
+                RestartRequired: restartRequired,
+                Message: restartRequired
+                    ? "设置已保存，调试层/MCP 将在重启后生效。"
+                    : "设置已保存。");
+        }
+        catch (Exception ex)
+        {
+            return new DutySettingsApplyResult(
+                Success: false,
+                RestartRequired: restartRequired,
+                Message: $"后端配置保存失败：{ex.Message}",
+                BackendConfigAvailable: false);
+        }
     }
 }
-
