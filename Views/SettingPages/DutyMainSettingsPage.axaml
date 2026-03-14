@@ -391,64 +391,92 @@
                             </StackPanel>
                         </Grid>
 
-                        <Border Background="#03000000"
-                                BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}"
-                                BorderThickness="1"
-                                CornerRadius="8">
-                            <Grid RowDefinitions="Auto,*">
-                                <Border BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}"
-                                        BorderThickness="0,0,0,1"
-                                        Padding="10,8">
-                                    <Grid ColumnDefinitions="64,2*,1.8*,84,84" ColumnSpacing="8">
-                                        <TextBlock Grid.Column="0" Text="ID" FontWeight="SemiBold" />
-                                        <TextBlock Grid.Column="1" Text="姓名" FontWeight="SemiBold" />
-                                        <TextBlock Grid.Column="2" Text="下一次值日" FontWeight="SemiBold" />
-                                        <TextBlock Grid.Column="3" Text="次数" FontWeight="SemiBold" />
-                                        <TextBlock Grid.Column="4" Text="状态" FontWeight="SemiBold" />
-                                    </Grid>
-                                </Border>
-                                <ListBox x:Name="RosterListBox"
-                                         Grid.Row="1"
-                                         MinHeight="220"
-                                         MaxHeight="320"
-                                         SelectionChanged="OnRosterSelectionChanged">
-                                    <ListBox.ItemTemplate>
-                                        <DataTemplate>
-                                            <Border Padding="12,12" BorderBrush="#10000000" BorderThickness="0,0,0,1">
-                                                <Grid ColumnDefinitions="64,2*,1.8*,84,84" ColumnSpacing="8">
-                                                    <TextBlock Grid.Column="0" Text="{Binding Id}" VerticalAlignment="Center" Opacity="0.75" />
-                                                    <TextBlock Grid.Column="1" Text="{Binding Name}" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
-                                                    <TextBlock Grid.Column="2" Text="{Binding NextDutyDisplay}" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
-                                                    <TextBlock Grid.Column="3" Text="{Binding DutyCount}" VerticalAlignment="Center" />
-                                                    <TextBlock Grid.Column="4" Text="{Binding ActiveDisplay}" VerticalAlignment="Center" />
-                                                </Grid>
-                                            </Border>
-                                        </DataTemplate>
-                                    </ListBox.ItemTemplate>
-                                </ListBox>
-                                <StackPanel x:Name="RosterEmptyStatePanel"
-                                            Grid.Row="1"
-                                            HorizontalAlignment="Center"
-                                            IsVisible="False"
-                                            Spacing="8"
-                                            VerticalAlignment="Center">
+                        <Grid x:Name="RosterDropZone"
+                              DragDrop.AllowDrop="True"
+                              DragDrop.DragOver="OnRosterDropZoneDragOver"
+                              DragDrop.DragLeave="OnRosterDropZoneDragLeave"
+                              DragDrop.Drop="OnRosterDropZoneDrop">
+                            <Border Background="#03000000"
+                                    BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}"
+                                    BorderThickness="1"
+                                    CornerRadius="8">
+                                <Grid RowDefinitions="Auto,*">
+                                    <Border BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}"
+                                            BorderThickness="0,0,0,1"
+                                            Padding="10,8">
+                                        <Grid ColumnDefinitions="64,2*,1.8*,84,84" ColumnSpacing="8">
+                                            <TextBlock Grid.Column="0" Text="ID" FontWeight="SemiBold" />
+                                            <TextBlock Grid.Column="1" Text="姓名" FontWeight="SemiBold" />
+                                            <TextBlock Grid.Column="2" Text="下一次值日" FontWeight="SemiBold" />
+                                            <TextBlock Grid.Column="3" Text="次数" FontWeight="SemiBold" />
+                                            <TextBlock Grid.Column="4" Text="状态" FontWeight="SemiBold" />
+                                        </Grid>
+                                    </Border>
+                                    <ListBox x:Name="RosterListBox"
+                                             Grid.Row="1"
+                                             MinHeight="220"
+                                             MaxHeight="320"
+                                             SelectionChanged="OnRosterSelectionChanged">
+                                        <ListBox.ItemTemplate>
+                                            <DataTemplate>
+                                                <Border Padding="12,12" BorderBrush="#10000000" BorderThickness="0,0,0,1">
+                                                    <Grid ColumnDefinitions="64,2*,1.8*,84,84" ColumnSpacing="8">
+                                                        <TextBlock Grid.Column="0" Text="{Binding Id}" VerticalAlignment="Center" Opacity="0.75" />
+                                                        <TextBlock Grid.Column="1" Text="{Binding Name}" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
+                                                        <TextBlock Grid.Column="2" Text="{Binding NextDutyDisplay}" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
+                                                        <TextBlock Grid.Column="3" Text="{Binding DutyCount}" VerticalAlignment="Center" />
+                                                        <TextBlock Grid.Column="4" Text="{Binding ActiveDisplay}" VerticalAlignment="Center" />
+                                                    </Grid>
+                                                </Border>
+                                            </DataTemplate>
+                                        </ListBox.ItemTemplate>
+                                    </ListBox>
+                                    <StackPanel x:Name="RosterEmptyStatePanel"
+                                                Grid.Row="1"
+                                                HorizontalAlignment="Center"
+                                                IsVisible="False"
+                                                Spacing="8"
+                                                VerticalAlignment="Center">
+                                        <TextBlock FontFamily="Segoe MDL2 Assets, Segoe Fluent Icons, Segoe UI Symbol"
+                                                   Text="&#xE716;"
+                                                   FontSize="48"
+                                                   Opacity="0.4"
+                                                   HorizontalAlignment="Center" />
+                                        <TextBlock Text="当前暂无学生名单数据"
+                                                   Opacity="0.6"
+                                                   FontSize="14"
+                                                   FontWeight="SemiBold"
+                                                   HorizontalAlignment="Center" />
+                                        <TextBlock Text="请在上方添加、导入或直接拖入名单文件。"
+                                                   Opacity="0.5"
+                                                   FontSize="12"
+                                                   HorizontalAlignment="Center" />
+                                    </StackPanel>
+                                </Grid>
+                            </Border>
+                            <Border x:Name="RosterDropOverlay"
+                                    IsVisible="False"
+                                    IsHitTestVisible="False"
+                                    Background="#15007ACC"
+                                    BorderBrush="{DynamicResource AccentFillColorDefaultBrush}"
+                                    BorderThickness="2"
+                                    CornerRadius="8">
+                                <StackPanel HorizontalAlignment="Center"
+                                            VerticalAlignment="Center"
+                                            Spacing="8">
                                     <TextBlock FontFamily="Segoe MDL2 Assets, Segoe Fluent Icons, Segoe UI Symbol"
-                                               Text="&#xE716;"
-                                               FontSize="48"
-                                               Opacity="0.4"
+                                               Text="&#xE898;"
+                                               FontSize="40"
                                                HorizontalAlignment="Center" />
-                                    <TextBlock Text="当前暂无学生名单数据"
-                                               Opacity="0.6"
-                                               FontSize="14"
+                                    <TextBlock Text="松手导入名单文件"
                                                FontWeight="SemiBold"
                                                HorizontalAlignment="Center" />
-                                    <TextBlock Text="请在上方添加或导入名单。"
-                                               Opacity="0.5"
-                                               FontSize="12"
+                                    <TextBlock Text="支持 .txt 和 .xlsx"
+                                               Opacity="0.72"
                                                HorizontalAlignment="Center" />
                                 </StackPanel>
-                            </Grid>
-                        </Border>
+                            </Border>
+                        </Grid>
 
                         <TextBlock x:Name="RosterSummaryText" Text="名单未加载。" Opacity="0.75" />
                     </StackPanel>

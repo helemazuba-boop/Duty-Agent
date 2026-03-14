@@ -436,6 +436,42 @@ def _get_plan_by_id(plan_presets: List[dict], selected_plan_id: str) -> dict:
     return dict(plan_presets[0]) if plan_presets else _create_default_plan_presets()[0]
 
 
+def _sync_selected_plan_from_top_level(source: dict, plan_presets: List[dict], selected_plan_id: str) -> List[dict]:
+    if not plan_presets:
+        return plan_presets
+
+    selected_plan = _get_plan_by_id(plan_presets, selected_plan_id)
+    selected_id = str(selected_plan.get("id", "")).strip()
+    if not selected_id:
+        return plan_presets
+
+    updated_presets: List[dict] = []
+    selected_mode_id = normalize_plan_mode_id(selected_plan.get("mode_id"))
+    for plan in plan_presets:
+        if str(plan.get("id", "")).strip() != selected_id:
+            updated_presets.append(dict(plan))
+            continue
+
+        updated_plan = dict(plan)
+        if "api_key" in source:
+            updated_plan["api_key"] = str(source.get("api_key", "") or "").strip()
+        if "base_url" in source:
+            updated_plan["base_url"] = str(source.get("base_url", "") or DEFAULT_BASE_URL).strip() or DEFAULT_BASE_URL
+        if "model" in source:
+            updated_plan["model"] = str(source.get("model", "") or DEFAULT_MODEL).strip() or DEFAULT_MODEL
+        if "model_profile" in source:
+            updated_plan["model_profile"] = normalize_model_profile(source.get("model_profile", DEFAULT_MODEL_PROFILE))
+        if "provider_hint" in source:
+            updated_plan["provider_hint"] = str(source.get("provider_hint", "") or "").strip()
+        if selected_mode_id == "campus_6agent" and "multi_agent_execution_mode" in source:
+            updated_plan["multi_agent_execution_mode"] = normalize_multi_agent_execution_mode(
+                source.get("multi_agent_execution_mode", DEFAULT_MULTI_AGENT_EXECUTION_MODE)
+            )
+        updated_presets.append(updated_plan)
+
+    return updated_presets
+
+
 def normalize_selected_plan_id(value, plan_presets: List[dict], source: Optional[dict] = None) -> str:
     raw_value = str(value or "").strip()
     if raw_value:
@@ -608,6 +644,15 @@ def patch_config(ctx: Context, patch: dict) -> dict:
         if value is None:
             continue
         current[key] = value
+    if any(
+        key in (patch or {})
+        for key in ("api_key", "base_url", "model", "model_profile", "provider_hint", "multi_agent_execution_mode")
+    ):
+        current["plan_presets"] = _sync_selected_plan_from_top_level(
+            current,
+            _normalize_plan_presets(current.get("plan_presets"), current),
+            normalize_selected_plan_id(current.get("selected_plan_id"), _normalize_plan_presets(current.get("plan_presets"), current), current),
+        )
     return save_config(ctx, current)
 
 

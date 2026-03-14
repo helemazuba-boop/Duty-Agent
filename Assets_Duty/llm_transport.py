@@ -25,11 +25,15 @@ class StreamUnsupportedError(RuntimeError):
 
 def create_llm_request(url: str, payload: dict, api_key: str) -> urllib.request.Request:
     data = json.dumps(payload).encode("utf-8")
+    headers = {"Content-Type": "application/json"}
+    normalized_api_key = str(api_key or "").strip()
+    if normalized_api_key:
+        headers["Authorization"] = f"Bearer {normalized_api_key}"
     return urllib.request.Request(
         url=url,
         data=data,
         method="POST",
-        headers={"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"},
+        headers=headers,
     )
 
 
@@ -184,7 +188,12 @@ def request_llm_stream(url: str, payload: dict, api_key: str, progress_callback=
 
 def _build_llm_target(config: dict, messages: List[dict], transport_overrides: Optional[dict] = None) -> Tuple[str, dict, str]:
     base_url = str(config["base_url"]).rstrip("/")
-    url = f"{base_url}/chat/completions"
+    if base_url.lower().endswith("/chat/completions"):
+        url = base_url
+    elif base_url.lower().endswith("/v1"):
+        url = f"{base_url}/chat/completions"
+    else:
+        url = f"{base_url}/v1/chat/completions"
     payload = {
         "model": config["model"],
         "messages": list(messages),
@@ -193,8 +202,6 @@ def _build_llm_target(config: dict, messages: List[dict], transport_overrides: O
     if transport_overrides:
         payload.update({key: value for key, value in transport_overrides.items() if value is not None})
     api_key = str(config.get("api_key", "")).strip()
-    if not api_key:
-        raise ValueError("Missing API key.")
     return url, payload, api_key
 
 

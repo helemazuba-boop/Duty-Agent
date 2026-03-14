@@ -249,6 +249,23 @@ internal sealed class DutyMainSettingsBackendModule
             index++;
         }
 
+        if (currentBackend != null && normalized.Count > 0)
+        {
+            var selectedPlanId = NormalizeSelectedPlanId(currentBackend.SelectedPlanId, normalized);
+            var selectedPlan = normalized.FirstOrDefault(plan => string.Equals(plan.Id, selectedPlanId, StringComparison.Ordinal));
+            if (selectedPlan != null)
+            {
+                selectedPlan.ApiKey = currentBackend.ApiKey ?? string.Empty;
+                selectedPlan.BaseUrl = NormalizeBaseUrl(currentBackend.BaseUrl);
+                selectedPlan.Model = string.IsNullOrWhiteSpace(currentBackend.Model) ? DefaultModel : currentBackend.Model.Trim();
+                selectedPlan.ModelProfile = DutyScheduleOrchestrator.NormalizeModelProfile(currentBackend.ModelProfile);
+                selectedPlan.ProviderHint = (currentBackend.ProviderHint ?? string.Empty).Trim();
+                selectedPlan.MultiAgentExecutionMode = string.Equals(selectedPlan.ModeId, DutyBackendModeIds.Campus6Agent, StringComparison.Ordinal)
+                    ? DutyScheduleOrchestrator.NormalizeMultiAgentExecutionMode(currentBackend.MultiAgentExecutionMode)
+                    : "auto";
+            }
+        }
+
         return normalized;
     }
 

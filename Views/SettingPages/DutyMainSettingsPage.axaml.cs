@@ -46,10 +46,13 @@ public partial class DutyMainSettingsPage : SettingsPageBase
     private string? _backendConfigErrorMessage;
     private int _configLoadRevision;
     private int _dataLoadRevision;
+    private int _runSessionRevision;
+    private int _activeRunSessionRevision;
     private DutyHostSettingsValues _lastAppliedHostSettings = new();
     private DutyBackendConfig? _lastAppliedBackendConfig;
     private List<DutyPlanPreset> _planPresetDrafts = [];
     private string _currentPlanId = string.Empty;
+    private bool _isRosterDropActive;
 
     public DutyMainSettingsPage()
     {
@@ -172,6 +175,8 @@ public partial class DutyMainSettingsPage : SettingsPageBase
 
     private async void OnRunAgentClick(object? sender, RoutedEventArgs e)
     {
+        var runSessionRevision = Interlocked.Increment(ref _runSessionRevision);
+        _activeRunSessionRevision = runSessionRevision;
         var instruction = (InstructionBox.Text ?? string.Empty).Trim();
         var useDefaultInstruction = instruction.Length == 0;
 
@@ -206,11 +211,40 @@ public partial class DutyMainSettingsPage : SettingsPageBase
 
                     if (phase == "stream_chunk")
                     {
-                        Dispatcher.UIThread.Post(() => 
+                        Dispatcher.UIThread.Post(() =>
                         {
+                            if (_activeRunSessionRevision != runSessionRevision)
+                            {
+                                return;
+                            }
                             SetStatus("AI 正在流式返回中...", Brushes.Gray);
                             ReasoningBoardText.Text += progress.StreamChunk;
                             ReasoningBoardScrollViewer.ScrollToEnd();
+                        });
+                        return;
+                    }
+
+                    if (phase is "stream_fallback" or "parse_retry" or "agent_fail" or "agent_fallback")
+                    {
+                        var detail = (progress.Message ?? string.Empty).Trim();
+                        Dispatcher.UIThread.Post(() =>
+                        {
+                            if (_activeRunSessionRevision != runSessionRevision)
+                            {
+                                return;
+                            }
+
+                            if (detail.Length > 0)
+                            {
+                                if (!string.IsNullOrWhiteSpace(ReasoningBoardText.Text))
+                                {
+                                    ReasoningBoardText.Text += Environment.NewLine;
+                                }
+                                ReasoningBoardText.Text += $"[系统] {detail}";
+                                ReasoningBoardScrollViewer.ScrollToEnd();
+                            }
+
+                            SetStatus(detail.Length > 0 ? detail : "执行状态更新。", Brushes.Orange);
                         });
                         return;
                     }
@@ -221,11 +255,24 @@ public partial class DutyMainSettingsPage : SettingsPageBase
                         return;
                     }
 
-                    Dispatcher.UIThread.Post(() => SetStatus(message, Brushes.Gray));
-                });
-            if (result.Success)
-            {
-                ReasoningBoardContainer.BorderBrush = Brushes.Green;
+                      Dispatcher.UIThread.Post(() =>
+                      {
+                          if (_activeRunSessionRevision != runSessionRevision)
+                          {
+                              return;
+                          }
+                          SetStatus(message, Brushes.Gray);
+                      });
+                  });
+              _activeRunSessionRevision = 0;
+              if (result.Success)
+              {
+                  if (string.IsNullOrWhiteSpace(ReasoningBoardText.Text) && !string.IsNullOrWhiteSpace(result.AiResponse))
+                  {
+                      ReasoningBoardText.Text = result.AiResponse;
+                      ReasoningBoardScrollViewer.ScrollToEnd();
+                  }
+                  ReasoningBoardContainer.BorderBrush = Brushes.Green;
                 await LoadDataAsync("排班完成");
                 UpdateRunTracking("执行成功");
                 SetStatus(
@@ -241,18 +288,20 @@ public partial class DutyMainSettingsPage : SettingsPageBase
                 var message = string.IsNullOrWhiteSpace(result.Message) ? "排班执行失败。" : $"排班执行失败：{result.Message}";
                 SetStatus(message, Brushes.Red);
             }
-        }
-        catch (Exception ex)
-        {
-            ReasoningBoardContainer.BorderBrush = Brushes.Red;
-            UpdateRunTracking("执行异常");
-            SetStatus($"执行失败：{ex.Message}", Brushes.Red);
-        }
-        finally
-        {
-            RunAgentBtn.IsEnabled = true;
-        }
-    }
+          }
+          catch (Exception ex)
+          {
+              _activeRunSessionRevision = 0;
+              ReasoningBoardContainer.BorderBrush = Brushes.Red;
+              UpdateRunTracking("执行异常");
+              SetStatus($"执行失败：{ex.Message}", Brushes.Red);
+          }
+          finally
+          {
+              _activeRunSessionRevision = 0;
+              RunAgentBtn.IsEnabled = true;
+          }
+      }
 
     private void OnConfigInputLostFocus(object? sender, RoutedEventArgs e)
     {
@@ -556,22 +605,7 @@ public partial class DutyMainSettingsPage : SettingsPageBase
                 return;
             }
 
-            var parsedNames = RosterImportFileHelper.LoadStudentNames(localPath);
-            if (parsedNames.Count == 0)
-            {
-                SetStatus("文件中未解析到有效姓名。", Brushes.Orange);
-                return;
-            }
-
-            var result = _rosterModule.ImportStudents(parsedNames);
-            if (!result.Success)
-            {
-                SetStatus(result.Message, Brushes.Orange);
-                return;
-            }
-
-            await LoadDataAsync("名单导入");
-            SetStatus(result.Message, Brushes.Green);
+            await ImportRosterFromPathAsync(localPath, "名单导入");
         }
         catch (Exception ex)
         {
@@ -579,9 +613,114 @@ public partial class DutyMainSettingsPage : SettingsPageBase
         }
     }
 
+    private void OnRosterDropZoneDragOver(object? sender, DragEventArgs e)
+    {
+        var localPath = TryGetFirstDroppedRosterPath(e.Data, out _);
+        var canDrop = !string.IsNullOrWhiteSpace(localPath);
+        e.DragEffects = canDrop ? DragDropEffects.Copy : DragDropEffects.None;
+        SetRosterDropActive(canDrop);
+        e.Handled = true;
+    }
+
+    private void OnRosterDropZoneDragLeave(object? sender, RoutedEventArgs e)
+    {
+        SetRosterDropActive(false);
+    }
+
+    private async void OnRosterDropZoneDrop(object? sender, DragEventArgs e)
+    {
+        SetRosterDropActive(false);
+        try
+        {
+            var localPath = TryGetFirstDroppedRosterPath(e.Data, out var supportedCount);
+            if (string.IsNullOrWhiteSpace(localPath))
+            {
+                SetStatus("请拖入本地 .txt 或 .xlsx 名单文件。", Brushes.Orange);
+                return;
+            }
+
+            var extraMessage = supportedCount > 1 ? " 其余文件已忽略。" : string.Empty;
+            await ImportRosterFromPathAsync(localPath, "拖拽导入", extraMessage);
+            e.Handled = true;
+        }
+        catch (Exception ex)
+        {
+            SetStatus($"拖拽导入失败：{ex.Message}", Brushes.Red);
+        }
+    }
+
     private void OnRosterSelectionChanged(object? sender, SelectionChangedEventArgs e)
     {
         UpdateStudentActionButtons();
+    }
+
+    private async Task ImportRosterFromPathAsync(string localPath, string reason, string successSuffix = "")
+    {
+        if (string.IsNullOrWhiteSpace(localPath))
+        {
+            SetStatus("仅支持导入本地文件。", Brushes.Orange);
+            return;
+        }
+
+        var parsedNames = RosterImportFileHelper.LoadStudentNames(localPath);
+        if (parsedNames.Count == 0)
+        {
+            SetStatus("文件中未解析到有效姓名。", Brushes.Orange);
+            return;
+        }
+
+        var result = _rosterModule.ImportStudents(parsedNames);
+        if (!result.Success)
+        {
+            SetStatus(result.Message, Brushes.Orange);
+            return;
+        }
+
+        await LoadDataAsync(reason);
+        SetStatus($"{result.Message}{successSuffix}", Brushes.Green);
+    }
+
+    private static string? TryGetFirstDroppedRosterPath(IDataObject data, out int supportedCount)
+    {
+        supportedCount = 0;
+        var items = data.GetFiles();
+        if (items == null)
+        {
+            return null;
+        }
+
+        string? firstSupportedPath = null;
+        foreach (var item in items)
+        {
+            var localPath = item.TryGetLocalPath();
+            if (string.IsNullOrWhiteSpace(localPath) || !IsSupportedRosterImportPath(localPath))
+            {
+                continue;
+            }
+
+            supportedCount++;
+            firstSupportedPath ??= localPath;
+        }
+
+        return firstSupportedPath;
+    }
+
+    private static bool IsSupportedRosterImportPath(string path)
+    {
+        var extension = (Path.GetExtension(path) ?? string.Empty).Trim();
+        return extension.Equals(".txt", StringComparison.OrdinalIgnoreCase) ||
+               extension.Equals(".xlsx", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private void SetRosterDropActive(bool isActive)
+    {
+        if (_isRosterDropActive == isActive)
+        {
+            return;
+        }
+
+        _isRosterDropActive = isActive;
+        RosterDropOverlay.IsVisible = isActive;
     }
 
     private void OnShowScheduleViewClick(object? sender, RoutedEventArgs e)

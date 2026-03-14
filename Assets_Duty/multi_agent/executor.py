@@ -59,8 +59,6 @@ def _freeze_snapshot(ctx: Context, input_data: dict) -> FrozenSnapshot:
         str(config.get("api_key", "")).strip()
         or load_api_key_from_env()
     )
-    if not api_key:
-        raise ValueError("Missing config/api_key.")
     config = dict(config)
     config["api_key"] = api_key
     config["llm_stream"] = False
@@ -154,7 +152,17 @@ def _run_batch(
                 _emit_progress(emit_progress_fn, "agent_start", f"{agent_id} started.", {"agent_id": agent_id})
                 future_map[executor.submit(_execute, entry)] = agent_id
             for future in as_completed(future_map):
-                agent_id, payload = future.result()
+                agent_id = future_map[future]
+                try:
+                    _, payload = future.result()
+                except Exception as ex:
+                    _emit_progress(
+                        emit_progress_fn,
+                        "agent_fail",
+                        f"{agent_id} failed: {ex}",
+                        {"agent_id": agent_id, "error": str(ex)},
+                    )
+                    raise RuntimeError(f"{agent_id} failed: {ex}") from ex
                 result, raw_text, metadata, trace = payload
                 results[agent_id] = result
                 raw_texts[agent_id] = raw_text
@@ -165,7 +173,16 @@ def _run_batch(
         for entry in batch:
             agent_id = entry[0]
             _emit_progress(emit_progress_fn, "agent_start", f"{agent_id} started.", {"agent_id": agent_id})
-            _, payload = _execute(entry)
+            try:
+                _, payload = _execute(entry)
+            except Exception as ex:
+                _emit_progress(
+                    emit_progress_fn,
+                    "agent_fail",
+                    f"{agent_id} failed: {ex}",
+                    {"agent_id": agent_id, "error": str(ex)},
+                )
+                raise RuntimeError(f"{agent_id} failed: {ex}") from ex
             result, raw_text, metadata, trace = payload
             results[agent_id] = result
             raw_texts[agent_id] = raw_text

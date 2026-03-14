@@ -88,6 +88,16 @@ def run_schedule(ctx: Context, input_data: dict, emit_progress_fn=None, stop_eve
         return result
     except Exception as ex:
         traceback.print_exc()
+        _logger = getattr(ctx, "logger", None)
+        if _logger is not None:
+            _logger.error(
+                "Engine",
+                "run_schedule failed.",
+                trace_id=getattr(ctx, "trace_id", ""),
+                request_source=getattr(ctx, "request_source", ""),
+                exc=ex,
+                runtime_mode=execution_plan.runtime_mode if "execution_plan" in locals() else "",
+            )
         return {
             "status": "error",
             "message": str(ex),

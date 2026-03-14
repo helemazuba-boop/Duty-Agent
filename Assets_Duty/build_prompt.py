@@ -21,6 +21,7 @@ def build_prompt_messages(
     instruction: str,
     duty_rule: str,
     area_names: List[str],
+    area_per_day_counts: Dict[str, int],
     debt_list: List[int],
     credit_list: List[int],
     previous_context: str = "",
@@ -37,11 +38,18 @@ def build_prompt_messages(
     )
 
     if compact_mode:
+        area_text = ",".join(area_names) if area_names else "default_area"
+        area_count_text = ",".join(
+            f"{area}={area_per_day_counts.get(area, 0)}"
+            for area in (area_names or ["default_area"])
+        )
         params = [
             f"<all_roster_ids>{','.join(map(str, all_ids))}</all_roster_ids>",
             f"<inactive_ids>{','.join(map(str, inactive_ids))}</inactive_ids>",
             f"<current_time>{current_time}</current_time>",
             f"<user_instruction>{instruction}</user_instruction>",
+            f"<area_names>{area_text}</area_names>",
+            f"<area_slot_counts>{area_count_text}</area_slot_counts>",
             f"<single_pass_strategy>{single_pass_strategy}</single_pass_strategy>",
         ]
         if previous_context:
@@ -54,6 +62,13 @@ def build_prompt_messages(
         f"<all_roster_ids>{','.join(map(str, all_ids))}</all_roster_ids>",
         f"<current_time>{current_time}</current_time>",
         f"<user_instruction>{instruction}</user_instruction>",
+        f"<area_names>{','.join(area_names) if area_names else 'default_area'}</area_names>",
+        "<area_slot_counts>{}</area_slot_counts>".format(
+            ",".join(
+                f"{area}={area_per_day_counts.get(area, 0)}"
+                for area in (area_names or ["default_area"])
+            )
+        ),
         f"<single_pass_strategy>{single_pass_strategy}</single_pass_strategy>",
     ]
     if previous_context:
@@ -82,6 +97,15 @@ def build_prompt_messages(
     duty_rule = (duty_rule or "").strip()
     if duty_rule:
         methods_list.append(f"<user_defined_rule>\n{duty_rule}\n</user_defined_rule>")
+
+    methods_list.append(
+        "<output_guard>\n"
+        "Assigned_IDs must contain ONLY the scheduled IDs for that date, not the whole roster.\n"
+        "If area_slot_counts says default_area=2, then each date must contain exactly 2 unique IDs.\n"
+        "When Assigned_IDs contains multiple IDs in one CSV cell, quote that cell and separate IDs with commas, "
+        "for example \"1,2\".\n"
+        "</output_guard>"
+    )
 
     if single_pass_strategy == "incremental_thinking":
         methods_list.append(

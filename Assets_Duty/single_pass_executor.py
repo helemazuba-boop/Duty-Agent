@@ -58,16 +58,13 @@ def run_single_pass_schedule(
         str(ctx.config.get("api_key", "")).strip()
         or load_api_key_from_env()
     )
-    if not api_key:
-        raise ValueError("Missing config/api_key.")
-
     ctx.config["api_key"] = api_key
     ctx.config["llm_stream"] = True
 
-    area_names = normalize_area_names([])
+    area_names = normalize_area_names(["default_area"])
     area_per_day_counts = normalize_area_per_day_counts(
         area_names,
-        {},
+        {"default_area": ctx.config.get("per_day", DEFAULT_PER_DAY)},
         ctx.config.get("per_day", DEFAULT_PER_DAY),
     )
     apply_mode = str(input_data.get("apply_mode", "append")).lower()
@@ -90,6 +87,7 @@ def run_single_pass_schedule(
         instruction=anonymize_instruction(instruction, name_to_id),
         duty_rule=anonymize_instruction(str(ctx.config.get("duty_rule", "")), name_to_id),
         area_names=area_names,
+        area_per_day_counts=area_per_day_counts,
         debt_list=extract_ids_from_value(state_data.get("debt_list", []), set(all_ids)),
         credit_list=extract_ids_from_value(state_data.get("credit_list", []), set(all_ids)),
         previous_context=str(state_data.get("next_run_note", "")).strip(),

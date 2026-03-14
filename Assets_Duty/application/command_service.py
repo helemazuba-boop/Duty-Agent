@@ -32,14 +32,25 @@ class CommandService:
         )
         result = run_schedule(context, request_payload, progress_callback, stop_event)
         result.setdefault("trace_id", request_payload["trace_id"])
-        self._runtime.logger.info(
-            "CommandService",
-            "Finished run_schedule.",
-            trace_id=request_payload["trace_id"],
-            request_source=request_payload["request_source"],
-            status=result.get("status", ""),
-            selected_executor=result.get("selected_executor", ""),
-        )
+        if result.get("status") == "error":
+            self._runtime.logger.error(
+                "CommandService",
+                "run_schedule returned error result.",
+                trace_id=request_payload["trace_id"],
+                request_source=request_payload["request_source"],
+                status=result.get("status", ""),
+                selected_executor=result.get("selected_executor", ""),
+                error_message=str(result.get("message", "") or ""),
+            )
+        else:
+            self._runtime.logger.info(
+                "CommandService",
+                "Finished run_schedule.",
+                trace_id=request_payload["trace_id"],
+                request_source=request_payload["request_source"],
+                status=result.get("status", ""),
+                selected_executor=result.get("selected_executor", ""),
+            )
         return result
 
     def update_config(
