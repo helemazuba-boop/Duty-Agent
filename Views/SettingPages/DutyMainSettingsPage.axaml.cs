@@ -1,5 +1,6 @@
 ﻿using System.Diagnostics;
 using System.Globalization;
+using System.Threading;
 using Avalonia.Controls;
 using Avalonia.Input;
 using Avalonia.Interactivity;
@@ -21,6 +22,13 @@ namespace DutyAgent.Views.SettingPages;
 [SettingsPageInfo("duty-agent.settings", "Duty-Agent", "\uE31E", "\uE31E")]
 public partial class DutyMainSettingsPage : SettingsPageBase
 {
+    private enum BackendConfigLoadState
+    {
+        NotLoaded,
+        Loaded,
+        LoadFailed
+    }
+
     private DutyScheduleOrchestrator Service { get; } = IAppHost.GetService<DutyScheduleOrchestrator>();
     private DutyNotificationService NotificationService { get; } = IAppHost.GetService<DutyNotificationService>();
     private readonly DutyMainSettingsConfigModule _configModule;
@@ -38,6 +46,13 @@ public partial class DutyMainSettingsPage : SettingsPageBase
     private bool _hasPendingConfigApply;
     private string _pendingScheduleSelectionDate = string.Empty;
     private bool _isPopulatingEditor;
+    private BackendConfigLoadState _backendConfigState = BackendConfigLoadState.NotLoaded;
+    private bool _isLoadingBackendConfig;
+    private string? _backendConfigErrorMessage;
+    private int _configLoadRevision;
+    private int _dataLoadRevision;
+    private DutySettingsApplyRequest _lastAppliedHostForm = new();
+    private DutyBackendConfig? _lastAppliedBackendConfig;
 
     public DutyMainSettingsPage()
     {
@@ -50,17 +65,30 @@ public partial class DutyMainSettingsPage : SettingsPageBase
             Interval = TimeSpan.FromMilliseconds(500)
         };
         _configApplyDebounceTimer.Tick += OnConfigApplyDebounceTick;
-        Unloaded += (_, _) => _configApplyDebounceTimer.Stop();
+        Loaded += OnPageLoaded;
+        Unloaded += OnPageUnloaded;
         InitializeAutoRunTimeOptions();
         InitializeAutoRunModeOptions();
         InitializeComponentRefreshTimeOptions();
         InitializeDutyReminderTimeOptions();
         InitializeScheduleDayOptions();
         SetDataView(showScheduleView: true);
-        LoadConfigForm();
-        UpdateConfigTracking("已加载");
+        LoadLocalConfigForm();
+        UpdateConfigTracking("已加载本地配置");
         UpdateRunTracking("待命");
-        LoadData("页面初始化");
+        _ = LoadDataAsync("页面初始化");
+    }
+
+    private async void OnPageLoaded(object? sender, RoutedEventArgs e)
+    {
+        DutyDiagnosticsLogger.Info("SettingsPage", "Settings page loaded; beginning backend config load.");
+        await LoadBackendConfigAsync();
+    }
+
+    private void OnPageUnloaded(object? sender, RoutedEventArgs e)
+    {
+        _configApplyDebounceTimer.Stop();
+        Interlocked.Increment(ref _configLoadRevision);
     }
 
     private void InitializeAutoRunTimeOptions()
@@ -135,7 +163,7 @@ public partial class DutyMainSettingsPage : SettingsPageBase
         var useDefaultInstruction = instruction.Length == 0;
 
         _configApplyDebounceTimer.Stop();
-        FlushPendingConfigApply();
+        await FlushPendingConfigApplyAsync();
 
         const string applyMode = "replace_all";
 
@@ -152,7 +180,7 @@ public partial class DutyMainSettingsPage : SettingsPageBase
                     : "正在执行排班（覆盖模式）...",
                 Brushes.Gray);
 
-            var result = await Task.Run(() => Service.RunCoreAgentWithMessage(
+            var result = await Service.RunCoreAgentAsync(
                 instruction,
                 applyMode,
                 progress: progress =>
@@ -181,11 +209,11 @@ public partial class DutyMainSettingsPage : SettingsPageBase
                     }
 
                     Dispatcher.UIThread.Post(() => SetStatus(message, Brushes.Gray));
-                }));
+                });
             if (result.Success)
             {
                 ReasoningBoardContainer.BorderBrush = Brushes.Green;
-                LoadData("排班完成");
+                await LoadDataAsync("排班完成");
                 UpdateRunTracking("执行成功");
                 SetStatus(
                     useDefaultInstruction
@@ -255,7 +283,7 @@ public partial class DutyMainSettingsPage : SettingsPageBase
         _configApplyDebounceTimer.Stop();
         if (immediate)
         {
-            FlushPendingConfigApply();
+            _ = FlushPendingConfigApplyAsync();
             return;
         }
 
@@ -265,71 +293,110 @@ public partial class DutyMainSettingsPage : SettingsPageBase
     private void OnConfigApplyDebounceTick(object? sender, EventArgs e)
     {
         _configApplyDebounceTimer.Stop();
-        FlushPendingConfigApply();
+        _ = FlushPendingConfigApplyAsync();
     }
 
-    private void FlushPendingConfigApply()
+    private async Task FlushPendingConfigApplyAsync()
     {
-        if (!_hasPendingConfigApply)
+        if (!_hasPendingConfigApply || _isApplyingConfig || _isLoadingConfig)
         {
             return;
         }
 
         _hasPendingConfigApply = false;
-        _ = ApplyConfigFromControls();
+        await ApplyConfigFromControlsAsync();
     }
 
-    private bool ApplyConfigFromControls()
+    private async Task<bool> ApplyConfigFromControlsAsync()
     {
         if (_isLoadingConfig || _isApplyingConfig)
         {
             return false;
         }
 
+        DutySettingsApplyRequest? request = null;
+        var traceId = DutyDiagnosticsLogger.CreateTraceId("settings");
+        var hostSaved = false;
         try
         {
             _isApplyingConfig = true;
-            var request = new DutySettingsApplyRequest
-            {
-                ApiKeyInput = ApiKeyBox.Text,
-                BaseUrl = BaseUrlBox.Text,
-                Model = ModelBox.Text,
-                ModelProfile = GetSelectedModelProfile(),
-                OrchestrationMode = GetSelectedOrchestrationMode(),
-                MultiAgentExecutionMode = GetSelectedMultiAgentExecutionMode(),
-                AutoRunMode = GetSelectedAutoRunMode(),
-                AutoRunParameter = GetSelectedAutoRunParameter(),
-                AutoRunTime = GetSelectedAutoRunTime(),
-                ComponentRefreshTime = GetSelectedComponentRefreshTime(),
-                AutoRunTriggerNotificationEnabled = AutoRunTriggerNotificationSwitch.IsChecked == true,
-                DutyReminderEnabled = DutyReminderEnabledSwitch.IsChecked == true,
-                DutyReminderTime = GetSelectedDutyReminderTime(),
-                EnableMcp = EnableMcpSwitch.IsChecked == true,
-                EnableWebViewDebugLayer = EnableWebDebugLayerSwitch.IsChecked == true,
-                DutyRule = DutyRuleBox.Text,
-                NotificationDurationSeconds = (int)NotificationDurationSlider.Value
-            };
-            var result = _configModule.Apply(request);
+            request = BuildCurrentRequestFromControls();
+            var hostChanged = HasHostChanges(request, _lastAppliedHostForm);
+            var backendLoadState = _backendConfigState;
+            var backendPatch = backendLoadState == BackendConfigLoadState.Loaded
+                ? TryBuildBackendPatch(request, _lastAppliedBackendConfig)
+                : null;
+            var backendChanged = backendPatch != null;
 
-            if (!result.Success)
+            DutyDiagnosticsLogger.Info("SettingsPage", "Applying settings from controls.",
+                new
+                {
+                    traceId,
+                    hostChanged,
+                    backendChanged,
+                    backendState = backendLoadState.ToString(),
+                    backendError = _backendConfigErrorMessage ?? string.Empty,
+                    backendPatch = SummarizeBackendPatch(backendPatch)
+                });
+
+            if (!hostChanged && !backendChanged)
             {
-                UpdateConfigTracking("应用失败");
-                SetStatus(result.Message, Brushes.Red);
-                return false;
+                DutyDiagnosticsLogger.Info("SettingsPage", "No settings changes detected.",
+                    new { traceId, backendState = backendLoadState.ToString() });
+                return true;
             }
 
-            SetStatus(
-                result.Message,
-                Brushes.Gray);
+            var restartRequired = false;
+            if (hostChanged)
+            {
+                var hostResult = _configModule.SaveHost(request, traceId);
+                restartRequired = hostResult.RestartRequired;
+                hostSaved = hostResult.HostSaved;
+                _lastAppliedHostForm = BuildHostSnapshotFromRequest(request);
+                SetStatus(hostResult.Message, Brushes.Gray);
+            }
+
+            if (backendChanged && backendPatch != null)
+            {
+                SetStatus(
+                    hostChanged ? "宿主设置已保存，正在保存后端设置..." : "正在保存后端设置...",
+                    Brushes.Gray);
+                var savedBackend = await _configModule.SaveBackendAsync(backendPatch, "host_settings", traceId);
+                _lastAppliedBackendConfig = CloneBackendConfig(savedBackend);
+                _backendConfigState = BackendConfigLoadState.Loaded;
+                _backendConfigErrorMessage = null;
+                ApplyBackendConfig(savedBackend);
+            }
+            else if (backendLoadState != BackendConfigLoadState.Loaded)
+            {
+                DutyDiagnosticsLogger.Warn("SettingsPage", "Skipped backend save because backend config is not loaded.",
+                    new
+                    {
+                        traceId,
+                        backendState = backendLoadState.ToString(),
+                        backendError = _backendConfigErrorMessage ?? string.Empty
+                    });
+            }
 
             UpdateConfigTracking(
-                result.RestartRequired
+                restartRequired
                     ? "自动保存（需重启）"
                     : "自动保存");
 
-            if (result.RestartRequired)
+            if (restartRequired)
             {
                 RequestRestart();
+            }
+
+            if (hostChanged && backendChanged)
+            {
+                SetStatus(
+                    restartRequired ? "设置已保存，重启后启用相关宿主功能。" : "设置已保存。",
+                    Brushes.Gray);
+            }
+            else if (backendChanged)
+            {
+                SetStatus("后端设置已保存。", Brushes.Gray);
             }
 
             return true;
@@ -337,12 +404,31 @@ public partial class DutyMainSettingsPage : SettingsPageBase
         catch (Exception ex)
         {
             UpdateConfigTracking("应用失败");
-            SetStatus($"应用失败：{ex.Message}", Brushes.Red);
+            DutyDiagnosticsLogger.Error("SettingsPage", "Applying settings failed.", ex,
+                new
+                {
+                    traceId,
+                    hostSaved,
+                    backendState = _backendConfigState.ToString(),
+                    backendError = _backendConfigErrorMessage ?? string.Empty
+                });
+            if (hostSaved || (request != null && !HasHostChanges(request, _lastAppliedHostForm)))
+            {
+                SetStatus($"宿主设置已保存，但后端设置失败：{ex.Message}", Brushes.Orange);
+            }
+            else
+            {
+                SetStatus($"后端设置失败：{ex.Message}", Brushes.Red);
+            }
             return false;
         }
         finally
         {
             _isApplyingConfig = false;
+            if (_hasPendingConfigApply)
+            {
+                _ = FlushPendingConfigApplyAsync();
+            }
         }
     }
 
@@ -356,7 +442,7 @@ public partial class DutyMainSettingsPage : SettingsPageBase
         }
 
         NewStudentNameBox.Text = string.Empty;
-        LoadData("名单变更");
+        _ = LoadDataAsync("名单变更");
         SetStatus(result.Message, result.IsDuplicate ? Brushes.Orange : Brushes.Green);
     }
 
@@ -375,7 +461,7 @@ public partial class DutyMainSettingsPage : SettingsPageBase
             return;
         }
 
-        LoadData("名单变更");
+        _ = LoadDataAsync("名单变更");
         SetStatus(result.Message, Brushes.Green);
     }
 
@@ -394,7 +480,7 @@ public partial class DutyMainSettingsPage : SettingsPageBase
             return;
         }
 
-        LoadData("名单变更");
+        _ = LoadDataAsync("名单变更");
         SetStatus(result.Message, Brushes.Green);
     }
 
@@ -447,7 +533,7 @@ public partial class DutyMainSettingsPage : SettingsPageBase
                 return;
             }
 
-            LoadData("名单导入");
+            await LoadDataAsync("名单导入");
             SetStatus(result.Message, Brushes.Green);
         }
         catch (Exception ex)
@@ -471,13 +557,17 @@ public partial class DutyMainSettingsPage : SettingsPageBase
         SetDataView(showScheduleView: false);
     }
 
-    private void OnRefreshDataClick(object? sender, RoutedEventArgs e)
+    private async void OnRefreshDataClick(object? sender, RoutedEventArgs e)
     {
         try
         {
-            LoadConfigForm();
-            LoadData("手动刷新");
-            SetStatus("预览已刷新。", Brushes.Green);
+            await Task.WhenAll(
+                LoadDataAsync("手动刷新"),
+                LoadBackendConfigAsync(forceReload: true));
+            if (_backendConfigState == BackendConfigLoadState.Loaded)
+            {
+                SetStatus("预览已刷新。", Brushes.Green);
+            }
         }
         catch (Exception ex)
         {
@@ -485,19 +575,115 @@ public partial class DutyMainSettingsPage : SettingsPageBase
         }
     }
 
-    private void LoadConfigForm()
+    private void LoadLocalConfigForm()
+    {
+        var formModel = _configModule.LoadHostOnly();
+        ApplyHostFormModel(formModel);
+        _lastAppliedHostForm = BuildHostSnapshotFromFormModel(formModel);
+        _backendConfigState = BackendConfigLoadState.NotLoaded;
+        _backendConfigErrorMessage = null;
+        _lastAppliedBackendConfig = null;
+        SetBackendConfigControlsEnabled(false);
+        SetStatus("正在连接后端配置...", Brushes.Gray);
+        DutyDiagnosticsLogger.Info("SettingsPage", "Loaded host-only settings and marked backend config as not loaded.");
+    }
+
+    private async Task<bool> LoadBackendConfigAsync(bool forceReload = false)
+    {
+        if (_isLoadingBackendConfig)
+        {
+            return _backendConfigState == BackendConfigLoadState.Loaded;
+        }
+
+        if (_backendConfigState == BackendConfigLoadState.Loaded && !forceReload)
+        {
+            return true;
+        }
+
+        var revision = Interlocked.Increment(ref _configLoadRevision);
+        var traceId = DutyDiagnosticsLogger.CreateTraceId("cfg-load");
+        var stopwatch = Stopwatch.StartNew();
+        _isLoadingBackendConfig = true;
+        SetBackendConfigControlsEnabled(false);
+        SetStatus(forceReload ? "正在刷新后端配置..." : "正在连接后端配置...", Brushes.Gray);
+        DutyDiagnosticsLogger.Info("SettingsPage", "Starting async backend config load.",
+            new
+            {
+                traceId,
+                forceReload,
+                revision
+            });
+
+        try
+        {
+            var backendConfig = await _configModule.LoadBackendAsync("host_settings", traceId);
+            if (revision != _configLoadRevision)
+            {
+                DutyDiagnosticsLogger.Warn("SettingsPage", "Discarded stale backend config load result.",
+                    new { traceId, revision, latestRevision = _configLoadRevision });
+                return _backendConfigState == BackendConfigLoadState.Loaded;
+            }
+
+            ApplyBackendConfig(backendConfig);
+            _lastAppliedBackendConfig = CloneBackendConfig(backendConfig);
+            _backendConfigState = BackendConfigLoadState.Loaded;
+            _backendConfigErrorMessage = null;
+            UpdateConfigTracking("已加载");
+            SetStatus("后端配置已加载。", Brushes.Gray);
+            stopwatch.Stop();
+            DutyDiagnosticsLogger.Info("SettingsPage", "Backend config load succeeded.",
+                new
+                {
+                    traceId,
+                    revision,
+                    durationMs = stopwatch.ElapsedMilliseconds,
+                    baseUrl = backendConfig.BaseUrl,
+                    model = backendConfig.Model,
+                    modelProfile = backendConfig.ModelProfile,
+                    orchestrationMode = backendConfig.OrchestrationMode,
+                    multiAgentExecutionMode = backendConfig.MultiAgentExecutionMode,
+                    apiKey = DutyDiagnosticsLogger.MaskSecret(backendConfig.ApiKey)
+                });
+            return true;
+        }
+        catch (Exception ex)
+        {
+            if (revision != _configLoadRevision)
+            {
+                DutyDiagnosticsLogger.Warn("SettingsPage", "Discarded stale backend config load failure.",
+                    new { traceId, revision, latestRevision = _configLoadRevision });
+                return _backendConfigState == BackendConfigLoadState.Loaded;
+            }
+
+            _backendConfigState = BackendConfigLoadState.LoadFailed;
+            _backendConfigErrorMessage = ex.Message;
+            _lastAppliedBackendConfig = null;
+            UpdateConfigTracking("后端不可用");
+            SetStatus($"后端配置不可用：{ex.Message}", Brushes.Orange);
+            stopwatch.Stop();
+            DutyDiagnosticsLogger.Error("SettingsPage", "Backend config load failed.", ex,
+                new
+                {
+                    traceId,
+                    revision,
+                    durationMs = stopwatch.ElapsedMilliseconds
+                });
+            return false;
+        }
+        finally
+        {
+            if (revision == _configLoadRevision)
+            {
+                _isLoadingBackendConfig = false;
+            }
+        }
+    }
+
+    private void ApplyHostFormModel(DutySettingsFormModel formModel)
     {
         _isLoadingConfig = true;
         try
         {
-            var formModel = _configModule.Load();
-
-            ApiKeyBox.Text = formModel.ApiKeyMask;
-            BaseUrlBox.Text = formModel.BaseUrl;
-            ModelBox.Text = formModel.Model;
-            SetModelProfileSelection(formModel.ModelProfile);
-            SetOrchestrationModeSelection(formModel.OrchestrationMode);
-            SetMultiAgentExecutionModeSelection(formModel.MultiAgentExecutionMode);
             SetAutoRunModeSelection(formModel.AutoRunMode);
             SetAutoRunParameterSelection(formModel.AutoRunMode, formModel.AutoRunParameter);
             SetAutoRunTimeSelection(formModel.AutoRunTime);
@@ -507,16 +693,28 @@ public partial class DutyMainSettingsPage : SettingsPageBase
             EnableMcpSwitch.IsChecked = formModel.EnableMcp;
             EnableWebDebugLayerSwitch.IsChecked = formModel.EnableWebViewDebugLayer;
             SetComponentRefreshTimeSelection(formModel.ComponentRefreshTime);
-            DutyRuleBox.Text = formModel.DutyRule;
-
             NotificationDurationSlider.Value = formModel.NotificationDurationSeconds;
             NotificationDurationLabel.Text = $"{formModel.NotificationDurationSeconds} 秒";
-            SetBackendConfigControlsEnabled(formModel.BackendConfigAvailable);
-            if (!formModel.BackendConfigAvailable)
-            {
-                UpdateConfigTracking("后端不可用");
-                SetStatus($"后端配置不可用：{formModel.BackendConfigError}", Brushes.Orange);
-            }
+        }
+        finally
+        {
+            _isLoadingConfig = false;
+        }
+    }
+
+    private void ApplyBackendConfig(DutyBackendConfig backendConfig)
+    {
+        _isLoadingConfig = true;
+        try
+        {
+            ApiKeyBox.Text = string.IsNullOrWhiteSpace(backendConfig.ApiKey) ? string.Empty : "********";
+            BaseUrlBox.Text = backendConfig.BaseUrl;
+            ModelBox.Text = backendConfig.Model;
+            SetModelProfileSelection(backendConfig.ModelProfile);
+            SetOrchestrationModeSelection(backendConfig.OrchestrationMode);
+            SetMultiAgentExecutionModeSelection(backendConfig.MultiAgentExecutionMode);
+            DutyRuleBox.Text = backendConfig.DutyRule;
+            SetBackendConfigControlsEnabled(true);
         }
         finally
         {
@@ -536,14 +734,58 @@ public partial class DutyMainSettingsPage : SettingsPageBase
         RunAgentBtn.IsEnabled = enabled;
     }
 
-    private void LoadData(string reason = "数据刷新")
+    private async Task LoadDataAsync(string reason = "数据刷新")
     {
-        var state = Service.LoadState();
-        var roster = Service.LoadRosterEntries();
-        BuildRosterList(roster, state);
-        BuildSchedulePreview(state);
-        UpdateStudentActionButtons();
-        UpdateDataTracking(reason);
+        var revision = Interlocked.Increment(ref _dataLoadRevision);
+        var traceId = DutyDiagnosticsLogger.CreateTraceId("data-load");
+        var stopwatch = Stopwatch.StartNew();
+        DutyDiagnosticsLogger.Info("SettingsPage", "Starting preview data load.",
+            new { traceId, reason, revision });
+        try
+        {
+            var data = await Task.Run(() =>
+            {
+                var state = Service.LoadState();
+                var roster = Service.LoadRosterEntries();
+                var rosterPreview = _rosterModule.BuildPreview(roster, state, DateTime.Today);
+                var schedulePreview = _scheduleModule.BuildPreview(state);
+                return (rosterPreview, schedulePreview);
+            });
+
+            if (revision != _dataLoadRevision)
+            {
+                return;
+            }
+
+            ApplyRosterPreview(data.rosterPreview);
+            ApplySchedulePreview(data.schedulePreview);
+            UpdateStudentActionButtons();
+            UpdateDataTracking(reason);
+            stopwatch.Stop();
+            DutyDiagnosticsLogger.Info("SettingsPage", "Preview data load completed.",
+                new
+                {
+                    traceId,
+                    reason,
+                    revision,
+                    durationMs = stopwatch.ElapsedMilliseconds,
+                    rosterCount = data.rosterPreview.Rows.Count,
+                    scheduleCount = data.schedulePreview.Rows.Count
+                });
+        }
+        catch (Exception ex)
+        {
+            if (revision != _dataLoadRevision)
+            {
+                return;
+            }
+
+            UpdateDataTracking("刷新失败");
+            SetStatus($"刷新数据失败：{ex.Message}", Brushes.Orange);
+            stopwatch.Stop();
+            DutyDiagnosticsLogger.Error("SettingsPage", "Preview data load failed.", ex,
+                new { traceId, reason, revision, durationMs = stopwatch.ElapsedMilliseconds });
+        }
     }
 
     private void UpdateStudentActionButtons()
@@ -559,11 +801,9 @@ public partial class DutyMainSettingsPage : SettingsPageBase
         ToggleStudentActiveBtn.Content = "启用/停用选中";
     }
 
-    private void BuildRosterList(List<RosterEntry> roster, DutyState state)
+    private void ApplyRosterPreview(DutyRosterPreview preview)
     {
         var previousSelectedId = (RosterListBox.SelectedItem as DutyRosterRow)?.Id;
-        var preview = _rosterModule.BuildPreview(roster, state, DateTime.Today);
-
         RosterListBox.ItemsSource = preview.Rows;
         if (previousSelectedId.HasValue)
         {
@@ -574,13 +814,11 @@ public partial class DutyMainSettingsPage : SettingsPageBase
         RosterEmptyStatePanel.IsVisible = preview.Rows.Count == 0;
     }
 
-    private void BuildSchedulePreview(DutyState state)
+    private void ApplySchedulePreview(DutySchedulePreview preview)
     {
         var previousSelectedDate = string.IsNullOrWhiteSpace(_pendingScheduleSelectionDate)
             ? (ScheduleListBox.SelectedItem as DutyScheduleRow)?.Date
             : _pendingScheduleSelectionDate;
-
-        var preview = _scheduleModule.BuildPreview(state);
 
         ScheduleListBox.ItemsSource = preview.Rows;
         if (!string.IsNullOrWhiteSpace(previousSelectedDate))
@@ -648,7 +886,7 @@ public partial class DutyMainSettingsPage : SettingsPageBase
         }
 
         _pendingScheduleSelectionDate = targetDate;
-        LoadData("手动编辑排班");
+        _ = LoadDataAsync("手动编辑排班");
         SetStatus("排班编辑已保存。", Brushes.Green);
     }
 
@@ -689,7 +927,7 @@ public partial class DutyMainSettingsPage : SettingsPageBase
         }
 
         _pendingScheduleSelectionDate = targetDate;
-        LoadData("手动新建排班");
+        _ = LoadDataAsync("手动新建排班");
         SetStatus("已新建值日安排。", Brushes.Green);
     }
 
@@ -1085,6 +1323,183 @@ public partial class DutyMainSettingsPage : SettingsPageBase
         }
     }
 
+    private DutySettingsApplyRequest BuildCurrentRequestFromControls()
+    {
+        return new DutySettingsApplyRequest
+        {
+            ApiKeyInput = ApiKeyBox.Text,
+            BaseUrl = BaseUrlBox.Text,
+            Model = ModelBox.Text,
+            ModelProfile = GetSelectedModelProfile(),
+            OrchestrationMode = GetSelectedOrchestrationMode(),
+            MultiAgentExecutionMode = GetSelectedMultiAgentExecutionMode(),
+            AutoRunMode = GetSelectedAutoRunMode(),
+            AutoRunParameter = GetSelectedAutoRunParameter(),
+            AutoRunTime = GetSelectedAutoRunTime(),
+            ComponentRefreshTime = GetSelectedComponentRefreshTime(),
+            AutoRunTriggerNotificationEnabled = AutoRunTriggerNotificationSwitch.IsChecked == true,
+            DutyReminderEnabled = DutyReminderEnabledSwitch.IsChecked == true,
+            DutyReminderTime = GetSelectedDutyReminderTime(),
+            EnableMcp = EnableMcpSwitch.IsChecked == true,
+            EnableWebViewDebugLayer = EnableWebDebugLayerSwitch.IsChecked == true,
+            DutyRule = DutyRuleBox.Text,
+            NotificationDurationSeconds = (int)NotificationDurationSlider.Value
+        };
+    }
+
+    private static DutySettingsApplyRequest BuildHostSnapshotFromFormModel(DutySettingsFormModel formModel)
+    {
+        return new DutySettingsApplyRequest
+        {
+            AutoRunMode = formModel.AutoRunMode,
+            AutoRunParameter = formModel.AutoRunParameter,
+            AutoRunTime = formModel.AutoRunTime,
+            ComponentRefreshTime = formModel.ComponentRefreshTime,
+            AutoRunTriggerNotificationEnabled = formModel.AutoRunTriggerNotificationEnabled,
+            DutyReminderEnabled = formModel.DutyReminderEnabled,
+            DutyReminderTime = formModel.DutyReminderTime,
+            EnableMcp = formModel.EnableMcp,
+            EnableWebViewDebugLayer = formModel.EnableWebViewDebugLayer,
+            NotificationDurationSeconds = formModel.NotificationDurationSeconds
+        };
+    }
+
+    private static DutySettingsApplyRequest BuildHostSnapshotFromRequest(DutySettingsApplyRequest request)
+    {
+        return new DutySettingsApplyRequest
+        {
+            AutoRunMode = request.AutoRunMode,
+            AutoRunParameter = request.AutoRunParameter,
+            AutoRunTime = request.AutoRunTime,
+            ComponentRefreshTime = request.ComponentRefreshTime,
+            AutoRunTriggerNotificationEnabled = request.AutoRunTriggerNotificationEnabled,
+            DutyReminderEnabled = request.DutyReminderEnabled,
+            DutyReminderTime = request.DutyReminderTime,
+            EnableMcp = request.EnableMcp,
+            EnableWebViewDebugLayer = request.EnableWebViewDebugLayer,
+            NotificationDurationSeconds = request.NotificationDurationSeconds
+        };
+    }
+
+    private static bool HasHostChanges(DutySettingsApplyRequest current, DutySettingsApplyRequest lastApplied)
+    {
+        return !string.Equals(DutyScheduleOrchestrator.NormalizeAutoRunMode(current.AutoRunMode), DutyScheduleOrchestrator.NormalizeAutoRunMode(lastApplied.AutoRunMode), StringComparison.Ordinal) ||
+               !string.Equals((current.AutoRunParameter ?? string.Empty).Trim(), (lastApplied.AutoRunParameter ?? string.Empty).Trim(), StringComparison.Ordinal) ||
+               !string.Equals(DutyScheduleOrchestrator.NormalizeTimeOrThrow(current.AutoRunTime), DutyScheduleOrchestrator.NormalizeTimeOrThrow(lastApplied.AutoRunTime), StringComparison.Ordinal) ||
+               !string.Equals(DutyScheduleOrchestrator.NormalizeTimeOrThrow(current.ComponentRefreshTime), DutyScheduleOrchestrator.NormalizeTimeOrThrow(lastApplied.ComponentRefreshTime), StringComparison.Ordinal) ||
+               current.AutoRunTriggerNotificationEnabled != lastApplied.AutoRunTriggerNotificationEnabled ||
+               current.DutyReminderEnabled != lastApplied.DutyReminderEnabled ||
+               !string.Equals(GetNormalizedDutyReminderTime(current.DutyReminderTime), GetNormalizedDutyReminderTime(lastApplied.DutyReminderTime), StringComparison.Ordinal) ||
+               current.EnableMcp != lastApplied.EnableMcp ||
+               current.EnableWebViewDebugLayer != lastApplied.EnableWebViewDebugLayer ||
+               Math.Clamp(current.NotificationDurationSeconds, 3, 15) != Math.Clamp(lastApplied.NotificationDurationSeconds, 3, 15);
+    }
+
+    private static string GetNormalizedDutyReminderTime(string? time)
+    {
+        return TimeSpan.TryParse(time, out var parsed)
+            ? $"{parsed.Hours:D2}:{parsed.Minutes:D2}"
+            : "07:40";
+    }
+
+    private static DutyBackendConfig CloneBackendConfig(DutyBackendConfig config)
+    {
+        return new DutyBackendConfig
+        {
+            ApiKey = config.ApiKey,
+            BaseUrl = config.BaseUrl,
+            Model = config.Model,
+            ModelProfile = config.ModelProfile,
+            OrchestrationMode = config.OrchestrationMode,
+            MultiAgentExecutionMode = config.MultiAgentExecutionMode,
+            ProviderHint = config.ProviderHint,
+            PerDay = config.PerDay,
+            DutyRule = config.DutyRule
+        };
+    }
+
+    private DutyBackendConfigPatch? TryBuildBackendPatch(DutySettingsApplyRequest request, DutyBackendConfig? currentBackend)
+    {
+        if (_backendConfigState != BackendConfigLoadState.Loaded || currentBackend == null)
+        {
+            return null;
+        }
+
+        var resolvedApiKey = DutyScheduleOrchestrator.ResolveApiKeyInput(request.ApiKeyInput, currentBackend.ApiKey);
+        var normalizedBaseUrl = (request.BaseUrl ?? string.Empty).Trim();
+        var normalizedModel = (request.Model ?? string.Empty).Trim();
+        var normalizedModelProfile = DutyScheduleOrchestrator.NormalizeModelProfile(request.ModelProfile);
+        var normalizedOrchestrationMode = DutyScheduleOrchestrator.NormalizeOrchestrationMode(request.OrchestrationMode);
+        var normalizedMultiAgentExecutionMode = DutyScheduleOrchestrator.NormalizeMultiAgentExecutionMode(request.MultiAgentExecutionMode);
+        var normalizedDutyRule = request.DutyRule ?? string.Empty;
+
+        var patch = new DutyBackendConfigPatch();
+        var hasChanges = false;
+
+        if (!string.Equals(resolvedApiKey, currentBackend.ApiKey, StringComparison.Ordinal))
+        {
+            patch.ApiKey = resolvedApiKey;
+            hasChanges = true;
+        }
+
+        if (!string.Equals(normalizedBaseUrl, currentBackend.BaseUrl, StringComparison.Ordinal))
+        {
+            patch.BaseUrl = normalizedBaseUrl;
+            hasChanges = true;
+        }
+
+        if (!string.Equals(normalizedModel, currentBackend.Model, StringComparison.Ordinal))
+        {
+            patch.Model = normalizedModel;
+            hasChanges = true;
+        }
+
+        if (!string.Equals(normalizedModelProfile, currentBackend.ModelProfile, StringComparison.Ordinal))
+        {
+            patch.ModelProfile = normalizedModelProfile;
+            hasChanges = true;
+        }
+
+        if (!string.Equals(normalizedOrchestrationMode, currentBackend.OrchestrationMode, StringComparison.Ordinal))
+        {
+            patch.OrchestrationMode = normalizedOrchestrationMode;
+            hasChanges = true;
+        }
+
+        if (!string.Equals(normalizedMultiAgentExecutionMode, currentBackend.MultiAgentExecutionMode, StringComparison.Ordinal))
+        {
+            patch.MultiAgentExecutionMode = normalizedMultiAgentExecutionMode;
+            hasChanges = true;
+        }
+
+        if (!string.Equals(normalizedDutyRule, currentBackend.DutyRule, StringComparison.Ordinal))
+        {
+            patch.DutyRule = normalizedDutyRule;
+            hasChanges = true;
+        }
+
+        return hasChanges ? patch : null;
+    }
+
+    private static object? SummarizeBackendPatch(DutyBackendConfigPatch? patch)
+    {
+        if (patch == null)
+        {
+            return null;
+        }
+
+        return new
+        {
+            apiKey = patch.ApiKey is null ? "<unchanged>" : DutyDiagnosticsLogger.MaskSecret(patch.ApiKey),
+            baseUrl = patch.BaseUrl ?? "<unchanged>",
+            model = patch.Model ?? "<unchanged>",
+            modelProfile = patch.ModelProfile ?? "<unchanged>",
+            orchestrationMode = patch.OrchestrationMode ?? "<unchanged>",
+            multiAgentExecutionMode = patch.MultiAgentExecutionMode ?? "<unchanged>",
+            dutyRule = patch.DutyRule is null ? "<unchanged>" : TruncateForLog(patch.DutyRule, 160)
+        };
+    }
+
     private void UpdateConfigTracking(string state)
     {
         _lastConfigState = string.IsNullOrWhiteSpace(state) ? "未应用" : state.Trim();
@@ -1160,6 +1575,12 @@ public partial class DutyMainSettingsPage : SettingsPageBase
         }
 
         return InfoBarSeverity.Informational;
+    }
+
+    private static string TruncateForLog(string? value, int maxLength)
+    {
+        var normalized = (value ?? string.Empty).Replace('\r', ' ').Replace('\n', ' ').Trim();
+        return normalized.Length <= maxLength ? normalized : normalized[..maxLength];
     }
 
 }

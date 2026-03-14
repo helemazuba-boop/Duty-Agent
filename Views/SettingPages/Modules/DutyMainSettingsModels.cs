@@ -49,7 +49,14 @@ internal sealed class DutySettingsApplyRequest
     public int NotificationDurationSeconds { get; init; } = 8;
 }
 
-internal readonly record struct DutySettingsApplyResult(bool Success, bool RestartRequired, string Message, bool BackendConfigAvailable = true);
+internal readonly record struct DutySettingsApplyResult(
+    bool Success,
+    bool RestartRequired,
+    string Message,
+    bool BackendConfigAvailable = true,
+    bool HostSaved = false,
+    bool BackendAttempted = false,
+    bool BackendSaved = false);
 
 public sealed class DutyRosterRow
 {

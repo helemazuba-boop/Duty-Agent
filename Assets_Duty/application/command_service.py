@@ -15,11 +15,61 @@ class CommandService:
         request_payload.setdefault("trace_id", self._runtime.new_trace_id())
         request_payload.setdefault("request_source", "api")
 
-        context = Context(self._runtime.data_dir)
+        self._runtime.logger.info(
+            "CommandService",
+            "Starting run_schedule.",
+            trace_id=request_payload["trace_id"],
+            request_source=request_payload["request_source"],
+            apply_mode=request_payload.get("apply_mode", ""),
+            instruction_length=len(str(request_payload.get("instruction", "") or "")),
+        )
+
+        context = Context(
+            self._runtime.data_dir,
+            logger=self._runtime.logger,
+            trace_id=request_payload["trace_id"],
+            request_source=request_payload["request_source"],
+        )
         result = run_schedule(context, request_payload, progress_callback, stop_event)
         result.setdefault("trace_id", request_payload["trace_id"])
+        self._runtime.logger.info(
+            "CommandService",
+            "Finished run_schedule.",
+            trace_id=request_payload["trace_id"],
+            request_source=request_payload["request_source"],
+            status=result.get("status", ""),
+            selected_executor=result.get("selected_executor", ""),
+        )
         return result
 
-    def update_config(self, patch_payload: Dict[str, Any]) -> Dict[str, Any]:
-        context = Context(self._runtime.data_dir)
-        return patch_config(context, patch_payload)
+    def update_config(
+        self,
+        patch_payload: Dict[str, Any],
+        trace_id: str | None = None,
+        request_source: str = "api",
+    ) -> Dict[str, Any]:
+        effective_trace_id = trace_id or self._runtime.new_trace_id()
+        self._runtime.logger.info(
+            "CommandService",
+            "Starting update_config.",
+            trace_id=effective_trace_id,
+            request_source=request_source,
+            patch_keys=sorted(list((patch_payload or {}).keys())),
+        )
+        context = Context(
+            self._runtime.data_dir,
+            logger=self._runtime.logger,
+            trace_id=effective_trace_id,
+            request_source=request_source,
+        )
+        result = patch_config(context, patch_payload)
+        self._runtime.logger.info(
+            "CommandService",
+            "Finished update_config.",
+            trace_id=effective_trace_id,
+            request_source=request_source,
+            model=result.get("model", ""),
+            model_profile=result.get("model_profile", ""),
+            orchestration_mode=result.get("orchestration_mode", ""),
+        )
+        return result

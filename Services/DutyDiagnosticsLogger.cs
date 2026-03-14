@@ -13,6 +13,7 @@ internal static class DutyDiagnosticsLogger
     {
         WriteIndented = false
     };
+    private const string LogFilePrefix = "duty-agent";
 
     private static readonly string SessionId = DateTime.Now.ToString("yyyyMMdd-HHmmss");
     private static string? _configuredLogDirectory;
@@ -54,6 +55,28 @@ internal static class DutyDiagnosticsLogger
     public static void Error(string scope, string message, Exception? ex = null, object? data = null)
     {
         Write("ERROR", scope, message, data, ex);
+    }
+
+    public static string CreateTraceId(string prefix = "trace")
+    {
+        var safePrefix = string.IsNullOrWhiteSpace(prefix) ? "trace" : Sanitize(prefix).ToLowerInvariant();
+        return $"{safePrefix}-{Guid.NewGuid():N}";
+    }
+
+    public static string MaskSecret(string? value)
+    {
+        var normalized = (value ?? string.Empty).Trim();
+        if (normalized.Length == 0)
+        {
+            return "<empty>";
+        }
+
+        if (normalized.Length <= 4)
+        {
+            return "<redacted>";
+        }
+
+        return $"<redacted:{normalized.Length}:{normalized[^4..]}>";
     }
 
     private static void Write(string level, string scope, string message, object? data, Exception? ex)
@@ -106,7 +129,7 @@ internal static class DutyDiagnosticsLogger
                 return;
             }
 
-            _currentLogPath = Path.Combine(ResolveLogDirectory(), $"duty-webview-{DateTime.Now:yyyyMMdd-HHmmss}.log");
+            _currentLogPath = Path.Combine(ResolveLogDirectory(), $"{LogFilePrefix}-{DateTime.Now:yyyyMMdd-HHmmss}.log");
         }
         catch (Exception ex)
         {
@@ -119,7 +142,7 @@ internal static class DutyDiagnosticsLogger
         try
         {
             var cutoff = DateTime.Now.AddDays(-KeepDays);
-            foreach (var file in Directory.EnumerateFiles(ResolveLogDirectory(), "duty-webview-*.log"))
+            foreach (var file in Directory.EnumerateFiles(ResolveLogDirectory(), $"{LogFilePrefix}-*.log"))
             {
                 var info = new FileInfo(file);
                 if (info.LastWriteTime < cutoff)
@@ -136,7 +159,7 @@ internal static class DutyDiagnosticsLogger
 
     private static string BuildDefaultLogPath()
     {
-        return Path.Combine(ResolveLogDirectory(), $"duty-webview-{DateTime.Now:yyyyMMdd}.log");
+        return Path.Combine(ResolveLogDirectory(), $"{LogFilePrefix}-{DateTime.Now:yyyyMMdd}.log");
     }
 
     private static string ResolveLogDirectory()

@@ -263,7 +263,7 @@ public partial class DutyWebSettingsPage : SettingsPageBase
             });
         try
         {
-            var result = await Task.Run(() => _backendService.RunCoreAgentWithMessage(
+            var result = await _backendService.RunCoreAgentAsync(
                 instruction,
                 applyMode,
                 progress: progress =>
@@ -300,7 +300,7 @@ public partial class DutyWebSettingsPage : SettingsPageBase
                             message = TruncateForLog(progressMessage, 220)
                         });
                     Dispatcher.UIThread.Post(() => _ = SendRunStatusAsync(phase, progressMessage));
-                }));
+                });
             var resultMessage = result.Message ?? string.Empty;
             var aiResponse = result.AiResponse ?? string.Empty;
             DutyDiagnosticsLogger.Info("RunCore", "Run finished.",
@@ -454,11 +454,26 @@ public partial class DutyWebSettingsPage : SettingsPageBase
 
     private async Task ApplyConfigAsync(WebConfigDto config)
     {
+        var traceId = DutyDiagnosticsLogger.CreateTraceId("webcfg");
         _backendService.LoadConfig();
         var currentHost = _backendService.Config;
         var previousEnableMcp = currentHost.EnableMcp;
         var previousEnableWebViewDebugLayer = currentHost.EnableWebViewDebugLayer;
-        var currentBackend = await Task.Run(() => _backendService.LoadBackendConfig());
+        var currentBackend = await _backendService.LoadBackendConfigAsync("webview", traceId);
+
+        DutyDiagnosticsLogger.Info("WebConfig", "Applying config from WebView.",
+            new
+            {
+                traceId,
+                apiKey = config.ApiKey is null ? "<unchanged>" : DutyDiagnosticsLogger.MaskSecret(config.ApiKey),
+                baseUrl = TruncateForLog(config.BaseUrl ?? string.Empty, 120),
+                model = TruncateForLog(config.Model ?? string.Empty, 120),
+                modelProfile = config.ModelProfile ?? "<unchanged>",
+                orchestrationMode = config.OrchestrationMode ?? "<unchanged>",
+                multiAgentExecutionMode = config.MultiAgentExecutionMode ?? "<unchanged>",
+                enableMcp = config.EnableMcp,
+                enableWebViewDebugLayer = config.EnableWebViewDebugLayer
+            });
 
         var apiKey = DutyScheduleOrchestrator.ResolveApiKeyInput(config.ApiKey, currentBackend.ApiKey);
         var enableMcp = config.EnableMcp ?? currentHost.EnableMcp;
@@ -491,7 +506,7 @@ public partial class DutyWebSettingsPage : SettingsPageBase
             PerDay = config.PerDay ?? currentBackend.PerDay,
             DutyRule = config.DutyRule ?? currentBackend.DutyRule
         };
-        await Task.Run(() => _backendService.SaveBackendConfig(backendPatch));
+        await _backendService.SaveBackendConfigAsync(backendPatch, "webview", traceId);
 
         currentHost.AutoRunMode = DutyScheduleOrchestrator.NormalizeAutoRunMode(autoRunMode);
         currentHost.AutoRunParameter = (autoRunParameter ?? currentHost.AutoRunParameter).Trim();
@@ -513,13 +528,23 @@ public partial class DutyWebSettingsPage : SettingsPageBase
         {
             RequestRestart();
         }
+
+        DutyDiagnosticsLogger.Info("WebConfig", "WebView config applied.",
+            new
+            {
+                traceId,
+                autoRunMode = currentHost.AutoRunMode,
+                enableMcp = currentHost.EnableMcp,
+                enableWebViewDebugLayer = currentHost.EnableWebViewDebugLayer
+            });
     }
 
     private async Task SendSnapshotAsync()
     {
+        var traceId = DutyDiagnosticsLogger.CreateTraceId("websnap");
         _backendService.LoadConfig();
         var hostConfig = _backendService.Config;
-        var backendSnapshot = await Task.Run(() => _backendService.LoadBackendSnapshot());
+        var backendSnapshot = await _backendService.LoadBackendSnapshotAsync("webview", traceId);
 
         var snapshot = new BridgeSnapshot
         {
@@ -562,6 +587,7 @@ public partial class DutyWebSettingsPage : SettingsPageBase
         DutyDiagnosticsLogger.Info("Bridge", "Sending snapshot to web.",
             new
             {
+                traceId,
                 rosterCount = snapshot.Roster.Count,
                 scheduleCount = snapshot.State.SchedulePool.Count
             });

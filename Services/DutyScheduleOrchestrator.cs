@@ -110,10 +110,129 @@ public class DutyScheduleOrchestrator : IDisposable
     // Proxy load/save for backward compatibility with existing view models
     public void LoadConfig() => _ = _configManager.Config;
     public void SaveConfig() => _configManager.SaveConfig();
-    public DutyBackendConfig LoadBackendConfig() => _ipcService.GetBackendConfigAsync().GetAwaiter().GetResult();
-    public DutyBackendConfig SaveBackendConfig(DutyBackendConfigPatch patch) =>
-        _ipcService.UpdateBackendConfigAsync(patch).GetAwaiter().GetResult();
-    public DutyBackendSnapshot LoadBackendSnapshot() => _ipcService.GetBackendSnapshotAsync().GetAwaiter().GetResult();
+    public async Task<DutyBackendConfig> LoadBackendConfigAsync(
+        string requestSource = "host_settings",
+        string? traceId = null,
+        CancellationToken cancellationToken = default)
+    {
+        var effectiveTraceId = string.IsNullOrWhiteSpace(traceId)
+            ? DutyDiagnosticsLogger.CreateTraceId("cfg-load")
+            : traceId.Trim();
+        var stopwatch = Stopwatch.StartNew();
+        DutyDiagnosticsLogger.Info("SettingsBackend", "Loading backend config.",
+            new { traceId = effectiveTraceId, requestSource });
+        try
+        {
+            var config = await _ipcService.GetBackendConfigAsync(requestSource, effectiveTraceId, cancellationToken);
+            stopwatch.Stop();
+            DutyDiagnosticsLogger.Info("SettingsBackend", "Backend config loaded.",
+                new
+                {
+                    traceId = effectiveTraceId,
+                    requestSource,
+                    durationMs = stopwatch.ElapsedMilliseconds,
+                    baseUrl = config.BaseUrl,
+                    model = config.Model,
+                    modelProfile = config.ModelProfile,
+                    orchestrationMode = config.OrchestrationMode,
+                    multiAgentExecutionMode = config.MultiAgentExecutionMode,
+                    apiKey = DutyDiagnosticsLogger.MaskSecret(config.ApiKey)
+                });
+            return config;
+        }
+        catch (Exception ex)
+        {
+            stopwatch.Stop();
+            DutyDiagnosticsLogger.Error("SettingsBackend", "Failed to load backend config.", ex,
+                new { traceId = effectiveTraceId, requestSource, durationMs = stopwatch.ElapsedMilliseconds });
+            throw;
+        }
+    }
+
+    public async Task<DutyBackendConfig> SaveBackendConfigAsync(
+        DutyBackendConfigPatch patch,
+        string requestSource = "host_settings",
+        string? traceId = null,
+        CancellationToken cancellationToken = default)
+    {
+        var effectiveTraceId = string.IsNullOrWhiteSpace(traceId)
+            ? DutyDiagnosticsLogger.CreateTraceId("cfg-save")
+            : traceId.Trim();
+        var stopwatch = Stopwatch.StartNew();
+        DutyDiagnosticsLogger.Info("SettingsBackend", "Saving backend config.",
+            new
+            {
+                traceId = effectiveTraceId,
+                requestSource,
+                apiKey = patch.ApiKey is null ? "<unchanged>" : DutyDiagnosticsLogger.MaskSecret(patch.ApiKey),
+                baseUrl = patch.BaseUrl ?? "<unchanged>",
+                model = patch.Model ?? "<unchanged>",
+                modelProfile = patch.ModelProfile ?? "<unchanged>",
+                orchestrationMode = patch.OrchestrationMode ?? "<unchanged>",
+                multiAgentExecutionMode = patch.MultiAgentExecutionMode ?? "<unchanged>",
+                dutyRule = patch.DutyRule is null ? "<unchanged>" : TruncateForLog(patch.DutyRule, 160)
+            });
+        try
+        {
+            var config = await _ipcService.UpdateBackendConfigAsync(patch, requestSource, effectiveTraceId, cancellationToken);
+            stopwatch.Stop();
+            DutyDiagnosticsLogger.Info("SettingsBackend", "Backend config saved.",
+                new
+                {
+                    traceId = effectiveTraceId,
+                    requestSource,
+                    durationMs = stopwatch.ElapsedMilliseconds,
+                    baseUrl = config.BaseUrl,
+                    model = config.Model,
+                    modelProfile = config.ModelProfile,
+                    orchestrationMode = config.OrchestrationMode,
+                    multiAgentExecutionMode = config.MultiAgentExecutionMode
+                });
+            return config;
+        }
+        catch (Exception ex)
+        {
+            stopwatch.Stop();
+            DutyDiagnosticsLogger.Error("SettingsBackend", "Failed to save backend config.", ex,
+                new { traceId = effectiveTraceId, requestSource, durationMs = stopwatch.ElapsedMilliseconds });
+            throw;
+        }
+    }
+
+    public async Task<DutyBackendSnapshot> LoadBackendSnapshotAsync(
+        string requestSource = "host_settings",
+        string? traceId = null,
+        CancellationToken cancellationToken = default)
+    {
+        var effectiveTraceId = string.IsNullOrWhiteSpace(traceId)
+            ? DutyDiagnosticsLogger.CreateTraceId("snapshot")
+            : traceId.Trim();
+        var stopwatch = Stopwatch.StartNew();
+        DutyDiagnosticsLogger.Info("SettingsBackend", "Loading backend snapshot.",
+            new { traceId = effectiveTraceId, requestSource });
+        try
+        {
+            var snapshot = await _ipcService.GetBackendSnapshotAsync(requestSource, effectiveTraceId, cancellationToken);
+            stopwatch.Stop();
+            DutyDiagnosticsLogger.Info("SettingsBackend", "Backend snapshot loaded.",
+                new
+                {
+                    traceId = effectiveTraceId,
+                    requestSource,
+                    durationMs = stopwatch.ElapsedMilliseconds,
+                    rosterCount = snapshot.Roster.Count,
+                    scheduleCount = snapshot.State.SchedulePool.Count
+                });
+            return snapshot;
+        }
+        catch (Exception ex)
+        {
+            stopwatch.Stop();
+            DutyDiagnosticsLogger.Error("SettingsBackend", "Failed to load backend snapshot.", ex,
+                new { traceId = effectiveTraceId, requestSource, durationMs = stopwatch.ElapsedMilliseconds });
+            throw;
+        }
+    }
 
     public DutyState LoadState() => _stateManager.LoadState();
     public void SaveState(DutyState state) => _stateManager.SaveState(state);
@@ -175,12 +294,6 @@ public class DutyScheduleOrchestrator : IDisposable
         }
     }
 
-    public string GetApiKeyMaskForUi()
-    {
-        var backendConfig = LoadBackendConfig();
-        return string.IsNullOrWhiteSpace(backendConfig.ApiKey) ? string.Empty : ApiKeyMask;
-    }
-
     public static string ResolveApiKeyInput(string? incomingApiKey, string existingApiKey)
     {
         if (incomingApiKey is null) return existingApiKey;
@@ -188,6 +301,12 @@ public class DutyScheduleOrchestrator : IDisposable
         if (trimmed.Length == 0) return string.Empty;
         if (string.Equals(trimmed, ApiKeyMask, StringComparison.Ordinal)) return existingApiKey;
         return trimmed;
+    }
+
+    private static string TruncateForLog(string? value, int maxLength)
+    {
+        var normalized = (value ?? string.Empty).Replace('\r', ' ').Replace('\n', ' ').Trim();
+        return normalized.Length <= maxLength ? normalized : normalized[..maxLength];
     }
 
     public EngineState EngineStatus => _ipcService.State;

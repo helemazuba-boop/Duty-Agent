@@ -15,9 +15,9 @@ namespace DutyAgent.Services;
 public interface IPythonIpcService: IDisposable
 {
     Task<CoreRunResult> RunScheduleAsync(object requestPayload, Action<CoreRunProgress>? progressCallback, CancellationToken cancellationToken = default);
-    Task<DutyBackendConfig> GetBackendConfigAsync(CancellationToken cancellationToken = default);
-    Task<DutyBackendConfig> UpdateBackendConfigAsync(DutyBackendConfigPatch patch, CancellationToken cancellationToken = default);
-    Task<DutyBackendSnapshot> GetBackendSnapshotAsync(CancellationToken cancellationToken = default);
+    Task<DutyBackendConfig> GetBackendConfigAsync(string requestSource = "host_settings", string? traceId = null, CancellationToken cancellationToken = default);
+    Task<DutyBackendConfig> UpdateBackendConfigAsync(DutyBackendConfigPatch patch, string requestSource = "host_settings", string? traceId = null, CancellationToken cancellationToken = default);
+    Task<DutyBackendSnapshot> GetBackendSnapshotAsync(string requestSource = "host_settings", string? traceId = null, CancellationToken cancellationToken = default);
     Task EnsureReadyAsync(CancellationToken cancellationToken = default);
     Task RestartEngineAsync();
     Task StopAsync();
@@ -46,6 +46,8 @@ public class DutyPythonIpcService : IPythonIpcService
     private bool _disposed;
     private readonly StringBuilder _errorBuffer = new();
     private const int EngineStartupTimeoutSeconds = 15;
+    private const string TraceHeaderName = "X-Duty-Trace-Id";
+    private const string RequestSourceHeaderName = "X-Duty-Request-Source";
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         PropertyNameCaseInsensitive = true
@@ -388,26 +390,60 @@ public class DutyPythonIpcService : IPythonIpcService
         }
     }
 
-    public async Task<DutyBackendConfig> GetBackendConfigAsync(CancellationToken cancellationToken = default)
+    public async Task<DutyBackendConfig> GetBackendConfigAsync(
+        string requestSource = "host_settings",
+        string? traceId = null,
+        CancellationToken cancellationToken = default)
     {
-        return await SendJsonAsync<DutyBackendConfig>(HttpMethod.Get, "/api/v1/config", null, cancellationToken);
+        return await SendJsonAsync<DutyBackendConfig>(HttpMethod.Get, "/api/v1/config", null, requestSource, traceId, cancellationToken);
     }
 
-    public async Task<DutyBackendConfig> UpdateBackendConfigAsync(DutyBackendConfigPatch patch, CancellationToken cancellationToken = default)
+    public async Task<DutyBackendConfig> UpdateBackendConfigAsync(
+        DutyBackendConfigPatch patch,
+        string requestSource = "host_settings",
+        string? traceId = null,
+        CancellationToken cancellationToken = default)
     {
-        return await SendJsonAsync<DutyBackendConfig>(HttpMethod.Patch, "/api/v1/config", patch, cancellationToken);
+        return await SendJsonAsync<DutyBackendConfig>(HttpMethod.Patch, "/api/v1/config", patch, requestSource, traceId, cancellationToken);
     }
 
-    public async Task<DutyBackendSnapshot> GetBackendSnapshotAsync(CancellationToken cancellationToken = default)
+    public async Task<DutyBackendSnapshot> GetBackendSnapshotAsync(
+        string requestSource = "host_settings",
+        string? traceId = null,
+        CancellationToken cancellationToken = default)
     {
-        return await SendJsonAsync<DutyBackendSnapshot>(HttpMethod.Get, "/api/v1/snapshot", null, cancellationToken);
+        return await SendJsonAsync<DutyBackendSnapshot>(HttpMethod.Get, "/api/v1/snapshot", null, requestSource, traceId, cancellationToken);
     }
 
-    private async Task<T> SendJsonAsync<T>(HttpMethod method, string relativePath, object? payload, CancellationToken cancellationToken)
+    private async Task<T> SendJsonAsync<T>(
+        HttpMethod method,
+        string relativePath,
+        object? payload,
+        string requestSource,
+        string? traceId,
+        CancellationToken cancellationToken)
     {
+        var effectiveTraceId = string.IsNullOrWhiteSpace(traceId)
+            ? DutyDiagnosticsLogger.CreateTraceId("backend")
+            : traceId.Trim();
+        var effectiveRequestSource = string.IsNullOrWhiteSpace(requestSource) ? "host_settings" : requestSource.Trim();
+        var stopwatch = Stopwatch.StartNew();
+
+        DutyDiagnosticsLogger.Info("BackendConfigHttp", "Sending backend HTTP request.",
+            new
+            {
+                traceId = effectiveTraceId,
+                requestSource = effectiveRequestSource,
+                method = method.Method,
+                relativePath,
+                payload = SummarizePayload(payload)
+            });
+
         await EnsureReadyAsync(cancellationToken);
 
         using var request = new HttpRequestMessage(method, $"http://127.0.0.1:{_serverPort}{relativePath}");
+        request.Headers.TryAddWithoutValidation(TraceHeaderName, effectiveTraceId);
+        request.Headers.TryAddWithoutValidation(RequestSourceHeaderName, effectiveRequestSource);
         if (payload != null)
         {
             request.Content = new StringContent(
@@ -416,17 +452,93 @@ public class DutyPythonIpcService : IPythonIpcService
                 "application/json");
         }
 
-        using var response = await _httpClient.SendAsync(request, cancellationToken);
-        var responseText = await response.Content.ReadAsStringAsync(cancellationToken);
-        response.EnsureSuccessStatusCode();
-
-        var parsed = JsonSerializer.Deserialize<T>(responseText, JsonOptions);
-        if (parsed == null)
+        try
         {
-            throw new InvalidOperationException($"Failed to parse backend response for {relativePath}.");
-        }
+            using var response = await _httpClient.SendAsync(request, cancellationToken);
+            var responseText = await response.Content.ReadAsStringAsync(cancellationToken);
+            stopwatch.Stop();
 
-        return parsed;
+            if (!response.IsSuccessStatusCode)
+            {
+                DutyDiagnosticsLogger.Warn("BackendConfigHttp", "Backend HTTP request failed.",
+                    new
+                    {
+                        traceId = effectiveTraceId,
+                        requestSource = effectiveRequestSource,
+                        method = method.Method,
+                        relativePath,
+                        statusCode = (int)response.StatusCode,
+                        durationMs = stopwatch.ElapsedMilliseconds,
+                        responsePreview = TruncateForLog(responseText, 320)
+                    });
+                response.EnsureSuccessStatusCode();
+            }
+
+            var parsed = JsonSerializer.Deserialize<T>(responseText, JsonOptions);
+            if (parsed == null)
+            {
+                throw new InvalidOperationException($"Failed to parse backend response for {relativePath}.");
+            }
+
+            DutyDiagnosticsLogger.Info("BackendConfigHttp", "Backend HTTP request completed.",
+                new
+                {
+                    traceId = effectiveTraceId,
+                    requestSource = effectiveRequestSource,
+                    method = method.Method,
+                    relativePath,
+                    statusCode = (int)response.StatusCode,
+                    durationMs = stopwatch.ElapsedMilliseconds,
+                    responseLength = responseText.Length
+                });
+
+            return parsed;
+        }
+        catch (Exception ex)
+        {
+            stopwatch.Stop();
+            DutyDiagnosticsLogger.Error("BackendConfigHttp", "Backend HTTP request threw exception.", ex,
+                new
+                {
+                    traceId = effectiveTraceId,
+                    requestSource = effectiveRequestSource,
+                    method = method.Method,
+                    relativePath,
+                    durationMs = stopwatch.ElapsedMilliseconds,
+                    payload = SummarizePayload(payload)
+                });
+            throw;
+        }
+    }
+
+    private static object? SummarizePayload(object? payload)
+    {
+        return payload switch
+        {
+            null => null,
+            DutyBackendConfigPatch patch => new
+            {
+                apiKey = patch.ApiKey is null ? "<unchanged>" : DutyDiagnosticsLogger.MaskSecret(patch.ApiKey),
+                baseUrl = patch.BaseUrl is null ? "<unchanged>" : TruncateForLog(patch.BaseUrl, 120),
+                model = patch.Model is null ? "<unchanged>" : TruncateForLog(patch.Model, 120),
+                modelProfile = patch.ModelProfile ?? "<unchanged>",
+                orchestrationMode = patch.OrchestrationMode ?? "<unchanged>",
+                multiAgentExecutionMode = patch.MultiAgentExecutionMode ?? "<unchanged>",
+                providerHint = patch.ProviderHint is null ? "<unchanged>" : TruncateForLog(patch.ProviderHint, 120),
+                perDay = patch.PerDay?.ToString() ?? "<unchanged>",
+                dutyRule = patch.DutyRule is null ? "<unchanged>" : TruncateForLog(patch.DutyRule, 160)
+            },
+            _ => new
+            {
+                type = payload.GetType().Name
+            }
+        };
+    }
+
+    private static string TruncateForLog(string? value, int maxLength)
+    {
+        var normalized = (value ?? string.Empty).Replace('\r', ' ').Replace('\n', ' ').Trim();
+        return normalized.Length <= maxLength ? normalized : normalized[..maxLength];
     }
 
     private void ShutdownPythonServer()

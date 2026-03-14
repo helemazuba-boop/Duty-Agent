@@ -27,20 +27,63 @@ class QueryService:
             "current_runtime_mode": "dynamic_dispatch",
         }
 
-    def get_config(self) -> dict:
-        context = Context(self._runtime.data_dir)
-        return load_config(context)
+    def get_config(self, trace_id: str | None = None, request_source: str = "api") -> dict:
+        effective_trace_id = trace_id or self._runtime.new_trace_id()
+        self._runtime.logger.info(
+            "QueryService",
+            "Starting get_config.",
+            trace_id=effective_trace_id,
+            request_source=request_source,
+        )
+        context = Context(
+            self._runtime.data_dir,
+            logger=self._runtime.logger,
+            trace_id=effective_trace_id,
+            request_source=request_source,
+        )
+        config = load_config(context)
+        self._runtime.logger.info(
+            "QueryService",
+            "Finished get_config.",
+            trace_id=effective_trace_id,
+            request_source=request_source,
+            model=config.get("model", ""),
+            model_profile=config.get("model_profile", ""),
+            orchestration_mode=config.get("orchestration_mode", ""),
+        )
+        return config
 
-    def get_snapshot(self) -> dict:
-        context = Context(self._runtime.data_dir)
+    def get_snapshot(self, trace_id: str | None = None, request_source: str = "api") -> dict:
+        effective_trace_id = trace_id or self._runtime.new_trace_id()
+        self._runtime.logger.info(
+            "QueryService",
+            "Starting get_snapshot.",
+            trace_id=effective_trace_id,
+            request_source=request_source,
+        )
+        context = Context(
+            self._runtime.data_dir,
+            logger=self._runtime.logger,
+            trace_id=effective_trace_id,
+            request_source=request_source,
+        )
         roster = []
         try:
             roster = load_roster_entries(context.paths["roster"])
         except (FileNotFoundError, ValueError):
             roster = []
 
-        return {
+        snapshot = {
             "config": load_config(context),
             "roster": roster,
             "state": load_state(context.paths["state"]),
         }
+        self._runtime.logger.info(
+            "QueryService",
+            "Finished get_snapshot.",
+            trace_id=effective_trace_id,
+            request_source=request_source,
+            roster_count=len(snapshot["roster"]),
+            schedule_count=len(snapshot["state"].get("schedule_pool", [])),
+        )
+        return snapshot

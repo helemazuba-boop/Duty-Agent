@@ -177,11 +177,11 @@ public sealed class DutyLocalPreviewHostedService : IHostedService, IDisposable
                 continue;
             }
 
-            _ = Task.Run(() => HandleRequest(context));
+            _ = Task.Run(() => HandleRequestAsync(context));
         }
     }
 
-    private void HandleRequest(HttpListenerContext context)
+    private async Task HandleRequestAsync(HttpListenerContext context)
     {
         try
         {
@@ -245,7 +245,7 @@ public sealed class DutyLocalPreviewHostedService : IHostedService, IDisposable
                     return;
                 }
 
-                HandleOverwriteScheduleRequest(context);
+                await HandleOverwriteScheduleRequestAsync(context);
                 return;
             }
 
@@ -258,7 +258,7 @@ public sealed class DutyLocalPreviewHostedService : IHostedService, IDisposable
         }
     }
 
-    private void HandleOverwriteScheduleRequest(HttpListenerContext context)
+    private async Task HandleOverwriteScheduleRequestAsync(HttpListenerContext context)
     {
         if (!string.Equals(context.Request.HttpMethod, "POST", StringComparison.OrdinalIgnoreCase))
         {
@@ -279,7 +279,17 @@ public sealed class DutyLocalPreviewHostedService : IHostedService, IDisposable
         }
 
         var instruction = (request?.Instruction ?? string.Empty).Trim();
-        var responsePayload = ExecuteOverwriteSchedule(instruction, request?.Config, out var statusCode);
+        var responsePayload = await ExecuteOverwriteScheduleAsync(instruction, request?.Config);
+        var statusCode = responsePayload.Code switch
+        {
+            "ok" => 200,
+            "busy" => 409,
+            "validation" => 400,
+            "config" => 400,
+            "invalid_config" => 400,
+            _ when responsePayload.Success => 200,
+            _ => 500
+        };
 
         DutyDiagnosticsLogger.Info("WebPreview", "Overwrite API request handled.",
             new
@@ -293,15 +303,13 @@ public sealed class DutyLocalPreviewHostedService : IHostedService, IDisposable
         WriteJson(context.Response, responsePayload, statusCode);
     }
 
-    private OverwriteScheduleResponse ExecuteOverwriteSchedule(
+    private async Task<OverwriteScheduleResponse> ExecuteOverwriteScheduleAsync(
         string instruction,
-        OverwriteScheduleConfig? config,
-        out int statusCode)
+        OverwriteScheduleConfig? config)
     {
         var normalizedInstruction = (instruction ?? string.Empty).Trim();
         if (normalizedInstruction.Length == 0)
         {
-            statusCode = 400;
             return new OverwriteScheduleResponse
             {
                 Success = false,
@@ -319,12 +327,11 @@ public sealed class DutyLocalPreviewHostedService : IHostedService, IDisposable
         {
             if (config != null)
             {
-                ApplyOverwriteConfig(config);
+                await ApplyOverwriteConfigAsync(config);
             }
         }
         catch (Exception ex)
         {
-            statusCode = 400;
             return new OverwriteScheduleResponse
             {
                 Success = false,
@@ -339,7 +346,7 @@ public sealed class DutyLocalPreviewHostedService : IHostedService, IDisposable
         }
 
         var startedAt = DateTimeOffset.Now;
-        var result = _backendService.RunCoreAgentWithMessage(normalizedInstruction, applyMode: "replace_all");
+        var result = await _backendService.RunCoreAgentAsync(normalizedInstruction, applyMode: "replace_all");
         var finishedAt = DateTimeOffset.Now;
 
         var responsePayload = new OverwriteScheduleResponse
@@ -357,16 +364,6 @@ public sealed class DutyLocalPreviewHostedService : IHostedService, IDisposable
             McpUrl = McpUrl,
             State = _backendService.LoadState()
         };
-
-        statusCode = result.Success
-            ? 200
-            : result.Code switch
-            {
-                "busy" => 409,
-                "validation" => 400,
-                "config" => 400,
-                _ => 500
-            };
 
         return responsePayload;
     }
@@ -504,106 +501,6 @@ public sealed class DutyLocalPreviewHostedService : IHostedService, IDisposable
         return string.Equals(methodElement.GetString(), "initialize", StringComparison.Ordinal);
     }
 
-    private List<object> ProcessJsonRpcRootForHttp(JsonElement root)
-    {
-        var responses = new List<object>();
-        if (root.ValueKind == JsonValueKind.Object)
-        {
-            var single = ProcessSingleJsonRpcForHttp(root);
-            if (single != null)
-            {
-                responses.Add(single);
-            }
-
-            return responses;
-        }
-
-        if (root.ValueKind != JsonValueKind.Array)
-        {
-            responses.Add(BuildJsonRpcErrorResponse(null, -32600, "Invalid Request."));
-            return responses;
-        }
-
-        var hasAny = false;
-        foreach (var item in root.EnumerateArray())
-        {
-            hasAny = true;
-            var response = ProcessSingleJsonRpcForHttp(item);
-            if (response != null)
-            {
-                responses.Add(response);
-            }
-        }
-
-        if (!hasAny)
-        {
-            responses.Add(BuildJsonRpcErrorResponse(null, -32600, "Invalid Request."));
-        }
-
-        return responses;
-    }
-
-    private object? ProcessSingleJsonRpcForHttp(JsonElement requestElement)
-    {
-        JsonElement? rpcId = null;
-        if (requestElement.TryGetProperty("id", out var idElement))
-        {
-            rpcId = idElement.Clone();
-        }
-
-        var hasId = rpcId != null;
-        if (requestElement.ValueKind != JsonValueKind.Object)
-        {
-            return hasId ? BuildJsonRpcErrorResponse(rpcId, -32600, "Invalid Request.") : null;
-        }
-
-        if (!requestElement.TryGetProperty("jsonrpc", out var jsonRpcElement) ||
-            jsonRpcElement.ValueKind != JsonValueKind.String ||
-            !string.Equals(jsonRpcElement.GetString(), "2.0", StringComparison.Ordinal))
-        {
-            return hasId
-                ? BuildJsonRpcErrorResponse(rpcId, -32600, "Invalid Request: `jsonrpc` must be \"2.0\".")
-                : null;
-        }
-
-        if (!requestElement.TryGetProperty("method", out var methodElement) ||
-            methodElement.ValueKind != JsonValueKind.String)
-        {
-            return hasId ? BuildJsonRpcErrorResponse(rpcId, -32600, "Invalid Request: missing method.") : null;
-        }
-
-        var method = methodElement.GetString() ?? string.Empty;
-        switch (method)
-        {
-            case "initialize":
-                return hasId ? BuildJsonRpcResultResponse(rpcId, BuildInitializeResult()) : null;
-            case "notifications/initialized":
-                return null;
-            case "tools/list":
-                return hasId ? BuildJsonRpcResultResponse(rpcId, BuildToolsListResult()) : null;
-            case "tools/call":
-            {
-                var callHandled = TryHandleToolsCall(requestElement, out var callResult, out var callErrorCode,
-                    out var callErrorMessage, out var callErrorData);
-                if (!hasId)
-                {
-                    return null;
-                }
-
-                if (!callHandled)
-                {
-                    return BuildJsonRpcErrorResponse(rpcId, callErrorCode, callErrorMessage, callErrorData);
-                }
-
-                return BuildJsonRpcResultResponse(rpcId, callResult);
-            }
-            case "ping":
-                return hasId ? BuildJsonRpcResultResponse(rpcId, new { }) : null;
-            default:
-                return hasId ? BuildJsonRpcErrorResponse(rpcId, -32601, $"Method not found: {method}") : null;
-        }
-    }
-
     private object BuildJsonRpcResultResponse(JsonElement? rpcId, object? result)
     {
         return new
@@ -707,15 +604,19 @@ public sealed class DutyLocalPreviewHostedService : IHostedService, IDisposable
                 return;
             case "tools/call":
             {
-                var callHandled = TryHandleToolsCall(requestElement, out var callResult, out var callErrorCode,
-                    out var callErrorMessage, out var callErrorData);
-                if (!callHandled)
+                var toolCall = await TryHandleToolsCallAsync(requestElement);
+                if (!toolCall.Handled)
                 {
-                    await SendJsonRpcErrorIfNeededAsync(session, rpcId, callErrorCode, callErrorMessage, callErrorData);
+                    await SendJsonRpcErrorIfNeededAsync(
+                        session,
+                        rpcId,
+                        toolCall.ErrorCode,
+                        toolCall.ErrorMessage,
+                        toolCall.ErrorData);
                     return;
                 }
 
-                await SendJsonRpcResultIfNeededAsync(session, rpcId, callResult);
+                await SendJsonRpcResultIfNeededAsync(session, rpcId, toolCall.Result);
                 return;
             }
             case "ping":
@@ -727,29 +628,29 @@ public sealed class DutyLocalPreviewHostedService : IHostedService, IDisposable
         }
     }
 
-    private bool TryHandleToolsCall(
-        JsonElement requestElement,
-        out object? result,
-        out int errorCode,
-        out string errorMessage,
-        out object? errorData)
+    private readonly record struct ToolCallDispatchResult(
+        bool Handled,
+        object? Result,
+        int ErrorCode,
+        string ErrorMessage,
+        object? ErrorData)
     {
-        result = null;
-        errorCode = -32602;
-        errorMessage = "Invalid params.";
-        errorData = null;
+        public static ToolCallDispatchResult Success(object? result) => new(true, result, 0, string.Empty, null);
+        public static ToolCallDispatchResult Failure(int errorCode, string errorMessage, object? errorData = null) =>
+            new(false, null, errorCode, errorMessage, errorData);
+    }
 
+    private async Task<ToolCallDispatchResult> TryHandleToolsCallAsync(JsonElement requestElement)
+    {
         if (!requestElement.TryGetProperty("params", out var paramsElement) ||
             paramsElement.ValueKind != JsonValueKind.Object)
         {
-            errorMessage = "Invalid params: missing `params` object.";
-            return false;
+            return ToolCallDispatchResult.Failure(-32602, "Invalid params: missing `params` object.");
         }
 
         if (!paramsElement.TryGetProperty("name", out var nameElement) || nameElement.ValueKind != JsonValueKind.String)
         {
-            errorMessage = "Invalid params: missing tool `name`.";
-            return false;
+            return ToolCallDispatchResult.Failure(-32602, "Invalid params: missing tool `name`.");
         }
 
         var toolName = (nameElement.GetString() ?? string.Empty).Trim();
@@ -758,8 +659,7 @@ public sealed class DutyLocalPreviewHostedService : IHostedService, IDisposable
         {
             if (rawArguments.ValueKind is not JsonValueKind.Object and not JsonValueKind.Null)
             {
-                errorMessage = "Invalid params: `arguments` must be an object.";
-                return false;
+                return ToolCallDispatchResult.Failure(-32602, "Invalid params: `arguments` must be an object.");
             }
 
             if (rawArguments.ValueKind == JsonValueKind.Object)
@@ -770,47 +670,29 @@ public sealed class DutyLocalPreviewHostedService : IHostedService, IDisposable
 
         return toolName switch
         {
-            McpToolScheduleOverwrite => TryHandleScheduleOverwriteTool(argumentsElement, out result, out errorCode,
-                out errorMessage, out errorData),
-            McpToolRosterImportStudents => TryHandleRosterImportStudentsTool(argumentsElement, out result, out errorCode,
-                out errorMessage, out errorData),
-            McpToolConfigUpdateSettings => TryHandleConfigUpdateSettingsTool(argumentsElement, out result, out errorCode,
-                out errorMessage, out errorData),
-            _ => BuildToolNotFound(toolName, out errorCode, out errorMessage)
+            McpToolScheduleOverwrite => await TryHandleScheduleOverwriteToolAsync(argumentsElement),
+            McpToolRosterImportStudents => TryHandleRosterImportStudentsTool(argumentsElement, out var result, out var errorCode,
+                out var errorMessage, out var errorData)
+                ? ToolCallDispatchResult.Success(result)
+                : ToolCallDispatchResult.Failure(errorCode, errorMessage, errorData),
+            McpToolConfigUpdateSettings => await TryHandleConfigUpdateSettingsToolAsync(argumentsElement),
+            _ => ToolCallDispatchResult.Failure(-32602, $"Tool not found: {toolName}")
         };
     }
 
-    private bool BuildToolNotFound(string toolName, out int errorCode, out string errorMessage)
+    private async Task<ToolCallDispatchResult> TryHandleScheduleOverwriteToolAsync(
+        JsonElement argumentsElement)
     {
-        errorCode = -32602;
-        errorMessage = $"Tool not found: {toolName}";
-        return false;
-    }
-
-    private bool TryHandleScheduleOverwriteTool(
-        JsonElement argumentsElement,
-        out object? result,
-        out int errorCode,
-        out string errorMessage,
-        out object? errorData)
-    {
-        result = null;
-        errorCode = -32602;
-        errorMessage = "Invalid params.";
-        errorData = null;
-
         if (!TryGetToolArgument(argumentsElement, "instruction", out var instructionElement) ||
             instructionElement.ValueKind != JsonValueKind.String)
         {
-            errorMessage = "Invalid params: `instruction` is required.";
-            return false;
+            return ToolCallDispatchResult.Failure(-32602, "Invalid params: `instruction` is required.");
         }
 
         var instruction = (instructionElement.GetString() ?? string.Empty).Trim();
         if (instruction.Length == 0)
         {
-            errorMessage = "Invalid params: `instruction` is required.";
-            return false;
+            return ToolCallDispatchResult.Failure(-32602, "Invalid params: `instruction` is required.");
         }
 
         OverwriteScheduleConfig? config = null;
@@ -819,8 +701,7 @@ public sealed class DutyLocalPreviewHostedService : IHostedService, IDisposable
         {
             if (configElement.ValueKind != JsonValueKind.Object)
             {
-                errorMessage = "Invalid params: `config` must be an object when provided.";
-                return false;
+                return ToolCallDispatchResult.Failure(-32602, "Invalid params: `config` must be an object when provided.");
             }
 
             try
@@ -829,14 +710,26 @@ public sealed class DutyLocalPreviewHostedService : IHostedService, IDisposable
             }
             catch (Exception ex)
             {
-                errorMessage = "Invalid params: `config` cannot be parsed.";
-                errorData = new { message = ex.Message };
-                return false;
+                return ToolCallDispatchResult.Failure(
+                    -32602,
+                    "Invalid params: `config` cannot be parsed.",
+                    new { message = ex.Message });
             }
         }
 
-        var overwriteResult = ExecuteOverwriteSchedule(instruction, config, out var statusCode);
-        result = new
+        var overwriteResult = await ExecuteOverwriteScheduleAsync(instruction, config);
+        var statusCode = overwriteResult.Code switch
+        {
+            "ok" => 200,
+            "busy" => 409,
+            "validation" => 400,
+            "config" => 400,
+            "invalid_config" => 400,
+            _ when overwriteResult.Success => 200,
+            _ => 500
+        };
+
+        return ToolCallDispatchResult.Success(new
         {
             content = new[]
             {
@@ -862,8 +755,7 @@ public sealed class DutyLocalPreviewHostedService : IHostedService, IDisposable
                 api_overwrite_url = overwriteResult.ApiOverwriteUrl,
                 mcp_url = overwriteResult.McpUrl
             }
-        };
-        return true;
+        });
     }
 
     private bool TryHandleRosterImportStudentsTool(
@@ -989,18 +881,9 @@ public sealed class DutyLocalPreviewHostedService : IHostedService, IDisposable
         return true;
     }
 
-    private bool TryHandleConfigUpdateSettingsTool(
-        JsonElement argumentsElement,
-        out object? result,
-        out int errorCode,
-        out string errorMessage,
-        out object? errorData)
+    private async Task<ToolCallDispatchResult> TryHandleConfigUpdateSettingsToolAsync(
+        JsonElement argumentsElement)
     {
-        result = null;
-        errorCode = -32602;
-        errorMessage = "Invalid params.";
-        errorData = null;
-
         var supportedFields = new[]
         {
             "api_key",
@@ -1026,122 +909,102 @@ public sealed class DutyLocalPreviewHostedService : IHostedService, IDisposable
         };
         if (!HasAnyToolArgument(argumentsElement, supportedFields))
         {
-            errorMessage = "Invalid params: no supported settings provided.";
-            return false;
+            return ToolCallDispatchResult.Failure(-32602, "Invalid params: no supported settings provided.");
         }
 
         if (!TryReadOptionalStringArgument(argumentsElement, "api_key", out var apiKey, out var parseError))
         {
-            errorMessage = parseError ?? "Invalid params.";
-            return false;
+            return ToolCallDispatchResult.Failure(-32602, parseError ?? "Invalid params.");
         }
         if (!TryReadOptionalStringArgument(argumentsElement, "base_url", out var baseUrl, out parseError))
         {
-            errorMessage = parseError ?? "Invalid params.";
-            return false;
+            return ToolCallDispatchResult.Failure(-32602, parseError ?? "Invalid params.");
         }
         if (!TryReadOptionalStringArgument(argumentsElement, "model", out var model, out parseError))
         {
-            errorMessage = parseError ?? "Invalid params.";
-            return false;
+            return ToolCallDispatchResult.Failure(-32602, parseError ?? "Invalid params.");
         }
         if (!TryReadOptionalStringArgument(argumentsElement, "model_profile", out var modelProfile, out parseError))
         {
-            errorMessage = parseError ?? "Invalid params.";
-            return false;
+            return ToolCallDispatchResult.Failure(-32602, parseError ?? "Invalid params.");
         }
         if (!TryReadOptionalStringArgument(argumentsElement, "orchestration_mode", out var orchestrationMode, out parseError))
         {
-            errorMessage = parseError ?? "Invalid params.";
-            return false;
+            return ToolCallDispatchResult.Failure(-32602, parseError ?? "Invalid params.");
         }
         if (!TryReadOptionalStringArgument(argumentsElement, "multi_agent_execution_mode", out var multiAgentExecutionMode, out parseError))
         {
-            errorMessage = parseError ?? "Invalid params.";
-            return false;
+            return ToolCallDispatchResult.Failure(-32602, parseError ?? "Invalid params.");
         }
         if (!TryReadOptionalStringArgument(argumentsElement, "provider_hint", out var providerHint, out parseError))
         {
-            errorMessage = parseError ?? "Invalid params.";
-            return false;
+            return ToolCallDispatchResult.Failure(-32602, parseError ?? "Invalid params.");
         }
         if (!TryReadOptionalStringArgument(argumentsElement, "python_path", out var pythonPath, out parseError))
         {
-            errorMessage = parseError ?? "Invalid params.";
-            return false;
+            return ToolCallDispatchResult.Failure(-32602, parseError ?? "Invalid params.");
         }
         if (!TryReadOptionalStringArgument(argumentsElement, "auto_run_mode", out var autoRunMode, out parseError))
         {
-            errorMessage = parseError ?? "Invalid params.";
-            return false;
+            return ToolCallDispatchResult.Failure(-32602, parseError ?? "Invalid params.");
         }
         if (!TryReadOptionalBooleanArgument(argumentsElement, "enable_mcp", out var enableMcp, out parseError))
         {
-            errorMessage = parseError ?? "Invalid params.";
-            return false;
+            return ToolCallDispatchResult.Failure(-32602, parseError ?? "Invalid params.");
         }
         if (!TryReadOptionalBooleanArgument(argumentsElement, "enable_webview_debug_layer",
                 out var enableWebViewDebugLayer, out parseError))
         {
-            errorMessage = parseError ?? "Invalid params.";
-            return false;
+            return ToolCallDispatchResult.Failure(-32602, parseError ?? "Invalid params.");
         }
         if (!TryReadOptionalStringArgument(argumentsElement, "auto_run_parameter", out var autoRunParameter, out parseError))
         {
-            errorMessage = parseError ?? "Invalid params.";
-            return false;
+            return ToolCallDispatchResult.Failure(-32602, parseError ?? "Invalid params.");
         }
         if (!TryReadOptionalStringArgument(argumentsElement, "auto_run_time", out var autoRunTime, out parseError))
         {
-            errorMessage = parseError ?? "Invalid params.";
-            return false;
+            return ToolCallDispatchResult.Failure(-32602, parseError ?? "Invalid params.");
         }
         if (!TryReadOptionalIntArgument(argumentsElement, "per_day", out var perDay, out parseError))
         {
-            errorMessage = parseError ?? "Invalid params.";
-            return false;
+            return ToolCallDispatchResult.Failure(-32602, parseError ?? "Invalid params.");
         }
         if (!TryReadOptionalStringArgument(argumentsElement, "duty_rule", out var dutyRule, out parseError))
         {
-            errorMessage = parseError ?? "Invalid params.";
-            return false;
+            return ToolCallDispatchResult.Failure(-32602, parseError ?? "Invalid params.");
         }
         if (!TryReadOptionalStringArgument(argumentsElement, "component_refresh_time", out var componentRefreshTime,
                 out parseError))
         {
-            errorMessage = parseError ?? "Invalid params.";
-            return false;
+            return ToolCallDispatchResult.Failure(-32602, parseError ?? "Invalid params.");
         }
         if (!TryReadOptionalBooleanArgument(argumentsElement, "auto_run_trigger_notification_enabled",
                 out var autoRunTriggerNotificationEnabled, out parseError))
         {
-            errorMessage = parseError ?? "Invalid params.";
-            return false;
+            return ToolCallDispatchResult.Failure(-32602, parseError ?? "Invalid params.");
         }
         if (!TryReadOptionalIntArgument(argumentsElement, "notification_duration_seconds",
                 out var notificationDurationSeconds, out parseError))
         {
-            errorMessage = parseError ?? "Invalid params.";
-            return false;
+            return ToolCallDispatchResult.Failure(-32602, parseError ?? "Invalid params.");
         }
         if (!TryReadOptionalBooleanArgument(argumentsElement, "duty_reminder_enabled", out var dutyReminderEnabled,
                 out parseError))
         {
-            errorMessage = parseError ?? "Invalid params.";
-            return false;
+            return ToolCallDispatchResult.Failure(-32602, parseError ?? "Invalid params.");
         }
         if (!TryReadStringListArgument(argumentsElement, "duty_reminder_times", required: false, out var dutyReminderTimes,
                 out var listParseError))
         {
-            errorMessage = listParseError;
-            return false;
+            return ToolCallDispatchResult.Failure(-32602, listParseError);
         }
 
         _backendService.LoadConfig();
         var hostConfig = _backendService.Config;
         try
         {
-            var currentBackend = _backendService.LoadBackendConfig();
+            var traceId = DutyDiagnosticsLogger.CreateTraceId("mcp-cfg");
+            var currentBackend = await _backendService.LoadBackendConfigAsync("mcp", traceId);
             var backendPatch = new DutyBackendConfigPatch
             {
                 ApiKey = DutyScheduleOrchestrator.ResolveApiKeyInput(apiKey, currentBackend.ApiKey),
@@ -1160,7 +1023,7 @@ public sealed class DutyLocalPreviewHostedService : IHostedService, IDisposable
                 PerDay = perDay ?? currentBackend.PerDay,
                 DutyRule = dutyRule ?? currentBackend.DutyRule
             };
-            _backendService.SaveBackendConfig(backendPatch);
+            await _backendService.SaveBackendConfigAsync(backendPatch, "mcp", traceId);
 
             hostConfig.AutoRunMode = autoRunMode ?? hostConfig.AutoRunMode;
             hostConfig.AutoRunParameter = autoRunParameter ?? hostConfig.AutoRunParameter;
@@ -1180,14 +1043,13 @@ public sealed class DutyLocalPreviewHostedService : IHostedService, IDisposable
         }
         catch (Exception ex)
         {
-            errorMessage = $"Invalid params: {ex.Message}";
-            return false;
+            return ToolCallDispatchResult.Failure(-32602, $"Invalid params: {ex.Message}");
         }
 
         _backendService.LoadConfig();
         var savedHost = _backendService.Config;
-        var savedBackend = _backendService.LoadBackendConfig();
-        result = new
+        var savedBackend = await _backendService.LoadBackendConfigAsync("mcp");
+        return ToolCallDispatchResult.Success(new
         {
             content = new[]
             {
@@ -1219,8 +1081,7 @@ public sealed class DutyLocalPreviewHostedService : IHostedService, IDisposable
                 duty_reminder_enabled = savedHost.DutyReminderEnabled,
                 duty_reminder_times = _backendService.GetDutyReminderTimes()
             }
-        };
-        return true;
+        });
     }
 
     private static bool TryReadOptionalStringArgument(
@@ -1940,11 +1801,12 @@ public sealed class DutyLocalPreviewHostedService : IHostedService, IDisposable
         session.Dispose();
     }
 
-    private void ApplyOverwriteConfig(OverwriteScheduleConfig config)
+    private async Task ApplyOverwriteConfigAsync(OverwriteScheduleConfig config)
     {
+        var traceId = DutyDiagnosticsLogger.CreateTraceId("overwrite-cfg");
         _backendService.LoadConfig();
         var hostConfig = _backendService.Config;
-        var backendConfig = _backendService.LoadBackendConfig();
+        var backendConfig = await _backendService.LoadBackendConfigAsync("web_preview", traceId);
 
         var patch = new DutyBackendConfigPatch
         {
@@ -1964,7 +1826,7 @@ public sealed class DutyLocalPreviewHostedService : IHostedService, IDisposable
             PerDay = config.PerDay ?? backendConfig.PerDay,
             DutyRule = config.DutyRule ?? backendConfig.DutyRule
         };
-        _backendService.SaveBackendConfig(patch);
+        await _backendService.SaveBackendConfigAsync(patch, "web_preview", traceId);
 
         hostConfig.PythonPath = config.PythonPath ?? hostConfig.PythonPath;
     }

@@ -9,6 +9,7 @@ import time
 from datetime import date, datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
+from diagnostics import mask_secret, truncate_for_log
 
 DEFAULT_PER_DAY = 2
 DEFAULT_BASE_URL = "https://integrate.api.nvidia.com/v1"
@@ -21,7 +22,7 @@ STATE_LOCK_RETRY_INTERVAL_SECONDS = 0.2
 
 
 class Context:
-    def __init__(self, data_dir: Path):
+    def __init__(self, data_dir: Path, logger=None, trace_id: str = "", request_source: str = ""):
         self.data_dir = data_dir
         self.paths = {
             "config": data_dir / "config.json",
@@ -31,6 +32,21 @@ class Context:
             "result": data_dir / "ipc_result.json",
         }
         self.config: dict = {}
+        self.logger = logger
+        self.trace_id = trace_id
+        self.request_source = request_source
+
+
+def _log(ctx: Context, level: str, scope: str, message: str, **data) -> None:
+    logger = getattr(ctx, "logger", None)
+    if logger is None:
+        return
+    if level == "INFO":
+        logger.info(scope, message, trace_id=ctx.trace_id, request_source=ctx.request_source, **data)
+    elif level == "WARN":
+        logger.warn(scope, message, trace_id=ctx.trace_id, request_source=ctx.request_source, **data)
+    else:
+        logger.error(scope, message, trace_id=ctx.trace_id, request_source=ctx.request_source, **data)
 
 
 def normalize_model_profile(value) -> str:
@@ -141,25 +157,52 @@ def release_state_file_lock(lock_path: Path) -> None:
 
 def load_config(ctx: Context) -> dict:
     config_path = ctx.paths["config"]
+    _log(ctx, "INFO", "ConfigStore", "Loading backend config.", config_path=str(config_path))
     if not config_path.exists():
         config = create_default_config()
         save_json_atomic(config_path, config)
+        _log(ctx, "INFO", "ConfigStore", "Config file missing; created default backend config.",
+             config_path=str(config_path))
         return config
     with open(config_path, "r", encoding="utf-8-sig") as file:
         raw = json.load(file)
     config = normalize_config(raw)
     if raw != config:
         save_json_atomic(config_path, config)
+        _log(ctx, "INFO", "ConfigStore", "Normalized backend config and rewrote config file.",
+             config_path=str(config_path),
+             model=config.get("model", ""),
+             model_profile=config.get("model_profile", ""),
+             orchestration_mode=config.get("orchestration_mode", ""))
+    else:
+        _log(ctx, "INFO", "ConfigStore", "Loaded backend config.",
+             config_path=str(config_path),
+             model=config.get("model", ""),
+             model_profile=config.get("model_profile", ""),
+             orchestration_mode=config.get("orchestration_mode", ""))
     return config
 
 
 def save_config(ctx: Context, config: dict) -> dict:
     normalized = normalize_config(config)
     save_json_atomic(ctx.paths["config"], normalized)
+    _log(ctx, "INFO", "ConfigStore", "Saved backend config.",
+         config_path=str(ctx.paths["config"]),
+         base_url=normalized.get("base_url", ""),
+         model=normalized.get("model", ""),
+         model_profile=normalized.get("model_profile", ""),
+         orchestration_mode=normalized.get("orchestration_mode", ""),
+         multi_agent_execution_mode=normalized.get("multi_agent_execution_mode", ""))
     return normalized
 
 
 def patch_config(ctx: Context, patch: dict) -> dict:
+    patch_keys = sorted([str(key) for key, value in (patch or {}).items() if value is not None])
+    _log(ctx, "INFO", "ConfigStore", "Patching backend config.",
+         config_path=str(ctx.paths["config"]),
+         patch_keys=patch_keys,
+         api_key=mask_secret(str((patch or {}).get("api_key", "") or "")) if "api_key" in (patch or {}) else "<unchanged>",
+         duty_rule=truncate_for_log(str((patch or {}).get("duty_rule", "") or ""), 160) if "duty_rule" in (patch or {}) else "<unchanged>")
     current = load_config(ctx)
     for key, value in (patch or {}).items():
         if value is None:
