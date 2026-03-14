@@ -143,7 +143,7 @@ internal sealed class DutyMainSettingsBackendModule
             return null;
         }
 
-        var normalizedPlanPresets = NormalizePlanPresets(values.PlanPresets, currentBackend);
+        var normalizedPlanPresets = NormalizePlanPresets(values.PlanPresets, currentBackend, syncSelectedPlanFromCurrentBackend: false);
         var normalizedSelectedPlanId = NormalizeSelectedPlanId(values.SelectedPlanId, normalizedPlanPresets, currentBackend);
         var normalizedDutyRule = values.DutyRule ?? string.Empty;
 
@@ -196,7 +196,10 @@ internal sealed class DutyMainSettingsBackendModule
         };
     }
 
-    public List<DutyPlanPreset> NormalizePlanPresets(IEnumerable<DutyPlanPreset>? planPresets, DutyBackendConfig? currentBackend = null)
+    public List<DutyPlanPreset> NormalizePlanPresets(
+        IEnumerable<DutyPlanPreset>? planPresets,
+        DutyBackendConfig? currentBackend = null,
+        bool syncSelectedPlanFromCurrentBackend = true)
     {
         var seed = ClonePlanPresets(planPresets);
         if (seed.Count == 0 && currentBackend != null)
@@ -249,7 +252,7 @@ internal sealed class DutyMainSettingsBackendModule
             index++;
         }
 
-        if (currentBackend != null && normalized.Count > 0)
+        if (syncSelectedPlanFromCurrentBackend && currentBackend != null && normalized.Count > 0)
         {
             var selectedPlanId = NormalizeSelectedPlanId(currentBackend.SelectedPlanId, normalized);
             var selectedPlan = normalized.FirstOrDefault(plan => string.Equals(plan.Id, selectedPlanId, StringComparison.Ordinal));
