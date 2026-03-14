@@ -22,16 +22,11 @@ namespace DutyAgent.Views.SettingPages;
 [SettingsPageInfo("duty-agent.settings", "Duty-Agent", "\uE31E", "\uE31E")]
 public partial class DutyMainSettingsPage : SettingsPageBase
 {
-    private enum BackendConfigLoadState
-    {
-        NotLoaded,
-        Loaded,
-        LoadFailed
-    }
-
     private DutyScheduleOrchestrator Service { get; } = IAppHost.GetService<DutyScheduleOrchestrator>();
     private DutyNotificationService NotificationService { get; } = IAppHost.GetService<DutyNotificationService>();
-    private readonly DutyMainSettingsConfigModule _configModule;
+    private readonly DutyMainSettingsHostModule _hostModule;
+    private readonly DutyMainSettingsBackendModule _backendModule;
+    private readonly DutyMainSettingsSaveCoordinator _saveCoordinator;
     private readonly DutyMainSettingsRosterModule _rosterModule;
     private readonly DutyMainSettingsScheduleModule _scheduleModule;
     private bool _isLoadingConfig;
@@ -46,18 +41,22 @@ public partial class DutyMainSettingsPage : SettingsPageBase
     private bool _hasPendingConfigApply;
     private string _pendingScheduleSelectionDate = string.Empty;
     private bool _isPopulatingEditor;
-    private BackendConfigLoadState _backendConfigState = BackendConfigLoadState.NotLoaded;
+    private DutyBackendConfigLoadState _backendConfigState = DutyBackendConfigLoadState.NotLoaded;
     private bool _isLoadingBackendConfig;
     private string? _backendConfigErrorMessage;
     private int _configLoadRevision;
     private int _dataLoadRevision;
-    private DutySettingsApplyRequest _lastAppliedHostForm = new();
+    private DutyHostSettingsValues _lastAppliedHostSettings = new();
     private DutyBackendConfig? _lastAppliedBackendConfig;
+    private List<DutyPlanPreset> _planPresetDrafts = [];
+    private string _currentPlanId = string.Empty;
 
     public DutyMainSettingsPage()
     {
         InitializeComponent();
-        _configModule = new DutyMainSettingsConfigModule(Service);
+        _hostModule = new DutyMainSettingsHostModule(Service);
+        _backendModule = new DutyMainSettingsBackendModule(Service);
+        _saveCoordinator = new DutyMainSettingsSaveCoordinator(_hostModule, _backendModule);
         _rosterModule = new DutyMainSettingsRosterModule(Service);
         _scheduleModule = new DutyMainSettingsScheduleModule(Service);
         _configApplyDebounceTimer = new DispatcherTimer
@@ -72,6 +71,7 @@ public partial class DutyMainSettingsPage : SettingsPageBase
         InitializeComponentRefreshTimeOptions();
         InitializeDutyReminderTimeOptions();
         InitializeScheduleDayOptions();
+        UpdateExecutionModeVisibility();
         SetDataView(showScheduleView: true);
         LoadLocalConfigForm();
         UpdateConfigTracking("已加载本地配置");
@@ -121,9 +121,22 @@ public partial class DutyMainSettingsPage : SettingsPageBase
     private void UpdateAutoRunSecondaryVisibility()
     {
         var mode = GetSelectedAutoRunMode();
-        AutoRunDayComboBox.IsVisible = mode == "Weekly";
-        AutoRunMonthDayComboBox.IsVisible = mode == "Monthly";
-        AutoRunIntervalBox.IsVisible = mode == "Custom";
+        var isWeekly = mode == "Weekly";
+        var isMonthly = mode == "Monthly";
+        var isCustom = mode == "Custom";
+
+        AutoRunWeeklyItem.IsVisible = isWeekly;
+        AutoRunMonthlyItem.IsVisible = isMonthly;
+        AutoRunIntervalItem.IsVisible = isCustom;
+        AutoRunDayComboBox.IsVisible = isWeekly;
+        AutoRunMonthDayComboBox.IsVisible = isMonthly;
+        AutoRunIntervalBox.IsVisible = isCustom;
+    }
+
+    private void UpdateExecutionModeVisibility()
+    {
+        var isMultiAgent = string.Equals(GetSelectedPlanModeId(), DutyBackendModeIds.Campus6Agent, StringComparison.Ordinal);
+        MultiAgentExecutionModeItem.IsVisible = isMultiAgent;
     }
 
     private void InitializeComponentRefreshTimeOptions()
@@ -243,6 +256,8 @@ public partial class DutyMainSettingsPage : SettingsPageBase
 
     private void OnConfigInputLostFocus(object? sender, RoutedEventArgs e)
     {
+        CaptureCurrentPlanDraft();
+        RefreshPlanSelectors();
         QueueConfigApply();
     }
 
@@ -254,6 +269,8 @@ public partial class DutyMainSettingsPage : SettingsPageBase
         }
 
         e.Handled = true;
+        CaptureCurrentPlanDraft();
+        RefreshPlanSelectors();
         QueueConfigApply(immediate: true);
     }
 
@@ -263,7 +280,85 @@ public partial class DutyMainSettingsPage : SettingsPageBase
         {
             UpdateAutoRunSecondaryVisibility();
         }
+        else if (sender == PlanModeComboBox)
+        {
+            UpdateExecutionModeVisibility();
+            UpdatePlanModeHint();
+        }
+
+        CaptureCurrentPlanDraft();
         QueueConfigApply();
+    }
+
+    private void OnCurrentPlanSelectionChanged(object? sender, SelectionChangedEventArgs e)
+    {
+        if (_isLoadingConfig)
+        {
+            return;
+        }
+
+        CaptureCurrentPlanDraft();
+        _currentPlanId = GetSelectedPlanOptionId();
+        ApplyCurrentPlanToControls();
+        RefreshPlanSelectors();
+        QueueConfigApply();
+    }
+
+    private void OnCreatePlanClick(object? sender, RoutedEventArgs e)
+    {
+        if (_isLoadingConfig)
+        {
+            return;
+        }
+
+        CaptureCurrentPlanDraft();
+        var plan = CreateDraftPlan(copyFromCurrent: false);
+        _planPresetDrafts.Add(plan);
+        _currentPlanId = plan.Id;
+        RefreshPlanSelectors();
+        ApplyCurrentPlanToControls();
+        QueueConfigApply(immediate: true);
+    }
+
+    private void OnDuplicatePlanClick(object? sender, RoutedEventArgs e)
+    {
+        if (_isLoadingConfig)
+        {
+            return;
+        }
+
+        CaptureCurrentPlanDraft();
+        var plan = CreateDraftPlan(copyFromCurrent: true);
+        _planPresetDrafts.Add(plan);
+        _currentPlanId = plan.Id;
+        RefreshPlanSelectors();
+        ApplyCurrentPlanToControls();
+        QueueConfigApply(immediate: true);
+    }
+
+    private void OnDeletePlanClick(object? sender, RoutedEventArgs e)
+    {
+        if (_isLoadingConfig || _planPresetDrafts.Count <= 1)
+        {
+            return;
+        }
+
+        CaptureCurrentPlanDraft();
+        var removedPlanId = GetSelectedPlanOptionId();
+        var remaining = _planPresetDrafts
+            .Where(plan => !string.Equals(plan.Id, removedPlanId, StringComparison.Ordinal))
+            .ToList();
+
+        if (remaining.Count == 0)
+        {
+            return;
+        }
+
+        _planPresetDrafts = remaining;
+        _currentPlanId = remaining[0].Id;
+        RefreshPlanSelectors();
+        ApplyCurrentPlanToControls();
+        QueueConfigApply(immediate: true);
     }
 
     private void OnConfigToggleChanged(object? sender, RoutedEventArgs e)
@@ -314,113 +409,55 @@ public partial class DutyMainSettingsPage : SettingsPageBase
             return false;
         }
 
-        DutySettingsApplyRequest? request = null;
-        var traceId = DutyDiagnosticsLogger.CreateTraceId("settings");
-        var hostSaved = false;
         try
         {
             _isApplyingConfig = true;
-            request = BuildCurrentRequestFromControls();
-            var hostChanged = HasHostChanges(request, _lastAppliedHostForm);
-            var backendLoadState = _backendConfigState;
-            var backendPatch = backendLoadState == BackendConfigLoadState.Loaded
-                ? TryBuildBackendPatch(request, _lastAppliedBackendConfig)
-                : null;
-            var backendChanged = backendPatch != null;
-
-            DutyDiagnosticsLogger.Info("SettingsPage", "Applying settings from controls.",
-                new
-                {
-                    traceId,
-                    hostChanged,
-                    backendChanged,
-                    backendState = backendLoadState.ToString(),
-                    backendError = _backendConfigErrorMessage ?? string.Empty,
-                    backendPatch = SummarizeBackendPatch(backendPatch)
-                });
-
-            if (!hostChanged && !backendChanged)
+            var outcome = await _saveCoordinator.ApplyAsync(new DutySettingsSaveContext
             {
-                DutyDiagnosticsLogger.Info("SettingsPage", "No settings changes detected.",
-                    new { traceId, backendState = backendLoadState.ToString() });
+                Current = BuildSettingsPageValuesFromControls(),
+                LastAppliedHost = _lastAppliedHostSettings,
+                LastAppliedBackend = _lastAppliedBackendConfig,
+                BackendLoadState = _backendConfigState,
+                BackendErrorMessage = _backendConfigErrorMessage ?? string.Empty
+            });
+
+            if (outcome.NoChanges)
+            {
                 return true;
             }
 
-            var restartRequired = false;
-            if (hostChanged)
+            if (outcome.AppliedHost != null)
             {
-                var hostResult = _configModule.SaveHost(request, traceId);
-                restartRequired = hostResult.RestartRequired;
-                hostSaved = hostResult.HostSaved;
-                _lastAppliedHostForm = BuildHostSnapshotFromRequest(request);
-                SetStatus(hostResult.Message, Brushes.Gray);
+                _lastAppliedHostSettings = outcome.AppliedHost;
             }
 
-            if (backendChanged && backendPatch != null)
+            if (outcome.AppliedBackend != null)
             {
-                SetStatus(
-                    hostChanged ? "宿主设置已保存，正在保存后端设置..." : "正在保存后端设置...",
-                    Brushes.Gray);
-                var savedBackend = await _configModule.SaveBackendAsync(backendPatch, "host_settings", traceId);
-                _lastAppliedBackendConfig = CloneBackendConfig(savedBackend);
-                _backendConfigState = BackendConfigLoadState.Loaded;
+                _lastAppliedBackendConfig = _backendModule.CloneConfig(outcome.AppliedBackend);
+                _backendConfigState = DutyBackendConfigLoadState.Loaded;
                 _backendConfigErrorMessage = null;
-                ApplyBackendConfig(savedBackend);
+                ApplyBackendConfig(outcome.AppliedBackend);
             }
-            else if (backendLoadState != BackendConfigLoadState.Loaded)
+
+            if (!outcome.Success)
             {
-                DutyDiagnosticsLogger.Warn("SettingsPage", "Skipped backend save because backend config is not loaded.",
-                    new
-                    {
-                        traceId,
-                        backendState = backendLoadState.ToString(),
-                        backendError = _backendConfigErrorMessage ?? string.Empty
-                    });
+                UpdateConfigTracking("应用失败");
+                SetStatus(outcome.Message, GetStatusBrush(outcome.MessageLevel));
+                return false;
             }
 
             UpdateConfigTracking(
-                restartRequired
+                outcome.RestartRequired
                     ? "自动保存（需重启）"
                     : "自动保存");
 
-            if (restartRequired)
+            if (outcome.RestartRequired)
             {
                 RequestRestart();
             }
 
-            if (hostChanged && backendChanged)
-            {
-                SetStatus(
-                    restartRequired ? "设置已保存，重启后启用相关宿主功能。" : "设置已保存。",
-                    Brushes.Gray);
-            }
-            else if (backendChanged)
-            {
-                SetStatus("后端设置已保存。", Brushes.Gray);
-            }
-
+            SetStatus(outcome.Message, GetStatusBrush(outcome.MessageLevel));
             return true;
-        }
-        catch (Exception ex)
-        {
-            UpdateConfigTracking("应用失败");
-            DutyDiagnosticsLogger.Error("SettingsPage", "Applying settings failed.", ex,
-                new
-                {
-                    traceId,
-                    hostSaved,
-                    backendState = _backendConfigState.ToString(),
-                    backendError = _backendConfigErrorMessage ?? string.Empty
-                });
-            if (hostSaved || (request != null && !HasHostChanges(request, _lastAppliedHostForm)))
-            {
-                SetStatus($"宿主设置已保存，但后端设置失败：{ex.Message}", Brushes.Orange);
-            }
-            else
-            {
-                SetStatus($"后端设置失败：{ex.Message}", Brushes.Red);
-            }
-            return false;
         }
         finally
         {
@@ -564,7 +601,7 @@ public partial class DutyMainSettingsPage : SettingsPageBase
             await Task.WhenAll(
                 LoadDataAsync("手动刷新"),
                 LoadBackendConfigAsync(forceReload: true));
-            if (_backendConfigState == BackendConfigLoadState.Loaded)
+            if (_backendConfigState == DutyBackendConfigLoadState.Loaded)
             {
                 SetStatus("预览已刷新。", Brushes.Green);
             }
@@ -577,12 +614,14 @@ public partial class DutyMainSettingsPage : SettingsPageBase
 
     private void LoadLocalConfigForm()
     {
-        var formModel = _configModule.LoadHostOnly();
-        ApplyHostFormModel(formModel);
-        _lastAppliedHostForm = BuildHostSnapshotFromFormModel(formModel);
-        _backendConfigState = BackendConfigLoadState.NotLoaded;
+        var hostSettings = _hostModule.Load();
+        ApplyHostFormModel(hostSettings);
+        _lastAppliedHostSettings = hostSettings;
+        _backendConfigState = DutyBackendConfigLoadState.NotLoaded;
         _backendConfigErrorMessage = null;
         _lastAppliedBackendConfig = null;
+        _planPresetDrafts = [];
+        _currentPlanId = string.Empty;
         SetBackendConfigControlsEnabled(false);
         SetStatus("正在连接后端配置...", Brushes.Gray);
         DutyDiagnosticsLogger.Info("SettingsPage", "Loaded host-only settings and marked backend config as not loaded.");
@@ -592,10 +631,10 @@ public partial class DutyMainSettingsPage : SettingsPageBase
     {
         if (_isLoadingBackendConfig)
         {
-            return _backendConfigState == BackendConfigLoadState.Loaded;
+            return _backendConfigState == DutyBackendConfigLoadState.Loaded;
         }
 
-        if (_backendConfigState == BackendConfigLoadState.Loaded && !forceReload)
+        if (_backendConfigState == DutyBackendConfigLoadState.Loaded && !forceReload)
         {
             return true;
         }
@@ -616,17 +655,17 @@ public partial class DutyMainSettingsPage : SettingsPageBase
 
         try
         {
-            var backendConfig = await _configModule.LoadBackendAsync("host_settings", traceId);
+            var backendConfig = await _backendModule.LoadAsync("host_settings", traceId);
             if (revision != _configLoadRevision)
             {
                 DutyDiagnosticsLogger.Warn("SettingsPage", "Discarded stale backend config load result.",
                     new { traceId, revision, latestRevision = _configLoadRevision });
-                return _backendConfigState == BackendConfigLoadState.Loaded;
+                return _backendConfigState == DutyBackendConfigLoadState.Loaded;
             }
 
             ApplyBackendConfig(backendConfig);
-            _lastAppliedBackendConfig = CloneBackendConfig(backendConfig);
-            _backendConfigState = BackendConfigLoadState.Loaded;
+            _lastAppliedBackendConfig = _backendModule.CloneConfig(backendConfig);
+            _backendConfigState = DutyBackendConfigLoadState.Loaded;
             _backendConfigErrorMessage = null;
             UpdateConfigTracking("已加载");
             SetStatus("后端配置已加载。", Brushes.Gray);
@@ -652,10 +691,10 @@ public partial class DutyMainSettingsPage : SettingsPageBase
             {
                 DutyDiagnosticsLogger.Warn("SettingsPage", "Discarded stale backend config load failure.",
                     new { traceId, revision, latestRevision = _configLoadRevision });
-                return _backendConfigState == BackendConfigLoadState.Loaded;
+                return _backendConfigState == DutyBackendConfigLoadState.Loaded;
             }
 
-            _backendConfigState = BackendConfigLoadState.LoadFailed;
+            _backendConfigState = DutyBackendConfigLoadState.LoadFailed;
             _backendConfigErrorMessage = ex.Message;
             _lastAppliedBackendConfig = null;
             UpdateConfigTracking("后端不可用");
@@ -679,22 +718,22 @@ public partial class DutyMainSettingsPage : SettingsPageBase
         }
     }
 
-    private void ApplyHostFormModel(DutySettingsFormModel formModel)
+    private void ApplyHostFormModel(DutyHostSettingsValues hostSettings)
     {
         _isLoadingConfig = true;
         try
         {
-            SetAutoRunModeSelection(formModel.AutoRunMode);
-            SetAutoRunParameterSelection(formModel.AutoRunMode, formModel.AutoRunParameter);
-            SetAutoRunTimeSelection(formModel.AutoRunTime);
-            AutoRunTriggerNotificationSwitch.IsChecked = formModel.AutoRunTriggerNotificationEnabled;
-            DutyReminderEnabledSwitch.IsChecked = formModel.DutyReminderEnabled;
-            SetDutyReminderTimeSelection(formModel.DutyReminderTime);
-            EnableMcpSwitch.IsChecked = formModel.EnableMcp;
-            EnableWebDebugLayerSwitch.IsChecked = formModel.EnableWebViewDebugLayer;
-            SetComponentRefreshTimeSelection(formModel.ComponentRefreshTime);
-            NotificationDurationSlider.Value = formModel.NotificationDurationSeconds;
-            NotificationDurationLabel.Text = $"{formModel.NotificationDurationSeconds} 秒";
+            SetAutoRunModeSelection(hostSettings.AutoRunMode);
+            SetAutoRunParameterSelection(hostSettings.AutoRunMode, hostSettings.AutoRunParameter);
+            SetAutoRunTimeSelection(hostSettings.AutoRunTime);
+            AutoRunTriggerNotificationSwitch.IsChecked = hostSettings.AutoRunTriggerNotificationEnabled;
+            DutyReminderEnabledSwitch.IsChecked = hostSettings.DutyReminderEnabled;
+            SetDutyReminderTimeSelection(hostSettings.DutyReminderTime);
+            EnableMcpSwitch.IsChecked = hostSettings.EnableMcp;
+            EnableWebDebugLayerSwitch.IsChecked = hostSettings.EnableWebViewDebugLayer;
+            SetComponentRefreshTimeSelection(hostSettings.ComponentRefreshTime);
+            NotificationDurationSlider.Value = hostSettings.NotificationDurationSeconds;
+            NotificationDurationLabel.Text = $"{hostSettings.NotificationDurationSeconds} 秒";
         }
         finally
         {
@@ -707,12 +746,12 @@ public partial class DutyMainSettingsPage : SettingsPageBase
         _isLoadingConfig = true;
         try
         {
-            ApiKeyBox.Text = string.IsNullOrWhiteSpace(backendConfig.ApiKey) ? string.Empty : "********";
-            BaseUrlBox.Text = backendConfig.BaseUrl;
-            ModelBox.Text = backendConfig.Model;
-            SetModelProfileSelection(backendConfig.ModelProfile);
-            SetOrchestrationModeSelection(backendConfig.OrchestrationMode);
-            SetMultiAgentExecutionModeSelection(backendConfig.MultiAgentExecutionMode);
+            _planPresetDrafts = _backendModule.NormalizePlanPresets(backendConfig.PlanPresets, backendConfig);
+            _currentPlanId = _backendModule.NormalizeSelectedPlanId(backendConfig.SelectedPlanId, _planPresetDrafts, backendConfig);
+            RefreshPlanSelectors();
+            ApplyCurrentPlanToControls();
+            UpdateExecutionModeVisibility();
+            UpdatePlanModeHint();
             DutyRuleBox.Text = backendConfig.DutyRule;
             SetBackendConfigControlsEnabled(true);
         }
@@ -724,14 +763,20 @@ public partial class DutyMainSettingsPage : SettingsPageBase
 
     private void SetBackendConfigControlsEnabled(bool enabled)
     {
+        CurrentPlanComboBox.IsEnabled = enabled;
+        CreatePlanBtn.IsEnabled = enabled;
+        DuplicatePlanBtn.IsEnabled = enabled;
+        DeletePlanBtn.IsEnabled = enabled;
+        PlanNameBox.IsEnabled = enabled;
+        PlanModeComboBox.IsEnabled = enabled;
         ApiKeyBox.IsEnabled = enabled;
         BaseUrlBox.IsEnabled = enabled;
         ModelBox.IsEnabled = enabled;
         ModelProfileComboBox.IsEnabled = enabled;
-        OrchestrationModeComboBox.IsEnabled = enabled;
         MultiAgentExecutionModeComboBox.IsEnabled = enabled;
         DutyRuleBox.IsEnabled = enabled;
         RunAgentBtn.IsEnabled = enabled;
+        UpdatePlanActionButtons();
     }
 
     private async Task LoadDataAsync(string reason = "数据刷新")
@@ -1183,16 +1228,29 @@ public partial class DutyMainSettingsPage : SettingsPageBase
         ModelProfileComboBox.SelectedItem = item ?? ModelProfileComboBox.Items.Cast<ComboBoxItem>().First();
     }
 
-    private string GetSelectedOrchestrationMode()
+    private string GetSelectedPlanId()
     {
-        return OrchestrationModeComboBox.SelectedItem is ComboBoxItem { Tag: string tag } ? tag : "auto";
+        return GetSelectedPlanOptionId();
     }
 
-    private void SetOrchestrationModeSelection(string orchestrationMode)
+    private void SetSelectedPlanId(string selectedPlanId)
     {
-        var targetTag = (orchestrationMode ?? "auto").Trim();
-        var item = OrchestrationModeComboBox.Items.Cast<ComboBoxItem>().FirstOrDefault(x => string.Equals(x.Tag as string, targetTag, StringComparison.OrdinalIgnoreCase));
-        OrchestrationModeComboBox.SelectedItem = item ?? OrchestrationModeComboBox.Items.Cast<ComboBoxItem>().First();
+        SetSelectedPlanOptionId(CurrentPlanComboBox, selectedPlanId);
+    }
+
+    private string GetSelectedPlanModeId()
+    {
+        return PlanModeComboBox.SelectedItem is ComboBoxItem { Tag: string tag }
+            ? _backendModule.NormalizePlanModeId(tag)
+            : DutyBackendModeIds.Standard;
+    }
+
+    private void SetPlanModeSelection(string modeId)
+    {
+        var targetTag = _backendModule.NormalizePlanModeId(modeId);
+        var item = PlanModeComboBox.Items.Cast<ComboBoxItem>()
+            .FirstOrDefault(x => string.Equals(x.Tag as string, targetTag, StringComparison.OrdinalIgnoreCase));
+        PlanModeComboBox.SelectedItem = item ?? PlanModeComboBox.Items.Cast<ComboBoxItem>().First();
     }
 
     private string GetSelectedMultiAgentExecutionMode()
@@ -1206,6 +1264,195 @@ public partial class DutyMainSettingsPage : SettingsPageBase
         var item = MultiAgentExecutionModeComboBox.Items.Cast<ComboBoxItem>()
             .FirstOrDefault(x => string.Equals(x.Tag as string, targetTag, StringComparison.OrdinalIgnoreCase));
         MultiAgentExecutionModeComboBox.SelectedItem = item ?? MultiAgentExecutionModeComboBox.Items.Cast<ComboBoxItem>().First();
+    }
+
+    private void RefreshPlanSelectors()
+    {
+        if (_planPresetDrafts.Count == 0)
+        {
+            _planPresetDrafts = _backendModule.NormalizePlanPresets([], _lastAppliedBackendConfig);
+        }
+
+        _currentPlanId = _backendModule.NormalizeSelectedPlanId(_currentPlanId, _planPresetDrafts, _lastAppliedBackendConfig);
+
+        var previousLoadingState = _isLoadingConfig;
+        _isLoadingConfig = true;
+        try
+        {
+            var options = _planPresetDrafts
+                .Select(plan => new PlanSelectOption(plan.Id, plan.Name))
+                .ToList();
+
+            CurrentPlanComboBox.ItemsSource = options;
+            SetSelectedPlanOptionId(CurrentPlanComboBox, _currentPlanId);
+            UpdatePlanActionButtons();
+        }
+        finally
+        {
+            _isLoadingConfig = previousLoadingState;
+        }
+    }
+
+    private void UpdatePlanModeHint()
+    {
+        PlanModeHintText.Text = GetPlanModeHint(GetSelectedPlanModeId());
+    }
+
+    private void ApplyCurrentPlanToControls()
+    {
+        if (_planPresetDrafts.Count == 0)
+        {
+            return;
+        }
+
+        var plan = GetCurrentPlan();
+        if (plan == null)
+        {
+            return;
+        }
+
+        var previousLoadingState = _isLoadingConfig;
+        _isLoadingConfig = true;
+        try
+        {
+            _currentPlanId = plan.Id;
+            SetSelectedPlanOptionId(CurrentPlanComboBox, plan.Id);
+            PlanNameBox.Text = plan.Name;
+            SetPlanModeSelection(plan.ModeId);
+            ApiKeyBox.Text = string.IsNullOrWhiteSpace(plan.ApiKey) ? string.Empty : "********";
+            ModelBox.Text = plan.Model;
+            BaseUrlBox.Text = plan.BaseUrl;
+            SetModelProfileSelection(plan.ModelProfile);
+            SetMultiAgentExecutionModeSelection(plan.MultiAgentExecutionMode);
+        }
+        finally
+        {
+            _isLoadingConfig = previousLoadingState;
+        }
+
+        UpdateExecutionModeVisibility();
+        UpdatePlanModeHint();
+        UpdatePlanActionButtons();
+    }
+
+    private void CaptureCurrentPlanDraft()
+    {
+        var plan = GetCurrentPlan();
+        if (plan == null)
+        {
+            return;
+        }
+
+        plan.Name = (PlanNameBox.Text ?? string.Empty).Trim();
+        plan.ModeId = GetSelectedPlanModeId();
+        plan.ApiKey = DutyScheduleOrchestrator.ResolveApiKeyInput(ApiKeyBox.Text, plan.ApiKey);
+        plan.Model = (ModelBox.Text ?? string.Empty).Trim();
+        plan.BaseUrl = (BaseUrlBox.Text ?? string.Empty).Trim();
+        plan.ModelProfile = GetSelectedModelProfile();
+        plan.MultiAgentExecutionMode = string.Equals(plan.ModeId, DutyBackendModeIds.Campus6Agent, StringComparison.Ordinal)
+            ? GetSelectedMultiAgentExecutionMode()
+            : "auto";
+    }
+
+    private DutyPlanPreset? GetCurrentPlan()
+    {
+        if (_planPresetDrafts.Count == 0)
+        {
+            return null;
+        }
+
+        if (string.IsNullOrWhiteSpace(_currentPlanId))
+        {
+            _currentPlanId = _planPresetDrafts[0].Id;
+        }
+
+        return _planPresetDrafts.FirstOrDefault(plan => string.Equals(plan.Id, _currentPlanId, StringComparison.Ordinal))
+               ?? _planPresetDrafts[0];
+    }
+
+    private string GetSelectedPlanOptionId()
+    {
+        return CurrentPlanComboBox.SelectedItem is PlanSelectOption option
+            ? option.Id
+            : _backendModule.NormalizeSelectedPlanId(_currentPlanId, _planPresetDrafts, _lastAppliedBackendConfig);
+    }
+
+    private static void SetSelectedPlanOptionId(ComboBox comboBox, string planId)
+    {
+        if (comboBox.ItemsSource is not IEnumerable<PlanSelectOption> options)
+        {
+            comboBox.SelectedItem = null;
+            return;
+        }
+
+        comboBox.SelectedItem = options.FirstOrDefault(option => string.Equals(option.Id, planId, StringComparison.Ordinal))
+            ?? options.FirstOrDefault();
+    }
+
+    private void UpdatePlanActionButtons()
+    {
+        var hasPlan = _planPresetDrafts.Count > 0;
+        DuplicatePlanBtn.IsEnabled = hasPlan && CurrentPlanComboBox.IsEnabled;
+        DeletePlanBtn.IsEnabled = hasPlan && _planPresetDrafts.Count > 1 && CurrentPlanComboBox.IsEnabled;
+    }
+
+    private DutyPlanPreset CreateDraftPlan(bool copyFromCurrent)
+    {
+        var source = copyFromCurrent ? GetCurrentPlan() : null;
+        var usedIds = _planPresetDrafts.Select(plan => plan.Id).ToHashSet(StringComparer.Ordinal);
+        var idBase = source == null ? "plan" : source.Id;
+        var nextId = idBase;
+        var suffix = 2;
+        while (!usedIds.Add(nextId))
+        {
+            nextId = $"{idBase}-{suffix}";
+            suffix++;
+        }
+
+        var nextName = source == null
+            ? $"方案预设 {_planPresetDrafts.Count + 1}"
+            : $"{(string.IsNullOrWhiteSpace(source.Name) ? GetPlanModeDisplayName(source.ModeId) : source.Name)} 副本";
+
+        var modeId = source?.ModeId ?? DutyBackendModeIds.Standard;
+        return new DutyPlanPreset
+        {
+            Id = nextId,
+            Name = nextName,
+            ModeId = modeId,
+            ApiKey = source?.ApiKey ?? string.Empty,
+            BaseUrl = source?.BaseUrl ?? "https://integrate.api.nvidia.com/v1",
+            Model = source?.Model ?? "moonshotai/kimi-k2-thinking",
+            ModelProfile = source?.ModelProfile ?? "auto",
+            ProviderHint = source?.ProviderHint ?? string.Empty,
+            MultiAgentExecutionMode = string.Equals(modeId, DutyBackendModeIds.Campus6Agent, StringComparison.Ordinal)
+                ? source?.MultiAgentExecutionMode ?? "auto"
+                : "auto"
+        };
+    }
+
+    private static string GetPlanModeDisplayName(string modeId)
+    {
+        return modeId switch
+        {
+            DutyBackendModeIds.Campus6Agent => "6Agent",
+            DutyBackendModeIds.IncrementalSmall => "增量小模型",
+            _ => "标准"
+        };
+    }
+
+    private static string GetPlanModeHint(string modeId)
+    {
+        return modeId switch
+        {
+            DutyBackendModeIds.Campus6Agent => "使用 6Agent 执行链路，适合校园计算中心模型与更稳定的结构化排班。",
+            DutyBackendModeIds.IncrementalSmall => "使用详细提示词的单次执行方案，适合推理稳定的小模型。",
+            _ => "默认的单次执行方案，优先控制 token 消耗并保持响应速度。"
+        };
+    }
+
+    private sealed record PlanSelectOption(string Id, string Name)
+    {
+        public override string ToString() => Name;
     }
 
     private string GetSelectedAutoRunTime()
@@ -1323,16 +1570,19 @@ public partial class DutyMainSettingsPage : SettingsPageBase
         }
     }
 
-    private DutySettingsApplyRequest BuildCurrentRequestFromControls()
+    private DutySettingsPageValues BuildSettingsPageValuesFromControls()
     {
-        return new DutySettingsApplyRequest
+        return new DutySettingsPageValues
         {
-            ApiKeyInput = ApiKeyBox.Text,
-            BaseUrl = BaseUrlBox.Text,
-            Model = ModelBox.Text,
-            ModelProfile = GetSelectedModelProfile(),
-            OrchestrationMode = GetSelectedOrchestrationMode(),
-            MultiAgentExecutionMode = GetSelectedMultiAgentExecutionMode(),
+            Host = BuildHostSettingsValuesFromControls(),
+            Backend = BuildBackendSettingsValuesFromControls()
+        };
+    }
+
+    private DutyHostSettingsValues BuildHostSettingsValuesFromControls()
+    {
+        return new DutyHostSettingsValues
+        {
             AutoRunMode = GetSelectedAutoRunMode(),
             AutoRunParameter = GetSelectedAutoRunParameter(),
             AutoRunTime = GetSelectedAutoRunTime(),
@@ -1342,161 +1592,18 @@ public partial class DutyMainSettingsPage : SettingsPageBase
             DutyReminderTime = GetSelectedDutyReminderTime(),
             EnableMcp = EnableMcpSwitch.IsChecked == true,
             EnableWebViewDebugLayer = EnableWebDebugLayerSwitch.IsChecked == true,
-            DutyRule = DutyRuleBox.Text,
             NotificationDurationSeconds = (int)NotificationDurationSlider.Value
         };
     }
 
-    private static DutySettingsApplyRequest BuildHostSnapshotFromFormModel(DutySettingsFormModel formModel)
+    private DutyBackendSettingsValues BuildBackendSettingsValuesFromControls()
     {
-        return new DutySettingsApplyRequest
+        CaptureCurrentPlanDraft();
+        return new DutyBackendSettingsValues
         {
-            AutoRunMode = formModel.AutoRunMode,
-            AutoRunParameter = formModel.AutoRunParameter,
-            AutoRunTime = formModel.AutoRunTime,
-            ComponentRefreshTime = formModel.ComponentRefreshTime,
-            AutoRunTriggerNotificationEnabled = formModel.AutoRunTriggerNotificationEnabled,
-            DutyReminderEnabled = formModel.DutyReminderEnabled,
-            DutyReminderTime = formModel.DutyReminderTime,
-            EnableMcp = formModel.EnableMcp,
-            EnableWebViewDebugLayer = formModel.EnableWebViewDebugLayer,
-            NotificationDurationSeconds = formModel.NotificationDurationSeconds
-        };
-    }
-
-    private static DutySettingsApplyRequest BuildHostSnapshotFromRequest(DutySettingsApplyRequest request)
-    {
-        return new DutySettingsApplyRequest
-        {
-            AutoRunMode = request.AutoRunMode,
-            AutoRunParameter = request.AutoRunParameter,
-            AutoRunTime = request.AutoRunTime,
-            ComponentRefreshTime = request.ComponentRefreshTime,
-            AutoRunTriggerNotificationEnabled = request.AutoRunTriggerNotificationEnabled,
-            DutyReminderEnabled = request.DutyReminderEnabled,
-            DutyReminderTime = request.DutyReminderTime,
-            EnableMcp = request.EnableMcp,
-            EnableWebViewDebugLayer = request.EnableWebViewDebugLayer,
-            NotificationDurationSeconds = request.NotificationDurationSeconds
-        };
-    }
-
-    private static bool HasHostChanges(DutySettingsApplyRequest current, DutySettingsApplyRequest lastApplied)
-    {
-        return !string.Equals(DutyScheduleOrchestrator.NormalizeAutoRunMode(current.AutoRunMode), DutyScheduleOrchestrator.NormalizeAutoRunMode(lastApplied.AutoRunMode), StringComparison.Ordinal) ||
-               !string.Equals((current.AutoRunParameter ?? string.Empty).Trim(), (lastApplied.AutoRunParameter ?? string.Empty).Trim(), StringComparison.Ordinal) ||
-               !string.Equals(DutyScheduleOrchestrator.NormalizeTimeOrThrow(current.AutoRunTime), DutyScheduleOrchestrator.NormalizeTimeOrThrow(lastApplied.AutoRunTime), StringComparison.Ordinal) ||
-               !string.Equals(DutyScheduleOrchestrator.NormalizeTimeOrThrow(current.ComponentRefreshTime), DutyScheduleOrchestrator.NormalizeTimeOrThrow(lastApplied.ComponentRefreshTime), StringComparison.Ordinal) ||
-               current.AutoRunTriggerNotificationEnabled != lastApplied.AutoRunTriggerNotificationEnabled ||
-               current.DutyReminderEnabled != lastApplied.DutyReminderEnabled ||
-               !string.Equals(GetNormalizedDutyReminderTime(current.DutyReminderTime), GetNormalizedDutyReminderTime(lastApplied.DutyReminderTime), StringComparison.Ordinal) ||
-               current.EnableMcp != lastApplied.EnableMcp ||
-               current.EnableWebViewDebugLayer != lastApplied.EnableWebViewDebugLayer ||
-               Math.Clamp(current.NotificationDurationSeconds, 3, 15) != Math.Clamp(lastApplied.NotificationDurationSeconds, 3, 15);
-    }
-
-    private static string GetNormalizedDutyReminderTime(string? time)
-    {
-        return TimeSpan.TryParse(time, out var parsed)
-            ? $"{parsed.Hours:D2}:{parsed.Minutes:D2}"
-            : "07:40";
-    }
-
-    private static DutyBackendConfig CloneBackendConfig(DutyBackendConfig config)
-    {
-        return new DutyBackendConfig
-        {
-            ApiKey = config.ApiKey,
-            BaseUrl = config.BaseUrl,
-            Model = config.Model,
-            ModelProfile = config.ModelProfile,
-            OrchestrationMode = config.OrchestrationMode,
-            MultiAgentExecutionMode = config.MultiAgentExecutionMode,
-            ProviderHint = config.ProviderHint,
-            PerDay = config.PerDay,
-            DutyRule = config.DutyRule
-        };
-    }
-
-    private DutyBackendConfigPatch? TryBuildBackendPatch(DutySettingsApplyRequest request, DutyBackendConfig? currentBackend)
-    {
-        if (_backendConfigState != BackendConfigLoadState.Loaded || currentBackend == null)
-        {
-            return null;
-        }
-
-        var resolvedApiKey = DutyScheduleOrchestrator.ResolveApiKeyInput(request.ApiKeyInput, currentBackend.ApiKey);
-        var normalizedBaseUrl = (request.BaseUrl ?? string.Empty).Trim();
-        var normalizedModel = (request.Model ?? string.Empty).Trim();
-        var normalizedModelProfile = DutyScheduleOrchestrator.NormalizeModelProfile(request.ModelProfile);
-        var normalizedOrchestrationMode = DutyScheduleOrchestrator.NormalizeOrchestrationMode(request.OrchestrationMode);
-        var normalizedMultiAgentExecutionMode = DutyScheduleOrchestrator.NormalizeMultiAgentExecutionMode(request.MultiAgentExecutionMode);
-        var normalizedDutyRule = request.DutyRule ?? string.Empty;
-
-        var patch = new DutyBackendConfigPatch();
-        var hasChanges = false;
-
-        if (!string.Equals(resolvedApiKey, currentBackend.ApiKey, StringComparison.Ordinal))
-        {
-            patch.ApiKey = resolvedApiKey;
-            hasChanges = true;
-        }
-
-        if (!string.Equals(normalizedBaseUrl, currentBackend.BaseUrl, StringComparison.Ordinal))
-        {
-            patch.BaseUrl = normalizedBaseUrl;
-            hasChanges = true;
-        }
-
-        if (!string.Equals(normalizedModel, currentBackend.Model, StringComparison.Ordinal))
-        {
-            patch.Model = normalizedModel;
-            hasChanges = true;
-        }
-
-        if (!string.Equals(normalizedModelProfile, currentBackend.ModelProfile, StringComparison.Ordinal))
-        {
-            patch.ModelProfile = normalizedModelProfile;
-            hasChanges = true;
-        }
-
-        if (!string.Equals(normalizedOrchestrationMode, currentBackend.OrchestrationMode, StringComparison.Ordinal))
-        {
-            patch.OrchestrationMode = normalizedOrchestrationMode;
-            hasChanges = true;
-        }
-
-        if (!string.Equals(normalizedMultiAgentExecutionMode, currentBackend.MultiAgentExecutionMode, StringComparison.Ordinal))
-        {
-            patch.MultiAgentExecutionMode = normalizedMultiAgentExecutionMode;
-            hasChanges = true;
-        }
-
-        if (!string.Equals(normalizedDutyRule, currentBackend.DutyRule, StringComparison.Ordinal))
-        {
-            patch.DutyRule = normalizedDutyRule;
-            hasChanges = true;
-        }
-
-        return hasChanges ? patch : null;
-    }
-
-    private static object? SummarizeBackendPatch(DutyBackendConfigPatch? patch)
-    {
-        if (patch == null)
-        {
-            return null;
-        }
-
-        return new
-        {
-            apiKey = patch.ApiKey is null ? "<unchanged>" : DutyDiagnosticsLogger.MaskSecret(patch.ApiKey),
-            baseUrl = patch.BaseUrl ?? "<unchanged>",
-            model = patch.Model ?? "<unchanged>",
-            modelProfile = patch.ModelProfile ?? "<unchanged>",
-            orchestrationMode = patch.OrchestrationMode ?? "<unchanged>",
-            multiAgentExecutionMode = patch.MultiAgentExecutionMode ?? "<unchanged>",
-            dutyRule = patch.DutyRule is null ? "<unchanged>" : TruncateForLog(patch.DutyRule, 160)
+            SelectedPlanId = GetSelectedPlanId(),
+            PlanPresets = _backendModule.ClonePlanPresets(_planPresetDrafts),
+            DutyRule = DutyRuleBox.Text
         };
     }
 
@@ -1523,9 +1630,8 @@ public partial class DutyMainSettingsPage : SettingsPageBase
 
     private void RefreshTrackingMeta()
     {
-        StatusMetaText.Text = FormatTrackingSegment("配置状态", _lastConfigState, _lastConfigAt);
-        RuntimeMetaText.Text =
-            $"{FormatTrackingSegment("运行状态", _lastRunState, _lastRunAt)} | {FormatTrackingSegment("数据状态", _lastDataState, _lastDataAt)}";
+        StatusInfoBar.Message =
+            $"{FormatTrackingSegment("配置状态", _lastConfigState, _lastConfigAt)}{Environment.NewLine}{FormatTrackingSegment("运行状态", _lastRunState, _lastRunAt)}｜{FormatTrackingSegment("数据状态", _lastDataState, _lastDataAt)}";
     }
 
     private static string FormatTrackingSegment(string label, string state, DateTime? timestamp)
@@ -1536,10 +1642,19 @@ public partial class DutyMainSettingsPage : SettingsPageBase
         return $"{safeLabel}：{safeState}（{time}）";
     }
 
+    private static IBrush GetStatusBrush(DutySettingsSaveMessageLevel level)
+    {
+        return level switch
+        {
+            DutySettingsSaveMessageLevel.Warning => Brushes.Orange,
+            DutySettingsSaveMessageLevel.Error => Brushes.Red,
+            _ => Brushes.Gray
+        };
+    }
+
     private void SetStatus(string text, IBrush brush)
     {
-        StatusText.Text = text;
-        StatusText.Foreground = brush;
+        StatusInfoBar.Title = text;
         StatusInfoBar.Severity = GetStatusSeverity(brush);
     }
 
@@ -1576,11 +1691,4 @@ public partial class DutyMainSettingsPage : SettingsPageBase
 
         return InfoBarSeverity.Informational;
     }
-
-    private static string TruncateForLog(string? value, int maxLength)
-    {
-        var normalized = (value ?? string.Empty).Replace('\r', ' ').Replace('\n', ' ').Trim();
-        return normalized.Length <= maxLength ? normalized : normalized[..maxLength];
-    }
-
 }

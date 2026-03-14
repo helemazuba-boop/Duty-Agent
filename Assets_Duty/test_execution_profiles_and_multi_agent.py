@@ -50,6 +50,54 @@ class TestExecutionPlanSelection(unittest.TestCase):
         profile = resolve_execution_profile({}, config)
         self.assertEqual(profile.single_pass_strategy, "edge_tuned")
 
+    def test_incremental_mode_uses_explicit_single_pass_strategy(self):
+        config = normalize_config(
+            {
+                "selected_plan_id": "incremental_small",
+                "plan_presets": [
+                    {
+                        "id": "standard",
+                        "name": "标准",
+                        "mode_id": "standard",
+                        "model": "small-thinking",
+                        "model_profile": "campus_small",
+                    },
+                    {
+                        "id": "campus-6agent",
+                        "name": "6Agent",
+                        "mode_id": "campus_6agent",
+                        "model": "campus-model",
+                        "model_profile": "campus_small",
+                        "multi_agent_execution_mode": "serial",
+                    },
+                    {
+                        "id": "incremental-small",
+                        "name": "增量小模型",
+                        "mode_id": "incremental_small",
+                        "model": "small-thinking",
+                        "model_profile": "campus_small",
+                    },
+                ],
+            }
+        )
+        profile = resolve_execution_profile({}, config)
+        plan = build_execution_plan(profile)
+        self.assertEqual(plan.runtime_mode, "single_pass")
+        self.assertEqual(profile.single_pass_strategy, "incremental_thinking")
+
+    def test_legacy_single_model_config_is_migrated_to_plan_presets(self):
+        config = normalize_config(
+            {
+                "api_key": "secret",
+                "model": "legacy-model",
+                "model_profile": "cloud",
+            }
+        )
+        self.assertEqual(config["selected_plan_id"], "standard")
+        self.assertEqual(len(config["plan_presets"]), 3)
+        self.assertEqual(config["plan_presets"][0]["model"], "legacy-model")
+        self.assertEqual(config["plan_presets"][0]["mode_id"], "standard")
+
 
 class TestBarrier2(unittest.TestCase):
     def test_barrier2_filters_pointer_overlap_and_fills_slots(self):

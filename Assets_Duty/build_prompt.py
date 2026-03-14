@@ -31,7 +31,10 @@ def build_prompt_messages(
     """Build prompt messages for the unified scheduling engine."""
 
     inactive_ids = [pid for pid, active in id_to_active.items() if active == 0]
-    compact_mode = model_profile == "campus_small" or orchestration_mode == "multi_agent"
+    compact_mode = (
+        single_pass_strategy != "incremental_thinking"
+        and (model_profile == "campus_small" or orchestration_mode == "multi_agent")
+    )
 
     if compact_mode:
         params = [
@@ -79,6 +82,12 @@ def build_prompt_messages(
     duty_rule = (duty_rule or "").strip()
     if duty_rule:
         methods_list.append(f"<user_defined_rule>\n{duty_rule}\n</user_defined_rule>")
+
+    if single_pass_strategy == "incremental_thinking":
+        methods_list.append(
+            "<execution_hint>\nThink through the constraints carefully before finalizing the schedule, "
+            "but only return the final result.\n</execution_hint>"
+        )
 
     dynamic_parameters = "\n".join(params_list)
     dynamic_methods = "\n".join(methods_list) if methods_list else "<!-- No specific processing rules triggered. Follow basic sequence. -->"

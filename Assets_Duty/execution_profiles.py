@@ -6,7 +6,7 @@ from typing import Any, Dict, List, Tuple
 SUPPORTED_MODEL_PROFILES = ("auto", "cloud", "campus_small", "edge", "custom")
 SUPPORTED_ORCHESTRATION_MODES = ("auto", "single_pass", "multi_agent")
 SUPPORTED_MULTI_AGENT_EXECUTION_MODES = ("auto", "parallel", "serial")
-SUPPORTED_SINGLE_PASS_STRATEGIES = ("cloud_standard", "edge_tuned", "edge_generic")
+SUPPORTED_SINGLE_PASS_STRATEGIES = ("auto", "cloud_standard", "edge_tuned", "edge_generic", "incremental_thinking")
 
 MODEL_PROFILE_ALIASES = {
     "auto": "auto",
@@ -123,6 +123,10 @@ def _resolve_multi_agent_execution_mode(config: Dict[str, Any]) -> str:
 
 
 def _resolve_single_pass_strategy(model_profile: str, provider_hint: str, config: Dict[str, Any]) -> str:
+    explicit = _normalize_text(config.get("single_pass_strategy"), "auto")
+    if explicit in SUPPORTED_SINGLE_PASS_STRATEGIES and explicit != "auto":
+        return explicit
+
     if model_profile != "edge":
         return "cloud_standard"
 
