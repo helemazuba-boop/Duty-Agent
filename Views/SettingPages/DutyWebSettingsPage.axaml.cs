@@ -208,7 +208,7 @@ public partial class DutyWebSettingsPage : SettingsPageBase
         }
 
         await ApplyConfigAsync(request.Config);
-        await SendSnapshotAsync();
+        await SendConfigSavedAsync();
     }
 
     private async Task HandleSaveRosterAsync(JsonElement payload)
@@ -672,6 +672,15 @@ public partial class DutyWebSettingsPage : SettingsPageBase
         });
     }
 
+    private Task SendConfigSavedAsync()
+    {
+        return _webViewHost.PostJsonAsync(new ConfigSavedMessage
+        {
+            Type = "config_saved",
+            Message = "Config saved."
+        });
+    }
+
     private Task SendErrorAsync(string code, string message, string? action = null)
     {
         return _webViewHost.PostJsonAsync(new ErrorMessage
@@ -839,6 +848,15 @@ public partial class DutyWebSettingsPage : SettingsPageBase
 
         [JsonPropertyName("action")]
         public string? Action { get; set; }
+    }
+
+    private sealed class ConfigSavedMessage
+    {
+        [JsonPropertyName("type")]
+        public string Type { get; set; } = "config_saved";
+
+        [JsonPropertyName("message")]
+        public string Message { get; set; } = string.Empty;
     }
 
     private sealed class ThemeMessage

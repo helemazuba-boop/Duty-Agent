@@ -306,7 +306,7 @@ public partial class DutyMainSettingsPage : SettingsPageBase
     private void OnConfigInputLostFocus(object? sender, RoutedEventArgs e)
     {
         CaptureCurrentPlanDraft();
-        RefreshPlanSelectors();
+        RefreshPlanSelectorsIfNeeded(sender);
         QueueConfigApply();
     }
 
@@ -319,7 +319,7 @@ public partial class DutyMainSettingsPage : SettingsPageBase
 
         e.Handled = true;
         CaptureCurrentPlanDraft();
-        RefreshPlanSelectors();
+        RefreshPlanSelectorsIfNeeded(sender);
         QueueConfigApply(immediate: true);
     }
 
@@ -485,7 +485,7 @@ public partial class DutyMainSettingsPage : SettingsPageBase
                 _lastAppliedBackendConfig = _backendModule.CloneConfig(outcome.AppliedBackend);
                 _backendConfigState = DutyBackendConfigLoadState.Loaded;
                 _backendConfigErrorMessage = null;
-                ApplyBackendConfig(outcome.AppliedBackend);
+                ReconcileAppliedBackendConfig(outcome.AppliedBackend);
             }
 
             if (!outcome.Success)
@@ -897,6 +897,25 @@ public partial class DutyMainSettingsPage : SettingsPageBase
         finally
         {
             _isLoadingConfig = false;
+        }
+    }
+
+    private void ReconcileAppliedBackendConfig(DutyBackendConfig backendConfig)
+    {
+        var normalizedPlans = _backendModule.NormalizePlanPresets(backendConfig.PlanPresets, backendConfig);
+        var normalizedSelectedPlanId = _backendModule.NormalizeSelectedPlanId(
+            backendConfig.SelectedPlanId,
+            normalizedPlans,
+            backendConfig);
+        var refreshSelectors = HasPlanSelectorChanges(normalizedPlans, normalizedSelectedPlanId);
+
+        _planPresetDrafts = _backendModule.ClonePlanPresets(normalizedPlans);
+        _currentPlanId = normalizedSelectedPlanId;
+        SetBackendConfigControlsEnabled(true);
+
+        if (refreshSelectors)
+        {
+            RefreshPlanSelectors();
         }
     }
 
@@ -1430,6 +1449,40 @@ public partial class DutyMainSettingsPage : SettingsPageBase
         {
             _isLoadingConfig = previousLoadingState;
         }
+    }
+
+    private void RefreshPlanSelectorsIfNeeded(object? sender)
+    {
+        if (ReferenceEquals(sender, PlanNameBox))
+        {
+            RefreshPlanSelectors();
+        }
+    }
+
+    private bool HasPlanSelectorChanges(IReadOnlyList<DutyPlanPreset> normalizedPlans, string normalizedSelectedPlanId)
+    {
+        if (!string.Equals(_currentPlanId, normalizedSelectedPlanId, StringComparison.Ordinal))
+        {
+            return true;
+        }
+
+        if (_planPresetDrafts.Count != normalizedPlans.Count)
+        {
+            return true;
+        }
+
+        for (var i = 0; i < normalizedPlans.Count; i++)
+        {
+            var current = _planPresetDrafts[i];
+            var incoming = normalizedPlans[i];
+            if (!string.Equals(current.Id, incoming.Id, StringComparison.Ordinal) ||
+                !string.Equals(current.Name, incoming.Name, StringComparison.Ordinal))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private void UpdatePlanModeHint()
