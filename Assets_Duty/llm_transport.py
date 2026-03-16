@@ -5,10 +5,12 @@ import io
 import json
 import re
 import socket
+import ssl
 import threading
 import time
 import urllib.error
 import urllib.request
+from urllib.parse import urlparse
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 LLM_TIMEOUT_SECONDS = 120
@@ -21,6 +23,47 @@ LLM_STREAM_PROGRESS_MIN_INTERVAL_SECONDS = 0.2
 
 class StreamUnsupportedError(RuntimeError):
     pass
+
+
+def _is_loopback_host(host: str) -> bool:
+    normalized = (host or "").strip().lower()
+    return normalized in {"localhost", "127.0.0.1", "::1", "0.0.0.0"}
+
+
+def _validate_auth_context(base_url: str, api_key: str) -> None:
+    if str(api_key or "").strip():
+        return
+
+    parsed = urlparse(str(base_url or ""))
+    if parsed.scheme.lower() != "https":
+        return
+
+    if _is_loopback_host(parsed.hostname or ""):
+        raise ValueError(
+            "HTTPS local endpoint with empty API key is not supported. "
+            "For Ollama use http://127.0.0.1:11434/v1."
+        )
+
+    raise ValueError(
+        "API key is empty for an HTTPS endpoint. "
+        "Provide an API key, or switch to local Ollama endpoint http://127.0.0.1:11434/v1."
+    )
+
+
+def _is_ssl_eof_error(ex: Exception) -> bool:
+    error_text = str(ex)
+    if "UNEXPECTED_EOF_WHILE_READING" in error_text:
+        return True
+    if "EOF occurred in violation of protocol" in error_text:
+        return True
+
+    reason = getattr(ex, "reason", None)
+    reason_text = str(reason)
+    if "UNEXPECTED_EOF_WHILE_READING" in reason_text:
+        return True
+    if "EOF occurred in violation of protocol" in reason_text:
+        return True
+    return isinstance(reason, ssl.SSLError) and "EOF" in reason_text
 
 
 def create_llm_request(url: str, payload: dict, api_key: str) -> urllib.request.Request:
@@ -91,6 +134,11 @@ def execute_with_retries(request_fn: Callable[[], str], mode: str) -> str:
                 ) from ex
             raise RuntimeError(f"HTTP error {ex.code}: {detail}") from ex
         except (urllib.error.URLError, TimeoutError, socket.timeout, ConnectionError) as ex:
+            if _is_ssl_eof_error(ex):
+                raise RuntimeError(
+                    "SSL handshake failed (UNEXPECTED_EOF_WHILE_READING). "
+                    "If you are using Ollama, set Base URL to http://127.0.0.1:11434/v1 (not https)."
+                ) from ex
             last_error = ex
             if attempt < LLM_MAX_RETRIES:
                 time.sleep(LLM_RETRY_BACKOFF_SECONDS * (attempt + 1))
@@ -202,6 +250,7 @@ def _build_llm_target(config: dict, messages: List[dict], transport_overrides: O
     if transport_overrides:
         payload.update({key: value for key, value in transport_overrides.items() if value is not None})
     api_key = str(config.get("api_key", "")).strip()
+    _validate_auth_context(base_url, api_key)
     return url, payload, api_key
 
 

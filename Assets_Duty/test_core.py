@@ -81,7 +81,7 @@ class TestNormalizeScheduleNoValidation(unittest.TestCase):
         self.assertEqual(len(normalized), 0)
 
     def test_no_force_fill(self):
-        """Should NOT fill up to per_day count if IDs are missing."""
+        """Should NOT fill up to the default slot count if IDs are missing."""
         # Request says 2 per day, but AI gives 0 or 1
         raw = [{"date": "2023-10-23", "area_ids": {"A": [1]}}]
         active = [1, 2, 3]
@@ -310,8 +310,11 @@ class TestCallLlmPayloadIsolation(unittest.TestCase):
             "llm_stream": False,
         }
         with patch(
-            "engine.request_llm_non_stream",
-            side_effect=['no csv here', '<csv>\nDate,Assigned_IDs,Note\n2023-10-10,4,ok\n</csv>'],
+            "llm_transport.call_llm_raw",
+            return_value="no csv here",
+        ), patch(
+            "llm_transport.request_llm_non_stream",
+            return_value="<csv>\nDate,Assigned_IDs,Note\n2023-10-10,4,ok\n</csv>",
         ):
             parsed, _ = call_llm(messages, config)
         self.assertEqual(parsed["schedule"][0]["date"], "2023-10-10")

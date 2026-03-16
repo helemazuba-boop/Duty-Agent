@@ -16,7 +16,7 @@ from postprocess import (
 )
 from prompt_gateway import build_single_pass_prompt_messages
 from state_ops import (
-    DEFAULT_PER_DAY,
+    DEFAULT_ASSIGNMENTS_PER_AREA,
     Context,
     anonymize_instruction,
     extract_ids_from_value,
@@ -64,8 +64,8 @@ def run_single_pass_schedule(
     area_names = normalize_area_names(["default_area"])
     area_per_day_counts = normalize_area_per_day_counts(
         area_names,
-        {"default_area": ctx.config.get("per_day", DEFAULT_PER_DAY)},
-        ctx.config.get("per_day", DEFAULT_PER_DAY),
+        {"default_area": DEFAULT_ASSIGNMENTS_PER_AREA},
+        DEFAULT_ASSIGNMENTS_PER_AREA,
     )
     apply_mode = str(input_data.get("apply_mode", "append")).lower()
 

@@ -40,7 +40,7 @@ def _build_agent1_prompt(agent_context: Dict[str, Any]) -> List[Dict[str, str]]:
     payload = {
         "request_time": agent_context["request_time"],
         "instruction": agent_context["instruction"],
-        "default_per_day": agent_context["default_per_day"],
+        "default_slot_count": agent_context["default_slot_count"],
         "previous_note": agent_context["previous_note"],
         "duty_rule": agent_context["duty_rule"],
     }
@@ -58,7 +58,7 @@ def _build_agent1_prompt(agent_context: Dict[str, Any]) -> List[Dict[str, str]]:
         "Template keys must exactly match dates.",
         "Counts must be positive integers.",
     ]
-    return _json_only_prompt("Agent1 Anchor Planner", "Extract dates and per-day area slots.", payload, output_contract, rules)
+    return _json_only_prompt("Agent1 Anchor Planner", "Extract dates and default area slot counts.", payload, output_contract, rules)
 
 
 def _build_agent2_prompt(agent_context: Dict[str, Any]) -> List[Dict[str, str]]:

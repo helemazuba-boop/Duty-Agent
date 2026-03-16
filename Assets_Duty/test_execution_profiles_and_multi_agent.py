@@ -1,7 +1,7 @@
+import sys
 import unittest
 from datetime import date, datetime
 from pathlib import Path
-import sys
 
 ROOT = Path(__file__).resolve().parent
 if str(ROOT) not in sys.path:
@@ -14,14 +14,41 @@ from state_ops import normalize_config
 
 
 class TestExecutionPlanSelection(unittest.TestCase):
-    def test_auto_campus_small_defaults_to_parallel_multi_agent(self):
-        config = normalize_config({"model_profile": "campus_small", "orchestration_mode": "auto"})
+    def test_campus_6agent_defaults_to_parallel_multi_agent(self):
+        config = normalize_config(
+            {
+                "selected_plan_id": "campus-6agent",
+                "plan_presets": [
+                    {
+                        "id": "campus-6agent",
+                        "name": "6Agent",
+                        "mode_id": "campus_6agent",
+                        "model": "campus-model",
+                        "model_profile": "campus_small",
+                        "multi_agent_execution_mode": "auto",
+                    }
+                ],
+            }
+        )
         profile = resolve_execution_profile({}, config)
         plan = build_execution_plan(profile)
         self.assertEqual(plan.runtime_mode, "multi_agent_parallel")
 
     def test_auto_edge_stays_single_pass(self):
-        config = normalize_config({"model_profile": "edge", "orchestration_mode": "auto"})
+        config = normalize_config(
+            {
+                "selected_plan_id": "standard",
+                "plan_presets": [
+                    {
+                        "id": "standard",
+                        "name": "Standard",
+                        "mode_id": "standard",
+                        "model": "edge-model",
+                        "model_profile": "edge",
+                    }
+                ],
+            }
+        )
         profile = resolve_execution_profile({}, config)
         plan = build_execution_plan(profile)
         self.assertEqual(plan.runtime_mode, "single_pass")
@@ -29,9 +56,17 @@ class TestExecutionPlanSelection(unittest.TestCase):
     def test_multi_agent_serial_mode_is_respected(self):
         config = normalize_config(
             {
-                "model_profile": "campus_small",
-                "orchestration_mode": "multi_agent",
-                "multi_agent_execution_mode": "serial",
+                "selected_plan_id": "campus-6agent",
+                "plan_presets": [
+                    {
+                        "id": "campus-6agent",
+                        "name": "6Agent",
+                        "mode_id": "campus_6agent",
+                        "model": "campus-model",
+                        "model_profile": "campus_small",
+                        "multi_agent_execution_mode": "serial",
+                    }
+                ],
             }
         )
         profile = resolve_execution_profile({}, config)
@@ -41,10 +76,17 @@ class TestExecutionPlanSelection(unittest.TestCase):
     def test_edge_tuned_strategy_uses_model_or_hint(self):
         config = normalize_config(
             {
-                "model_profile": "edge",
-                "orchestration_mode": "single_pass",
-                "provider_hint": "lab-edge-tuned",
-                "model": "duty-agent-0.8b",
+                "selected_plan_id": "standard",
+                "plan_presets": [
+                    {
+                        "id": "standard",
+                        "name": "Standard",
+                        "mode_id": "standard",
+                        "provider_hint": "lab-edge-tuned",
+                        "model": "duty-agent-0.8b",
+                        "model_profile": "edge",
+                    }
+                ],
             }
         )
         profile = resolve_execution_profile({}, config)
@@ -53,11 +95,11 @@ class TestExecutionPlanSelection(unittest.TestCase):
     def test_incremental_mode_uses_explicit_single_pass_strategy(self):
         config = normalize_config(
             {
-                "selected_plan_id": "incremental_small",
+                "selected_plan_id": "incremental-small",
                 "plan_presets": [
                     {
                         "id": "standard",
-                        "name": "标准",
+                        "name": "Standard",
                         "mode_id": "standard",
                         "model": "small-thinking",
                         "model_profile": "campus_small",
@@ -72,7 +114,7 @@ class TestExecutionPlanSelection(unittest.TestCase):
                     },
                     {
                         "id": "incremental-small",
-                        "name": "增量小模型",
+                        "name": "Incremental",
                         "mode_id": "incremental_small",
                         "model": "small-thinking",
                         "model_profile": "campus_small",
@@ -85,17 +127,10 @@ class TestExecutionPlanSelection(unittest.TestCase):
         self.assertEqual(plan.runtime_mode, "single_pass")
         self.assertEqual(profile.single_pass_strategy, "incremental_thinking")
 
-    def test_legacy_single_model_config_is_migrated_to_plan_presets(self):
-        config = normalize_config(
-            {
-                "api_key": "secret",
-                "model": "legacy-model",
-                "model_profile": "cloud",
-            }
-        )
+    def test_missing_plan_presets_fall_back_to_defaults(self):
+        config = normalize_config({})
         self.assertEqual(config["selected_plan_id"], "standard")
         self.assertEqual(len(config["plan_presets"]), 3)
-        self.assertEqual(config["plan_presets"][0]["model"], "legacy-model")
         self.assertEqual(config["plan_presets"][0]["mode_id"], "standard")
 
 

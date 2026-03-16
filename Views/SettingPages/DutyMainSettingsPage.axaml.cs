@@ -485,11 +485,16 @@ public partial class DutyMainSettingsPage : SettingsPageBase
                 _lastAppliedBackendConfig = _backendModule.CloneConfig(outcome.AppliedBackend);
                 _backendConfigState = DutyBackendConfigLoadState.Loaded;
                 _backendConfigErrorMessage = null;
-                ReconcileAppliedBackendConfig(outcome.AppliedBackend);
+                ApplyBackendConfig(outcome.AppliedBackend);
             }
 
             if (!outcome.Success)
             {
+                if (outcome.RestartRequired)
+                {
+                    RequestRestart();
+                }
+
                 UpdateConfigTracking("应用失败");
                 SetStatus(outcome.Message, GetStatusBrush(outcome.MessageLevel));
                 return false;
@@ -897,25 +902,6 @@ public partial class DutyMainSettingsPage : SettingsPageBase
         finally
         {
             _isLoadingConfig = false;
-        }
-    }
-
-    private void ReconcileAppliedBackendConfig(DutyBackendConfig backendConfig)
-    {
-        var normalizedPlans = _backendModule.NormalizePlanPresets(backendConfig.PlanPresets, backendConfig);
-        var normalizedSelectedPlanId = _backendModule.NormalizeSelectedPlanId(
-            backendConfig.SelectedPlanId,
-            normalizedPlans,
-            backendConfig);
-        var refreshSelectors = HasPlanSelectorChanges(normalizedPlans, normalizedSelectedPlanId);
-
-        _planPresetDrafts = _backendModule.ClonePlanPresets(normalizedPlans);
-        _currentPlanId = normalizedSelectedPlanId;
-        SetBackendConfigControlsEnabled(true);
-
-        if (refreshSelectors)
-        {
-            RefreshPlanSelectors();
         }
     }
 

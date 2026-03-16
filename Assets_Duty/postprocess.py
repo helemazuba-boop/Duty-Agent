@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import date, datetime
 from typing import Dict, List, Optional
 
-from state_ops import DEFAULT_PER_DAY, extract_ids_from_value
+from state_ops import DEFAULT_ASSIGNMENTS_PER_AREA, extract_ids_from_value
 
 DAY_NAMES = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 
@@ -83,7 +83,7 @@ def normalize_multi_area_schedule_ids(
         day_assignments: Dict[str, List[int]] = {}
         used_ids: set = set()
         for area_index, area_name in enumerate(area_names):
-            per_area_count = area_per_day_counts.get(area_name, DEFAULT_PER_DAY)
+            per_area_count = area_per_day_counts.get(area_name, DEFAULT_ASSIGNMENTS_PER_AREA)
             extracted_ids = extract_area_ids(entry, area_name, area_index, active_set, per_area_count)
             final_ids = [person_id for person_id in extracted_ids if person_id not in used_ids]
             day_assignments[area_name] = final_ids

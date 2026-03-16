@@ -57,21 +57,24 @@ internal sealed class DutyMainSettingsHostModule
             : traceId.Trim();
 
         _service.LoadConfig();
-        var hostConfig = _service.Config;
+        var currentConfig = _service.Config;
 
-        var previousEnableMcp = hostConfig.EnableMcp;
-        var previousEnableWebViewDebugLayer = hostConfig.EnableWebViewDebugLayer;
+        var previousEnableMcp = currentConfig.EnableMcp;
+        var previousEnableWebViewDebugLayer = currentConfig.EnableWebViewDebugLayer;
 
-        hostConfig.AutoRunMode = DutyScheduleOrchestrator.NormalizeAutoRunMode(values.AutoRunMode);
-        hostConfig.AutoRunParameter = (values.AutoRunParameter ?? hostConfig.AutoRunParameter).Trim();
-        hostConfig.AutoRunTime = DutyScheduleOrchestrator.NormalizeTimeOrThrow(values.AutoRunTime);
-        hostConfig.ComponentRefreshTime = DutyScheduleOrchestrator.NormalizeTimeOrThrow(values.ComponentRefreshTime);
-        hostConfig.DutyReminderEnabled = values.DutyReminderEnabled;
-        hostConfig.DutyReminderTimes = [NormalizeDutyReminderTime(values.DutyReminderTime)];
-        hostConfig.EnableMcp = values.EnableMcp;
-        hostConfig.EnableWebViewDebugLayer = values.EnableWebViewDebugLayer;
-        hostConfig.AutoRunTriggerNotificationEnabled = values.AutoRunTriggerNotificationEnabled;
-        hostConfig.NotificationDurationSeconds = Math.Clamp(values.NotificationDurationSeconds, 3, 15);
+        var hostConfig = _service.UpdateHostConfig(config =>
+        {
+            config.AutoRunMode = DutyScheduleOrchestrator.NormalizeAutoRunMode(values.AutoRunMode);
+            config.AutoRunParameter = (values.AutoRunParameter ?? config.AutoRunParameter).Trim();
+            config.AutoRunTime = DutyScheduleOrchestrator.NormalizeTimeOrThrow(values.AutoRunTime);
+            config.ComponentRefreshTime = DutyScheduleOrchestrator.NormalizeTimeOrThrow(values.ComponentRefreshTime);
+            config.DutyReminderEnabled = values.DutyReminderEnabled;
+            config.DutyReminderTimes = [NormalizeDutyReminderTime(values.DutyReminderTime)];
+            config.EnableMcp = values.EnableMcp;
+            config.EnableWebViewDebugLayer = values.EnableWebViewDebugLayer;
+            config.AutoRunTriggerNotificationEnabled = values.AutoRunTriggerNotificationEnabled;
+            config.NotificationDurationSeconds = Math.Clamp(values.NotificationDurationSeconds, 3, 15);
+        });
 
         var restartRequired = previousEnableMcp != values.EnableMcp ||
                               previousEnableWebViewDebugLayer != values.EnableWebViewDebugLayer;

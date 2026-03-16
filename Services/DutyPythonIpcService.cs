@@ -518,14 +518,8 @@ public class DutyPythonIpcService : IPythonIpcService
             null => null,
             DutyBackendConfigPatch patch => new
             {
-                apiKey = patch.ApiKey is null ? "<unchanged>" : DutyDiagnosticsLogger.MaskSecret(patch.ApiKey),
-                baseUrl = patch.BaseUrl is null ? "<unchanged>" : TruncateForLog(patch.BaseUrl, 120),
-                model = patch.Model is null ? "<unchanged>" : TruncateForLog(patch.Model, 120),
-                modelProfile = patch.ModelProfile ?? "<unchanged>",
-                orchestrationMode = patch.OrchestrationMode ?? "<unchanged>",
-                multiAgentExecutionMode = patch.MultiAgentExecutionMode ?? "<unchanged>",
-                providerHint = patch.ProviderHint is null ? "<unchanged>" : TruncateForLog(patch.ProviderHint, 120),
-                perDay = patch.PerDay?.ToString() ?? "<unchanged>",
+                selectedPlanId = patch.SelectedPlanId ?? "<unchanged>",
+                planPresetCount = patch.PlanPresets?.Count.ToString() ?? "<unchanged>",
                 dutyRule = patch.DutyRule is null ? "<unchanged>" : TruncateForLog(patch.DutyRule, 160)
             },
             _ => new

@@ -15,7 +15,6 @@ namespace DutyAgent.Services;
 public class DutyScheduleOrchestrator : IDisposable
 {
     private const string AutoRunInstruction = "Please generate duty schedule automatically based on roster.csv.";
-    private const int AutoRunRetryCooldownMinutes = 30;
     private const string ApiKeyMask = "********";
 
     private readonly IConfigManager _configManager;
@@ -29,7 +28,6 @@ public class DutyScheduleOrchestrator : IDisposable
     private readonly SemaphoreSlim _runCoreGate = new(1, 1);
     private readonly object _dutyReminderLock = new();
     private readonly HashSet<string> _sentDutyReminderSlots = new(StringComparer.Ordinal);
-    private DateTime _lastAutoRunAttempt = DateTime.MinValue;
     private readonly DutyPluginPaths _pluginPaths;
     private bool _runtimeStarted;
     private bool _pendingAutomationStateChange;
@@ -110,6 +108,7 @@ public class DutyScheduleOrchestrator : IDisposable
     // Proxy load/save for backward compatibility with existing view models
     public void LoadConfig() => _ = _configManager.Config;
     public void SaveConfig() => _configManager.SaveConfig();
+    public DutyConfig UpdateHostConfig(Action<DutyConfig> update) => _configManager.UpdateConfig(update);
     public async Task<DutyBackendConfig> LoadBackendConfigAsync(
         string requestSource = "host_settings",
         string? traceId = null,
@@ -164,12 +163,8 @@ public class DutyScheduleOrchestrator : IDisposable
             {
                 traceId = effectiveTraceId,
                 requestSource,
-                apiKey = patch.ApiKey is null ? "<unchanged>" : DutyDiagnosticsLogger.MaskSecret(patch.ApiKey),
-                baseUrl = patch.BaseUrl ?? "<unchanged>",
-                model = patch.Model ?? "<unchanged>",
-                modelProfile = patch.ModelProfile ?? "<unchanged>",
-                orchestrationMode = patch.OrchestrationMode ?? "<unchanged>",
-                multiAgentExecutionMode = patch.MultiAgentExecutionMode ?? "<unchanged>",
+                selectedPlanId = patch.SelectedPlanId ?? "<unchanged>",
+                planPresetCount = patch.PlanPresets?.Count.ToString() ?? "<unchanged>",
                 dutyRule = patch.DutyRule is null ? "<unchanged>" : TruncateForLog(patch.DutyRule, 160)
             });
         try
@@ -427,11 +422,6 @@ public class DutyScheduleOrchestrator : IDisposable
                 return;
             }
 
-            if ((now - _lastAutoRunAttempt).TotalMinutes < AutoRunRetryCooldownMinutes)
-            {
-                return;
-            }
-
             if (!IsAutoRunTriggered(mode, Config.AutoRunParameter, Config.LastAutoRunDate, now))
             {
                 return;
@@ -454,7 +444,6 @@ public class DutyScheduleOrchestrator : IDisposable
                 return;
             }
 
-            _lastAutoRunAttempt = now;
             PublishRunCompletionNotification(
                 instruction: AutoRunInstruction,
                 applyMode: "replace_all",
@@ -462,15 +451,11 @@ public class DutyScheduleOrchestrator : IDisposable
                 success: result.Success,
                 isAutoRun: true);
 
-            if (result.Success)
+            UpdateHostConfig(config =>
             {
-                Config.LastAutoRunDate = today;
-                Config.AiConsecutiveFailures = 0;
-            }
-            else
-            {
-                Config.AiConsecutiveFailures++;
-            }
+                config.LastAutoRunDate = today;
+                config.AiConsecutiveFailures = 0;
+            });
         }
         catch
         {

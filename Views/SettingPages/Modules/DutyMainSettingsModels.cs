@@ -28,7 +28,6 @@ internal sealed class DutyBackendSettingsValues
 {
     public string SelectedPlanId { get; init; } = DutyBackendModeIds.Standard;
     public List<DutyPlanPreset> PlanPresets { get; init; } = [];
-    public int? PerDay { get; init; }
     public string? DutyRule { get; init; }
 }
 

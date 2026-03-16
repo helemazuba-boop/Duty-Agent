@@ -488,40 +488,35 @@ public partial class DutyWebSettingsPage : SettingsPageBase
         var dutyReminderEnabled = config.DutyReminderEnabled ?? currentHost.DutyReminderEnabled;
         var dutyReminderTimes = config.DutyReminderTimes ?? currentHost.DutyReminderTimes;
 
-        var backendPatch = new DutyBackendConfigPatch
-        {
-            ApiKey = apiKey,
-            BaseUrl = config.BaseUrl ?? currentBackend.BaseUrl,
-            Model = config.Model ?? currentBackend.Model,
-            ModelProfile = config.ModelProfile is null
-                ? currentBackend.ModelProfile
-                : DutyScheduleOrchestrator.NormalizeModelProfile(config.ModelProfile),
-            OrchestrationMode = config.OrchestrationMode is null
-                ? currentBackend.OrchestrationMode
-                : DutyScheduleOrchestrator.NormalizeOrchestrationMode(config.OrchestrationMode),
-            MultiAgentExecutionMode = config.MultiAgentExecutionMode is null
-                ? currentBackend.MultiAgentExecutionMode
-                : DutyScheduleOrchestrator.NormalizeMultiAgentExecutionMode(config.MultiAgentExecutionMode),
-            ProviderHint = config.ProviderHint ?? currentBackend.ProviderHint,
-            PerDay = config.PerDay ?? currentBackend.PerDay,
-            DutyRule = config.DutyRule ?? currentBackend.DutyRule
-        };
+        var backendPatch = DutyBackendPlanPatchHelper.BuildSelectedPlanPatch(
+            currentBackend,
+            apiKey,
+            config.BaseUrl,
+            config.Model,
+            config.ModelProfile,
+            config.ProviderHint,
+            config.OrchestrationMode,
+            config.MultiAgentExecutionMode,
+            config.DutyRule);
         await _backendService.SaveBackendConfigAsync(backendPatch, "webview", traceId);
 
-        currentHost.AutoRunMode = DutyScheduleOrchestrator.NormalizeAutoRunMode(autoRunMode);
-        currentHost.AutoRunParameter = (autoRunParameter ?? currentHost.AutoRunParameter).Trim();
-        currentHost.AutoRunTime = DutyScheduleOrchestrator.NormalizeTimeOrThrow(autoRunTime);
-        currentHost.ComponentRefreshTime = DutyScheduleOrchestrator.NormalizeTimeOrThrow(componentRefreshTime);
-        currentHost.DutyReminderEnabled = dutyReminderEnabled;
-        currentHost.DutyReminderTimes = dutyReminderTimes;
-        currentHost.EnableMcp = enableMcp;
-        currentHost.EnableWebViewDebugLayer = enableWebViewDebugLayer;
-        currentHost.AutoRunTriggerNotificationEnabled = autoRunTriggerNotificationEnabled;
-        currentHost.PythonPath = pythonPath;
-        if (config.NotificationDurationSeconds.HasValue)
+        var savedHost = _backendService.UpdateHostConfig(hostConfig =>
         {
-            currentHost.NotificationDurationSeconds = Math.Clamp(config.NotificationDurationSeconds.Value, 3, 15);
-        }
+            hostConfig.AutoRunMode = DutyScheduleOrchestrator.NormalizeAutoRunMode(autoRunMode);
+            hostConfig.AutoRunParameter = (autoRunParameter ?? hostConfig.AutoRunParameter).Trim();
+            hostConfig.AutoRunTime = DutyScheduleOrchestrator.NormalizeTimeOrThrow(autoRunTime);
+            hostConfig.ComponentRefreshTime = DutyScheduleOrchestrator.NormalizeTimeOrThrow(componentRefreshTime);
+            hostConfig.DutyReminderEnabled = dutyReminderEnabled;
+            hostConfig.DutyReminderTimes = dutyReminderTimes;
+            hostConfig.EnableMcp = enableMcp;
+            hostConfig.EnableWebViewDebugLayer = enableWebViewDebugLayer;
+            hostConfig.AutoRunTriggerNotificationEnabled = autoRunTriggerNotificationEnabled;
+            hostConfig.PythonPath = pythonPath;
+            if (config.NotificationDurationSeconds.HasValue)
+            {
+                hostConfig.NotificationDurationSeconds = Math.Clamp(config.NotificationDurationSeconds.Value, 3, 15);
+            }
+        });
 
         if (previousEnableMcp != enableMcp ||
             previousEnableWebViewDebugLayer != enableWebViewDebugLayer)
@@ -533,9 +528,9 @@ public partial class DutyWebSettingsPage : SettingsPageBase
             new
             {
                 traceId,
-                autoRunMode = currentHost.AutoRunMode,
-                enableMcp = currentHost.EnableMcp,
-                enableWebViewDebugLayer = currentHost.EnableWebViewDebugLayer
+                autoRunMode = savedHost.AutoRunMode,
+                enableMcp = savedHost.EnableMcp,
+                enableWebViewDebugLayer = savedHost.EnableWebViewDebugLayer
             });
     }
 
@@ -566,7 +561,6 @@ public partial class DutyWebSettingsPage : SettingsPageBase
                 EnableWebViewDebugLayer = hostConfig.EnableWebViewDebugLayer,
                 AutoRunParameter = hostConfig.AutoRunParameter,
                 AutoRunTime = hostConfig.AutoRunTime,
-                PerDay = backendSnapshot.Config.PerDay,
                 DutyRule = backendSnapshot.Config.DutyRule,
                 ComponentRefreshTime = hostConfig.ComponentRefreshTime,
                 NotificationDurationSeconds = hostConfig.NotificationDurationSeconds,
@@ -941,9 +935,6 @@ public partial class DutyWebSettingsPage : SettingsPageBase
 
         [JsonPropertyName("auto_run_time")]
         public string? AutoRunTime { get; set; }
-
-        [JsonPropertyName("per_day")]
-        public int? PerDay { get; set; }
 
         [JsonPropertyName("duty_rule")]
         public string? DutyRule { get; set; }

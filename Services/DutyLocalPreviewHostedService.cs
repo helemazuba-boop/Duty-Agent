@@ -899,7 +899,6 @@ public sealed class DutyLocalPreviewHostedService : IHostedService, IDisposable
             "enable_webview_debug_layer",
             "auto_run_parameter",
             "auto_run_time",
-            "per_day",
             "duty_rule",
             "component_refresh_time",
             "auto_run_trigger_notification_enabled",
@@ -965,10 +964,6 @@ public sealed class DutyLocalPreviewHostedService : IHostedService, IDisposable
         {
             return ToolCallDispatchResult.Failure(-32602, parseError ?? "Invalid params.");
         }
-        if (!TryReadOptionalIntArgument(argumentsElement, "per_day", out var perDay, out parseError))
-        {
-            return ToolCallDispatchResult.Failure(-32602, parseError ?? "Invalid params.");
-        }
         if (!TryReadOptionalStringArgument(argumentsElement, "duty_rule", out var dutyRule, out parseError))
         {
             return ToolCallDispatchResult.Failure(-32602, parseError ?? "Invalid params.");
@@ -999,47 +994,46 @@ public sealed class DutyLocalPreviewHostedService : IHostedService, IDisposable
             return ToolCallDispatchResult.Failure(-32602, listParseError);
         }
 
-        _backendService.LoadConfig();
-        var hostConfig = _backendService.Config;
         try
         {
             var traceId = DutyDiagnosticsLogger.CreateTraceId("mcp-cfg");
             var currentBackend = await _backendService.LoadBackendConfigAsync("mcp", traceId);
-            var backendPatch = new DutyBackendConfigPatch
-            {
-                ApiKey = DutyScheduleOrchestrator.ResolveApiKeyInput(apiKey, currentBackend.ApiKey),
-                BaseUrl = baseUrl ?? currentBackend.BaseUrl,
-                Model = model ?? currentBackend.Model,
-                ModelProfile = modelProfile is null
-                    ? currentBackend.ModelProfile
-                    : DutyScheduleOrchestrator.NormalizeModelProfile(modelProfile),
-                OrchestrationMode = orchestrationMode is null
-                    ? currentBackend.OrchestrationMode
-                    : DutyScheduleOrchestrator.NormalizeOrchestrationMode(orchestrationMode),
-                MultiAgentExecutionMode = multiAgentExecutionMode is null
-                    ? currentBackend.MultiAgentExecutionMode
-                    : DutyScheduleOrchestrator.NormalizeMultiAgentExecutionMode(multiAgentExecutionMode),
-                ProviderHint = providerHint ?? currentBackend.ProviderHint,
-                PerDay = perDay ?? currentBackend.PerDay,
-                DutyRule = dutyRule ?? currentBackend.DutyRule
-            };
+            var backendPatch = DutyBackendPlanPatchHelper.BuildSelectedPlanPatch(
+                currentBackend,
+                apiKey,
+                baseUrl,
+                model,
+                modelProfile,
+                providerHint,
+                orchestrationMode,
+                multiAgentExecutionMode,
+                dutyRule);
             await _backendService.SaveBackendConfigAsync(backendPatch, "mcp", traceId);
 
-            hostConfig.AutoRunMode = autoRunMode ?? hostConfig.AutoRunMode;
-            hostConfig.AutoRunParameter = autoRunParameter ?? hostConfig.AutoRunParameter;
-            hostConfig.AutoRunTime = autoRunTime ?? hostConfig.AutoRunTime;
-            hostConfig.ComponentRefreshTime = componentRefreshTime ?? hostConfig.ComponentRefreshTime;
-            hostConfig.PythonPath = pythonPath ?? hostConfig.PythonPath;
-            hostConfig.DutyReminderEnabled = dutyReminderEnabled ?? hostConfig.DutyReminderEnabled;
-            hostConfig.DutyReminderTimes = dutyReminderTimes ?? hostConfig.DutyReminderTimes;
-            hostConfig.EnableMcp = enableMcp ?? hostConfig.EnableMcp;
-            hostConfig.EnableWebViewDebugLayer = enableWebViewDebugLayer ?? hostConfig.EnableWebViewDebugLayer;
-            hostConfig.AutoRunTriggerNotificationEnabled =
-                autoRunTriggerNotificationEnabled ?? hostConfig.AutoRunTriggerNotificationEnabled;
-            hostConfig.NotificationDurationSeconds = Math.Clamp(
-                notificationDurationSeconds ?? hostConfig.NotificationDurationSeconds,
-                3,
-                15);
+            _backendService.UpdateHostConfig(config =>
+            {
+                config.AutoRunMode = autoRunMode is null
+                    ? config.AutoRunMode
+                    : DutyScheduleOrchestrator.NormalizeAutoRunMode(autoRunMode);
+                config.AutoRunParameter = (autoRunParameter ?? config.AutoRunParameter).Trim();
+                config.AutoRunTime = autoRunTime is null
+                    ? config.AutoRunTime
+                    : DutyScheduleOrchestrator.NormalizeTimeOrThrow(autoRunTime);
+                config.ComponentRefreshTime = componentRefreshTime is null
+                    ? config.ComponentRefreshTime
+                    : DutyScheduleOrchestrator.NormalizeTimeOrThrow(componentRefreshTime);
+                config.PythonPath = (pythonPath ?? config.PythonPath).Trim();
+                config.DutyReminderEnabled = dutyReminderEnabled ?? config.DutyReminderEnabled;
+                config.DutyReminderTimes = dutyReminderTimes ?? config.DutyReminderTimes;
+                config.EnableMcp = enableMcp ?? config.EnableMcp;
+                config.EnableWebViewDebugLayer = enableWebViewDebugLayer ?? config.EnableWebViewDebugLayer;
+                config.AutoRunTriggerNotificationEnabled =
+                    autoRunTriggerNotificationEnabled ?? config.AutoRunTriggerNotificationEnabled;
+                config.NotificationDurationSeconds = Math.Clamp(
+                    notificationDurationSeconds ?? config.NotificationDurationSeconds,
+                    3,
+                    15);
+            });
         }
         catch (Exception ex)
         {
@@ -1074,7 +1068,6 @@ public sealed class DutyLocalPreviewHostedService : IHostedService, IDisposable
                 enable_webview_debug_layer = savedHost.EnableWebViewDebugLayer,
                 auto_run_parameter = savedHost.AutoRunParameter,
                 auto_run_time = savedHost.AutoRunTime,
-                per_day = savedBackend.PerDay,
                 duty_rule = savedBackend.DutyRule,
                 component_refresh_time = savedHost.ComponentRefreshTime,
                 notification_duration_seconds = savedHost.NotificationDurationSeconds,
@@ -1506,7 +1499,6 @@ public sealed class DutyLocalPreviewHostedService : IHostedService, IDisposable
                             enable_webview_debug_layer = new { type = "boolean" },
                             auto_run_parameter = new { type = "string" },
                             auto_run_time = new { type = "string" },
-                            per_day = new { type = "integer" },
                             duty_rule = new { type = "string" },
                             component_refresh_time = new { type = "string" },
                             auto_run_trigger_notification_enabled = new { type = "boolean" },
@@ -1804,31 +1796,22 @@ public sealed class DutyLocalPreviewHostedService : IHostedService, IDisposable
     private async Task ApplyOverwriteConfigAsync(OverwriteScheduleConfig config)
     {
         var traceId = DutyDiagnosticsLogger.CreateTraceId("overwrite-cfg");
-        _backendService.LoadConfig();
-        var hostConfig = _backendService.Config;
         var backendConfig = await _backendService.LoadBackendConfigAsync("web_preview", traceId);
-
-        var patch = new DutyBackendConfigPatch
-        {
-            ApiKey = DutyScheduleOrchestrator.ResolveApiKeyInput(config.ApiKey, backendConfig.ApiKey),
-            BaseUrl = config.BaseUrl ?? backendConfig.BaseUrl,
-            Model = config.Model ?? backendConfig.Model,
-            ModelProfile = config.ModelProfile is null
-                ? backendConfig.ModelProfile
-                : DutyScheduleOrchestrator.NormalizeModelProfile(config.ModelProfile),
-            OrchestrationMode = config.OrchestrationMode is null
-                ? backendConfig.OrchestrationMode
-                : DutyScheduleOrchestrator.NormalizeOrchestrationMode(config.OrchestrationMode),
-            MultiAgentExecutionMode = config.MultiAgentExecutionMode is null
-                ? backendConfig.MultiAgentExecutionMode
-                : DutyScheduleOrchestrator.NormalizeMultiAgentExecutionMode(config.MultiAgentExecutionMode),
-            ProviderHint = config.ProviderHint ?? backendConfig.ProviderHint,
-            PerDay = config.PerDay ?? backendConfig.PerDay,
-            DutyRule = config.DutyRule ?? backendConfig.DutyRule
-        };
+        var patch = DutyBackendPlanPatchHelper.BuildSelectedPlanPatch(
+            backendConfig,
+            config.ApiKey,
+            config.BaseUrl,
+            config.Model,
+            config.ModelProfile,
+            config.ProviderHint,
+            config.OrchestrationMode,
+            config.MultiAgentExecutionMode,
+            config.DutyRule);
         await _backendService.SaveBackendConfigAsync(patch, "web_preview", traceId);
-
-        hostConfig.PythonPath = config.PythonPath ?? hostConfig.PythonPath;
+        _backendService.UpdateHostConfig(hostConfig =>
+        {
+            hostConfig.PythonPath = config.PythonPath ?? hostConfig.PythonPath;
+        });
     }
 
     private bool IsMcpEnabled()
@@ -1968,8 +1951,6 @@ public sealed class DutyLocalPreviewHostedService : IHostedService, IDisposable
 
         [JsonPropertyName("provider_hint")]
         public string? ProviderHint { get; set; }
-        [JsonPropertyName("per_day")]
-        public int? PerDay { get; set; }
 
         [JsonPropertyName("duty_rule")]
         public string? DutyRule { get; set; }

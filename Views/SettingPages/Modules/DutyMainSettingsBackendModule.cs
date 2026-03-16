@@ -1,3 +1,7 @@
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Threading;
 using DutyAgent.Models;
 using DutyAgent.Services;
 
@@ -7,12 +11,6 @@ internal sealed class DutyMainSettingsBackendModule
 {
     private const string DefaultBaseUrl = "https://integrate.api.nvidia.com/v1";
     private const string DefaultModel = "moonshotai/kimi-k2-thinking";
-    private static readonly string[] DefaultPlanOrder =
-    [
-        DutyBackendModeIds.Standard,
-        DutyBackendModeIds.Campus6Agent,
-        DutyBackendModeIds.IncrementalSmall
-    ];
 
     private readonly DutyScheduleOrchestrator _service;
 
@@ -52,9 +50,6 @@ internal sealed class DutyMainSettingsBackendModule
             ProviderHint = config.ProviderHint,
             SelectedPlanId = NormalizeSelectedPlanId(config.SelectedPlanId, config.PlanPresets, config),
             PlanPresets = ClonePlanPresets(config.PlanPresets),
-            ModelPresets = ClonePresets(config.ModelPresets),
-            ModeProfiles = CloneModeProfiles(config.ModeProfiles),
-            PerDay = config.PerDay,
             DutyRule = config.DutyRule
         };
     }
@@ -143,7 +138,7 @@ internal sealed class DutyMainSettingsBackendModule
             return null;
         }
 
-        var normalizedPlanPresets = NormalizePlanPresets(values.PlanPresets, currentBackend, syncSelectedPlanFromCurrentBackend: false);
+        var normalizedPlanPresets = NormalizePlanPresets(values.PlanPresets, currentBackend);
         var normalizedSelectedPlanId = NormalizeSelectedPlanId(values.SelectedPlanId, normalizedPlanPresets, currentBackend);
         var normalizedDutyRule = values.DutyRule ?? string.Empty;
 
@@ -162,12 +157,6 @@ internal sealed class DutyMainSettingsBackendModule
         if (!ArePlanPresetsEqual(normalizedPlanPresets, NormalizePlanPresets(currentBackend.PlanPresets, currentBackend)))
         {
             patch.PlanPresets = ClonePlanPresets(normalizedPlanPresets);
-            hasChanges = true;
-        }
-
-        if (values.PerDay.HasValue && values.PerDay.Value != currentBackend.PerDay)
-        {
-            patch.PerDay = Math.Clamp(values.PerDay.Value, 1, 30);
             hasChanges = true;
         }
 
@@ -191,22 +180,18 @@ internal sealed class DutyMainSettingsBackendModule
         {
             selectedPlanId = patch.SelectedPlanId ?? "<unchanged>",
             planPresetCount = patch.PlanPresets?.Count.ToString() ?? "<unchanged>",
-            perDay = patch.PerDay?.ToString() ?? "<unchanged>",
             dutyRule = patch.DutyRule is null ? "<unchanged>" : TruncateForLog(patch.DutyRule, 160)
         };
     }
 
     public List<DutyPlanPreset> NormalizePlanPresets(
         IEnumerable<DutyPlanPreset>? planPresets,
-        DutyBackendConfig? currentBackend = null,
-        bool syncSelectedPlanFromCurrentBackend = true)
+        DutyBackendConfig? currentBackend = null)
     {
         var seed = ClonePlanPresets(planPresets);
         if (seed.Count == 0 && currentBackend != null)
         {
-            seed = currentBackend.PlanPresets.Count > 0
-                ? ClonePlanPresets(currentBackend.PlanPresets)
-                : BuildLegacyPlanPresets(currentBackend);
+            seed = ClonePlanPresets(currentBackend.PlanPresets);
         }
 
         if (seed.Count == 0)
@@ -252,27 +237,10 @@ internal sealed class DutyMainSettingsBackendModule
             index++;
         }
 
-        if (syncSelectedPlanFromCurrentBackend && currentBackend != null && normalized.Count > 0)
-        {
-            var selectedPlanId = NormalizeSelectedPlanId(currentBackend.SelectedPlanId, normalized);
-            var selectedPlan = normalized.FirstOrDefault(plan => string.Equals(plan.Id, selectedPlanId, StringComparison.Ordinal));
-            if (selectedPlan != null)
-            {
-                selectedPlan.ApiKey = currentBackend.ApiKey ?? string.Empty;
-                selectedPlan.BaseUrl = NormalizeBaseUrl(currentBackend.BaseUrl);
-                selectedPlan.Model = string.IsNullOrWhiteSpace(currentBackend.Model) ? DefaultModel : currentBackend.Model.Trim();
-                selectedPlan.ModelProfile = DutyScheduleOrchestrator.NormalizeModelProfile(currentBackend.ModelProfile);
-                selectedPlan.ProviderHint = (currentBackend.ProviderHint ?? string.Empty).Trim();
-                selectedPlan.MultiAgentExecutionMode = string.Equals(selectedPlan.ModeId, DutyBackendModeIds.Campus6Agent, StringComparison.Ordinal)
-                    ? DutyScheduleOrchestrator.NormalizeMultiAgentExecutionMode(currentBackend.MultiAgentExecutionMode)
-                    : "auto";
-            }
-        }
-
         return normalized;
     }
 
-    private List<DutyPlanPreset> CreateDefaultPlanPresets()
+    private static List<DutyPlanPreset> CreateDefaultPlanPresets()
     {
         return
         [
@@ -282,264 +250,18 @@ internal sealed class DutyMainSettingsBackendModule
         ];
     }
 
-    private DutyPlanPreset CreateDefaultPlanPreset(string modeId)
+    private static DutyPlanPreset CreateDefaultPlanPreset(string modeId)
     {
         return new DutyPlanPreset
         {
             Id = NormalizePlanId(modeId),
             Name = GetModeDisplayName(modeId),
-            ModeId = NormalizePlanModeId(modeId),
+            ModeId = modeId,
             BaseUrl = DefaultBaseUrl,
             Model = DefaultModel,
             ModelProfile = "auto",
-            MultiAgentExecutionMode = string.Equals(modeId, DutyBackendModeIds.Campus6Agent, StringComparison.Ordinal)
-                ? "auto"
-                : "auto"
+            MultiAgentExecutionMode = "auto"
         };
-    }
-
-    private List<DutyPlanPreset> BuildLegacyPlanPresets(DutyBackendConfig? currentBackend)
-    {
-        if (currentBackend == null)
-        {
-            return CreateDefaultPlanPresets();
-        }
-
-        var normalizedPresets = NormalizeLegacyModelPresets(currentBackend.ModelPresets, currentBackend);
-        var selectedModeId = InferLegacySelectedModeId(currentBackend);
-        var normalizedProfiles = NormalizeLegacyModeProfiles(currentBackend.ModeProfiles, normalizedPresets, currentBackend, selectedModeId);
-
-        var plans = new List<DutyPlanPreset>();
-        foreach (var modeId in DefaultPlanOrder)
-        {
-            var profile = normalizedProfiles.FirstOrDefault(item => string.Equals(item.ModeId, modeId, StringComparison.Ordinal))
-                          ?? CreateLegacyModeProfile(modeId, normalizedPresets[0].Id, modeId == DutyBackendModeIds.Campus6Agent ? "multi_agent" : "single_pass", "auto", modeId == DutyBackendModeIds.IncrementalSmall ? "incremental_thinking" : "auto");
-            var preset = normalizedPresets.FirstOrDefault(item => string.Equals(item.Id, profile.PresetId, StringComparison.Ordinal))
-                         ?? normalizedPresets[0];
-
-            plans.Add(new DutyPlanPreset
-            {
-                Id = NormalizePlanId(modeId),
-                Name = GetModeDisplayName(modeId),
-                ModeId = modeId,
-                ApiKey = preset.ApiKey,
-                BaseUrl = NormalizeBaseUrl(preset.BaseUrl),
-                Model = string.IsNullOrWhiteSpace(preset.Model) ? DefaultModel : preset.Model.Trim(),
-                ModelProfile = DutyScheduleOrchestrator.NormalizeModelProfile(preset.ModelProfile),
-                ProviderHint = (preset.ProviderHint ?? string.Empty).Trim(),
-                MultiAgentExecutionMode = string.Equals(modeId, DutyBackendModeIds.Campus6Agent, StringComparison.Ordinal)
-                    ? DutyScheduleOrchestrator.NormalizeMultiAgentExecutionMode(profile.MultiAgentExecutionMode)
-                    : "auto"
-            });
-        }
-
-        return plans;
-    }
-
-    private List<DutyModelPreset> ClonePresets(IEnumerable<DutyModelPreset>? presets)
-    {
-        return (presets ?? [])
-            .Select(preset => new DutyModelPreset
-            {
-                Id = preset.Id,
-                Name = preset.Name,
-                ApiKey = preset.ApiKey,
-                BaseUrl = preset.BaseUrl,
-                Model = preset.Model,
-                ModelProfile = preset.ModelProfile,
-                ProviderHint = preset.ProviderHint
-            })
-            .ToList();
-    }
-
-    private List<DutyModeProfile> CloneModeProfiles(IEnumerable<DutyModeProfile>? modeProfiles)
-    {
-        return (modeProfiles ?? [])
-            .Select(profile => new DutyModeProfile
-            {
-                ModeId = profile.ModeId,
-                PresetId = profile.PresetId,
-                OrchestrationMode = profile.OrchestrationMode,
-                MultiAgentExecutionMode = profile.MultiAgentExecutionMode,
-                SinglePassStrategy = profile.SinglePassStrategy
-            })
-            .ToList();
-    }
-
-    private List<DutyModelPreset> NormalizeLegacyModelPresets(IEnumerable<DutyModelPreset>? presets, DutyBackendConfig? currentBackend = null)
-    {
-        var seed = ClonePresets(presets);
-        if (seed.Count == 0 && currentBackend != null)
-        {
-            seed = currentBackend.ModelPresets.Count > 0
-                ? ClonePresets(currentBackend.ModelPresets)
-                : [CreateLegacyPreset(currentBackend)];
-        }
-
-        if (seed.Count == 0)
-        {
-            seed =
-            [
-                new DutyModelPreset
-                {
-                    Id = "default",
-                    Name = "默认模型"
-                }
-            ];
-        }
-
-        var normalized = new List<DutyModelPreset>();
-        var usedIds = new HashSet<string>(StringComparer.Ordinal);
-        var index = 1;
-
-        foreach (var preset in seed)
-        {
-            var baseId = NormalizePlanId(preset.Id);
-            if (baseId.Length == 0)
-            {
-                baseId = $"preset-{index}";
-            }
-
-            var resolvedId = EnsureUniquePlanId(baseId, usedIds);
-            var resolvedModel = (preset.Model ?? string.Empty).Trim();
-            normalized.Add(new DutyModelPreset
-            {
-                Id = resolvedId,
-                Name = NormalizeLegacyPresetName(preset.Name, resolvedModel, normalized.Count + 1),
-                ApiKey = (preset.ApiKey ?? string.Empty).Trim(),
-                BaseUrl = NormalizeBaseUrl(preset.BaseUrl),
-                Model = resolvedModel.Length == 0 ? DefaultModel : resolvedModel,
-                ModelProfile = DutyScheduleOrchestrator.NormalizeModelProfile(preset.ModelProfile),
-                ProviderHint = (preset.ProviderHint ?? string.Empty).Trim()
-            });
-            index++;
-        }
-
-        return normalized;
-    }
-
-    private List<DutyModeProfile> NormalizeLegacyModeProfiles(
-        IEnumerable<DutyModeProfile>? modeProfiles,
-        IReadOnlyList<DutyModelPreset> presets,
-        DutyBackendConfig? currentBackend = null,
-        string? selectedModeId = null)
-    {
-        var presetIds = presets.Select(x => x.Id).ToHashSet(StringComparer.Ordinal);
-        var fallbackPresetId = presets.FirstOrDefault()?.Id ?? "default";
-        var inputMap = CloneModeProfiles(modeProfiles)
-            .GroupBy(profile => NormalizePlanModeId(profile.ModeId), StringComparer.Ordinal)
-            .ToDictionary(group => group.Key, group => group.Last(), StringComparer.Ordinal);
-
-        var effectiveSelectedModeId = NormalizePlanModeId(selectedModeId ?? currentBackend?.SelectedPlanId);
-        return
-        [
-            CreateLegacyModeProfile(
-                DutyBackendModeIds.Standard,
-                ResolveLegacyPresetId(inputMap, DutyBackendModeIds.Standard, currentBackend, fallbackPresetId, presetIds, effectiveSelectedModeId),
-                "single_pass",
-                "auto",
-                "auto"),
-            CreateLegacyModeProfile(
-                DutyBackendModeIds.Campus6Agent,
-                ResolveLegacyPresetId(inputMap, DutyBackendModeIds.Campus6Agent, currentBackend, fallbackPresetId, presetIds, effectiveSelectedModeId),
-                "multi_agent",
-                ResolveLegacyCampusExecutionMode(inputMap, currentBackend, effectiveSelectedModeId),
-                "auto"),
-            CreateLegacyModeProfile(
-                DutyBackendModeIds.IncrementalSmall,
-                ResolveLegacyPresetId(inputMap, DutyBackendModeIds.IncrementalSmall, currentBackend, fallbackPresetId, presetIds, effectiveSelectedModeId),
-                "single_pass",
-                "auto",
-                "incremental_thinking")
-        ];
-    }
-
-    private static DutyModelPreset CreateLegacyPreset(DutyBackendConfig currentBackend)
-    {
-        return new DutyModelPreset
-        {
-            Id = "default",
-            Name = "默认模型",
-            ApiKey = currentBackend.ApiKey,
-            BaseUrl = currentBackend.BaseUrl,
-            Model = currentBackend.Model,
-            ModelProfile = currentBackend.ModelProfile,
-            ProviderHint = currentBackend.ProviderHint
-        };
-    }
-
-    private static DutyModeProfile CreateLegacyModeProfile(
-        string modeId,
-        string presetId,
-        string orchestrationMode,
-        string multiAgentExecutionMode,
-        string singlePassStrategy)
-    {
-        return new DutyModeProfile
-        {
-            ModeId = modeId,
-            PresetId = presetId,
-            OrchestrationMode = orchestrationMode,
-            MultiAgentExecutionMode = multiAgentExecutionMode,
-            SinglePassStrategy = singlePassStrategy
-        };
-    }
-
-    private string InferLegacySelectedModeId(DutyBackendConfig currentBackend)
-    {
-        var explicitModeId = NormalizePlanModeId(currentBackend.SelectedPlanId);
-        if (currentBackend.ModelPresets.Count > 0 || currentBackend.ModeProfiles.Count > 0)
-        {
-            return explicitModeId;
-        }
-
-        if (string.Equals(DutyScheduleOrchestrator.NormalizeOrchestrationMode(currentBackend.OrchestrationMode), "multi_agent", StringComparison.Ordinal))
-        {
-            return DutyBackendModeIds.Campus6Agent;
-        }
-
-        if (string.Equals((currentBackend.SinglePassStrategy ?? string.Empty).Trim(), "incremental_thinking", StringComparison.OrdinalIgnoreCase))
-        {
-            return DutyBackendModeIds.IncrementalSmall;
-        }
-
-        if (string.Equals(DutyScheduleOrchestrator.NormalizeModelProfile(currentBackend.ModelProfile), "campus_small", StringComparison.OrdinalIgnoreCase) &&
-            string.Equals(DutyScheduleOrchestrator.NormalizeOrchestrationMode(currentBackend.OrchestrationMode), "auto", StringComparison.Ordinal))
-        {
-            return DutyBackendModeIds.Campus6Agent;
-        }
-
-        return explicitModeId;
-    }
-
-    private static string ResolveLegacyPresetId(
-        IReadOnlyDictionary<string, DutyModeProfile> inputMap,
-        string modeId,
-        DutyBackendConfig? currentBackend,
-        string fallbackPresetId,
-        IReadOnlySet<string> presetIds,
-        string selectedModeId)
-    {
-        var candidate = inputMap.TryGetValue(modeId, out var inputProfile)
-            ? inputProfile.PresetId
-            : string.Equals(selectedModeId, modeId, StringComparison.Ordinal) && currentBackend != null
-                ? fallbackPresetId
-                : fallbackPresetId;
-        var normalized = (candidate ?? string.Empty).Trim();
-        return presetIds.Contains(normalized) ? normalized : fallbackPresetId;
-    }
-
-    private static string ResolveLegacyCampusExecutionMode(
-        IReadOnlyDictionary<string, DutyModeProfile> inputMap,
-        DutyBackendConfig? currentBackend,
-        string selectedModeId)
-    {
-        var candidate = inputMap.TryGetValue(DutyBackendModeIds.Campus6Agent, out var inputProfile)
-            ? inputProfile.MultiAgentExecutionMode
-            : string.Equals(selectedModeId, DutyBackendModeIds.Campus6Agent, StringComparison.Ordinal)
-                ? currentBackend?.MultiAgentExecutionMode
-                : "auto";
-        return DutyScheduleOrchestrator.NormalizeMultiAgentExecutionMode(candidate);
     }
 
     private static bool ArePlanPresetsEqual(IReadOnlyList<DutyPlanPreset> left, IReadOnlyList<DutyPlanPreset> right)
@@ -609,18 +331,7 @@ internal sealed class DutyMainSettingsBackendModule
             return normalized;
         }
 
-        return index <= DefaultPlanOrder.Length ? GetModeDisplayName(modeId) : (model.Length > 0 ? model : $"方案预设 {index}");
-    }
-
-    private static string NormalizeLegacyPresetName(string? name, string model, int index)
-    {
-        var normalized = (name ?? string.Empty).Trim();
-        if (normalized.Length > 0)
-        {
-            return normalized;
-        }
-
-        return model.Length > 0 ? model : $"模型预设 {index}";
+        return index <= 3 ? GetModeDisplayName(modeId) : (model.Length > 0 ? model : $"Plan Preset {index}");
     }
 
     private static string NormalizeBaseUrl(string? baseUrl)
@@ -634,8 +345,8 @@ internal sealed class DutyMainSettingsBackendModule
         return modeId switch
         {
             DutyBackendModeIds.Campus6Agent => "6Agent",
-            DutyBackendModeIds.IncrementalSmall => "增量小模型",
-            _ => "标准"
+            DutyBackendModeIds.IncrementalSmall => "\u589e\u91cf\u5c0f\u6a21\u578b",
+            _ => "\u6807\u51c6"
         };
     }
 

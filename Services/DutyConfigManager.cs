@@ -1,9 +1,8 @@
-﻿using System;
+using System;
 using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
-using System.Text.Json;
 using ClassIsland.Shared.Helpers;
 using DutyAgent.Models;
 
@@ -13,18 +12,22 @@ public interface IConfigManager
 {
     DutyConfig Config { get; }
     void SaveConfig();
+    DutyConfig UpdateConfig(Action<DutyConfig> update);
     event EventHandler<DutyConfig> ConfigChanged;
 }
 
 public class DutyConfigManager : IConfigManager, IDisposable
 {
     private const string DefaultDutyReminderTime = "07:40";
+    private static readonly TimeSpan WatcherIgnoreWindow = TimeSpan.FromMilliseconds(800);
+
     private readonly string _configPath;
-    private readonly string _backendConfigPath;
+    private readonly object _configLock = new();
     private FileSystemWatcher? _watcher;
     private DutyConfig _config = new();
     private bool _disposed;
-    private readonly object _configLock = new();
+    private bool _suppressAutoSave;
+    private DateTime _ignoreWatcherEventsUntilUtc = DateTime.MinValue;
 
     public DutyConfig Config
     {
@@ -44,7 +47,6 @@ public class DutyConfigManager : IConfigManager, IDisposable
         var dataDir = pluginPaths.DataDirectory;
         Directory.CreateDirectory(dataDir);
         _configPath = pluginPaths.HostConfigPath;
-        _backendConfigPath = pluginPaths.ConfigPath;
 
         LoadConfigInternal();
         InitializeWatcher(dataDir);
@@ -52,14 +54,14 @@ public class DutyConfigManager : IConfigManager, IDisposable
 
     private void LoadConfigInternal()
     {
+        DutyConfig loadedConfig;
+
         lock (_configLock)
         {
             if (_config != null)
             {
                 _config.PropertyChanged -= OnConfigPropertyChangedCurrent;
             }
-
-            EnsureSplitConfigFiles();
 
             if (!File.Exists(_configPath))
             {
@@ -70,9 +72,9 @@ public class DutyConfigManager : IConfigManager, IDisposable
             {
                 try
                 {
-                    var loaded = ConfigureFileHelper.LoadConfig<DutyConfig>(_configPath);
-                    loaded.DutyReminderTimes = NormalizeDutyReminderTimes(loaded.DutyReminderTimes);
-                    _config = loaded;
+                    loadedConfig = ConfigureFileHelper.LoadConfig<DutyConfig>(_configPath);
+                    loadedConfig.DutyReminderTimes = NormalizeDutyReminderTimes(loadedConfig.DutyReminderTimes);
+                    _config = loadedConfig;
                 }
                 catch (Exception ex)
                 {
@@ -83,81 +85,10 @@ public class DutyConfigManager : IConfigManager, IDisposable
             }
 
             _config.PropertyChanged += OnConfigPropertyChangedCurrent;
+            loadedConfig = _config;
         }
 
-        ConfigChanged?.Invoke(this, _config!);
-    }
-
-    private void EnsureSplitConfigFiles()
-    {
-        if (File.Exists(_configPath))
-        {
-            return;
-        }
-
-        if (!File.Exists(_backendConfigPath))
-        {
-            return;
-        }
-
-        try
-        {
-            using var doc = JsonDocument.Parse(File.ReadAllText(_backendConfigPath));
-            var root = doc.RootElement;
-            if (root.ValueKind != JsonValueKind.Object)
-            {
-                return;
-            }
-
-            var hostConfig = ExtractHostConfig(root);
-            hostConfig.DutyReminderTimes = NormalizeDutyReminderTimes(hostConfig.DutyReminderTimes);
-            ConfigureFileHelper.SaveConfig(_configPath, hostConfig);
-
-            var backendConfig = ExtractBackendConfig(root);
-            var options = new JsonSerializerOptions { WriteIndented = true };
-            File.WriteAllText(_backendConfigPath, JsonSerializer.Serialize(backendConfig, options));
-        }
-        catch (Exception ex)
-        {
-            Debug.WriteLine($"EnsureSplitConfigFiles Error: {ex.Message}");
-        }
-    }
-
-    private static DutyConfig ExtractHostConfig(JsonElement root)
-    {
-        var config = CreateDefaultHostConfig();
-        config.PythonPath = ReadString(root, "python_path", config.PythonPath);
-        config.AutoRunMode = ReadString(root, "auto_run_mode", config.AutoRunMode);
-        config.AutoRunParameter = ReadString(root, "auto_run_parameter", config.AutoRunParameter);
-        config.EnableMcp = ReadBoolean(root, "enable_mcp", config.EnableMcp);
-        config.EnableWebViewDebugLayer = ReadBoolean(root, "enable_webview_debug_layer", config.EnableWebViewDebugLayer);
-        config.AutoRunTime = ReadString(root, "auto_run_time", config.AutoRunTime);
-        config.AutoRunTriggerNotificationEnabled = ReadBoolean(root, "auto_run_trigger_notification_enabled", config.AutoRunTriggerNotificationEnabled);
-        config.AutoRunRetryTimes = ReadInt(root, "auto_run_retry_times", config.AutoRunRetryTimes);
-        config.AiConsecutiveFailures = ReadInt(root, "ai_consecutive_failures", config.AiConsecutiveFailures);
-        config.LastAutoRunDate = ReadString(root, "last_auto_run_date", config.LastAutoRunDate);
-        config.ComponentRefreshTime = ReadString(root, "component_refresh_time", config.ComponentRefreshTime);
-        config.NotificationDurationSeconds = ReadInt(root, "notification_duration_seconds", config.NotificationDurationSeconds);
-        config.DutyReminderEnabled = ReadBoolean(root, "duty_reminder_enabled", config.DutyReminderEnabled);
-        config.DutyReminderTimes = ReadStringList(root, "duty_reminder_times", config.DutyReminderTimes);
-        return config;
-    }
-
-    private static DutyBackendConfig ExtractBackendConfig(JsonElement root)
-    {
-        var config = new DutyBackendConfig
-        {
-            ApiKey = ReadString(root, "api_key", string.Empty),
-            BaseUrl = ReadString(root, "base_url", "https://integrate.api.nvidia.com/v1"),
-            Model = ReadString(root, "model", "moonshotai/kimi-k2-thinking"),
-            ModelProfile = DutyScheduleOrchestrator.NormalizeModelProfile(ReadString(root, "model_profile", "auto")),
-            OrchestrationMode = DutyScheduleOrchestrator.NormalizeOrchestrationMode(ReadString(root, "orchestration_mode", "auto")),
-            MultiAgentExecutionMode = ReadString(root, "multi_agent_execution_mode", "auto"),
-            ProviderHint = ReadString(root, "provider_hint", string.Empty),
-            PerDay = Math.Clamp(ReadInt(root, "per_day", 2), 1, 30),
-            DutyRule = ReadString(root, "duty_rule", string.Empty)
-        };
-        return config;
+        ConfigChanged?.Invoke(this, loadedConfig);
     }
 
     private static DutyConfig CreateDefaultHostConfig()
@@ -168,21 +99,84 @@ public class DutyConfigManager : IConfigManager, IDisposable
         };
     }
 
+    private static DutyConfig CloneConfig(DutyConfig source)
+    {
+        return new DutyConfig
+        {
+            PythonPath = source.PythonPath,
+            AutoRunMode = source.AutoRunMode,
+            AutoRunParameter = source.AutoRunParameter,
+            EnableMcp = source.EnableMcp,
+            EnableWebViewDebugLayer = source.EnableWebViewDebugLayer,
+            AutoRunTime = source.AutoRunTime,
+            AutoRunTriggerNotificationEnabled = source.AutoRunTriggerNotificationEnabled,
+            AutoRunRetryTimes = source.AutoRunRetryTimes,
+            AiConsecutiveFailures = source.AiConsecutiveFailures,
+            LastAutoRunDate = source.LastAutoRunDate,
+            ComponentRefreshTime = source.ComponentRefreshTime,
+            NotificationDurationSeconds = source.NotificationDurationSeconds,
+            DutyReminderEnabled = source.DutyReminderEnabled,
+            DutyReminderTimes = [.. (source.DutyReminderTimes ?? [])]
+        };
+    }
+
     private void SaveConfigInternal()
     {
+        _ignoreWatcherEventsUntilUtc = DateTime.UtcNow.Add(WatcherIgnoreWindow);
         ConfigureFileHelper.SaveConfig(_configPath, _config);
     }
 
     public void SaveConfig()
     {
+        DutyConfig savedConfig;
         lock (_configLock)
         {
             SaveConfigInternal();
+            savedConfig = _config;
         }
+
+        ConfigChanged?.Invoke(this, savedConfig);
+    }
+
+    public DutyConfig UpdateConfig(Action<DutyConfig> update)
+    {
+        if (update == null)
+        {
+            throw new ArgumentNullException(nameof(update));
+        }
+
+        DutyConfig updatedConfig;
+        lock (_configLock)
+        {
+            _suppressAutoSave = true;
+            try
+            {
+                var nextConfig = CloneConfig(_config);
+                update(nextConfig);
+                nextConfig.DutyReminderTimes = NormalizeDutyReminderTimes(nextConfig.DutyReminderTimes);
+                _config.PropertyChanged -= OnConfigPropertyChangedCurrent;
+                _config = nextConfig;
+                _config.PropertyChanged += OnConfigPropertyChangedCurrent;
+                SaveConfigInternal();
+                updatedConfig = _config;
+            }
+            finally
+            {
+                _suppressAutoSave = false;
+            }
+        }
+
+        ConfigChanged?.Invoke(this, updatedConfig);
+        return updatedConfig;
     }
 
     private void OnConfigPropertyChangedCurrent(object? sender, PropertyChangedEventArgs e)
     {
+        if (_suppressAutoSave)
+        {
+            return;
+        }
+
         SaveConfig();
     }
 
@@ -206,8 +200,18 @@ public class DutyConfigManager : IConfigManager, IDisposable
 
     private void OnConfigFileChanged(object sender, FileSystemEventArgs e)
     {
+        if (DateTime.UtcNow < _ignoreWatcherEventsUntilUtc)
+        {
+            return;
+        }
+
         Avalonia.Threading.Dispatcher.UIThread.InvokeAsync(() =>
         {
+            if (DateTime.UtcNow < _ignoreWatcherEventsUntilUtc)
+            {
+                return;
+            }
+
             LoadConfigInternal();
         });
     }
@@ -237,81 +241,42 @@ public class DutyConfigManager : IConfigManager, IDisposable
     private static string? TryNormalizeDutyReminderTime(string? input)
     {
         var val = (input ?? "").Trim();
-        if (val.Length != 5) return null;
-        if (!TimeSpan.TryParse(val + ":00", out var ts)) return null;
+        if (val.Length != 5)
+        {
+            return null;
+        }
+
+        if (!TimeSpan.TryParse(val + ":00", out _))
+        {
+            return null;
+        }
 
         var parts = val.Split(':');
-        if (parts.Length != 2) return null;
-        if (!int.TryParse(parts[0], out var h) || h < 0 || h > 23) return null;
-        if (!int.TryParse(parts[1], out var m) || m < 0 || m > 59) return null;
+        if (parts.Length != 2)
+        {
+            return null;
+        }
+
+        if (!int.TryParse(parts[0], out var h) || h < 0 || h > 23)
+        {
+            return null;
+        }
+
+        if (!int.TryParse(parts[1], out var m) || m < 0 || m > 59)
+        {
+            return null;
+        }
+
         return val;
-    }
-
-    private static string ReadString(JsonElement root, string propertyName, string fallback)
-    {
-        if (!root.TryGetProperty(propertyName, out var element))
-        {
-            return fallback;
-        }
-
-        return element.ValueKind == JsonValueKind.String ? (element.GetString() ?? fallback) : fallback;
-    }
-
-    private static bool ReadBoolean(JsonElement root, string propertyName, bool fallback)
-    {
-        if (!root.TryGetProperty(propertyName, out var element))
-        {
-            return fallback;
-        }
-
-        return element.ValueKind switch
-        {
-            JsonValueKind.True => true,
-            JsonValueKind.False => false,
-            JsonValueKind.Number => element.TryGetInt32(out var number) ? number != 0 : fallback,
-            JsonValueKind.String when bool.TryParse(element.GetString(), out var parsed) => parsed,
-            _ => fallback
-        };
-    }
-
-    private static int ReadInt(JsonElement root, string propertyName, int fallback)
-    {
-        if (!root.TryGetProperty(propertyName, out var element))
-        {
-            return fallback;
-        }
-
-        return element.ValueKind == JsonValueKind.Number && element.TryGetInt32(out var value)
-            ? value
-            : fallback;
-    }
-
-    private static List<string> ReadStringList(JsonElement root, string propertyName, List<string> fallback)
-    {
-        if (!root.TryGetProperty(propertyName, out var element) || element.ValueKind != JsonValueKind.Array)
-        {
-            return fallback;
-        }
-
-        var values = new List<string>();
-        foreach (var item in element.EnumerateArray())
-        {
-            if (item.ValueKind == JsonValueKind.String)
-            {
-                var value = item.GetString();
-                if (!string.IsNullOrWhiteSpace(value))
-                {
-                    values.Add(value.Trim());
-                }
-            }
-        }
-
-        return values.Count == 0 ? fallback : values;
     }
 
     public void Dispose()
     {
-        if (_disposed) return;
+        if (_disposed)
+        {
+            return;
+        }
+
         _disposed = true;
 
         if (_watcher != null)
