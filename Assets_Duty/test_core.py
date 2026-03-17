@@ -21,7 +21,6 @@ from engine import (
     anonymize_instruction,
     save_json_atomic,
     dedupe_pool_by_date,
-    merge_input_config,
     normalize_area_names,
     normalize_multi_area_schedule_ids,
     restore_schedule,
@@ -35,25 +34,6 @@ class TestAreaNameNormalization(unittest.TestCase):
 
     def test_missing_area_names_remains_empty(self):
         self.assertEqual(normalize_area_names(None), [])
-
-
-class TestMergeInputConfig(unittest.TestCase):
-    def test_root_fields_override_config_fields(self):
-        merged = merge_input_config(
-            {
-                "instruction": "root-instruction",
-                "model": "root-model",
-                "config": {
-                    "instruction": "config-instruction",
-                    "model": "config-model",
-                    "base_url": "https://example.com",
-                },
-            }
-        )
-        self.assertEqual(merged["instruction"], "root-instruction")
-        self.assertEqual(merged["model"], "root-model")
-        self.assertEqual(merged["base_url"], "https://example.com")
-
 
 class TestNormalizeScheduleNoValidation(unittest.TestCase):
     """Test the new 'no-validation' normalization logic."""

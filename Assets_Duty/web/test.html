@@ -429,12 +429,13 @@
     <section class="topbar">
       <div>
         <h1>Duty-Agent 测试控制台</h1>
-        <p>覆盖配置、多区域、名单、通知模板、排班执行、组件固定视图与快照回归。配置与名单默认自动应用。</p>
+        <p>统一验证 FastAPI 中枢下的配置、名单、通知模板、排班执行、组件固定视图与快照回归。正式业务配置通过 FastAPI 显式保存。</p>
       </div>
       <div class="mode">
         <label for="mode">模式</label>
         <select id="mode" style="width:170px">
           <option value="mock">本地模拟</option>
+          <option value="backend">FastAPI 中枢</option>
           <option value="bridge">宿主模式（网页容器）</option>
         </select>
         <span class="chip"><span id="bridgeDot" class="dot"></span><span id="bridgeText">宿主未启用</span></span>
@@ -474,8 +475,7 @@
               <button id="runBtn" class="primary">执行排班</button>
               <button id="loadBtn">加载数据</button>
             </div>
-            <div id="autoApplyStatus" class="status ok slim"><span class="dot ok"></span><span>自动应用已启用：输入后按 Enter
-                或切出输入框即可生效。</span></div>
+            <div id="autoApplyStatus" class="status slim"><span class="dot warn"></span><span>正式配置改为显式保存；本地调试项仅在页面内即时生效。</span></div>
             <div class="row">
               <label for="apiInstruction">本地接口覆盖排班指令（可留空复用上方排班指令）</label>
               <textarea id="apiInstruction" placeholder="例如：从今天开始覆盖排7天，每个区域每天2人。"></textarea>
@@ -499,35 +499,22 @@
                 placeholder="这里显示 /api/v1/schedule/overwrite 的 JSON 响应"></textarea>
             </div>
             <div id="runStatus" class="status"><span class="dot warn"></span><span>等待操作</span></div>
-            <div class="hint">快捷键：<span class="kbd">Ctrl</span> + <span class="kbd">Enter</span> 执行排班；输入框按 <span
-                class="kbd">Enter</span> 自动应用，文本域用 <span class="kbd">Ctrl</span> + <span class="kbd">Enter</span>
-              或失焦应用。导出快照会把接口密钥掩码为 <span class="mono">***仅运行时***</span>。</div>
+            <div class="hint">快捷键：<span class="kbd">Ctrl</span> + <span class="kbd">Enter</span> 执行排班。正式配置需点击“保存配置”提交到 FastAPI；导出快照会把接口密钥掩码为 <span class="mono">***仅运行时***</span>。</div>
           </div>
         </section>
 
         <section class="card">
           <div class="head">
-            <h2>区域与通知模板</h2><span class="pill">配置列表</span>
+            <h2>通知模板</h2><span class="pill">配置列表</span>
           </div>
           <div class="body">
-            <div class="row two">
-              <div class="row list">
-                <label>清洁区域</label>
-                <select id="areaList" size="6"></select>
-                <div class="btns">
-                  <input id="newArea" type="text" placeholder="新增区域名">
-                  <button id="addArea">新增</button>
-                  <button id="delArea" class="danger">删除</button>
-                </div>
-              </div>
-              <div class="row list">
-                <label>通知模板</label>
-                <select id="tplList" size="6"></select>
-                <div class="btns">
-                  <input id="newTpl" type="text" placeholder="{scene}{status}...">
-                  <button id="addTpl">新增</button>
-                  <button id="delTpl" class="danger">删除</button>
-                </div>
+            <div class="row list">
+              <label>通知模板</label>
+              <select id="tplList" size="6"></select>
+              <div class="btns">
+                <input id="newTpl" type="text" placeholder="{scene}{status}...">
+                <button id="addTpl">新增</button>
+                <button id="delTpl" class="danger">删除</button>
               </div>
             </div>
             <div class="hint">占位符：<span class="mono">{scene} {status} {date} {areas} {days} {per_day} {mode}
@@ -588,55 +575,57 @@
 
         <section class="card">
           <div class="head">
-            <h2>核心配置</h2><span class="pill">配置</span>
+            <h2>方案配置</h2><span class="pill">FastAPI 配置</span>
           </div>
           <div class="body">
+            <div class="hint">这里只编辑 FastAPI 正式业务配置：当前方案、方案预设和长期规则。宿主项不再混入这个页面。</div>
+            <div class="btns">
+              <button id="saveConfigBtn" class="primary">保存配置</button>
+              <button id="reloadConfigBtn">从后端重载</button>
+            </div>
+            <div class="row two">
+              <div class="row"><label for="cfgPlan">当前方案</label><select id="cfgPlan"></select></div>
+              <div class="row"><label for="cfgPlanName">方案名称</label><input id="cfgPlanName" type="text"></div>
+            </div>
+            <div class="row two">
+              <div class="row"><label for="cfgPlanMode">方案模式</label><select id="cfgPlanMode">
+                  <option value="standard">标准</option>
+                  <option value="campus_6agent">6Agent</option>
+                  <option value="incremental_small">增量小模型</option>
+                </select></div>
+              <div class="row"><label for="cfgProfile">模型画像</label><select id="cfgProfile">
+                  <option value="auto">自动</option>
+                  <option value="cloud">Cloud</option>
+                  <option value="campus_small">Campus Small</option>
+                  <option value="edge">Edge</option>
+                  <option value="custom">Custom</option>
+                </select></div>
+            </div>
             <div class="row"><label for="cfgApi">接口密钥（运行时）</label><input id="cfgApi" type="password"></div>
             <div class="row two">
               <div class="row"><label for="cfgBase">基础地址</label><input id="cfgBase" type="text"></div>
               <div class="row"><label for="cfgModel">模型</label><input id="cfgModel" type="text"></div>
+            </div>
+            <div class="row two">
+              <div class="row"><label for="cfgProvider">Provider Hint</label><input id="cfgProvider" type="text"></div>
+              <div class="row"><label for="cfgMulti">Multi-Agent 执行模式</label><select id="cfgMulti">
+                  <option value="auto">自动</option>
+                  <option value="parallel">并行</option>
+                  <option value="serial">串行</option>
+                </select></div>
             </div>
           </div>
         </section>
 
         <section class="card">
           <div class="head">
-            <h2>排班处理参数</h2><span class="pill">运行时</span>
+            <h2>本地调试选项</h2><span class="pill">Local Only</span>
           </div>
           <div class="body">
-            <div class="hint">以下参数控制排班的运行时处理逻辑（日期生成、结果归一化等），不会直接发送给 AI。</div>
-            <div class="row three">
-              <div class="row"><label for="cfgAuto">自动排班</label><select id="cfgAuto">
-                  <option value="true">启用</option>
-                  <option value="false">禁用</option>
-                </select></div>
-              <div class="row"><label for="cfgDay">自动排班日</label><select id="cfgDay">
-                  <option value="Monday">周一</option>
-                  <option value="Tuesday">周二</option>
-                  <option value="Wednesday">周三</option>
-                  <option value="Thursday">周四</option>
-                  <option value="Friday">周五</option>
-                  <option value="Saturday">周六</option>
-                  <option value="Sunday">周日</option>
-                </select></div>
-              <div class="row"><label for="cfgTime">自动排班时间</label><input id="cfgTime" type="time" step="60"></div>
+            <div class="hint">这些项不写入 FastAPI 正式配置，仅用于本地模拟和通知预览。</div>
+            <div class="row">
+              <div class="row"><label for="cfgPer">本地模拟每日人数</label><input id="cfgPer" type="number" min="1" max="30"></div>
             </div>
-            <div class="row two">
-              <div class="row"><label for="cfgPer">默认每区域每日人数</label><input id="cfgPer" type="number" min="1" max="30">
-              </div>
-              <div class="row"><label for="cfgRefresh">组件刷新时间</label><input id="cfgRefresh" type="time" step="60"></div>
-            </div>
-            <div class="row two">
-              <div class="row">
-                <label for="cfgEnableMcp">启用本地 MCP 接口</label>
-                <select id="cfgEnableMcp">
-                  <option value="false">禁用</option>
-                  <option value="true">启用</option>
-                </select>
-              </div>
-            </div>
-            <div class="row"><label for="cfgAreaCounts">区域单独人数（每行"区域=人数"）</label><textarea id="cfgAreaCounts"
-                class="mono" placeholder="教室=2&#10;清洁区=3"></textarea></div>
           </div>
         </section>
 
@@ -731,21 +720,46 @@
   <script>
     'use strict';
     const DEFAULT_CONFIG = {
-      python_path: '.\\Assets_Duty\\python-embed\\python.exe',
-      api_key: '',
-      base_url: 'https://integrate.api.nvidia.com/v1',
-      model: 'moonshotai/kimi-k2-thinking',
-      enable_auto_run: false,
-      enable_mcp: false,
-      auto_run_day: 'Monday',
-      auto_run_time: '08:00',
+      version: 1,
+      selected_plan_id: 'standard',
+      plan_presets: [
+        {
+          id: 'standard',
+          name: '标准',
+          mode_id: 'standard',
+          api_key: '',
+          base_url: 'https://integrate.api.nvidia.com/v1',
+          model: 'moonshotai/kimi-k2-thinking',
+          model_profile: 'auto',
+          provider_hint: '',
+          multi_agent_execution_mode: 'auto'
+        },
+        {
+          id: 'campus-6agent',
+          name: '6Agent',
+          mode_id: 'campus_6agent',
+          api_key: '',
+          base_url: 'https://integrate.api.nvidia.com/v1',
+          model: 'moonshotai/kimi-k2-thinking',
+          model_profile: 'auto',
+          provider_hint: '',
+          multi_agent_execution_mode: 'auto'
+        },
+        {
+          id: 'incremental-small',
+          name: '增量小模型',
+          mode_id: 'incremental_small',
+          api_key: '',
+          base_url: 'https://integrate.api.nvidia.com/v1',
+          model: 'moonshotai/kimi-k2-thinking',
+          model_profile: 'auto',
+          provider_hint: '',
+          multi_agent_execution_mode: 'auto'
+        }
+      ],
       per_day: 2,
       duty_rule: '',
-      component_refresh_time: '08:00',
-      area_names: [],
-      area_per_day_counts: {},
-      notification_templates: ['{scene}{status}，日期：{date}，区域：{areas}'],
-      start_from_today: false
+      notification_templates: ['{scene}{status}，日期：{date}，区域：{areas}']
     };
 
     const DEFAULT_ROSTER = [];
@@ -756,7 +770,10 @@
     const API_KEY_MASK = '***仅运行时***';
     const LEGACY_API_KEY_MASK = '***runtime-only***';
     const HOST_API_KEY_MASK = '********';
-    const hasBridge = !!(window.chrome && window.chrome.webview);
+    const urlParams = new URLSearchParams(window.location.search);
+    const forceHttpTransport = urlParams.get('transport') === 'http';
+    const hasBridge = !!(window.chrome && window.chrome.webview) && !forceHttpTransport;
+    const hasBackendTransport = window.location.protocol.startsWith('http');
 
     let runtimeMode = 'mock';
     let selectedRosterId = null;
@@ -780,10 +797,19 @@
       roster: normalizeRoster(DEFAULT_ROSTER),
       state: normalizeState(DEFAULT_STATE)
     };
+    let lastLoadedBackendConfig = clone(store.config);
+    let backendConfigDirty = false;
+    let pendingRosterSavePromise = Promise.resolve(true);
 
     const $ = (id) => document.getElementById(id);
 
     function clone(v) { return JSON.parse(JSON.stringify(v)); }
+    function createClientTraceId(prefix = 'web') {
+      if (window.crypto && typeof window.crypto.randomUUID === 'function') {
+        return `${prefix}-${window.crypto.randomUUID().replace(/-/g, '')}`;
+      }
+      return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+    }
     function int(v, d) { const n = Number(v); return Number.isFinite(n) ? Math.trunc(n) : d; }
     function bool(v, d) {
       if (typeof v === 'boolean') return v;
@@ -837,33 +863,72 @@
       return clone(fallback);
     }
     function names(v) { return list(v, [], true); }
-    function parseAreaCountsText(raw) {
-      const out = {};
-      for (const lineRaw of String(raw ?? '').split(/\r?\n/g)) {
-        const line = lineRaw.trim();
-        if (!line) continue;
-        const idx = line.search(/[=:：]/);
-        const area = (idx >= 0 ? line.slice(0, idx) : line).trim();
-        const countText = (idx >= 0 ? line.slice(idx + 1) : '').trim();
-        const n = Number(countText);
-        if (!area || !Number.isFinite(n)) continue;
-        out[area] = clamp(Math.trunc(n), 1, 30);
+    function normalizePlanModeId(value) {
+      const normalized = String(value ?? '').trim().toLowerCase();
+      if (['campus_6agent', 'campus6agent', '6agent', 'multi_agent'].includes(normalized)) return 'campus_6agent';
+      if (['incremental_small', 'incremental', 'small_incremental'].includes(normalized)) return 'incremental_small';
+      return 'standard';
+    }
+    function normalizeModelProfile(value) {
+      const normalized = String(value ?? '').trim().toLowerCase();
+      if (['cloud_general'].includes(normalized)) return 'cloud';
+      if (['campus', 'school_small'].includes(normalized)) return 'campus_small';
+      if (['edge_tuned', 'edge_finetuned'].includes(normalized)) return 'edge';
+      return ['auto', 'cloud', 'campus_small', 'edge', 'custom'].includes(normalized) ? normalized : 'auto';
+    }
+    function normalizeMultiAgentExecutionMode(value) {
+      const normalized = String(value ?? '').trim().toLowerCase();
+      if (['parallel', 'concurrent'].includes(normalized)) return 'parallel';
+      if (['serial', 'sequential'].includes(normalized)) return 'serial';
+      return 'auto';
+    }
+    function normalizePlanPresets(input) {
+      const source = Array.isArray(input) ? input : [];
+      const fallback = clone(DEFAULT_CONFIG.plan_presets);
+      const items = source.length ? source : fallback;
+      const out = [];
+      const usedIds = new Set();
+      for (let index = 0; index < items.length; index += 1) {
+        const raw = items[index] && typeof items[index] === 'object' ? items[index] : {};
+        const modeId = normalizePlanModeId(raw.mode_id);
+        let id = String(raw.id ?? '').trim() || (modeId === 'campus_6agent' ? 'campus-6agent' : modeId === 'incremental_small' ? 'incremental-small' : 'standard');
+        id = id.toLowerCase().replace(/[^a-z0-9-]+/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '') || `plan-${index + 1}`;
+        let uniqueId = id;
+        let suffix = 2;
+        while (usedIds.has(uniqueId)) {
+          uniqueId = `${id}-${suffix}`;
+          suffix += 1;
+        }
+        usedIds.add(uniqueId);
+        out.push({
+          id: uniqueId,
+          name: String(raw.name ?? '').trim() || (modeId === 'campus_6agent' ? '6Agent' : modeId === 'incremental_small' ? '增量小模型' : '标准'),
+          mode_id: modeId,
+          api_key: String(raw.api_key ?? ''),
+          base_url: String(raw.base_url ?? DEFAULT_CONFIG.plan_presets[0].base_url).trim() || DEFAULT_CONFIG.plan_presets[0].base_url,
+          model: String(raw.model ?? DEFAULT_CONFIG.plan_presets[0].model).trim() || DEFAULT_CONFIG.plan_presets[0].model,
+          model_profile: normalizeModelProfile(raw.model_profile),
+          provider_hint: String(raw.provider_hint ?? '').trim(),
+          multi_agent_execution_mode: modeId === 'campus_6agent'
+            ? normalizeMultiAgentExecutionMode(raw.multi_agent_execution_mode)
+            : 'auto'
+        });
       }
-      return out;
+      return out.length ? out : fallback;
     }
-    function normalizeAreaCounts(areaNames, sourceCounts, fallbackPerDay) {
-      const out = {};
-      const source = sourceCounts && typeof sourceCounts === 'object' ? sourceCounts : {};
-      const fallback = clamp(int(fallbackPerDay, DEFAULT_CONFIG.per_day), 1, 30);
-      for (const area of areaNames) {
-        out[area] = clamp(int(source[area], fallback), 1, 30);
-      }
-      return out;
+    function normalizeSelectedPlanId(value, planPresets) {
+      const plans = normalizePlanPresets(planPresets);
+      const raw = String(value ?? '').trim();
+      if (raw && plans.some((plan) => plan.id === raw)) return raw;
+      const normalizedMode = normalizePlanModeId(raw);
+      const modeMatch = plans.find((plan) => plan.mode_id === normalizedMode);
+      return modeMatch ? modeMatch.id : plans[0].id;
     }
-    function areaCountsToText(areaNames, areaCounts, fallbackPerDay) {
-      return areaNames.map((area) => `${area}=${clamp(int(areaCounts?.[area], fallbackPerDay), 1, 30)}`).join('\n');
+    function getSelectedPlan(config) {
+      const plans = normalizePlanPresets(config?.plan_presets);
+      const selectedPlanId = normalizeSelectedPlanId(config?.selected_plan_id, plans);
+      return plans.find((plan) => plan.id === selectedPlanId) || plans[0];
     }
-
     function applyHostTheme(payload) {
       if (!payload || typeof payload !== 'object') return;
       const root = document.documentElement;
@@ -891,24 +956,14 @@
     function normalizeConfig(input) {
       const raw = input && typeof input === 'object' ? input : {};
       const perDay = clamp(int(raw.per_day, DEFAULT_CONFIG.per_day), 1, 30);
-      const areaNames = list(raw.area_names, DEFAULT_CONFIG.area_names, true);
-      const areaCounts = normalizeAreaCounts(areaNames, raw.area_per_day_counts, perDay);
+      const planPresets = normalizePlanPresets(raw.plan_presets);
       return {
-        python_path: String(raw.python_path ?? DEFAULT_CONFIG.python_path).trim() || DEFAULT_CONFIG.python_path,
-        api_key: String(raw.api_key ?? ''),
-        base_url: String(raw.base_url ?? DEFAULT_CONFIG.base_url).trim() || DEFAULT_CONFIG.base_url,
-        model: String(raw.model ?? DEFAULT_CONFIG.model).trim() || DEFAULT_CONFIG.model,
-        enable_auto_run: bool(raw.enable_auto_run, false),
-        enable_mcp: bool(raw.enable_mcp, false),
-        auto_run_day: String(raw.auto_run_day ?? 'Monday').trim() || 'Monday',
-        auto_run_time: String(raw.auto_run_time ?? '08:00').trim() || '08:00',
+        version: Math.max(1, int(raw.version, DEFAULT_CONFIG.version)),
+        selected_plan_id: normalizeSelectedPlanId(raw.selected_plan_id, planPresets),
+        plan_presets: planPresets,
         per_day: perDay,
         duty_rule: String(raw.duty_rule ?? ''),
-        component_refresh_time: String(raw.component_refresh_time ?? '08:00').trim() || '08:00',
-        area_names: areaNames,
-        area_per_day_counts: areaCounts,
-        notification_templates: list(raw.notification_templates, DEFAULT_CONFIG.notification_templates),
-        start_from_today: bool(raw.start_from_today, false)
+        notification_templates: list(raw.notification_templates, DEFAULT_CONFIG.notification_templates)
       };
     }
 
@@ -969,8 +1024,32 @@
       return state;
     }
 
+    async function readResponsePayload(response) {
+      const text = await response.text();
+      if (!text) return {};
+      try {
+        return JSON.parse(text);
+      } catch {
+        return { message: text };
+      }
+    }
+
+    function responseErrorMessage(response, payload) {
+      if (payload && typeof payload.detail === 'string' && payload.detail.trim()) return payload.detail.trim();
+      if (payload && typeof payload.message === 'string' && payload.message.trim()) return payload.message.trim();
+      return `HTTP ${response.status}`;
+    }
+
     function assignment(item, areaOrder = []) {
       const map = normalizeAssignments(item?.area_assignments);
+      if (!Object.keys(map).length) {
+        const classroom = names(item?.classroom_students);
+        const cleaning = names(item?.cleaning_area_students);
+        const students = names(item?.students);
+        if (classroom.length) map['教室'] = classroom;
+        if (cleaning.length) map['清洁区'] = cleaning;
+        if (!Object.keys(map).length && students.length) map.default_area = students;
+      }
       const ordered = {};
       for (const area of areaOrder) if (map[area]) ordered[area] = [...map[area]];
       for (const [k, v] of Object.entries(map)) if (!ordered[k]) ordered[k] = [...v];
@@ -1082,28 +1161,259 @@
       node.innerHTML = `<span class="${dot}"></span><span>${html(text)}</span>`;
     }
 
-    function applyConfigImmediate(reason, options) {
+    function modeLabel(modeId) {
+      return modeId === 'campus_6agent' ? '6Agent' : modeId === 'incremental_small' ? '增量小模型' : '标准';
+    }
+
+    function configBody(config) {
+      const normalized = normalizeConfig(config);
+      return {
+        selected_plan_id: normalized.selected_plan_id,
+        plan_presets: normalized.plan_presets.map((plan) => ({
+          id: plan.id,
+          name: plan.name,
+          mode_id: plan.mode_id,
+          api_key: plan.api_key,
+          base_url: plan.base_url,
+          model: plan.model,
+          model_profile: plan.model_profile,
+          provider_hint: plan.provider_hint,
+          multi_agent_execution_mode: plan.multi_agent_execution_mode
+        })),
+        duty_rule: normalized.duty_rule
+      };
+    }
+
+    function setBackendConfigDirtyState(isDirty, text) {
+      backendConfigDirty = !!isDirty;
+      if (typeof text === 'string' && text.trim()) {
+        setAutoApplyStatus(isDirty ? 'warn' : 'ok', text);
+        return;
+      }
+      setAutoApplyStatus(
+        backendConfigDirty ? 'warn' : 'ok',
+        backendConfigDirty ? '正式配置有未保存修改。' : '正式配置已与 FastAPI 同步。'
+      );
+    }
+
+    function updateBackendConfigUiState() {
+      const disableSave = runtimeMode !== 'backend' || !hasBackendTransport || !backendConfigDirty;
+      const disableReload = runtimeMode !== 'backend' || !hasBackendTransport;
+      $('saveConfigBtn').disabled = disableSave;
+      $('reloadConfigBtn').disabled = disableReload;
+      const selectedPlan = getSelectedPlan(store.config);
+      const isMultiAgent = selectedPlan && selectedPlan.mode_id === 'campus_6agent';
+      $('cfgMulti').disabled = !isMultiAgent;
+    }
+
+    function markBackendConfigDirty(reason) {
+      const dirty = JSON.stringify(configBody(store.config)) !== JSON.stringify(configBody(lastLoadedBackendConfig));
+      setBackendConfigDirtyState(dirty);
+      if (reason) {
+        log('INFO', dirty ? '正式配置已变更，等待保存。' : '正式配置已回到已保存状态。', { reason });
+      }
+      updateBackendConfigUiState();
+    }
+
+    function applyLocalConfigImmediate(reason, options) {
       const opts = options && typeof options === 'object' ? options : {};
       syncConfigFromForm();
       if (opts.maskApiInput) {
-        $('cfgApi').value = String(store.config.api_key || '').trim() ? API_KEY_MASK : '';
-      }
-      if (runtimeMode === 'bridge') {
-        const ok = bridgePost('save_config', { config: store.config });
-        if (!ok) {
-          setAutoApplyStatus('err', '配置自动同步失败：宿主不可用。');
-          log('ERROR', '配置自动同步失败：宿主不可用。', { reason: reason || 'unknown' });
-          return false;
-        }
-        if (!opts.quiet) {
-          setAutoApplyStatus('ok', '配置已自动应用并同步到宿主。');
-        }
-        return true;
+        const selectedPlan = getSelectedPlan(store.config);
+        $('cfgApi').value = String(selectedPlan?.api_key || '').trim() ? API_KEY_MASK : '';
       }
       if (!opts.quiet) {
-        setAutoApplyStatus('ok', '配置已自动应用（本地模式）。');
+        setAutoApplyStatus('ok', '本地调试项已更新。');
       }
+      if (reason) {
+        log('INFO', '本地调试配置已更新。', { reason });
+      }
+      updateBackendConfigUiState();
       return true;
+    }
+
+    async function loadConfigFromBackend(reason) {
+      if (!hasBackendTransport) {
+        setAutoApplyStatus('err', '当前页面未连接到 FastAPI。');
+        return false;
+      }
+      const endpoint = `${window.location.origin}/api/v1/config`;
+      try {
+        log('INFO', '开始从 FastAPI 加载正式配置。', { reason: reason || 'manual', endpoint });
+        const response = await fetch(endpoint, {
+          headers: {
+            'Accept': 'application/json',
+            'X-Duty-Request-Source': 'web_app'
+          }
+        });
+        const text = await response.text();
+        const data = text ? JSON.parse(text) : {};
+        if (!response.ok) {
+          throw new Error(data.detail || data.message || `HTTP ${response.status}`);
+        }
+        store.config = normalizeConfig({
+          ...store.config,
+          ...data,
+          per_day: store.config.per_day,
+          notification_templates: store.config.notification_templates
+        });
+        lastLoadedBackendConfig = clone(store.config);
+        renderConfig();
+        setBackendConfigDirtyState(false, '正式配置已从 FastAPI 重载。');
+        log('OK', 'FastAPI 正式配置加载成功。', {
+          reason: reason || 'manual',
+          version: store.config.version,
+          selected_plan_id: store.config.selected_plan_id
+        });
+        return true;
+      } catch (e) {
+        const message = e instanceof Error ? e.message : String(e);
+        setAutoApplyStatus('err', `正式配置加载失败：${message}`);
+        log('ERROR', 'FastAPI 正式配置加载失败。', { reason: reason || 'manual', message, endpoint });
+        return false;
+      }
+    }
+
+    function buildBackendConfigPatch() {
+      syncConfigFromForm();
+      const currentBody = configBody(store.config);
+      const loadedBody = configBody(lastLoadedBackendConfig);
+      const patch = {
+        expected_version: lastLoadedBackendConfig.version
+      };
+      let hasChanges = false;
+      for (const key of ['selected_plan_id', 'plan_presets', 'duty_rule']) {
+        if (JSON.stringify(currentBody[key]) !== JSON.stringify(loadedBody[key])) {
+          patch[key] = currentBody[key];
+          hasChanges = true;
+        }
+      }
+      return hasChanges ? patch : null;
+    }
+
+    async function saveConfigToBackend(reason) {
+      if (!hasBackendTransport) {
+        setAutoApplyStatus('err', '当前页面未连接到 FastAPI。');
+        return false;
+      }
+      const patch = buildBackendConfigPatch();
+      if (!patch) {
+        setBackendConfigDirtyState(false, '正式配置没有变化。');
+        return true;
+      }
+      const endpoint = `${window.location.origin}/api/v1/config`;
+      $('saveConfigBtn').disabled = true;
+      try {
+        log('INFO', '开始保存正式配置到 FastAPI。', {
+          reason: reason || 'manual',
+          endpoint,
+          patch_keys: Object.keys(patch)
+        });
+        const response = await fetch(endpoint, {
+          method: 'PATCH',
+          headers: {
+            'Accept': 'application/json',
+            'Content-Type': 'application/json',
+            'X-Duty-Request-Source': 'web_app'
+          },
+          body: JSON.stringify(patch)
+        });
+        const text = await response.text();
+        const data = text ? JSON.parse(text) : {};
+        if (!response.ok) {
+          const detail = data.detail || data.message || `HTTP ${response.status}`;
+          throw new Error(detail);
+        }
+        store.config = normalizeConfig({
+          ...store.config,
+          ...data,
+          per_day: store.config.per_day,
+          notification_templates: store.config.notification_templates
+        });
+        lastLoadedBackendConfig = clone(store.config);
+        renderConfig();
+        setBackendConfigDirtyState(false, `正式配置已保存到 FastAPI（版本 ${store.config.version}）。`);
+        log('OK', 'FastAPI 正式配置保存成功。', {
+          reason: reason || 'manual',
+          version: store.config.version,
+          selected_plan_id: store.config.selected_plan_id
+        });
+        return true;
+      } catch (e) {
+        const message = e instanceof Error ? e.message : String(e);
+        if (message.includes('Config version mismatch')) {
+          await loadConfigFromBackend('version_conflict');
+          setAutoApplyStatus('err', '保存失败：配置版本已变化，已自动重载最新配置。');
+        } else {
+          setAutoApplyStatus('err', `正式配置保存失败：${message}`);
+        }
+        log('ERROR', 'FastAPI 正式配置保存失败。', { reason: reason || 'manual', message, endpoint, expected_version: patch.expected_version });
+        return false;
+      } finally {
+        updateBackendConfigUiState();
+      }
+    }
+
+    async function saveRosterToBackend(rosterSnapshot, reason, options) {
+      const opts = options && typeof options === 'object' ? options : {};
+      if (!hasBackendTransport) {
+        setAutoApplyStatus('err', '名单同步失败：当前页面未连接到 FastAPI。');
+        log('ERROR', 'FastAPI 名单保存失败：页面不在 HTTP 环境中。', { reason: reason || 'unknown' });
+        return false;
+      }
+
+      const endpoint = `${window.location.origin}/api/v1/roster`;
+      const traceId = createClientTraceId('roster');
+      try {
+        log('INFO', '开始保存名单到 FastAPI。', {
+          reason: reason || 'unknown',
+          endpoint,
+          trace_id: traceId,
+          roster_count: rosterSnapshot.length
+        });
+        const response = await fetch(endpoint, {
+          method: 'PUT',
+          headers: {
+            'Accept': 'application/json',
+            'Content-Type': 'application/json',
+            'X-Duty-Trace-Id': traceId,
+            'X-Duty-Request-Source': 'web_app'
+          },
+          body: JSON.stringify({ roster: rosterSnapshot })
+        });
+        const data = await readResponsePayload(response);
+        if (!response.ok) {
+          throw new Error(responseErrorMessage(response, data));
+        }
+
+        const savedRoster = normalizeRoster(data.roster);
+        store.roster = savedRoster;
+        if (selectedRosterId != null && !savedRoster.some((entry) => entry.id === selectedRosterId)) {
+          selectedRosterId = null;
+        }
+        renderRoster();
+        setAutoApplyStatus('ok', '名单已同步到 FastAPI。');
+        if (!opts.quiet) {
+          setStatus('ok', '名单已保存到 FastAPI。');
+        }
+        log('OK', 'FastAPI 名单保存成功。', {
+          reason: reason || 'unknown',
+          trace_id: traceId,
+          roster_count: savedRoster.length,
+          active_count: savedRoster.filter((entry) => entry.active).length
+        });
+        return true;
+      } catch (e) {
+        const message = e instanceof Error ? e.message : String(e);
+        setAutoApplyStatus('err', `名单同步失败：${message}`);
+        log('ERROR', 'FastAPI 名单保存失败。', {
+          reason: reason || 'unknown',
+          trace_id: traceId,
+          message,
+          roster_count: rosterSnapshot.length
+        });
+        return false;
+      }
     }
 
     function applyRosterImmediate(reason, options) {
@@ -1118,6 +1428,16 @@
         if (!opts.quiet) {
           setAutoApplyStatus('ok', '名单已自动应用并同步到宿主。');
         }
+        return true;
+      }
+      if (runtimeMode === 'backend') {
+        const rosterSnapshot = normalizeRoster(store.roster);
+        if (!opts.quiet) {
+          setAutoApplyStatus('warn', '名单修改已记录，正在同步到 FastAPI。');
+        }
+        pendingRosterSavePromise = pendingRosterSavePromise
+          .catch(() => false)
+          .then(() => saveRosterToBackend(rosterSnapshot, reason, opts));
         return true;
       }
       if (!opts.quiet) {
@@ -1135,31 +1455,41 @@
     }
 
     function setMode(mode) {
-      runtimeMode = mode === 'bridge' ? 'bridge' : 'mock';
+      runtimeMode = mode === 'bridge' ? 'bridge' : mode === 'backend' ? 'backend' : 'mock';
       $('mode').value = runtimeMode;
-      $('runtimeTag').textContent = runtimeMode === 'bridge' ? '运行模式：宿主模式' : '运行模式：本地模拟';
-      log('INFO', `切换运行模式：${runtimeMode === 'bridge' ? '宿主模式' : '本地模拟'}`);
+      $('runtimeTag').textContent = runtimeMode === 'bridge'
+        ? '运行模式：宿主模式'
+        : runtimeMode === 'backend'
+          ? '运行模式：FastAPI 模式'
+          : '运行模式：本地模拟';
+      log('INFO', `切换运行模式：${runtimeMode === 'bridge' ? '宿主模式' : runtimeMode === 'backend' ? 'FastAPI 模式' : '本地模拟'}`);
       if (runtimeMode === 'bridge' && hasBridge) {
         $('bridgeDot').className = 'dot ok';
         $('bridgeText').textContent = '宿主已连接';
-        setAutoApplyStatus('ok', '自动应用已启用：配置与名单会立即同步宿主。');
+        setAutoApplyStatus('warn', 'Bridge 模式仅保留历史能力；正式配置以 FastAPI 保存链路为准。');
         bridgePost('ready', { features: ['config', 'roster', 'state', 'run', 'notification'], version: 'test-html-1' });
       } else if (runtimeMode === 'bridge') {
         $('bridgeDot').className = 'dot warn';
         $('bridgeText').textContent = '宿主不可用';
-        setAutoApplyStatus('warn', '自动应用仅保留本地：宿主不可用。');
+        setAutoApplyStatus('warn', 'Bridge 模式不可用。');
+      } else if (runtimeMode === 'backend') {
+        $('bridgeDot').className = hasBackendTransport ? 'dot ok' : 'dot warn';
+        $('bridgeText').textContent = hasBackendTransport ? 'FastAPI 已连接' : 'FastAPI 不可用';
+        setBackendConfigDirtyState(backendConfigDirty);
+        setApiOverwriteUrl('');
       } else {
         $('bridgeDot').className = 'dot';
         $('bridgeText').textContent = '宿主未启用';
-        setAutoApplyStatus('ok', '自动应用已启用：本地修改即时生效。');
+        setAutoApplyStatus('ok', '当前为本地模拟模式；正式配置不会自动写回后端。');
       }
+      updateBackendConfigUiState();
     }
 
     function setLocalPreviewUrl(url) {
       const text = String(url || '').trim();
       localPreviewUrl = text;
       $('previewUrlTag').textContent = text ? `本地调试URL：${text}` : '本地调试URL：-';
-      if (!apiOverwriteUrl && text) {
+      if (!apiOverwriteUrl && text && !hasBackendTransport) {
         try {
           setApiOverwriteUrl(`${new URL(text).origin}/api/v1/schedule/overwrite`);
         } catch {
@@ -1213,43 +1543,61 @@
 
     function renderConfig() {
       const c = store.config;
-      $('cfgApi').value = String(c.api_key || '').trim() ? API_KEY_MASK : '';
-      $('cfgBase').value = c.base_url;
-      $('cfgModel').value = c.model;
-      $('cfgAuto').value = String(c.enable_auto_run);
-      $('cfgEnableMcp').value = String(c.enable_mcp);
-      $('cfgDay').value = c.auto_run_day;
-      $('cfgTime').value = c.auto_run_time;
+      const selectedPlan = getSelectedPlan(c);
+      const planSelect = $('cfgPlan');
+      planSelect.innerHTML = '';
+      for (const plan of c.plan_presets) {
+        const option = document.createElement('option');
+        option.value = plan.id;
+        option.textContent = `${plan.name} (${modeLabel(plan.mode_id)})`;
+        planSelect.appendChild(option);
+      }
+      planSelect.value = c.selected_plan_id;
+      planSelect.dataset.currentId = c.selected_plan_id;
+      $('cfgPlanName').value = selectedPlan.name;
+      $('cfgPlanMode').value = selectedPlan.mode_id;
+      $('cfgApi').value = String(selectedPlan.api_key || '').trim() ? API_KEY_MASK : '';
+      $('cfgBase').value = selectedPlan.base_url;
+      $('cfgModel').value = selectedPlan.model;
+      $('cfgProfile').value = selectedPlan.model_profile;
+      $('cfgProvider').value = selectedPlan.provider_hint;
+      $('cfgMulti').value = selectedPlan.multi_agent_execution_mode;
       $('cfgPer').value = c.per_day;
-      $('cfgRefresh').value = c.component_refresh_time;
-      $('cfgAreaCounts').value = areaCountsToText(c.area_names, c.area_per_day_counts, c.per_day);
       $('cfgRule').value = c.duty_rule;
-      renderOptions('areaList', c.area_names);
       renderOptions('tplList', c.notification_templates);
+      updateBackendConfigUiState();
     }
 
     function syncConfigFromForm() {
       const inputApiKey = $('cfgApi').value;
       const keepCurrentMasks = new Set([API_KEY_MASK, LEGACY_API_KEY_MASK, HOST_API_KEY_MASK]);
+      const currentConfig = normalizeConfig(store.config);
+      const selectedPlanId = String($('cfgPlan').dataset.currentId || currentConfig.selected_plan_id || '').trim() || currentConfig.selected_plan_id;
+      const nextSelectedPlanId = String($('cfgPlan').value || selectedPlanId).trim() || selectedPlanId;
+      const plans = clone(currentConfig.plan_presets);
+      const selectedIndex = Math.max(0, plans.findIndex((plan) => plan.id === selectedPlanId));
+      const existingPlan = selectedIndex >= 0 ? plans[selectedIndex] : plans[0];
       const apiKey = keepCurrentMasks.has(inputApiKey)
-        ? (String(store.config.api_key || '').trim() || HOST_API_KEY_MASK)
+        ? (String(existingPlan?.api_key || '').trim() || HOST_API_KEY_MASK)
         : inputApiKey;
-      const areaNames = Array.from($('areaList').options).map((x) => x.value);
-      store.config = normalizeConfig({
-        ...store.config,
-        python_path: store.config.python_path,
+      const nextPlan = {
+        ...existingPlan,
+        name: $('cfgPlanName').value,
+        mode_id: $('cfgPlanMode').value,
         api_key: apiKey,
         base_url: $('cfgBase').value,
         model: $('cfgModel').value,
-        enable_auto_run: $('cfgAuto').value,
-        enable_mcp: $('cfgEnableMcp').value,
-        auto_run_day: $('cfgDay').value,
-        auto_run_time: $('cfgTime').value,
+        model_profile: $('cfgProfile').value,
+        provider_hint: $('cfgProvider').value,
+        multi_agent_execution_mode: $('cfgMulti').value
+      };
+      plans[selectedIndex >= 0 ? selectedIndex : 0] = nextPlan;
+      store.config = normalizeConfig({
+        ...currentConfig,
+        selected_plan_id: nextSelectedPlanId,
+        plan_presets: plans,
         per_day: $('cfgPer').value,
         duty_rule: $('cfgRule').value,
-        component_refresh_time: $('cfgRefresh').value,
-        area_names: areaNames,
-        area_per_day_counts: parseAreaCountsText($('cfgAreaCounts').value),
         notification_templates: Array.from($('tplList').options).map((x) => x.value)
       });
     }
@@ -1264,7 +1612,7 @@
         const d = parseIso(item.date);
         if (!d) continue;
         const set = new Set();
-        const map = assignment(item, store.config.area_names);
+        const map = assignment(item);
         for (const arr of Object.values(map)) for (const n of arr) if (n) set.add(n);
         for (const n of set) {
           cnt.set(n, (cnt.get(n) || 0) + 1);
@@ -1319,10 +1667,10 @@
     }
 
     function allAreaNames() {
-      const out = [...store.config.area_names];
+      const out = [];
       const set = new Set(out);
       for (const item of store.state.schedule_pool) {
-        for (const k of Object.keys(assignment(item, out))) {
+        for (const k of Object.keys(assignment(item))) {
           if (!set.has(k)) { set.add(k); out.push(k); }
         }
       }
@@ -1355,7 +1703,7 @@
         return;
       }
       for (const it of pool) {
-        const map = assignment(it, store.config.area_names);
+        const map = assignment(it);
         const c1 = map['教室'] || names(it.classroom_students);
         const c2 = map['清洁区'] || names(it.cleaning_area_students);
         const tr = document.createElement('tr');
@@ -1369,15 +1717,68 @@
       renderRoster();
       renderSchedule();
       renderLegacy();
-      $('runtimeTag').textContent = runtimeMode === 'bridge' ? '运行模式：宿主模式' : '运行模式：本地模拟';
+      $('runtimeTag').textContent = runtimeMode === 'bridge'
+        ? '运行模式：宿主模式'
+        : runtimeMode === 'backend'
+          ? '运行模式：FastAPI 模式'
+          : '运行模式：本地模拟';
+    }
+
+    async function loadSnapshotFromBackend(reason) {
+      if (!hasBackendTransport) {
+        setStatus('err', '当前页面未连接到 FastAPI。');
+        log('ERROR', 'FastAPI 快照加载失败：页面不在 HTTP 环境中。', { reason: reason || 'unknown' });
+        return false;
+      }
+
+      const endpoint = `${window.location.origin}/api/v1/snapshot`;
+      try {
+        log('INFO', '开始从 FastAPI 加载快照。', { reason: reason || 'manual', endpoint });
+        const response = await fetch(endpoint, {
+          headers: {
+            'Accept': 'application/json',
+            'X-Duty-Request-Source': 'web_app'
+          }
+        });
+        const data = await readResponsePayload(response);
+        if (!response.ok) {
+          throw new Error(responseErrorMessage(response, data));
+        }
+
+        store = {
+          config: normalizeConfig({
+            ...store.config,
+            ...data.config,
+            per_day: store.config.per_day,
+            notification_templates: store.config.notification_templates
+          }),
+          roster: normalizeRoster(data.roster),
+          state: normalizeState(data.state)
+        };
+        lastLoadedBackendConfig = clone(store.config);
+        pendingRosterSavePromise = Promise.resolve(true);
+        setBackendConfigDirtyState(false, '正式配置与快照已从 FastAPI 同步。');
+        selectedRosterId = null;
+        renderAll();
+        setStatus('ok', '已从 FastAPI 加载最新数据。');
+        log('OK', 'FastAPI 快照加载成功。', {
+          reason: reason || 'manual',
+          version: store.config.version,
+          roster_count: store.roster.length,
+          schedule_count: store.state.schedule_pool.length
+        });
+        return true;
+      } catch (e) {
+        const message = e instanceof Error ? e.message : String(e);
+        setStatus('err', `FastAPI 快照加载失败：${message}`);
+        log('ERROR', 'FastAPI 快照加载失败。', { reason: reason || 'manual', message, endpoint });
+        return false;
+      }
     }
 
     function startDateFromConfig(applyMode) {
       const pool = [...store.state.schedule_pool].sort((a, b) => a.date.localeCompare(b.date));
       if (applyMode === 'append') {
-        if (store.config.start_from_today) {
-          return today();
-        }
         if (pool.length) {
           const last = parseIso(pool[pool.length - 1].date);
           if (last) return addDays(last, 1);
@@ -1436,9 +1837,10 @@
 
     function runMockInternal(daysToGenerate, applyMode, instruction, detailText) {
       syncConfigFromForm();
-      const areas = list(store.config.area_names, DEFAULT_CONFIG.area_names, true);
+      const areas = allAreaNames();
+      if (!areas.length) areas.push('default_area');
       const per = clamp(int(store.config.per_day, 2), 1, 30);
-      const areaCounts = normalizeAreaCounts(areas, store.config.area_per_day_counts, per);
+      const areaCounts = Object.fromEntries(areas.map((area) => [area, per]));
       const totalPerDay = Object.values(areaCounts).reduce((sum, value) => sum + value, 0);
       const days = clamp(int(daysToGenerate, 1), 1, 30);
       const active = store.roster.filter((r) => r.active && r.name).sort((a, b) => a.id - b.id);
@@ -1505,8 +1907,7 @@
         generated_days: generated.length,
         apply_mode: applyMode,
         areas,
-        per_day: per,
-        area_per_day_counts: areaCounts
+        per_day: per
       });
 
       notifyByTemplates(
@@ -1536,23 +1937,26 @@
 
     function buildOverwriteApiPayload(instruction) {
       syncConfigFromForm();
+      const selectedPlan = getSelectedPlan(store.config);
       return {
         instruction,
         config: {
-          api_key: store.config.api_key,
-          base_url: store.config.base_url,
-          model: store.config.model,
+          api_key: selectedPlan.api_key,
+          base_url: selectedPlan.base_url,
+          model: selectedPlan.model,
           per_day: store.config.per_day,
-          duty_rule: store.config.duty_rule,
-          start_from_today: store.config.start_from_today,
-          python_path: store.config.python_path,
-          area_names: store.config.area_names,
-          area_per_day_counts: store.config.area_per_day_counts
+          duty_rule: store.config.duty_rule
         }
       };
     }
 
     async function runOverwriteByApi() {
+      if (runtimeMode === 'backend') {
+        setStatus('warn', '当前页面已切到 FastAPI 中枢模式；旧的 overwrite API 已停用。');
+        log('WARN', '忽略 overwrite API 请求：FastAPI 中枢模式下不再使用宿主调试接口。');
+        return;
+      }
+
       const instruction = String($('apiInstruction').value || '').trim() || String($('instruction').value || '').trim();
       if (!instruction) {
         setStatus('err', '请输入覆盖排班指令。');
@@ -1638,7 +2042,7 @@
         scene: sceneText,
         status: statusText,
         date: `${dateIso(today())} ${new Date().toTimeString().slice(0, 5)}`,
-        areas: list(store.config.area_names, DEFAULT_CONFIG.area_names).join('、'),
+        areas: allAreaNames().join('、'),
         per_day: String(store.config.per_day),
         mode: applyMode || $('applyMode').value,
         instruction: String(instruction || '').trim().slice(0, 80),
@@ -1718,6 +2122,199 @@
       log('OK', '已在浏览器打开 test.html。', { target });
     }
 
+    function handleBackendRunProgress(progress) {
+      const phase = String(progress?.phase || '').trim().toLowerCase();
+      const message = String(progress?.message || '').trim();
+      const streamChunk = String(progress?.stream_chunk || '');
+      if (phase === 'stream_chunk') {
+        setRunInProgress(true, message || '正在接收模型流式输出...');
+        if (streamChunk.trim()) {
+          log('STREAM', 'FastAPI 模型流式片段。', { chunk: streamChunk });
+        }
+        return;
+      }
+      setRunInProgress(true, message || '正在执行排班，请稍候...');
+      log('INFO', 'FastAPI 执行状态更新。', { phase, message, stream_chunk: streamChunk });
+    }
+
+    function parseSseMessage(block) {
+      const text = String(block || '').replace(/\r/g, '');
+      if (!text.trim()) return null;
+      const lines = text.split('\n');
+      let eventName = '';
+      const dataLines = [];
+      for (const rawLine of lines) {
+        if (rawLine.startsWith('event:')) {
+          eventName = rawLine.slice(6).trim();
+        } else if (rawLine.startsWith('data:')) {
+          dataLines.push(rawLine.slice(5).trimStart());
+        }
+      }
+      if (!dataLines.length) return null;
+      const rawData = dataLines.join('\n');
+      let payload = {};
+      try {
+        payload = rawData ? JSON.parse(rawData) : {};
+      } catch {
+        payload = { message: rawData };
+      }
+      return { event: eventName || 'message', data: payload };
+    }
+
+    async function readScheduleEventStream(response) {
+      const reader = response.body && typeof response.body.getReader === 'function'
+        ? response.body.getReader()
+        : null;
+      if (!reader) {
+        throw new Error('当前浏览器不支持流式读取排班结果。');
+      }
+
+      const decoder = new TextDecoder();
+      let buffer = '';
+      let finalPayload = null;
+
+      while (true) {
+        const { value, done } = await reader.read();
+        buffer += decoder.decode(value || new Uint8Array(), { stream: !done });
+        buffer = buffer.replace(/\r\n/g, '\n');
+
+        let boundary = buffer.indexOf('\n\n');
+        while (boundary >= 0) {
+          const block = buffer.slice(0, boundary);
+          buffer = buffer.slice(boundary + 2);
+          const message = parseSseMessage(block);
+          if (message) {
+            if (message.event === 'complete') {
+              finalPayload = message.data;
+            } else {
+              handleBackendRunProgress(message.data);
+            }
+          }
+          boundary = buffer.indexOf('\n\n');
+        }
+
+        if (done) {
+          break;
+        }
+      }
+
+      if (buffer.trim()) {
+        const trailing = parseSseMessage(buffer);
+        if (trailing) {
+          if (trailing.event === 'complete') {
+            finalPayload = trailing.data;
+          } else {
+            handleBackendRunProgress(trailing.data);
+          }
+        }
+      }
+
+      return finalPayload;
+    }
+
+    async function runBackend() {
+      if (runInProgress) {
+        setStatus('warn', '已有排班任务在执行中，请稍候。');
+        log('WARN', '忽略 FastAPI 排班请求：已有任务进行中。');
+        return;
+      }
+      syncConfigFromForm();
+      const instruction = $('instruction').value.trim();
+      const applyMode = $('applyMode').value;
+      if (!instruction) {
+        setStatus('err', '请输入排班指令。');
+        log('ERROR', 'FastAPI 排班失败：排班指令为空。');
+        return;
+      }
+      if (backendConfigDirty) {
+        setStatus('warn', '正式配置有未保存修改，请先保存配置后再执行排班。');
+        log('WARN', '拒绝 FastAPI 排班请求：正式配置尚未保存。');
+        return;
+      }
+      const rosterSaved = await pendingRosterSavePromise.catch(() => false);
+      if (!rosterSaved) {
+        setStatus('err', '名单尚未成功同步到 FastAPI，请先处理名单保存错误。');
+        log('ERROR', '拒绝 FastAPI 排班请求：名单保存失败。');
+        return;
+      }
+      if (!hasBackendTransport) {
+        setStatus('err', '当前页面未连接到 FastAPI。');
+        log('ERROR', 'FastAPI 排班失败：页面不在 HTTP 环境中。');
+        return;
+      }
+
+      const endpoint = `${window.location.origin}/api/v1/duty/schedule`;
+      const traceId = createClientTraceId('run');
+      const payload = {
+        instruction,
+        apply_mode: applyMode,
+        trace_id: traceId,
+        request_source: 'web_app'
+      };
+
+      try {
+        log('INFO', '开始请求 FastAPI 执行排班。', {
+          endpoint,
+          trace_id: traceId,
+          apply_mode: applyMode
+        });
+        setRunInProgress(true, '正在执行排班，请稍候...');
+        const response = await fetch(endpoint, {
+          method: 'POST',
+          headers: {
+            'Accept': 'text/event-stream',
+            'Content-Type': 'application/json',
+            'X-Duty-Trace-Id': traceId,
+            'X-Duty-Request-Source': 'web_app'
+          },
+          body: JSON.stringify(payload)
+        });
+
+        if (!response.ok) {
+          const errorPayload = await readResponsePayload(response);
+          throw new Error(responseErrorMessage(response, errorPayload));
+        }
+
+        const finalPayload = await readScheduleEventStream(response);
+        if (!finalPayload || typeof finalPayload !== 'object') {
+          throw new Error('排班事件流提前结束，未收到最终结果。');
+        }
+
+        const ok = String(finalPayload.status || '').trim().toLowerCase() === 'success';
+        const message = String(finalPayload.message || '').trim();
+        const aiResponse = String(finalPayload.ai_response || '').trim();
+        if (message) {
+          $('nMsg').value = message;
+        }
+        if (aiResponse) {
+          log('INFO', 'FastAPI AI 返回内容。', { ai_response: aiResponse });
+        }
+
+        if (!ok) {
+          throw new Error(message || '未知错误');
+        }
+
+        setRunInProgress(false);
+        log('OK', 'FastAPI 排班成功。', {
+          trace_id: traceId,
+          selected_executor: finalPayload.selected_executor || '',
+          status: finalPayload.status || 'success'
+        });
+        const refreshed = await loadSnapshotFromBackend('run_complete');
+        if (refreshed) {
+          setStatus('ok', 'FastAPI 排班成功。');
+        } else {
+          setStatus('warn', 'FastAPI 排班成功，但刷新最新快照失败，请手动加载数据。');
+          log('WARN', 'FastAPI 排班成功后刷新快照失败。', { trace_id: traceId });
+        }
+      } catch (e) {
+        const message = e instanceof Error ? e.message : String(e);
+        setRunInProgress(false);
+        setStatus('err', `FastAPI 排班失败：${message}`);
+        log('ERROR', 'FastAPI 排班失败。', { trace_id: traceId, message });
+      }
+    }
+
     function runBridge() {
       if (runInProgress) {
         setStatus('warn', '已有排班任务在执行中，请稍候。');
@@ -1734,59 +2331,12 @@
       }
       log('INFO', '开始请求宿主执行排班。', { mode: applyMode });
       setRunInProgress(true, '正在执行排班，请稍候...');
-      const ok = bridgePost('run_core', { instruction, apply_mode: applyMode, config: store.config });
+      const ok = bridgePost('run_core', { instruction, apply_mode: applyMode });
       setStatus(ok ? 'warn' : 'err', ok ? '已发送排班请求到宿主。' : '宿主不可用，无法发送排班请求。');
       if (!ok) {
         setRunInProgress(false);
         log('ERROR', '宿主排班失败：宿主不可用。');
       }
-    }
-
-    function addArea() {
-      const name = $('newArea').value.trim();
-      if (!name) {
-        setStatus('err', '区域名不能为空。');
-        log('ERROR', '新增区域失败：区域名为空。');
-        return;
-      }
-      syncConfigFromForm();
-      if (store.config.area_names.includes(name)) {
-        setStatus('err', '区域已存在。');
-        log('ERROR', '新增区域失败：区域已存在。', { area: name });
-        return;
-      }
-      store.config.area_names.push(name);
-      store.config.area_per_day_counts[name] = clamp(int(store.config.per_day, DEFAULT_CONFIG.per_day), 1, 30);
-      $('newArea').value = '';
-      renderConfig();
-      renderSchedule();
-      applyConfigImmediate('add_area', { quiet: true });
-      setStatus('ok', `已新增区域：${name}`);
-      log('OK', '已新增区域。', { area: name });
-    }
-
-    function delArea() {
-      syncConfigFromForm();
-      const v = $('areaList').value;
-      if (!v) {
-        setStatus('err', '请先选择区域。');
-        log('ERROR', '删除区域失败：未选择区域。');
-        return;
-      }
-      if (store.config.area_names.length <= 1) {
-        setStatus('err', '至少保留一个区域。');
-        log('ERROR', '删除区域失败：区域数量不能少于 1。');
-        return;
-      }
-      store.config.area_names = store.config.area_names.filter((x) => x !== v);
-      if (store.config.area_per_day_counts && typeof store.config.area_per_day_counts === 'object') {
-        delete store.config.area_per_day_counts[v];
-      }
-      renderConfig();
-      renderSchedule();
-      applyConfigImmediate('del_area', { quiet: true });
-      setStatus('ok', `已删除区域：${v}`);
-      log('OK', '已删除区域。', { area: v });
     }
 
     function addTpl() {
@@ -1805,7 +2355,7 @@
       store.config.notification_templates.push(text);
       $('newTpl').value = '';
       renderConfig();
-      applyConfigImmediate('add_template', { quiet: true });
+      applyLocalConfigImmediate('add_template', { quiet: true });
       setStatus('ok', '通知模板已新增。');
       log('OK', '已新增通知模板。', { template: text });
     }
@@ -1825,7 +2375,7 @@
       }
       store.config.notification_templates = store.config.notification_templates.filter((x) => x !== v);
       renderConfig();
-      applyConfigImmediate('del_template', { quiet: true });
+      applyLocalConfigImmediate('del_template', { quiet: true });
       setStatus('ok', '通知模板已删除。');
       log('OK', '已删除通知模板。', { template: v });
     }
@@ -1878,7 +2428,12 @@
     function exportSnapshot() {
       syncConfigFromForm();
       const out = clone(store);
-      if (out.config.api_key && String(out.config.api_key).trim()) out.config.api_key = API_KEY_MASK;
+      if (Array.isArray(out.config.plan_presets)) {
+        out.config.plan_presets = out.config.plan_presets.map((plan) => ({
+          ...plan,
+          api_key: String(plan.api_key || '').trim() ? API_KEY_MASK : ''
+        }));
+      }
       $('snapshot').value = JSON.stringify(out, null, 2);
       setStatus('ok', '快照导出成功。');
       log('INFO', '快照已导出（API Key 已掩码）。');
@@ -1893,9 +2448,15 @@
       }
       try {
         const parsed = JSON.parse(txt);
-        const oldKey = store.config.api_key;
         const cfg = normalizeConfig(parsed.config);
-        if (cfg.api_key === API_KEY_MASK || cfg.api_key === LEGACY_API_KEY_MASK || cfg.api_key === HOST_API_KEY_MASK) cfg.api_key = oldKey;
+        const previousPlans = normalizePlanPresets(store.config.plan_presets);
+        cfg.plan_presets = cfg.plan_presets.map((plan) => {
+          if (![API_KEY_MASK, LEGACY_API_KEY_MASK, HOST_API_KEY_MASK].includes(String(plan.api_key || '').trim())) {
+            return plan;
+          }
+          const existing = previousPlans.find((item) => item.id === plan.id);
+          return { ...plan, api_key: existing ? existing.api_key : '' };
+        });
         store = {
           config: cfg,
           roster: normalizeRoster(parsed.roster),
@@ -1903,7 +2464,7 @@
         };
         selectedRosterId = null;
         renderAll();
-        applyConfigImmediate('import_snapshot', { quiet: true, maskApiInput: true });
+        setBackendConfigDirtyState(true, '快照已导入，正式配置尚未保存到 FastAPI。');
         applyRosterImmediate('import_snapshot', { quiet: true });
         setStatus('ok', '快照导入成功。');
         log('OK', '快照导入成功。');
@@ -1927,7 +2488,7 @@
       $('nMsg').value = '';
       $('noticeList').innerHTML = '';
       renderAll();
-      applyConfigImmediate('reset_all', { quiet: true });
+      setBackendConfigDirtyState(true, '已重置为默认测试数据，正式配置尚未保存到 FastAPI。');
       applyRosterImmediate('reset_all', { quiet: true });
       setStatus('ok', '已重置为默认测试数据。');
       log('OK', '已重置为默认测试数据。');
@@ -1939,7 +2500,17 @@
         return;
       }
       let changed = false;
-      if ('config' in data) { store.config = normalizeConfig(data.config); changed = true; }
+      if ('config' in data) {
+        store.config = normalizeConfig({
+          ...store.config,
+          ...data.config,
+          per_day: store.config.per_day,
+          notification_templates: store.config.notification_templates
+        });
+        lastLoadedBackendConfig = clone(store.config);
+        setBackendConfigDirtyState(false, '已应用宿主返回的配置。');
+        changed = true;
+      }
       if ('roster' in data) { store.roster = normalizeRoster(data.roster); changed = true; }
       if ('state' in data) { store.state = normalizeState(data.state); changed = true; }
       if (data.type === 'host_theme' && data.payload) {
@@ -1996,56 +2567,75 @@
     }
 
     function bindConfigAutoApply() {
-      const configFieldIds = [
-        'cfgApi', 'cfgBase', 'cfgModel',
-        'cfgAuto', 'cfgEnableMcp', 'cfgDay', 'cfgTime',
-        'cfgPer', 'cfgRefresh',
-        'cfgAreaCounts', 'cfgRule'
+      const backendFieldIds = [
+        'cfgPlanName', 'cfgPlanMode', 'cfgApi', 'cfgBase', 'cfgModel',
+        'cfgProfile', 'cfgProvider', 'cfgMulti', 'cfgRule'
       ];
-
-      for (const id of configFieldIds) {
+      for (const id of backendFieldIds) {
         const el = $(id);
         if (!el) continue;
         const tag = el.tagName.toLowerCase();
-        const maskApiInput = id === 'cfgApi';
         if (tag === 'select') {
           el.addEventListener('change', () => {
-            applyConfigImmediate(`change:${id}`, { maskApiInput });
+            syncConfigFromForm();
+            markBackendConfigDirty(`change:${id}`);
           });
           continue;
         }
         if (tag === 'textarea') {
           el.addEventListener('blur', () => {
-            applyConfigImmediate(`blur:${id}`, { maskApiInput });
+            syncConfigFromForm();
+            markBackendConfigDirty(`blur:${id}`);
           });
           el.addEventListener('keydown', (event) => {
             if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) {
               event.preventDefault();
-              applyConfigImmediate(`hotkey:${id}`, { maskApiInput });
+              syncConfigFromForm();
+              markBackendConfigDirty(`hotkey:${id}`);
             }
           });
           continue;
         }
         el.addEventListener('blur', () => {
-          applyConfigImmediate(`blur:${id}`, { maskApiInput });
-        });
-        el.addEventListener('keydown', (event) => {
-          if (event.key === 'Enter') {
-            event.preventDefault();
-            el.blur();
-          }
+          syncConfigFromForm();
+          markBackendConfigDirty(`blur:${id}`);
         });
       }
+
+      $('cfgPlan').addEventListener('focus', () => {
+        $('cfgPlan').dataset.currentId = store.config.selected_plan_id;
+      });
+      $('cfgPlan').addEventListener('change', () => {
+        syncConfigFromForm();
+        store.config = normalizeConfig({
+          ...store.config,
+          selected_plan_id: $('cfgPlan').value
+        });
+        renderConfig();
+        markBackendConfigDirty('change:cfgPlan');
+      });
+
+      $('cfgPer').addEventListener('blur', () => {
+        applyLocalConfigImmediate('blur:cfgPer', { quiet: true });
+      });
+      $('cfgPer').addEventListener('keydown', (event) => {
+        if (event.key === 'Enter') {
+          event.preventDefault();
+          applyLocalConfigImmediate('enter:cfgPer', { quiet: true });
+        }
+      });
     }
 
     function bind() {
       $('mode').addEventListener('change', () => setMode($('mode').value));
-      $('runBtn').addEventListener('click', () => runtimeMode === 'bridge' ? runBridge() : runMock());
+      $('saveConfigBtn').addEventListener('click', () => { void saveConfigToBackend('manual_save'); });
+      $('reloadConfigBtn').addEventListener('click', () => { void loadConfigFromBackend('manual_reload'); });
+      $('runBtn').addEventListener('click', () => runtimeMode === 'bridge' ? runBridge() : runtimeMode === 'backend' ? void runBackend() : runMock());
       $('apiOverwriteBtn').addEventListener('click', () => { void runOverwriteByApi(); });
       $('instruction').addEventListener('keydown', (event) => {
         if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) {
           event.preventDefault();
-          runtimeMode === 'bridge' ? runBridge() : runMock();
+          runtimeMode === 'bridge' ? runBridge() : runtimeMode === 'backend' ? void runBackend() : runMock();
         }
       });
       $('apiInstruction').addEventListener('keydown', (event) => {
@@ -2062,6 +2652,8 @@
           if (!ok) {
             log('ERROR', '加载数据失败：宿主不可用。');
           }
+        } else if (runtimeMode === 'backend') {
+          void loadSnapshotFromBackend('manual_refresh');
         } else {
           renderAll();
           setStatus('ok', '本地模拟数据已刷新。');
@@ -2069,18 +2661,10 @@
         }
       });
 
-      $('addArea').addEventListener('click', addArea);
-      $('delArea').addEventListener('click', delArea);
       $('addTpl').addEventListener('click', addTpl);
       $('delTpl').addEventListener('click', delTpl);
       $('addStudent').addEventListener('click', addStudent);
       $('delStudent').addEventListener('click', delStudent);
-      $('newArea').addEventListener('keydown', (event) => {
-        if (event.key === 'Enter') {
-          event.preventDefault();
-          addArea();
-        }
-      });
       $('newTpl').addEventListener('keydown', (event) => {
         if (event.key === 'Enter') {
           event.preventDefault();
@@ -2128,12 +2712,13 @@
     }
 
     bind();
-    setMode(hasBridge ? 'bridge' : 'mock');
+    setMode(hasBackendTransport ? 'backend' : hasBridge ? 'bridge' : 'mock');
     renderAll();
     requestAnimationFrame(() => document.body.classList.add('page-ready'));
-    if (window.location.protocol.startsWith('http')) {
+    if (hasBackendTransport) {
       setLocalPreviewUrl(window.location.href);
-      setApiOverwriteUrl(`${window.location.origin}/api/v1/schedule/overwrite`);
+      setApiOverwriteUrl('');
+      void loadSnapshotFromBackend('startup');
     }
     setStatus('warn', '测试控制台已就绪。');
     log('INFO', '页面初始化完成。');

@@ -27,7 +27,7 @@ from state_ops import (
     load_state,
     normalize_area_names,
     normalize_area_per_day_counts,
-    save_json_atomic,
+    update_state,
 )
 
 AI_RESPONSE_MAX_CHARS = 20000
@@ -111,33 +111,36 @@ def run_single_pass_schedule(
     )
     validate_llm_schedule_entries(llm_result.get("schedule", []))
 
-    state_data["next_run_note"] = str(llm_result.get("next_run_note", "")).strip()
     normalized_ids = normalize_multi_area_schedule_ids(
         llm_result.get("schedule", []),
         all_ids,
         area_names,
         area_per_day_counts,
     )
-    state_data["debt_list"] = recover_missing_debts(
-        extract_ids_from_value(state_data.get("debt_list", []), set(all_ids)),
-        extract_ids_from_value(llm_result.get("new_debt_ids", []), set(all_ids)),
-        normalized_ids,
-    )
-    state_data["credit_list"] = reconcile_credit_list(
-        extract_ids_from_value(state_data.get("credit_list", []), set(all_ids)),
-        extract_ids_from_value(llm_result.get("new_credit_ids", []), set(all_ids)),
-        normalized_ids,
-        set(all_ids),
-        state_data["debt_list"],
-        "new_credit_ids" in llm_result,
-    )
-
     restored = restore_schedule(normalized_ids, id_to_name, area_names, {})
     if not restored:
         raise ValueError("No valid schedule entries.")
 
-    state_data["schedule_pool"] = merge_schedule_pool(state_data, restored, apply_mode, start_date)
-    save_json_atomic(ctx.paths["state"], state_data)
+    def _apply_state_update(current_state: dict) -> dict:
+        next_state = dict(current_state)
+        next_state["next_run_note"] = str(llm_result.get("next_run_note", "")).strip()
+        next_state["debt_list"] = recover_missing_debts(
+            extract_ids_from_value(next_state.get("debt_list", []), set(all_ids)),
+            extract_ids_from_value(llm_result.get("new_debt_ids", []), set(all_ids)),
+            normalized_ids,
+        )
+        next_state["credit_list"] = reconcile_credit_list(
+            extract_ids_from_value(next_state.get("credit_list", []), set(all_ids)),
+            extract_ids_from_value(llm_result.get("new_credit_ids", []), set(all_ids)),
+            normalized_ids,
+            set(all_ids),
+            next_state["debt_list"],
+            "new_credit_ids" in llm_result,
+        )
+        next_state["schedule_pool"] = merge_schedule_pool(next_state, restored, apply_mode, start_date)
+        return next_state
+
+    update_state(ctx.paths["state"], _apply_state_update, stop_event=stop_event)
 
     return {
         "status": "success",

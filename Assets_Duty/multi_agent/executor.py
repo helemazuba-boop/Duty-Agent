@@ -377,7 +377,14 @@ def run_multi_agent_schedule(
         "Running settlement and atomic commit.",
         {"trace_id": snapshot.trace_id},
     )
-    settlement = finalize_multi_agent_run(ctx, snapshot, barrier1, barrier2, final_schedule)
+    settlement = finalize_multi_agent_run(
+        ctx,
+        snapshot,
+        barrier1,
+        barrier2,
+        final_schedule,
+        stop_event=stop_event,
+    )
     _emit_progress(
         emit_progress_fn,
         "commit",

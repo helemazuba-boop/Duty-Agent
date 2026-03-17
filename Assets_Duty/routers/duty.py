@@ -11,6 +11,17 @@ except ImportError:
 
 router = APIRouter(prefix="/api/v1/duty", tags=["Duty"])
 
+
+def _resolve_request_meta(request: Request, runtime, request_data: DutyRequest) -> tuple[str, str]:
+    trace_id = (request.headers.get("X-Duty-Trace-Id") or "").strip() or (request_data.trace_id or "").strip() or runtime.new_trace_id()
+    request_source = (
+        (request.headers.get("X-Duty-Request-Source") or "").strip()
+        or (request_data.request_source or "").strip()
+        or "api"
+    )
+    return trace_id, request_source
+
+
 @router.post("/schedule")
 async def schedule(request_data: DutyRequest, request: Request):
     runtime = getattr(request.app.state, "runtime", None)
@@ -19,6 +30,7 @@ async def schedule(request_data: DutyRequest, request: Request):
             iter(['event: complete\ndata: {"status":"error","message":"Runtime is not initialized."}\n\n']),
             media_type="text/event-stream",
         )
+    trace_id, request_source = _resolve_request_meta(request, runtime, request_data)
     stop_event = threading.Event()
     
     async def event_generator():
@@ -34,6 +46,8 @@ async def schedule(request_data: DutyRequest, request: Request):
         def run_task():
             try:
                 payload = request_data.model_dump(exclude_none=True, exclude_unset=True)
+                payload.setdefault("trace_id", trace_id)
+                payload.setdefault("request_source", request_source)
                 result = runtime.command_service.run_schedule(payload, put_progress, stop_event)
                 loop.call_soon_threadsafe(queue.put_nowait, {"type": "done", "data": result})
             except InterruptedError:

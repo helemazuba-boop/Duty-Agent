@@ -42,6 +42,9 @@ public sealed class DutyPlanPreset
 
 public sealed class DutyBackendConfig
 {
+    [JsonPropertyName("version")]
+    public int Version { get; set; } = 1;
+
     [JsonPropertyName("api_key")]
     public string ApiKey { get; set; } = string.Empty;
 
@@ -78,6 +81,10 @@ public sealed class DutyBackendConfig
 
 public sealed class DutyBackendConfigPatch
 {
+    [JsonPropertyName("expected_version")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? ExpectedVersion { get; set; }
+
     [JsonPropertyName("selected_plan_id")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? SelectedPlanId { get; set; }

@@ -24,6 +24,8 @@ public interface IPythonIpcService: IDisposable
     bool IsReady { get; }
     EngineState State { get; }
     string? LastErrorMessage { get; }
+    string ServerBaseUrl { get; }
+    string WebAppUrl { get; }
 }
 
 public enum EngineState
@@ -58,6 +60,8 @@ public class DutyPythonIpcService : IPythonIpcService
     public EngineState State => _state;
     public bool IsReady => _state == EngineState.Ready;
     public string? LastErrorMessage { get; private set; }
+    public string ServerBaseUrl => _serverPort > 0 ? $"http://127.0.0.1:{_serverPort}" : string.Empty;
+    public string WebAppUrl => string.IsNullOrWhiteSpace(ServerBaseUrl) ? string.Empty : $"{ServerBaseUrl}/app/";
     private readonly object _stateLock = new();
     private Task? _initializeTask;
 

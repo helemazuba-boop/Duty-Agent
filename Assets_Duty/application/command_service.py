@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any, Callable, Dict, Optional
 
 from engine import run_schedule
-from state_ops import Context, patch_config
+from state_ops import Context, patch_config, save_roster_entries
 
 
 class CommandService:
@@ -24,34 +24,51 @@ class CommandService:
             instruction_length=len(str(request_payload.get("instruction", "") or "")),
         )
 
+        if not self._runtime.schedule_run_lock.acquire(blocking=False):
+            message = "Another schedule run is already in progress."
+            self._runtime.logger.warn(
+                "CommandService",
+                "Rejected concurrent run_schedule request.",
+                trace_id=request_payload["trace_id"],
+                request_source=request_payload["request_source"],
+            )
+            return {
+                "status": "error",
+                "message": message,
+                "trace_id": request_payload["trace_id"],
+            }
+
         context = Context(
             self._runtime.data_dir,
             logger=self._runtime.logger,
             trace_id=request_payload["trace_id"],
             request_source=request_payload["request_source"],
         )
-        result = run_schedule(context, request_payload, progress_callback, stop_event)
-        result.setdefault("trace_id", request_payload["trace_id"])
-        if result.get("status") == "error":
-            self._runtime.logger.error(
-                "CommandService",
-                "run_schedule returned error result.",
-                trace_id=request_payload["trace_id"],
-                request_source=request_payload["request_source"],
-                status=result.get("status", ""),
-                selected_executor=result.get("selected_executor", ""),
-                error_message=str(result.get("message", "") or ""),
-            )
-        else:
-            self._runtime.logger.info(
-                "CommandService",
-                "Finished run_schedule.",
-                trace_id=request_payload["trace_id"],
-                request_source=request_payload["request_source"],
-                status=result.get("status", ""),
-                selected_executor=result.get("selected_executor", ""),
-            )
-        return result
+        try:
+            result = run_schedule(context, request_payload, progress_callback, stop_event)
+            result.setdefault("trace_id", request_payload["trace_id"])
+            if result.get("status") == "error":
+                self._runtime.logger.error(
+                    "CommandService",
+                    "run_schedule returned error result.",
+                    trace_id=request_payload["trace_id"],
+                    request_source=request_payload["request_source"],
+                    status=result.get("status", ""),
+                    selected_executor=result.get("selected_executor", ""),
+                    error_message=str(result.get("message", "") or ""),
+                )
+            else:
+                self._runtime.logger.info(
+                    "CommandService",
+                    "Finished run_schedule.",
+                    trace_id=request_payload["trace_id"],
+                    request_source=request_payload["request_source"],
+                    status=result.get("status", ""),
+                    selected_executor=result.get("selected_executor", ""),
+                )
+            return result
+        finally:
+            self._runtime.schedule_run_lock.release()
 
     def update_config(
         self,
@@ -82,5 +99,36 @@ class CommandService:
             model=result.get("model", ""),
             model_profile=result.get("model_profile", ""),
             orchestration_mode=result.get("orchestration_mode", ""),
+        )
+        return result
+
+    def update_roster(
+        self,
+        roster_payload: list[dict],
+        trace_id: str | None = None,
+        request_source: str = "api",
+    ) -> list[dict]:
+        effective_trace_id = trace_id or self._runtime.new_trace_id()
+        self._runtime.logger.info(
+            "CommandService",
+            "Starting update_roster.",
+            trace_id=effective_trace_id,
+            request_source=request_source,
+            roster_count=len(roster_payload or []),
+        )
+        context = Context(
+            self._runtime.data_dir,
+            logger=self._runtime.logger,
+            trace_id=effective_trace_id,
+            request_source=request_source,
+        )
+        result = save_roster_entries(context, roster_payload)
+        self._runtime.logger.info(
+            "CommandService",
+            "Finished update_roster.",
+            trace_id=effective_trace_id,
+            request_source=request_source,
+            roster_count=len(result),
+            active_count=sum(1 for item in result if item.get("active")),
         )
         return result

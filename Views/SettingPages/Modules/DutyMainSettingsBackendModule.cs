@@ -40,6 +40,7 @@ internal sealed class DutyMainSettingsBackendModule
     {
         return new DutyBackendConfig
         {
+            Version = config.Version,
             ApiKey = config.ApiKey,
             BaseUrl = config.BaseUrl,
             Model = config.Model,

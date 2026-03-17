@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+import threading
 import uuid
 from pathlib import Path
 
@@ -20,6 +21,7 @@ class DutyRuntime:
         self.version = APP_VERSION
         self.started_at = time.monotonic()
         self.logger = DutyDiagnosticsLogger(self.logs_dir)
+        self.schedule_run_lock = threading.Lock()
         self.command_service = CommandService(self)
         self.query_service = QueryService(self)
 

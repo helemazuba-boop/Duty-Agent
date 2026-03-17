@@ -96,22 +96,14 @@ def _normalize_text(value: Any, fallback: str) -> str:
     return text or fallback
 
 
-def _resolve_model_profile(input_data: Dict[str, Any], config: Dict[str, Any]) -> str:
-    raw = (
-        input_data.get("model_profile")
-        or config.get("model_profile")
-        or "auto"
-    )
+def _resolve_model_profile(_input_data: Dict[str, Any], config: Dict[str, Any]) -> str:
+    raw = config.get("model_profile") or "auto"
     normalized = _normalize_text(raw, "auto")
     return MODEL_PROFILE_ALIASES.get(normalized, "custom")
 
 
-def _resolve_orchestration_mode(input_data: Dict[str, Any], config: Dict[str, Any]) -> str:
-    raw = (
-        input_data.get("orchestration_mode")
-        or config.get("orchestration_mode")
-        or "auto"
-    )
+def _resolve_orchestration_mode(_input_data: Dict[str, Any], config: Dict[str, Any]) -> str:
+    raw = config.get("orchestration_mode") or "auto"
     normalized = _normalize_text(raw, "auto")
     return ORCHESTRATION_ALIASES.get(normalized, "auto")
 
@@ -153,8 +145,7 @@ def resolve_execution_profile(input_data: Dict[str, Any], config: Dict[str, Any]
     model_profile = _resolve_model_profile(input_data, config)
     orchestration_mode = _resolve_orchestration_mode(input_data, config)
     provider_hint = str(
-        input_data.get("provider_hint")
-        or config.get("provider_hint")
+        config.get("provider_hint")
         or config.get("base_url")
         or ""
     ).strip()

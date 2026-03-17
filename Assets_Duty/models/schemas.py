@@ -31,6 +31,7 @@ class DutyPlanPresetModel(BaseModel):
 class DutyBackendConfigModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    version: int = 1
     api_key: str = ""
     base_url: str = "https://integrate.api.nvidia.com/v1"
     model: str = "moonshotai/kimi-k2-thinking"
@@ -47,6 +48,7 @@ class DutyBackendConfigModel(BaseModel):
 class DutyBackendConfigPatch(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    expected_version: Optional[int] = None
     selected_plan_id: Optional[str] = None
     plan_presets: Optional[List[DutyPlanPresetModel]] = None
     duty_rule: Optional[str] = None
@@ -58,6 +60,26 @@ class SnapshotRosterEntry(BaseModel):
     id: int
     name: str
     active: bool = True
+
+
+class DutyRosterEntryPatch(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: Optional[int] = None
+    name: str
+    active: bool = True
+
+
+class DutyRosterUpdateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    roster: List[DutyRosterEntryPatch] = []
+
+
+class DutyRosterResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    roster: List[SnapshotRosterEntry] = []
 
 
 class DutySnapshotResponse(BaseModel):

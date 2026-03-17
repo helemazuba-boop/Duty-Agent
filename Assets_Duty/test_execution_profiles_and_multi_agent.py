@@ -3,11 +3,14 @@ import unittest
 from datetime import date, datetime
 from pathlib import Path
 
+from pydantic import ValidationError
+
 ROOT = Path(__file__).resolve().parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from execution_profiles import build_execution_plan, resolve_execution_profile
+from models.schemas import DutyRequest
 from multi_agent.contracts import FrozenSnapshot
 from multi_agent.validators import merge_barrier2
 from state_ops import normalize_config
@@ -132,6 +135,58 @@ class TestExecutionPlanSelection(unittest.TestCase):
         self.assertEqual(config["selected_plan_id"], "standard")
         self.assertEqual(len(config["plan_presets"]), 3)
         self.assertEqual(config["plan_presets"][0]["mode_id"], "standard")
+
+    def test_request_overrides_are_ignored_for_execution_profile(self):
+        config = normalize_config(
+            {
+                "selected_plan_id": "standard",
+                "plan_presets": [
+                    {
+                        "id": "standard",
+                        "name": "Standard",
+                        "mode_id": "standard",
+                        "model": "cloud-model",
+                        "model_profile": "cloud",
+                        "provider_hint": "config-provider",
+                    }
+                ],
+            }
+        )
+
+        profile = resolve_execution_profile(
+            {
+                "model_profile": "edge",
+                "orchestration_mode": "multi_agent",
+                "provider_hint": "request-provider",
+            },
+            config,
+        )
+
+        self.assertEqual(profile.model_profile, "cloud")
+        self.assertEqual(profile.orchestration_mode, "single_pass")
+        self.assertEqual(profile.provider_hint, "config-provider")
+        self.assertEqual(profile.single_pass_strategy, "cloud_standard")
+
+
+class TestScheduleRequestContract(unittest.TestCase):
+    def test_schedule_request_rejects_nested_config(self):
+        with self.assertRaises(ValidationError):
+            DutyRequest.model_validate(
+                {
+                    "instruction": "Generate duty schedule",
+                    "apply_mode": "replace_all",
+                    "config": {"model_profile": "edge"},
+                }
+            )
+
+    def test_schedule_request_rejects_execution_override_fields(self):
+        with self.assertRaises(ValidationError):
+            DutyRequest.model_validate(
+                {
+                    "instruction": "Generate duty schedule",
+                    "model_profile": "edge",
+                }
+            )
 
 
 class TestBarrier2(unittest.TestCase):

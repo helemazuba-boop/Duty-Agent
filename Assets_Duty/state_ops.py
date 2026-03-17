@@ -8,7 +8,7 @@ import sys
 import time
 from datetime import date, datetime
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 
 from diagnostics import truncate_for_log
 
@@ -21,8 +21,10 @@ DEFAULT_MULTI_AGENT_EXECUTION_MODE = "auto"
 DEFAULT_SINGLE_PASS_STRATEGY = "auto"
 INCREMENTAL_SINGLE_PASS_STRATEGY = "incremental_thinking"
 DEFAULT_SELECTED_PLAN_ID = "standard"
-STATE_LOCK_TIMEOUT_SECONDS = 360
+DEFAULT_CONFIG_VERSION = 1
+STATE_LOCK_TIMEOUT_SECONDS = 20
 STATE_LOCK_RETRY_INTERVAL_SECONDS = 0.2
+STATE_LOCK_STALE_SECONDS = 120
 CONFIG_LOCK_TIMEOUT_SECONDS = 30
 
 
@@ -40,6 +42,10 @@ class Context:
         self.logger = logger
         self.trace_id = trace_id
         self.request_source = request_source
+
+
+class ConfigVersionConflictError(ValueError):
+    pass
 
 
 def _log(ctx: Context, level: str, scope: str, message: str, **data) -> None:
@@ -256,10 +262,19 @@ def normalize_selected_plan_id(value, plan_presets: List[dict], source: Optional
 
 def _create_default_persisted_config() -> dict:
     return {
+        "version": DEFAULT_CONFIG_VERSION,
         "selected_plan_id": DEFAULT_SELECTED_PLAN_ID,
         "plan_presets": _create_default_plan_presets(),
         "duty_rule": "",
     }
+
+
+def _normalize_config_version(value: object) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return DEFAULT_CONFIG_VERSION
+    return max(DEFAULT_CONFIG_VERSION, parsed)
 
 
 def _normalize_persisted_config(config: dict | None) -> dict:
@@ -267,6 +282,7 @@ def _normalize_persisted_config(config: dict | None) -> dict:
     plan_presets = _normalize_plan_presets(source.get("plan_presets"))
     selected_plan_id = normalize_selected_plan_id(source.get("selected_plan_id"), plan_presets, source)
     return {
+        "version": _normalize_config_version(source.get("version", DEFAULT_CONFIG_VERSION)),
         "selected_plan_id": selected_plan_id,
         "plan_presets": plan_presets,
         "duty_rule": str(source.get("duty_rule", "") or "").strip(),
@@ -281,6 +297,7 @@ def _hydrate_runtime_config(persisted: dict) -> dict:
     selected_mode_id = normalize_plan_mode_id(selected_plan.get("mode_id"))
 
     return {
+        "version": normalized["version"],
         "api_key": selected_plan["api_key"],
         "base_url": selected_plan["base_url"],
         "model": selected_plan["model"],
@@ -324,9 +341,79 @@ def save_json_atomic(path: Path, data: dict):
                 raise
 
 
-def acquire_file_lock(lock_path: Path, timeout_seconds: int) -> None:
-    deadline = time.time() + max(1, int(timeout_seconds))
+def _read_lock_metadata(lock_path: Path) -> tuple[Optional[int], Optional[datetime]]:
+    try:
+        lines = lock_path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return None, None
+
+    pid = None
+    created_at = None
+    if lines:
+        try:
+            pid = int(lines[0].strip())
+        except (TypeError, ValueError):
+            pid = None
+    if len(lines) > 1:
+        try:
+            created_at = datetime.fromisoformat(lines[1].strip())
+        except ValueError:
+            created_at = None
+    return pid, created_at
+
+
+def _is_process_alive(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
+
+
+def _clear_stale_lock_if_needed(lock_path: Path, stale_after_seconds: int) -> bool:
+    pid, created_at = _read_lock_metadata(lock_path)
+    now = datetime.now()
+    age_seconds: Optional[float] = None
+    if created_at is not None:
+        age_seconds = max(0.0, (now - created_at).total_seconds())
+    else:
+        try:
+            age_seconds = max(0.0, now.timestamp() - lock_path.stat().st_mtime)
+        except OSError:
+            age_seconds = None
+
+    pid_stale = pid is not None and not _is_process_alive(pid)
+    age_stale = age_seconds is not None and age_seconds >= max(1, stale_after_seconds)
+    if not pid_stale and not age_stale:
+        return False
+
+    try:
+        lock_path.unlink()
+        return True
+    except FileNotFoundError:
+        return True
+    except OSError:
+        return False
+
+
+def acquire_file_lock(
+    lock_path: Path,
+    timeout_seconds: int,
+    *,
+    stop_event=None,
+    stale_after_seconds: Optional[int] = None,
+) -> None:
+    deadline = time.monotonic() + max(1, int(timeout_seconds))
+    stale_after = max(1, int(stale_after_seconds if stale_after_seconds is not None else max(timeout_seconds, 30)))
     while True:
+        if stop_event and stop_event.is_set():
+            raise InterruptedError(f"Cancelled while waiting for file lock: {lock_path}")
         try:
             fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
             with os.fdopen(fd, "w", encoding="utf-8") as lock_file:
@@ -334,7 +421,9 @@ def acquire_file_lock(lock_path: Path, timeout_seconds: int) -> None:
                 lock_file.write(f"{datetime.now().isoformat()}\n")
             return
         except FileExistsError:
-            if time.time() >= deadline:
+            if _clear_stale_lock_if_needed(lock_path, stale_after):
+                continue
+            if time.monotonic() >= deadline:
                 raise TimeoutError(f"Timed out waiting for file lock: {lock_path}")
             time.sleep(STATE_LOCK_RETRY_INTERVAL_SECONDS)
 
@@ -346,12 +435,36 @@ def release_file_lock(lock_path: Path) -> None:
         pass
 
 
-def acquire_state_file_lock(lock_path: Path, timeout_seconds: int = STATE_LOCK_TIMEOUT_SECONDS) -> None:
-    acquire_file_lock(lock_path, timeout_seconds)
+def acquire_state_file_lock(lock_path: Path, timeout_seconds: int = STATE_LOCK_TIMEOUT_SECONDS, stop_event=None) -> None:
+    acquire_file_lock(
+        lock_path,
+        timeout_seconds,
+        stop_event=stop_event,
+        stale_after_seconds=STATE_LOCK_STALE_SECONDS,
+    )
 
 
 def release_state_file_lock(lock_path: Path) -> None:
     release_file_lock(lock_path)
+
+
+def update_state(
+    path: Path,
+    updater: Callable[[dict], dict | None],
+    *,
+    timeout_seconds: int = STATE_LOCK_TIMEOUT_SECONDS,
+    stop_event=None,
+) -> dict:
+    lock_path = path.with_suffix(path.suffix + ".lock")
+    acquire_state_file_lock(lock_path, timeout_seconds=timeout_seconds, stop_event=stop_event)
+    try:
+        current = load_state(path)
+        updated = updater(current)
+        next_state = updated if isinstance(updated, dict) else current
+        save_json_atomic(path, next_state)
+        return next_state
+    finally:
+        release_state_file_lock(lock_path)
 
 
 def _load_persisted_config_unlocked(config_path: Path) -> tuple[dict, bool]:
@@ -435,12 +548,21 @@ def save_config(ctx: Context, config: dict) -> dict:
     return normalized
 
 
+def _persisted_config_body(config: dict | None) -> dict:
+    normalized = _normalize_persisted_config(config)
+    return {
+        "selected_plan_id": normalized["selected_plan_id"],
+        "plan_presets": normalized["plan_presets"],
+        "duty_rule": normalized["duty_rule"],
+    }
+
+
 def patch_config(ctx: Context, patch: dict) -> dict:
     patch_keys = sorted([str(key) for key, value in (patch or {}).items() if value is not None])
     unsupported_keys = sorted(
         str(key)
         for key, value in (patch or {}).items()
-        if value is not None and key not in {"selected_plan_id", "plan_presets", "duty_rule"}
+        if value is not None and key not in {"expected_version", "selected_plan_id", "plan_presets", "duty_rule"}
     )
     if unsupported_keys:
         raise ValueError(f"Unsupported config patch keys: {', '.join(unsupported_keys)}")
@@ -452,6 +574,7 @@ def patch_config(ctx: Context, patch: dict) -> dict:
         "Patching backend config.",
         config_path=str(ctx.paths["config"]),
         patch_keys=patch_keys,
+        expected_version=str((patch or {}).get("expected_version", "") or "") if "expected_version" in (patch or {}) else "<unchanged>",
         selected_plan_id=str((patch or {}).get("selected_plan_id", "") or "") if "selected_plan_id" in (patch or {}) else "<unchanged>",
         plan_preset_count=str(len((patch or {}).get("plan_presets") or [])) if "plan_presets" in (patch or {}) else "<unchanged>",
         duty_rule=truncate_for_log(str((patch or {}).get("duty_rule", "") or ""), 160) if "duty_rule" in (patch or {}) else "<unchanged>",
@@ -461,12 +584,26 @@ def patch_config(ctx: Context, patch: dict) -> dict:
     acquire_file_lock(lock_path, CONFIG_LOCK_TIMEOUT_SECONDS)
     try:
         current, _ = _load_persisted_config_unlocked(ctx.paths["config"])
-        for key, value in (patch or {}).items():
-            if value is None:
-                continue
-            current[key] = value
+        current_version = _normalize_config_version(current.get("version", DEFAULT_CONFIG_VERSION))
+        expected_version = None
+        if "expected_version" in (patch or {}) and (patch or {}).get("expected_version") is not None:
+            expected_version = _normalize_config_version((patch or {}).get("expected_version"))
+            if expected_version != current_version:
+                raise ConfigVersionConflictError(
+                    f"Config version mismatch: expected {expected_version}, current {current_version}"
+                )
 
-        persisted = _normalize_persisted_config(current)
+        candidate = dict(current)
+        for key, value in (patch or {}).items():
+            if key == "expected_version" or value is None:
+                continue
+            candidate[key] = value
+
+        persisted = _normalize_persisted_config(candidate)
+        if _persisted_config_body(persisted) != _persisted_config_body(current):
+            persisted["version"] = current_version + 1
+        else:
+            persisted["version"] = current_version
         save_json_atomic(ctx.paths["config"], persisted)
     finally:
         release_file_lock(lock_path)
@@ -536,6 +673,116 @@ def load_roster_entries(csv_path: Path) -> List[dict]:
         }
         for person_id in all_ids
     ]
+
+
+def _roster_lock_path(ctx: Context) -> Path:
+    return ctx.paths["roster"].with_suffix(ctx.paths["roster"].suffix + ".lock")
+
+
+def _normalize_roster_entry_id(value: object) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return 0
+    return parsed
+
+
+def _to_unique_roster_name(base_name: str, name_counts: Dict[str, int]) -> str:
+    key = base_name.casefold()
+    if key not in name_counts:
+        name_counts[key] = 1
+        return base_name
+
+    next_count = name_counts[key] + 1
+    name_counts[key] = next_count
+    return f"{base_name}{next_count}"
+
+
+def normalize_roster_entries(entries: object) -> List[dict]:
+    candidates = entries if isinstance(entries, list) else []
+    normalized: List[dict] = []
+    name_counts: Dict[str, int] = {}
+    used_ids: set[int] = set()
+    next_generated_id = 1
+
+    for candidate in candidates:
+        if not isinstance(candidate, dict):
+            continue
+
+        base_name = str(candidate.get("name", "") or "").strip()
+        if not base_name:
+            continue
+
+        person_id = _normalize_roster_entry_id(candidate.get("id"))
+        if person_id <= 0 or person_id in used_ids:
+            while next_generated_id in used_ids:
+                next_generated_id += 1
+            person_id = next_generated_id
+            used_ids.add(person_id)
+        else:
+            used_ids.add(person_id)
+
+        if person_id >= next_generated_id:
+            next_generated_id = person_id + 1
+
+        normalized.append(
+            {
+                "id": person_id,
+                "name": _to_unique_roster_name(base_name, name_counts),
+                "active": bool(candidate.get("active", True)),
+            }
+        )
+
+    normalized.sort(key=lambda item: item["id"])
+    return normalized
+
+
+def save_roster_atomic(path: Path, roster_entries: List[dict]) -> None:
+    tmp_path = path.with_suffix(path.suffix + ".tmp")
+    with open(tmp_path, "w", encoding="utf-8-sig", newline="") as file:
+        writer = csv.DictWriter(file, fieldnames=["id", "name", "active"])
+        writer.writeheader()
+        for item in roster_entries:
+            writer.writerow(
+                {
+                    "id": int(item.get("id", 0) or 0),
+                    "name": str(item.get("name", "") or "").strip(),
+                    "active": "1" if bool(item.get("active", True)) else "0",
+                }
+            )
+        file.flush()
+        os.fsync(file.fileno())
+    for attempt in range(3):
+        try:
+            os.replace(str(tmp_path), str(path))
+            return
+        except PermissionError:
+            if attempt < 2:
+                time.sleep(0.1 * (attempt + 1))
+            else:
+                raise
+
+
+def save_roster_entries(ctx: Context, roster_entries: object) -> List[dict]:
+    normalized = normalize_roster_entries(roster_entries)
+    ctx.paths["roster"].parent.mkdir(parents=True, exist_ok=True)
+    lock_path = _roster_lock_path(ctx)
+    acquire_file_lock(lock_path, CONFIG_LOCK_TIMEOUT_SECONDS)
+    try:
+        save_roster_atomic(ctx.paths["roster"], normalized)
+    finally:
+        release_file_lock(lock_path)
+
+    _log(
+        ctx,
+        "INFO",
+        "RosterStore",
+        "Saved roster entries.",
+        roster_path=str(ctx.paths["roster"]),
+        roster_count=len(normalized),
+        active_count=sum(1 for item in normalized if item.get("active")),
+    )
+    return normalized
 
 
 def load_state(path: Path) -> dict:

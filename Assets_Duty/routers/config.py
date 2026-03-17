@@ -6,8 +6,10 @@ from fastapi import APIRouter, HTTPException, Request
 
 try:
     from models.schemas import DutyBackendConfigPatch
+    from state_ops import ConfigVersionConflictError
 except ImportError:
     from ..models.schemas import DutyBackendConfigPatch
+    from ..state_ops import ConfigVersionConflictError
 
 router = APIRouter(prefix="/api/v1", tags=["Config"])
 
@@ -77,6 +79,16 @@ async def patch_config(config_patch: DutyBackendConfigPatch, request: Request):
             duration_ms=round((time.monotonic() - started_at) * 1000, 2),
         )
         return payload
+    except ConfigVersionConflictError as ex:
+        runtime.logger.warn(
+            "ConfigRoute",
+            "PATCH /api/v1/config rejected due to version conflict.",
+            trace_id=trace_id,
+            request_source=request_source,
+            duration_ms=round((time.monotonic() - started_at) * 1000, 2),
+            patch_keys=sorted(list(patch_payload.keys())),
+        )
+        raise HTTPException(status_code=409, detail=str(ex)) from ex
     except Exception as ex:
         runtime.logger.error(
             "ConfigRoute",

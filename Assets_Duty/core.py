@@ -17,9 +17,13 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from fastapi import FastAPI, BackgroundTasks, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import RedirectResponse
+from fastapi.staticfiles import StaticFiles
 from runtime import create_runtime
-from routers import config, duty
+from routers import config, duty, roster
 import uvicorn
+
+WEB_DIRECTORY = Path(__file__).resolve().parent / "web"
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -39,9 +43,17 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+@app.get("/app")
+async def web_app_root():
+    return RedirectResponse(url="/app/")
+
+if WEB_DIRECTORY.is_dir():
+    app.mount("/app", StaticFiles(directory=str(WEB_DIRECTORY), html=True), name="web_app")
+
 # Register modular routers
 app.include_router(duty.router)
 app.include_router(config.router)
+app.include_router(roster.router)
 
 @app.get("/")
 async def root(request: Request):

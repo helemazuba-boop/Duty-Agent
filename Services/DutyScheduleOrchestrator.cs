@@ -109,6 +109,17 @@ public class DutyScheduleOrchestrator : IDisposable
     public void LoadConfig() => _ = _configManager.Config;
     public void SaveConfig() => _configManager.SaveConfig();
     public DutyConfig UpdateHostConfig(Action<DutyConfig> update) => _configManager.UpdateConfig(update);
+    public async Task<string> GetWebAppUrlAsync(CancellationToken cancellationToken = default)
+    {
+        await _ipcService.EnsureReadyAsync(cancellationToken);
+        if (string.IsNullOrWhiteSpace(_ipcService.WebAppUrl))
+        {
+            throw new InvalidOperationException("Backend web app URL is unavailable.");
+        }
+
+        return _ipcService.WebAppUrl;
+    }
+
     public async Task<DutyBackendConfig> LoadBackendConfigAsync(
         string requestSource = "host_settings",
         string? traceId = null,
@@ -232,20 +243,19 @@ public class DutyScheduleOrchestrator : IDisposable
     public DutyState LoadState() => _stateManager.LoadState();
     public void SaveState(DutyState state) => _stateManager.SaveState(state);
 
-    public bool RunCoreAgent(string instruction, string applyMode = "append", string? overrideModel = null)
+    public bool RunCoreAgent(string instruction, string applyMode = "append")
     {
-        var result = RunCoreAgentWithMessage(instruction, applyMode, overrideModel);
+        var result = RunCoreAgentWithMessage(instruction, applyMode);
         return result.Success;
     }
 
     public CoreRunResult RunCoreAgentWithMessage(
         string instruction,
         string applyMode = "append",
-        string? overrideModel = null,
         Action<CoreRunProgress>? progress = null,
         bool isAutoRun = false)
     {
-        var t = RunCoreAgentAsync(instruction, applyMode, overrideModel, progress, isAutoRun);
+        var t = RunCoreAgentAsync(instruction, applyMode, progress, isAutoRun);
         t.Wait();
         return t.Result;
     }
@@ -253,7 +263,6 @@ public class DutyScheduleOrchestrator : IDisposable
     public async Task<CoreRunResult> RunCoreAgentAsync(
         string instruction,
         string applyMode = "append",
-        string? overrideModel = null,
         Action<CoreRunProgress>? progress = null,
         bool isAutoRun = false)
     {

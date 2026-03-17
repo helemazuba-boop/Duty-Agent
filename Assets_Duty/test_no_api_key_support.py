@@ -138,7 +138,7 @@ class TestExecutorsAllowBlankApiKey(unittest.TestCase):
                 "single_pass_executor.merge_schedule_pool",
                 return_value=[{"date": "2026-03-16", "area_assignments": {"default_area": ["Alice"]}, "note": ""}],
             ), patch(
-                "single_pass_executor.save_json_atomic",
+                "single_pass_executor.update_state",
             ):
                 result = run_single_pass_schedule(
                     context,

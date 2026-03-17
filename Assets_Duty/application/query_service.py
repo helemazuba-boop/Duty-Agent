@@ -55,6 +55,34 @@ class QueryService:
         )
         return config
 
+    def get_roster(self, trace_id: str | None = None, request_source: str = "api") -> list[dict]:
+        effective_trace_id = trace_id or self._runtime.new_trace_id()
+        self._runtime.logger.info(
+            "QueryService",
+            "Starting get_roster.",
+            trace_id=effective_trace_id,
+            request_source=request_source,
+        )
+        context = Context(
+            self._runtime.data_dir,
+            logger=self._runtime.logger,
+            trace_id=effective_trace_id,
+            request_source=request_source,
+        )
+        try:
+            roster = load_roster_entries(context.paths["roster"])
+        except (FileNotFoundError, ValueError):
+            roster = []
+
+        self._runtime.logger.info(
+            "QueryService",
+            "Finished get_roster.",
+            trace_id=effective_trace_id,
+            request_source=request_source,
+            roster_count=len(roster),
+        )
+        return roster
+
     def get_snapshot(self, trace_id: str | None = None, request_source: str = "api") -> dict:
         effective_trace_id = trace_id or self._runtime.new_trace_id()
         self._runtime.logger.info(

@@ -24,6 +24,7 @@ namespace DutyAgent.Views.SettingPages;
 [SettingsPageInfo("duty-agent.settings.debug", "Duty-Agent 调试层", "\uE7BA", "\uE7BA")]
 public partial class DutyWebSettingsPage : SettingsPageBase
 {
+    private const string PlaceholderWebEntryPath = "about:blank";
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         PropertyNameCaseInsensitive = true
@@ -60,8 +61,7 @@ public partial class DutyWebSettingsPage : SettingsPageBase
 
         _backendService.LoadConfig();
         var enableWebViewDebugLayer = _backendService.Config.EnableWebViewDebugLayer;
-        var entryPath = ResolveWebEntryPath();
-        _webViewHost = new DutyWebViewHost(entryPath, enableWebViewDebugLayer);
+        _webViewHost = new DutyWebViewHost(PlaceholderWebEntryPath, enableWebViewDebugLayer);
         _webViewHost.WebMessageReceived += OnWebMessageReceived;
         _webViewHost.ContentReady += OnWebContentReady;
         _webViewHost.LoadFailed += OnWebLoadFailed;
@@ -72,7 +72,7 @@ public partial class DutyWebSettingsPage : SettingsPageBase
         DutyDiagnosticsLogger.Info("SettingsPage", "Duty web settings page initialized.",
             new
             {
-                entryPath,
+                entryPath = PlaceholderWebEntryPath,
                 enableWebViewDebugLayer,
                 logPath = DutyDiagnosticsLogger.CurrentLogPath
             });
@@ -80,8 +80,7 @@ public partial class DutyWebSettingsPage : SettingsPageBase
 
     private async void OnLoaded(object? sender, RoutedEventArgs e)
     {
-        await SendSnapshotAsync();
-        _webViewHost.RequestResizeSync();
+        await InitializeBackendAppShellAsync();
         DutyDiagnosticsLogger.Info("SettingsPage", "Settings page loaded.",
             new
             {
@@ -93,10 +92,26 @@ public partial class DutyWebSettingsPage : SettingsPageBase
     private async void OnWebContentReady(object? sender, EventArgs e)
     {
         _webViewHost.RequestResizeSync();
-        await SendThemeAsync();
         WebViewHostContainer.Opacity = 1;
         HideWebLoadError();
         DutyDiagnosticsLogger.Info("SettingsPage", "Web content reported ready.");
+    }
+
+    private async Task InitializeBackendAppShellAsync()
+    {
+        try
+        {
+            var entryUrl = await _backendService.GetWebAppUrlAsync();
+            _webViewHost.NavigateTo(entryUrl);
+            _webViewHost.RequestResizeSync();
+            DutyDiagnosticsLogger.Info("SettingsPage", "Backend web app ready.",
+                new { entryUrl });
+        }
+        catch (Exception ex)
+        {
+            DutyDiagnosticsLogger.Error("SettingsPage", "Failed to initialize backend web app.", ex);
+            ShowWebLoadError($"后端页面启动失败：{ex.Message}");
+        }
     }
 
     private void OnWebLoadFailed(object? sender, string message)
@@ -239,6 +254,7 @@ public partial class DutyWebSettingsPage : SettingsPageBase
             });
         if (request.Config != null)
         {
+            // run_core persists UI config first, then dispatches the minimal schedule request.
             await ApplyConfigAsync(request.Config);
             DutyDiagnosticsLogger.Info("RunCore", "Applied config from run_core payload.");
         }
@@ -403,11 +419,7 @@ public partial class DutyWebSettingsPage : SettingsPageBase
 
     private async Task HandleOpenTestInBrowserAsync()
     {
-        var target = _localPreviewHostedService.PreviewUrl;
-        if (string.IsNullOrWhiteSpace(target))
-        {
-            target = new Uri(ResolveWebEntryPath()).AbsoluteUri;
-        }
+        var target = await _backendService.GetWebAppUrlAsync();
 
         Process.Start(new ProcessStartInfo
         {
@@ -696,17 +708,6 @@ public partial class DutyWebSettingsPage : SettingsPageBase
             "replace_all" => "replace_all",
             _ => "append"
         };
-    }
-
-    private string ResolveWebEntryPath()
-    {
-        var releasePath = _pluginPaths.WebIndexPath;
-        if (File.Exists(releasePath))
-        {
-            return releasePath;
-        }
-
-        return _pluginPaths.WebTestHtmlPath;
     }
 
     private static string TruncateForLog(string value, int maxLength)
@@ -1013,7 +1014,7 @@ internal sealed class DutyWebViewHost : NativeControlHost, IDisposable
     [DllImport("kernel32.dll")]
     private static extern IntPtr GetModuleHandle(string? moduleName);
 
-    private readonly string _entryPath;
+    private string _entryPath;
     private readonly bool _enableWebViewDebugLayer;
     private IntPtr _parentHandle = IntPtr.Zero;
     private IntPtr _childHandle = IntPtr.Zero;
@@ -1096,7 +1097,7 @@ internal sealed class DutyWebViewHost : NativeControlHost, IDisposable
 
     public DutyWebViewHost(string entryPath, bool enableWebViewDebugLayer)
     {
-        _entryPath = entryPath;
+        _entryPath = NormalizeEntryPath(entryPath);
         _enableWebViewDebugLayer = enableWebViewDebugLayer;
         DutyDiagnosticsLogger.Info("WebViewHost", "Host created.",
             new
@@ -1105,6 +1106,30 @@ internal sealed class DutyWebViewHost : NativeControlHost, IDisposable
                 enableWebViewDebugLayer,
                 logPath = DutyDiagnosticsLogger.CurrentLogPath
             });
+    }
+
+    public void NavigateTo(string entryPath)
+    {
+        _entryPath = NormalizeEntryPath(entryPath);
+        Dispatcher.UIThread.Post(() =>
+        {
+            if (_isDisposed)
+            {
+                return;
+            }
+
+            if (_controller?.CoreWebView2 != null)
+            {
+                var uri = new Uri(_entryPath).AbsoluteUri;
+                DutyDiagnosticsLogger.Info("WebViewHost", "Navigating webview to updated entry path.",
+                    new { uri });
+                _controller.CoreWebView2.Navigate(uri);
+                QueueResizeSync(2);
+                return;
+            }
+
+            _ = InitializeWebView2Async();
+        });
     }
 
     protected override IPlatformHandle CreateNativeControlCore(IPlatformHandle parent)
@@ -1295,6 +1320,11 @@ internal sealed class DutyWebViewHost : NativeControlHost, IDisposable
             DutyDiagnosticsLogger.Error("WebViewHost", "InitializeWebView2Async failed.", ex);
             ReportLoadFailed($"WebView2 初始化失败：{ex.Message}");
         }
+    }
+
+    private static string NormalizeEntryPath(string? entryPath)
+    {
+        return string.IsNullOrWhiteSpace(entryPath) ? "about:blank" : entryPath.Trim();
     }
 
     private void OnNavigationCompleted(object? sender, CoreWebView2NavigationCompletedEventArgs e)
