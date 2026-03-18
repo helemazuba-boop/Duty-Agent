@@ -167,7 +167,33 @@ internal sealed class DutyMainSettingsBackendModule
             hasChanges = true;
         }
 
+        if (hasChanges)
+        {
+            patch.ExpectedVersion = currentBackend.Version;
+        }
+
         return hasChanges ? patch : null;
+    }
+
+    public bool MatchesSettings(DutyBackendSettingsValues values, DutyBackendConfig? backendConfig)
+    {
+        if (backendConfig == null)
+        {
+            return false;
+        }
+
+        var normalizedPlanPresets = NormalizePlanPresets(values.PlanPresets, backendConfig);
+        var normalizedSelectedPlanId = NormalizeSelectedPlanId(values.SelectedPlanId, normalizedPlanPresets, backendConfig);
+        var normalizedDutyRule = values.DutyRule ?? string.Empty;
+
+        return string.Equals(
+                   normalizedSelectedPlanId,
+                   NormalizeSelectedPlanId(backendConfig.SelectedPlanId, backendConfig.PlanPresets, backendConfig),
+                   StringComparison.Ordinal) &&
+               string.Equals(normalizedDutyRule, backendConfig.DutyRule, StringComparison.Ordinal) &&
+               ArePlanPresetsEqual(
+                   normalizedPlanPresets,
+                   NormalizePlanPresets(backendConfig.PlanPresets, backendConfig));
     }
 
     public object? SummarizePatch(DutyBackendConfigPatch? patch)

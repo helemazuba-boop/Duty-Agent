@@ -218,7 +218,7 @@ public class DutyPythonIpcService : IPythonIpcService
             using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(EngineStartupTimeoutSeconds));
             using (cts.Token.Register(() => startupPortTcs.TrySetException(new TimeoutException($"Python engine initialization timed out ({EngineStartupTimeoutSeconds}s)."))))
             {
-                await startupPortTcs.Task;
+                await startupPortTcs.Task.ConfigureAwait(false);
             }
 
             _state = EngineState.Ready;
@@ -265,14 +265,14 @@ public class DutyPythonIpcService : IPythonIpcService
             waitTask = _portTcs.Task;
         }
 
-        await EnsureStartedAsync();
-        
-        await waitTask.WaitAsync(cancellationToken);
+        await EnsureStartedAsync().ConfigureAwait(false);
+
+        await waitTask.WaitAsync(cancellationToken).ConfigureAwait(false);
     }
 
     public async Task RestartEngineAsync()
     {
-        await StopAsync();
+        await StopAsync().ConfigureAwait(false);
         lock (_stateLock)
         {
             _state = EngineState.NotStarted;
@@ -282,7 +282,7 @@ public class DutyPythonIpcService : IPythonIpcService
                 _portTcs = new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously);
             }
         }
-        await EnsureReadyAsync();
+        await EnsureReadyAsync().ConfigureAwait(false);
     }
 
     public Task StopAsync()
@@ -304,7 +304,7 @@ public class DutyPythonIpcService : IPythonIpcService
 
     public async Task<CoreRunResult> RunScheduleAsync(object requestPayload, Action<CoreRunProgress>? progressCallback, CancellationToken cancellationToken = default)
     {
-        await EnsureReadyAsync(cancellationToken);
+        await EnsureReadyAsync(cancellationToken).ConfigureAwait(false);
 
         var url = $"http://127.0.0.1:{_serverPort}/api/v1/duty/schedule";
         var jsonPayload = JsonSerializer.Serialize(requestPayload);
@@ -313,10 +313,10 @@ public class DutyPythonIpcService : IPythonIpcService
         
         try
         {
-            using var response = await _httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+            using var response = await _httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken).ConfigureAwait(false);
             response.EnsureSuccessStatusCode();
 
-            using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
+            using var stream = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
             using var reader = new StreamReader(stream);
             
             CoreRunResult? finalResult = null;
@@ -326,7 +326,7 @@ public class DutyPythonIpcService : IPythonIpcService
             while (!reader.EndOfStream)
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                var line = await reader.ReadLineAsync();
+                var line = await reader.ReadLineAsync().ConfigureAwait(false);
                 
                 if (string.IsNullOrEmpty(line))
                 {
@@ -399,7 +399,7 @@ public class DutyPythonIpcService : IPythonIpcService
         string? traceId = null,
         CancellationToken cancellationToken = default)
     {
-        return await SendJsonAsync<DutyBackendConfig>(HttpMethod.Get, "/api/v1/config", null, requestSource, traceId, cancellationToken);
+        return await SendJsonAsync<DutyBackendConfig>(HttpMethod.Get, "/api/v1/config", null, requestSource, traceId, cancellationToken).ConfigureAwait(false);
     }
 
     public async Task<DutyBackendConfig> UpdateBackendConfigAsync(
@@ -408,7 +408,7 @@ public class DutyPythonIpcService : IPythonIpcService
         string? traceId = null,
         CancellationToken cancellationToken = default)
     {
-        return await SendJsonAsync<DutyBackendConfig>(HttpMethod.Patch, "/api/v1/config", patch, requestSource, traceId, cancellationToken);
+        return await SendJsonAsync<DutyBackendConfig>(HttpMethod.Patch, "/api/v1/config", patch, requestSource, traceId, cancellationToken).ConfigureAwait(false);
     }
 
     public async Task<DutyBackendSnapshot> GetBackendSnapshotAsync(
@@ -416,7 +416,7 @@ public class DutyPythonIpcService : IPythonIpcService
         string? traceId = null,
         CancellationToken cancellationToken = default)
     {
-        return await SendJsonAsync<DutyBackendSnapshot>(HttpMethod.Get, "/api/v1/snapshot", null, requestSource, traceId, cancellationToken);
+        return await SendJsonAsync<DutyBackendSnapshot>(HttpMethod.Get, "/api/v1/snapshot", null, requestSource, traceId, cancellationToken).ConfigureAwait(false);
     }
 
     private async Task<T> SendJsonAsync<T>(
@@ -443,7 +443,7 @@ public class DutyPythonIpcService : IPythonIpcService
                 payload = SummarizePayload(payload)
             });
 
-        await EnsureReadyAsync(cancellationToken);
+        await EnsureReadyAsync(cancellationToken).ConfigureAwait(false);
 
         using var request = new HttpRequestMessage(method, $"http://127.0.0.1:{_serverPort}{relativePath}");
         request.Headers.TryAddWithoutValidation(TraceHeaderName, effectiveTraceId);
@@ -458,8 +458,8 @@ public class DutyPythonIpcService : IPythonIpcService
 
         try
         {
-            using var response = await _httpClient.SendAsync(request, cancellationToken);
-            var responseText = await response.Content.ReadAsStringAsync(cancellationToken);
+            using var response = await _httpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
+            var responseText = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
             stopwatch.Stop();
 
             if (!response.IsSuccessStatusCode)

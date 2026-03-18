@@ -1,5 +1,6 @@
 ﻿using System.Diagnostics;
 using System.Globalization;
+using System.Text;
 using System.Threading;
 using Avalonia.Controls;
 using Avalonia.Input;
@@ -29,6 +30,9 @@ public partial class DutyMainSettingsPage : SettingsPageBase
     private readonly DutyMainSettingsSaveCoordinator _saveCoordinator;
     private readonly DutyMainSettingsRosterModule _rosterModule;
     private readonly DutyMainSettingsScheduleModule _scheduleModule;
+    private readonly DispatcherTimer _reasoningStreamFlushTimer;
+    private readonly object _reasoningStreamLock = new();
+    private readonly StringBuilder _pendingReasoningStreamText = new();
     private bool _isLoadingConfig;
     private bool _isApplyingConfig;
     private string _lastConfigState = "未应用";
@@ -40,6 +44,8 @@ public partial class DutyMainSettingsPage : SettingsPageBase
     private readonly DispatcherTimer _configApplyDebounceTimer;
     private bool _hasPendingConfigApply;
     private string _pendingScheduleSelectionDate = string.Empty;
+    private string _pendingReasoningStreamStatus = string.Empty;
+    private int _pendingReasoningStreamRevision;
     private bool _isPopulatingEditor;
     private DutyBackendConfigLoadState _backendConfigState = DutyBackendConfigLoadState.NotLoaded;
     private bool _isLoadingBackendConfig;
@@ -67,6 +73,11 @@ public partial class DutyMainSettingsPage : SettingsPageBase
             Interval = TimeSpan.FromMilliseconds(500)
         };
         _configApplyDebounceTimer.Tick += OnConfigApplyDebounceTick;
+        _reasoningStreamFlushTimer = new DispatcherTimer
+        {
+            Interval = TimeSpan.FromMilliseconds(33)
+        };
+        _reasoningStreamFlushTimer.Tick += OnReasoningStreamFlushTick;
         Loaded += OnPageLoaded;
         Unloaded += OnPageUnloaded;
         InitializeAutoRunTimeOptions();
@@ -88,10 +99,19 @@ public partial class DutyMainSettingsPage : SettingsPageBase
         await LoadBackendConfigAsync();
     }
 
-    private void OnPageUnloaded(object? sender, RoutedEventArgs e)
+    private async void OnPageUnloaded(object? sender, RoutedEventArgs e)
     {
-        _configApplyDebounceTimer.Stop();
         Interlocked.Increment(ref _configLoadRevision);
+        _configApplyDebounceTimer.Stop();
+        StopReasoningStreamFlush();
+        if (_isLoadingConfig)
+        {
+            return;
+        }
+
+        CaptureCurrentPlanDraft();
+        _hasPendingConfigApply = true;
+        await FlushPendingConfigApplyAsync();
     }
 
     private void InitializeAutoRunTimeOptions()
@@ -177,6 +197,7 @@ public partial class DutyMainSettingsPage : SettingsPageBase
     {
         var runSessionRevision = Interlocked.Increment(ref _runSessionRevision);
         _activeRunSessionRevision = runSessionRevision;
+        ResetReasoningStreamBuffer(runSessionRevision);
         var instruction = (InstructionBox.Text ?? string.Empty).Trim();
         var useDefaultInstruction = instruction.Length == 0;
 
@@ -211,16 +232,7 @@ public partial class DutyMainSettingsPage : SettingsPageBase
 
                     if (phase == "stream_chunk")
                     {
-                        Dispatcher.UIThread.Post(() =>
-                        {
-                            if (_activeRunSessionRevision != runSessionRevision)
-                            {
-                                return;
-                            }
-                            SetStatus("AI 正在流式返回中...", Brushes.Gray);
-                            ReasoningBoardText.Text += progress.StreamChunk;
-                            ReasoningBoardScrollViewer.ScrollToEnd();
-                        });
+                        QueueReasoningStreamChunk(runSessionRevision, progress.StreamChunk, "AI 正在流式返回中...");
                         return;
                     }
 
@@ -264,6 +276,7 @@ public partial class DutyMainSettingsPage : SettingsPageBase
                           SetStatus(message, Brushes.Gray);
                       });
                   });
+              FlushReasoningStreamBuffer(stopTimerIfIdle: true);
               _activeRunSessionRevision = 0;
               if (result.Success)
               {
@@ -273,13 +286,15 @@ public partial class DutyMainSettingsPage : SettingsPageBase
                       ReasoningBoardScrollViewer.ScrollToEnd();
                   }
                   ReasoningBoardContainer.BorderBrush = Brushes.Green;
-                await LoadDataAsync("排班完成");
-                UpdateRunTracking("执行成功");
-                SetStatus(
-                    useDefaultInstruction
-                        ? "默认排班执行成功（覆盖模式）。"
-                        : "排班执行成功（覆盖模式）。",
-                    Brushes.Green);
+                  UpdateRunTracking("执行成功");
+                  SetStatus(
+                      useDefaultInstruction
+                          ? "默认排班执行成功，正在刷新结果视图..."
+                          : "排班执行成功，正在刷新结果视图...",
+                      Brushes.Green);
+                  Dispatcher.UIThread.Post(
+                      () => { _ = LoadDataAsync("排班完成"); },
+                      DispatcherPriority.Background);
             }
             else
             {
@@ -291,6 +306,7 @@ public partial class DutyMainSettingsPage : SettingsPageBase
           }
           catch (Exception ex)
           {
+              FlushReasoningStreamBuffer(stopTimerIfIdle: true);
               _activeRunSessionRevision = 0;
               ReasoningBoardContainer.BorderBrush = Brushes.Red;
               UpdateRunTracking("执行异常");
@@ -298,6 +314,7 @@ public partial class DutyMainSettingsPage : SettingsPageBase
           }
           finally
           {
+              StopReasoningStreamFlush();
               _activeRunSessionRevision = 0;
               RunAgentBtn.IsEnabled = true;
           }
@@ -438,6 +455,110 @@ public partial class DutyMainSettingsPage : SettingsPageBase
     {
         _configApplyDebounceTimer.Stop();
         _ = FlushPendingConfigApplyAsync();
+    }
+
+    private void OnReasoningStreamFlushTick(object? sender, EventArgs e)
+    {
+        FlushReasoningStreamBuffer(stopTimerIfIdle: true);
+    }
+
+    private void ResetReasoningStreamBuffer(int runSessionRevision)
+    {
+        StopReasoningStreamFlush();
+        lock (_reasoningStreamLock)
+        {
+            _pendingReasoningStreamRevision = runSessionRevision;
+        }
+    }
+
+    private void QueueReasoningStreamChunk(int runSessionRevision, string? streamChunk, string? statusMessage)
+    {
+        lock (_reasoningStreamLock)
+        {
+            if (_pendingReasoningStreamRevision != runSessionRevision)
+            {
+                _pendingReasoningStreamText.Clear();
+                _pendingReasoningStreamStatus = string.Empty;
+                _pendingReasoningStreamRevision = runSessionRevision;
+            }
+
+            if (!string.IsNullOrEmpty(streamChunk))
+            {
+                _pendingReasoningStreamText.Append(streamChunk);
+            }
+
+            if (!string.IsNullOrWhiteSpace(statusMessage))
+            {
+                _pendingReasoningStreamStatus = statusMessage.Trim();
+            }
+        }
+
+        Dispatcher.UIThread.Post(() =>
+        {
+            if (!_reasoningStreamFlushTimer.IsEnabled)
+            {
+                _reasoningStreamFlushTimer.Start();
+            }
+        }, DispatcherPriority.Background);
+    }
+
+    private void FlushReasoningStreamBuffer(bool stopTimerIfIdle)
+    {
+        string chunk;
+        string status;
+        int revision;
+        lock (_reasoningStreamLock)
+        {
+            chunk = _pendingReasoningStreamText.ToString();
+            _pendingReasoningStreamText.Clear();
+            status = _pendingReasoningStreamStatus;
+            _pendingReasoningStreamStatus = string.Empty;
+            revision = _pendingReasoningStreamRevision;
+        }
+
+        if (revision != 0 && revision == _activeRunSessionRevision)
+        {
+            if (!string.IsNullOrWhiteSpace(status))
+            {
+                SetStatus(status, Brushes.Gray);
+            }
+
+            if (chunk.Length > 0)
+            {
+                ReasoningBoardText.Text += chunk;
+                ReasoningBoardScrollViewer.ScrollToEnd();
+            }
+        }
+
+        if (!stopTimerIfIdle)
+        {
+            return;
+        }
+
+        lock (_reasoningStreamLock)
+        {
+            if (_pendingReasoningStreamText.Length == 0 &&
+                string.IsNullOrWhiteSpace(_pendingReasoningStreamStatus) &&
+                _reasoningStreamFlushTimer.IsEnabled)
+            {
+                _reasoningStreamFlushTimer.Stop();
+            }
+        }
+    }
+
+    private void StopReasoningStreamFlush()
+    {
+        if (_reasoningStreamFlushTimer.IsEnabled)
+        {
+            _reasoningStreamFlushTimer.Stop();
+        }
+
+        lock (_reasoningStreamLock)
+        {
+            _pendingReasoningStreamText.Clear();
+            _pendingReasoningStreamStatus = string.Empty;
+            _pendingReasoningStreamRevision = 0;
+        }
     }
 
     private async Task FlushPendingConfigApplyAsync()

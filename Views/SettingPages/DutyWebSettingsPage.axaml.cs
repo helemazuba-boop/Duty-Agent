@@ -32,30 +32,22 @@ public partial class DutyWebSettingsPage : SettingsPageBase
 
     private readonly DutyScheduleOrchestrator _backendService;
     private readonly DutyNotificationService _notificationService;
-    private readonly DutyLocalPreviewHostedService _localPreviewHostedService;
-    private readonly DutyPluginPaths _pluginPaths;
     private readonly DutyWebViewHost _webViewHost;
     private Size _lastLoggedContainerSize;
 
     public DutyWebSettingsPage()
         : this(
             IAppHost.GetService<DutyScheduleOrchestrator>(),
-            IAppHost.GetService<DutyNotificationService>(),
-            IAppHost.GetService<DutyLocalPreviewHostedService>(),
-            IAppHost.GetService<DutyPluginPaths>())
+            IAppHost.GetService<DutyNotificationService>())
     {
     }
 
     public DutyWebSettingsPage(
         DutyScheduleOrchestrator backendService,
-        DutyNotificationService notificationService,
-        DutyLocalPreviewHostedService localPreviewHostedService,
-        DutyPluginPaths pluginPaths)
+        DutyNotificationService notificationService)
     {
         _backendService = backendService;
         _notificationService = notificationService;
-        _localPreviewHostedService = localPreviewHostedService;
-        _pluginPaths = pluginPaths;
 
         InitializeComponent();
 
@@ -176,19 +168,6 @@ public partial class DutyWebSettingsPage : SettingsPageBase
         {
             switch (action)
             {
-                case "ready":
-                case "load_all":
-                    await SendSnapshotAsync();
-                    break;
-                case "save_config":
-                    await HandleSaveConfigAsync(payload);
-                    break;
-                case "save_roster":
-                    await HandleSaveRosterAsync(payload);
-                    break;
-                case "run_core":
-                    await HandleRunCoreAsync(payload);
-                    break;
                 case "publish_notification":
                     await HandlePublishNotificationAsync(payload);
                     break;
@@ -210,146 +189,6 @@ public partial class DutyWebSettingsPage : SettingsPageBase
         {
             DutyDiagnosticsLogger.Error("Bridge", "Web message handler failed.", ex, new { action });
             await SendErrorAsync("handler_exception", ex.Message, action);
-        }
-    }
-
-    private async Task HandleSaveConfigAsync(JsonElement payload)
-    {
-        var request = payload.Deserialize<SaveConfigRequest>(JsonOptions);
-        if (request?.Config == null)
-        {
-            await SendErrorAsync("invalid_payload", "save_config requires payload.config.", "save_config");
-            return;
-        }
-
-        await ApplyConfigAsync(request.Config);
-        await SendConfigSavedAsync();
-    }
-
-    private async Task HandleSaveRosterAsync(JsonElement payload)
-    {
-        var request = payload.Deserialize<SaveRosterRequest>(JsonOptions);
-        var normalized = (request?.Roster ?? [])
-            .Select(x => new RosterEntry
-            {
-                Id = x.Id,
-                Name = (x.Name ?? string.Empty).Trim(),
-                Active = x.Active
-            })
-            .ToList();
-
-        _backendService.SaveRosterEntries(normalized);
-        await SendSnapshotAsync();
-    }
-
-    private async Task HandleRunCoreAsync(JsonElement payload)
-    {
-        var request = payload.Deserialize<RunCoreRequest>(JsonOptions) ?? new RunCoreRequest();
-        DutyDiagnosticsLogger.Info("RunCore", "Received run_core request.",
-            new
-            {
-                hasConfig = request.Config != null,
-                instructionLength = (request.Instruction ?? string.Empty).Trim().Length,
-                requestedApplyMode = request.ApplyMode ?? string.Empty
-            });
-        if (request.Config != null)
-        {
-            // run_core persists UI config first, then dispatches the minimal schedule request.
-            await ApplyConfigAsync(request.Config);
-            DutyDiagnosticsLogger.Info("RunCore", "Applied config from run_core payload.");
-        }
-
-        var instruction = (request.Instruction ?? string.Empty).Trim();
-        if (instruction.Length == 0)
-        {
-            const string emptyInstructionMessage = "Instruction cannot be empty.";
-            DutyDiagnosticsLogger.Warn("RunCore", emptyInstructionMessage);
-            await SendRunStatusAsync("failed", emptyInstructionMessage);
-            await SendRunResultAsync(false, emptyInstructionMessage, string.Empty);
-            return;
-        }
-
-        var applyMode = NormalizeApplyMode(request.ApplyMode);
-        await SendRunStatusAsync("started", "Schedule generation started.");
-        DutyDiagnosticsLogger.Info("RunCore", "Run started.",
-            new
-            {
-                applyMode,
-                instructionPreview = TruncateForLog(instruction, 180)
-            });
-        try
-        {
-            var result = await _backendService.RunCoreAgentAsync(
-                instruction,
-                applyMode,
-                progress: progress =>
-                {
-                    var phase = (progress.Phase ?? string.Empty).Trim().ToLowerInvariant();
-                    if (phase.Length == 0)
-                    {
-                        return;
-                    }
-
-                    var progressMessage = progress.Message ?? string.Empty;
-                    var streamChunk = progress.StreamChunk ?? string.Empty;
-                    if (phase == "stream_chunk")
-                    {
-                        if (streamChunk.Length == 0)
-                        {
-                            return;
-                        }
-
-                        DutyDiagnosticsLogger.Info("RunCore", "Streaming chunk received.",
-                            new
-                            {
-                                chunkLength = streamChunk.Length
-                            });
-                        Dispatcher.UIThread.Post(() =>
-                            _ = SendRunStatusAsync(phase, progressMessage, streamChunk));
-                        return;
-                    }
-
-                    DutyDiagnosticsLogger.Info("RunCore", "Progress update.",
-                        new
-                        {
-                            phase,
-                            message = TruncateForLog(progressMessage, 220)
-                        });
-                    Dispatcher.UIThread.Post(() => _ = SendRunStatusAsync(phase, progressMessage));
-                });
-            var resultMessage = result.Message ?? string.Empty;
-            var aiResponse = result.AiResponse ?? string.Empty;
-            DutyDiagnosticsLogger.Info("RunCore", "Run finished.",
-                new
-                {
-                    success = result.Success,
-                    message = TruncateForLog(resultMessage, 220),
-                    aiResponseLength = aiResponse.Length
-                });
-            if (!string.IsNullOrWhiteSpace(aiResponse))
-            {
-                DutyDiagnosticsLogger.Info("RunCore", "AI response received.",
-                    new
-                    {
-                        aiResponsePreview = TruncateForLog(aiResponse, 500)
-                    });
-            }
-
-            await SendRunResultAsync(result.Success, resultMessage, aiResponse);
-            if (result.Success)
-            {
-                TryPublishRunCompletionNotification(instruction, applyMode, resultMessage);
-            }
-
-            await SendRunStatusAsync(result.Success ? "completed" : "failed", resultMessage);
-            await SendSnapshotAsync();
-        }
-        catch (Exception ex)
-        {
-            DutyDiagnosticsLogger.Error("RunCore", "Run failed with exception.", ex,
-                new { applyMode });
-            await SendRunStatusAsync("failed", ex.Message);
-            await SendRunResultAsync(false, ex.Message, string.Empty);
         }
     }
 
@@ -463,154 +302,6 @@ public partial class DutyWebSettingsPage : SettingsPageBase
         });
     }
 
-
-    private async Task ApplyConfigAsync(WebConfigDto config)
-    {
-        var traceId = DutyDiagnosticsLogger.CreateTraceId("webcfg");
-        _backendService.LoadConfig();
-        var currentHost = _backendService.Config;
-        var previousEnableMcp = currentHost.EnableMcp;
-        var previousEnableWebViewDebugLayer = currentHost.EnableWebViewDebugLayer;
-        var currentBackend = await _backendService.LoadBackendConfigAsync("webview", traceId);
-
-        DutyDiagnosticsLogger.Info("WebConfig", "Applying config from WebView.",
-            new
-            {
-                traceId,
-                apiKey = config.ApiKey is null ? "<unchanged>" : DutyDiagnosticsLogger.MaskSecret(config.ApiKey),
-                baseUrl = TruncateForLog(config.BaseUrl ?? string.Empty, 120),
-                model = TruncateForLog(config.Model ?? string.Empty, 120),
-                modelProfile = config.ModelProfile ?? "<unchanged>",
-                orchestrationMode = config.OrchestrationMode ?? "<unchanged>",
-                multiAgentExecutionMode = config.MultiAgentExecutionMode ?? "<unchanged>",
-                enableMcp = config.EnableMcp,
-                enableWebViewDebugLayer = config.EnableWebViewDebugLayer
-            });
-
-        var apiKey = DutyScheduleOrchestrator.ResolveApiKeyInput(config.ApiKey, currentBackend.ApiKey);
-        var enableMcp = config.EnableMcp ?? currentHost.EnableMcp;
-        var enableWebViewDebugLayer = config.EnableWebViewDebugLayer ?? currentHost.EnableWebViewDebugLayer;
-        var autoRunMode = config.AutoRunMode ?? currentHost.AutoRunMode;
-        var autoRunParameter = config.AutoRunParameter ?? currentHost.AutoRunParameter;
-        var autoRunTime = config.AutoRunTime ?? currentHost.AutoRunTime;
-        var autoRunTriggerNotificationEnabled =
-            config.AutoRunTriggerNotificationEnabled ?? currentHost.AutoRunTriggerNotificationEnabled;
-        var componentRefreshTime = config.ComponentRefreshTime ?? currentHost.ComponentRefreshTime;
-        var pythonPath = config.PythonPath ?? currentHost.PythonPath;
-        var dutyReminderEnabled = config.DutyReminderEnabled ?? currentHost.DutyReminderEnabled;
-        var dutyReminderTimes = config.DutyReminderTimes ?? currentHost.DutyReminderTimes;
-
-        var backendPatch = DutyBackendPlanPatchHelper.BuildSelectedPlanPatch(
-            currentBackend,
-            apiKey,
-            config.BaseUrl,
-            config.Model,
-            config.ModelProfile,
-            config.ProviderHint,
-            config.OrchestrationMode,
-            config.MultiAgentExecutionMode,
-            config.DutyRule);
-        await _backendService.SaveBackendConfigAsync(backendPatch, "webview", traceId);
-
-        var savedHost = _backendService.UpdateHostConfig(hostConfig =>
-        {
-            hostConfig.AutoRunMode = DutyScheduleOrchestrator.NormalizeAutoRunMode(autoRunMode);
-            hostConfig.AutoRunParameter = (autoRunParameter ?? hostConfig.AutoRunParameter).Trim();
-            hostConfig.AutoRunTime = DutyScheduleOrchestrator.NormalizeTimeOrThrow(autoRunTime);
-            hostConfig.ComponentRefreshTime = DutyScheduleOrchestrator.NormalizeTimeOrThrow(componentRefreshTime);
-            hostConfig.DutyReminderEnabled = dutyReminderEnabled;
-            hostConfig.DutyReminderTimes = dutyReminderTimes;
-            hostConfig.EnableMcp = enableMcp;
-            hostConfig.EnableWebViewDebugLayer = enableWebViewDebugLayer;
-            hostConfig.AutoRunTriggerNotificationEnabled = autoRunTriggerNotificationEnabled;
-            hostConfig.PythonPath = pythonPath;
-            if (config.NotificationDurationSeconds.HasValue)
-            {
-                hostConfig.NotificationDurationSeconds = Math.Clamp(config.NotificationDurationSeconds.Value, 3, 15);
-            }
-        });
-
-        if (previousEnableMcp != enableMcp ||
-            previousEnableWebViewDebugLayer != enableWebViewDebugLayer)
-        {
-            RequestRestart();
-        }
-
-        DutyDiagnosticsLogger.Info("WebConfig", "WebView config applied.",
-            new
-            {
-                traceId,
-                autoRunMode = savedHost.AutoRunMode,
-                enableMcp = savedHost.EnableMcp,
-                enableWebViewDebugLayer = savedHost.EnableWebViewDebugLayer
-            });
-    }
-
-    private async Task SendSnapshotAsync()
-    {
-        var traceId = DutyDiagnosticsLogger.CreateTraceId("websnap");
-        _backendService.LoadConfig();
-        var hostConfig = _backendService.Config;
-        var backendSnapshot = await _backendService.LoadBackendSnapshotAsync("webview", traceId);
-
-        var snapshot = new BridgeSnapshot
-        {
-            LocalPreviewUrl = _localPreviewHostedService.PreviewUrl,
-            ApiOverwriteUrl = _localPreviewHostedService.ApiOverwriteUrl,
-            McpUrl = _localPreviewHostedService.McpUrl,
-            Config = new WebConfigDto
-            {
-                PythonPath = hostConfig.PythonPath,
-                ApiKey = string.IsNullOrWhiteSpace(backendSnapshot.Config.ApiKey) ? string.Empty : "********",
-                BaseUrl = backendSnapshot.Config.BaseUrl,
-                Model = backendSnapshot.Config.Model,
-                ModelProfile = backendSnapshot.Config.ModelProfile,
-                OrchestrationMode = backendSnapshot.Config.OrchestrationMode,
-                MultiAgentExecutionMode = backendSnapshot.Config.MultiAgentExecutionMode,
-                ProviderHint = backendSnapshot.Config.ProviderHint,
-                AutoRunMode = hostConfig.AutoRunMode,
-                EnableMcp = hostConfig.EnableMcp,
-                EnableWebViewDebugLayer = hostConfig.EnableWebViewDebugLayer,
-                AutoRunParameter = hostConfig.AutoRunParameter,
-                AutoRunTime = hostConfig.AutoRunTime,
-                DutyRule = backendSnapshot.Config.DutyRule,
-                ComponentRefreshTime = hostConfig.ComponentRefreshTime,
-                NotificationDurationSeconds = hostConfig.NotificationDurationSeconds,
-                DutyReminderEnabled = hostConfig.DutyReminderEnabled,
-                DutyReminderTimes = _backendService.GetDutyReminderTimes()
-            },
-            Roster = backendSnapshot.Roster
-                .Select(x => new WebRosterEntryDto
-                {
-                    Id = x.Id,
-                    Name = x.Name,
-                    Active = x.Active
-                })
-                .ToList(),
-            State = backendSnapshot.State
-        };
-
-        DutyDiagnosticsLogger.Info("Bridge", "Sending snapshot to web.",
-            new
-            {
-                traceId,
-                rosterCount = snapshot.Roster.Count,
-                scheduleCount = snapshot.State.SchedulePool.Count
-            });
-        await _webViewHost.PostJsonAsync(snapshot);
-        await SendThemeAsync();
-    }
-
-    private Task SendThemeAsync()
-    {
-        var payload = BuildThemePayload();
-        return _webViewHost.PostJsonAsync(new ThemeMessage
-        {
-            Type = "host_theme",
-            Payload = payload
-        });
-    }
-
     private void TryPublishRunCompletionNotification(string instruction, string applyMode, string resultMessage)
     {
         _backendService.PublishRunCompletionNotification(
@@ -619,72 +310,6 @@ public partial class DutyWebSettingsPage : SettingsPageBase
             resultMessage: resultMessage,
             success: true,
             isAutoRun: false);
-    }
-
-    private static ThemePayload BuildThemePayload()
-    {
-        var isDark = Application.Current?.ActualThemeVariant == ThemeVariant.Dark;
-        if (isDark)
-        {
-            return new ThemePayload
-            {
-                Mode = "dark",
-                Bg1 = "rgba(15, 23, 42, 0.42)",
-                Bg2 = "rgba(15, 23, 42, 0.26)",
-                Card = "rgba(15, 23, 42, 0.62)",
-                Line = "rgba(148, 163, 184, 0.35)",
-                Text = "#E2E8F0",
-                Muted = "#94A3B8",
-                Shadow = "0 12px 28px rgba(2, 6, 23, 0.45)",
-                InputBg = "rgba(15, 23, 42, 0.52)",
-                TableHead = "rgba(30, 41, 59, 0.72)"
-            };
-        }
-
-        return new ThemePayload
-        {
-            Mode = "light",
-            Bg1 = "rgba(248, 251, 255, 0.55)",
-            Bg2 = "rgba(239, 246, 255, 0.45)",
-            Card = "rgba(255, 255, 255, 0.82)",
-            Line = "rgba(148, 163, 184, 0.35)",
-            Text = "#1F2937",
-            Muted = "#64748B",
-            Shadow = "0 12px 28px rgba(15, 23, 42, 0.08)",
-            InputBg = "rgba(255, 255, 255, 0.72)",
-            TableHead = "rgba(248, 250, 252, 0.80)"
-        };
-    }
-
-    private Task SendRunResultAsync(bool success, string message, string aiResponse)
-    {
-        return _webViewHost.PostJsonAsync(new RunResultMessage
-        {
-            Type = "run_result",
-            Success = success,
-            Message = message,
-            AiResponse = aiResponse
-        });
-    }
-
-    private Task SendRunStatusAsync(string phase, string message, string? streamChunk = null)
-    {
-        return _webViewHost.PostJsonAsync(new RunStatusMessage
-        {
-            Type = "run_status",
-            Phase = phase,
-            Message = message,
-            StreamChunk = streamChunk ?? string.Empty
-        });
-    }
-
-    private Task SendConfigSavedAsync()
-    {
-        return _webViewHost.PostJsonAsync(new ConfigSavedMessage
-        {
-            Type = "config_saved",
-            Message = "Config saved."
-        });
     }
 
     private Task SendErrorAsync(string code, string message, string? action = null)
@@ -725,30 +350,6 @@ public partial class DutyWebSettingsPage : SettingsPageBase
         public JsonElement Payload { get; set; }
     }
 
-    private sealed class SaveConfigRequest
-    {
-        [JsonPropertyName("config")]
-        public WebConfigDto? Config { get; set; }
-    }
-
-    private sealed class SaveRosterRequest
-    {
-        [JsonPropertyName("roster")]
-        public List<WebRosterEntryDto>? Roster { get; set; }
-    }
-
-    private sealed class RunCoreRequest
-    {
-        [JsonPropertyName("instruction")]
-        public string? Instruction { get; set; }
-
-        [JsonPropertyName("apply_mode")]
-        public string? ApplyMode { get; set; }
-
-        [JsonPropertyName("config")]
-        public WebConfigDto? Config { get; set; }
-    }
-
     private sealed class PublishNotificationRequest
     {
         [JsonPropertyName("text")]
@@ -779,57 +380,6 @@ public partial class DutyWebSettingsPage : SettingsPageBase
         public string? Time { get; set; }
     }
 
-    private sealed class BridgeSnapshot
-    {
-        [JsonPropertyName("local_preview_url")]
-        public string LocalPreviewUrl { get; set; } = string.Empty;
-
-        [JsonPropertyName("api_overwrite_url")]
-        public string ApiOverwriteUrl { get; set; } = string.Empty;
-
-        [JsonPropertyName("mcp_url")]
-        public string McpUrl { get; set; } = string.Empty;
-
-        [JsonPropertyName("config")]
-        public WebConfigDto Config { get; set; } = new();
-
-        [JsonPropertyName("roster")]
-        public List<WebRosterEntryDto> Roster { get; set; } = [];
-
-        [JsonPropertyName("state")]
-        public DutyState State { get; set; } = new();
-    }
-
-    private sealed class RunResultMessage
-    {
-        [JsonPropertyName("type")]
-        public string Type { get; set; } = "run_result";
-
-        [JsonPropertyName("success")]
-        public bool Success { get; set; }
-
-        [JsonPropertyName("message")]
-        public string Message { get; set; } = string.Empty;
-
-        [JsonPropertyName("ai_response")]
-        public string AiResponse { get; set; } = string.Empty;
-    }
-
-    private sealed class RunStatusMessage
-    {
-        [JsonPropertyName("type")]
-        public string Type { get; set; } = "run_status";
-
-        [JsonPropertyName("phase")]
-        public string Phase { get; set; } = "started";
-
-        [JsonPropertyName("message")]
-        public string Message { get; set; } = string.Empty;
-
-        [JsonPropertyName("stream_chunk")]
-        public string StreamChunk { get; set; } = string.Empty;
-    }
-
     private sealed class ErrorMessage
     {
         [JsonPropertyName("type")]
@@ -843,129 +393,6 @@ public partial class DutyWebSettingsPage : SettingsPageBase
 
         [JsonPropertyName("action")]
         public string? Action { get; set; }
-    }
-
-    private sealed class ConfigSavedMessage
-    {
-        [JsonPropertyName("type")]
-        public string Type { get; set; } = "config_saved";
-
-        [JsonPropertyName("message")]
-        public string Message { get; set; } = string.Empty;
-    }
-
-    private sealed class ThemeMessage
-    {
-        [JsonPropertyName("type")]
-        public string Type { get; set; } = "host_theme";
-
-        [JsonPropertyName("payload")]
-        public ThemePayload Payload { get; set; } = new();
-    }
-
-    private sealed class ThemePayload
-    {
-        [JsonPropertyName("mode")]
-        public string Mode { get; set; } = "light";
-
-        [JsonPropertyName("bg1")]
-        public string Bg1 { get; set; } = "rgba(248, 251, 255, 0.55)";
-
-        [JsonPropertyName("bg2")]
-        public string Bg2 { get; set; } = "rgba(239, 246, 255, 0.45)";
-
-        [JsonPropertyName("card")]
-        public string Card { get; set; } = "rgba(255, 255, 255, 0.82)";
-
-        [JsonPropertyName("line")]
-        public string Line { get; set; } = "rgba(148, 163, 184, 0.35)";
-
-        [JsonPropertyName("text")]
-        public string Text { get; set; } = "#1F2937";
-
-        [JsonPropertyName("muted")]
-        public string Muted { get; set; } = "#64748B";
-
-        [JsonPropertyName("shadow")]
-        public string Shadow { get; set; } = "0 12px 28px rgba(15, 23, 42, 0.08)";
-
-        [JsonPropertyName("input_bg")]
-        public string InputBg { get; set; } = "rgba(255, 255, 255, 0.72)";
-
-        [JsonPropertyName("table_head")]
-        public string TableHead { get; set; } = "rgba(248, 250, 252, 0.80)";
-    }
-
-    private sealed class WebConfigDto
-    {
-        [JsonPropertyName("python_path")]
-        public string? PythonPath { get; set; }
-
-        [JsonPropertyName("api_key")]
-        public string? ApiKey { get; set; }
-
-        [JsonPropertyName("base_url")]
-        public string? BaseUrl { get; set; }
-
-        [JsonPropertyName("model")]
-        public string? Model { get; set; }
-
-        [JsonPropertyName("model_profile")]
-        public string? ModelProfile { get; set; }
-
-        [JsonPropertyName("orchestration_mode")]
-        public string? OrchestrationMode { get; set; }
-
-        [JsonPropertyName("provider_hint")]
-        public string? ProviderHint { get; set; }
-
-        [JsonPropertyName("multi_agent_execution_mode")]
-        public string? MultiAgentExecutionMode { get; set; }
-
-        [JsonPropertyName("auto_run_mode")]
-        public string? AutoRunMode { get; set; }
-
-        [JsonPropertyName("enable_mcp")]
-        public bool? EnableMcp { get; set; }
-
-        [JsonPropertyName("enable_webview_debug_layer")]
-        public bool? EnableWebViewDebugLayer { get; set; }
-
-        [JsonPropertyName("auto_run_parameter")]
-        public string? AutoRunParameter { get; set; }
-
-        [JsonPropertyName("auto_run_time")]
-        public string? AutoRunTime { get; set; }
-
-        [JsonPropertyName("duty_rule")]
-        public string? DutyRule { get; set; }
-
-        [JsonPropertyName("auto_run_trigger_notification_enabled")]
-        public bool? AutoRunTriggerNotificationEnabled { get; set; }
-
-        [JsonPropertyName("component_refresh_time")]
-        public string? ComponentRefreshTime { get; set; }
-
-        [JsonPropertyName("notification_duration_seconds")]
-        public int? NotificationDurationSeconds { get; set; }
-
-        [JsonPropertyName("duty_reminder_enabled")]
-        public bool? DutyReminderEnabled { get; set; }
-
-        [JsonPropertyName("duty_reminder_times")]
-        public List<string>? DutyReminderTimes { get; set; }
-    }
-
-    private sealed class WebRosterEntryDto
-    {
-        [JsonPropertyName("id")]
-        public int Id { get; set; }
-
-        [JsonPropertyName("name")]
-        public string Name { get; set; } = string.Empty;
-
-        [JsonPropertyName("active")]
-        public bool Active { get; set; } = true;
     }
 }
 

@@ -111,7 +111,7 @@ public class DutyScheduleOrchestrator : IDisposable
     public DutyConfig UpdateHostConfig(Action<DutyConfig> update) => _configManager.UpdateConfig(update);
     public async Task<string> GetWebAppUrlAsync(CancellationToken cancellationToken = default)
     {
-        await _ipcService.EnsureReadyAsync(cancellationToken);
+        await _ipcService.EnsureReadyAsync(cancellationToken).ConfigureAwait(false);
         if (string.IsNullOrWhiteSpace(_ipcService.WebAppUrl))
         {
             throw new InvalidOperationException("Backend web app URL is unavailable.");
@@ -133,7 +133,7 @@ public class DutyScheduleOrchestrator : IDisposable
             new { traceId = effectiveTraceId, requestSource });
         try
         {
-            var config = await _ipcService.GetBackendConfigAsync(requestSource, effectiveTraceId, cancellationToken);
+            var config = await _ipcService.GetBackendConfigAsync(requestSource, effectiveTraceId, cancellationToken).ConfigureAwait(false);
             stopwatch.Stop();
             DutyDiagnosticsLogger.Info("SettingsBackend", "Backend config loaded.",
                 new
@@ -180,7 +180,7 @@ public class DutyScheduleOrchestrator : IDisposable
             });
         try
         {
-            var config = await _ipcService.UpdateBackendConfigAsync(patch, requestSource, effectiveTraceId, cancellationToken);
+            var config = await _ipcService.UpdateBackendConfigAsync(patch, requestSource, effectiveTraceId, cancellationToken).ConfigureAwait(false);
             stopwatch.Stop();
             DutyDiagnosticsLogger.Info("SettingsBackend", "Backend config saved.",
                 new
@@ -218,7 +218,7 @@ public class DutyScheduleOrchestrator : IDisposable
             new { traceId = effectiveTraceId, requestSource });
         try
         {
-            var snapshot = await _ipcService.GetBackendSnapshotAsync(requestSource, effectiveTraceId, cancellationToken);
+            var snapshot = await _ipcService.GetBackendSnapshotAsync(requestSource, effectiveTraceId, cancellationToken).ConfigureAwait(false);
             stopwatch.Stop();
             DutyDiagnosticsLogger.Info("SettingsBackend", "Backend snapshot loaded.",
                 new
@@ -282,7 +282,7 @@ public class DutyScheduleOrchestrator : IDisposable
                 request_source = isAutoRun ? "automation" : "host"
             };
 
-            var result = await _ipcService.RunScheduleAsync(inputData, progress, CancellationToken.None);
+            var result = await _ipcService.RunScheduleAsync(inputData, progress, CancellationToken.None).ConfigureAwait(false);
             PublishAutomationRunResult(effectiveInstruction, applyMode, result, isAutoRun);
             return result;
         }
@@ -318,7 +318,7 @@ public class DutyScheduleOrchestrator : IDisposable
 
     public async Task RestartAIEngineAsync()
     {
-        await _ipcService.RestartEngineAsync();
+        await _ipcService.RestartEngineAsync().ConfigureAwait(false);
     }
 
     public void StartRuntime()

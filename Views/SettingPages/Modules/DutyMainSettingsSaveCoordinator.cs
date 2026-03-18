@@ -95,11 +95,34 @@ internal sealed class DutyMainSettingsSaveCoordinator
         {
             try
             {
-                appliedBackend = await _backendModule.SaveAsync(
+                await _backendModule.SaveAsync(
                     backendPatch,
                     requestSource: "host_settings",
                     traceId: traceId,
-                    cancellationToken: cancellationToken);
+                    cancellationToken: cancellationToken).ConfigureAwait(false);
+                appliedBackend = await _backendModule.LoadAsync(
+                    requestSource: "host_settings_verify",
+                    traceId: traceId,
+                    cancellationToken: cancellationToken).ConfigureAwait(false);
+                if (!_backendModule.MatchesSettings(context.Current.Backend, appliedBackend))
+                {
+                    return new DutySettingsSaveOutcome(
+                        Success: false,
+                        NoChanges: false,
+                        RestartRequired: restartRequired,
+                        HostChanged: hostChanged,
+                        HostSaved: appliedHost != null,
+                        BackendChanged: true,
+                        BackendSaved: false,
+                        Message: appliedHost != null
+                            ? "宿主设置已保存，但后端配置回读校验失败，已重新加载当前后端值。"
+                            : "后端配置回读校验失败，已重新加载当前后端值。",
+                        MessageLevel: appliedHost != null
+                            ? DutySettingsSaveMessageLevel.Warning
+                            : DutySettingsSaveMessageLevel.Error,
+                        AppliedHost: appliedHost,
+                        AppliedBackend: appliedBackend);
+                }
             }
             catch (Exception ex)
             {

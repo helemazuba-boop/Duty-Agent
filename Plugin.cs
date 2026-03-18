@@ -50,11 +50,6 @@ public class Plugin : PluginBase
             "\uE8D4");
 
         var bootstrap = ReadBootstrapFlags(pluginPaths);
-        if (bootstrap.EnableMcp || bootstrap.EnableWebViewDebugLayer)
-        {
-            services.AddSingleton<DutyLocalPreviewHostedService>();
-        }
-
         if (bootstrap.EnableWebViewDebugLayer)
         {
             services.AddSettingsPage<DutyWebSettingsPage>();
@@ -110,7 +105,6 @@ public class Plugin : PluginBase
             using var doc = JsonDocument.Parse(File.ReadAllText(configPath));
             var root = doc.RootElement;
             return new BootstrapFlags(
-                EnableMcp: TryReadBoolean(root, "enable_mcp"),
                 EnableWebViewDebugLayer: TryReadBoolean(root, "enable_webview_debug_layer"));
         }
         catch
@@ -165,8 +159,8 @@ public class Plugin : PluginBase
         }
     }
 
-    private readonly record struct BootstrapFlags(bool EnableMcp, bool EnableWebViewDebugLayer)
+    private readonly record struct BootstrapFlags(bool EnableWebViewDebugLayer)
     {
-        public static BootstrapFlags Disabled => new(false, false);
+        public static BootstrapFlags Disabled => new(false);
     }
 }

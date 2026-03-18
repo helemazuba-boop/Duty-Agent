@@ -436,12 +436,9 @@
         <select id="mode" style="width:170px">
           <option value="mock">本地模拟</option>
           <option value="backend">FastAPI 中枢</option>
-          <option value="bridge">宿主模式（网页容器）</option>
         </select>
-        <span class="chip"><span id="bridgeDot" class="dot"></span><span id="bridgeText">宿主未启用</span></span>
+        <span class="chip"><span id="bridgeDot" class="dot"></span><span id="bridgeText">宿主能力未启用</span></span>
         <span id="runtimeTag" class="pill mono">运行模式：本地模拟</span>
-        <span id="previewUrlTag" class="pill mono">本地调试URL：-</span>
-        <span id="apiOverwriteUrlTag" class="pill mono">覆盖排班API：-</span>
       </div>
     </section>
 
@@ -476,30 +473,8 @@
               <button id="loadBtn">加载数据</button>
             </div>
             <div id="autoApplyStatus" class="status slim"><span class="dot warn"></span><span>正式配置改为显式保存；本地调试项仅在页面内即时生效。</span></div>
-            <div class="row">
-              <label for="apiInstruction">本地接口覆盖排班指令（可留空复用上方排班指令）</label>
-              <textarea id="apiInstruction" placeholder="例如：从今天开始覆盖排7天，每个区域每天2人。"></textarea>
-            </div>
-            <div class="row two">
-              <div class="row">
-                <label for="apiBaseUrl">API 基址（自动填充）</label>
-                <input id="apiBaseUrl" type="text" placeholder="http://127.0.0.1:48380">
-              </div>
-              <div class="row">
-                <label for="apiStatus">接口状态</label>
-                <input id="apiStatus" type="text" value="待命" readonly>
-              </div>
-            </div>
-            <div class="btns">
-              <button id="apiOverwriteBtn">通过本地接口覆盖排班</button>
-            </div>
-            <div class="row">
-              <label for="apiResponse">接口响应</label>
-              <textarea id="apiResponse" class="mono"
-                placeholder="这里显示 /api/v1/schedule/overwrite 的 JSON 响应"></textarea>
-            </div>
             <div id="runStatus" class="status"><span class="dot warn"></span><span>等待操作</span></div>
-            <div class="hint">快捷键：<span class="kbd">Ctrl</span> + <span class="kbd">Enter</span> 执行排班。正式配置需点击“保存配置”提交到 FastAPI；导出快照会把接口密钥掩码为 <span class="mono">***仅运行时***</span>。</div>
+            <div class="hint">快捷键：<span class="kbd">Ctrl</span> + <span class="kbd">Enter</span> 执行排班。正式配置需点击“保存配置”提交到 FastAPI；名单会自动同步到 FastAPI；导出快照会把接口密钥掩码为 <span class="mono">***仅运行时***</span>。</div>
           </div>
         </section>
 
@@ -708,9 +683,7 @@
             </div>
             <textarea id="snapshot" class="mono" placeholder="导入或查看快照 JSON"></textarea>
             <div id="log" class="mono"></div>
-            <div class="hint">宿主消息 action：<span class="mono">ready / load_all / save_config(自动) / save_roster(自动) /
-                run_core / publish_notification / trigger_run_completion_notification /
-                trigger_duty_reminder_notification / open_test_in_browser</span></div>
+            <div class="hint">宿主桥接仅保留桌面能力：<span class="mono">publish_notification / trigger_run_completion_notification / trigger_duty_reminder_notification / open_test_in_browser</span></div>
           </div>
         </section>
       </div>
@@ -779,8 +752,6 @@
     let selectedRosterId = null;
     let logFilter = 'all';
     let runInProgress = false;
-    let localPreviewUrl = '';
-    let apiOverwriteUrl = '';
     const logEntries = [];
     const LOG_MAX = 500;
     const LOG_LEVEL_LABELS = {
@@ -792,8 +763,14 @@
       RECV: '接收',
       OK: '成功'
     };
+    const LOCAL_DEBUG_PREFS_STORAGE_KEY = 'duty-agent.local-debug-prefs.v1';
+    const STREAM_FLUSH_INTERVAL_MS = 33;
+    let logRenderScheduled = false;
+    let pendingStreamText = '';
+    let pendingStreamStatus = '';
+    let streamFlushTimer = 0;
     let store = {
-      config: normalizeConfig(DEFAULT_CONFIG),
+      config: normalizeConfig({ ...DEFAULT_CONFIG, ...loadLocalDebugPrefs() }),
       roster: normalizeRoster(DEFAULT_ROSTER),
       state: normalizeState(DEFAULT_STATE)
     };
@@ -967,6 +944,49 @@
       };
     }
 
+    function buildLocalDebugPrefs(config) {
+      const normalized = normalizeConfig(config);
+      return {
+        per_day: normalized.per_day,
+        notification_templates: list(normalized.notification_templates, DEFAULT_CONFIG.notification_templates)
+      };
+    }
+
+    function loadLocalDebugPrefs() {
+      try {
+        if (!window.localStorage) return {};
+        const raw = window.localStorage.getItem(LOCAL_DEBUG_PREFS_STORAGE_KEY);
+        if (!raw) return {};
+        const parsed = JSON.parse(raw);
+        return buildLocalDebugPrefs(parsed);
+      } catch {
+        return {};
+      }
+    }
+
+    function persistLocalDebugPrefs(reason, options) {
+      const opts = options && typeof options === 'object' ? options : {};
+      try {
+        if (!window.localStorage) return false;
+        const payload = buildLocalDebugPrefs(store.config);
+        window.localStorage.setItem(LOCAL_DEBUG_PREFS_STORAGE_KEY, JSON.stringify(payload));
+        if (!opts.quiet) {
+          log('INFO', '本地调试项已保存到当前设备。', {
+            reason: reason || 'manual',
+            per_day: payload.per_day,
+            template_count: payload.notification_templates.length
+          });
+        }
+        return true;
+      } catch (e) {
+        if (!opts.quiet) {
+          const message = e instanceof Error ? e.message : String(e);
+          log('WARN', '本地调试项保存失败。', { reason: reason || 'manual', message });
+        }
+        return false;
+      }
+    }
+
     function normalizeRoster(input) {
       if (!Array.isArray(input)) return [];
       const ids = new Set();
@@ -1102,6 +1122,51 @@
       }
     }
 
+    function scheduleLogRender() {
+      if (logRenderScheduled) return;
+      logRenderScheduled = true;
+      const schedule = typeof window.requestAnimationFrame === 'function'
+        ? window.requestAnimationFrame.bind(window)
+        : (callback) => window.setTimeout(callback, 16);
+      schedule(() => {
+        logRenderScheduled = false;
+        renderLogs();
+      });
+    }
+
+    function flushPendingStreamChunks() {
+      if (streamFlushTimer) {
+        window.clearTimeout(streamFlushTimer);
+        streamFlushTimer = 0;
+      }
+      if (pendingStreamStatus) {
+        setRunInProgress(true, pendingStreamStatus || '正在接收模型流式输出...');
+        pendingStreamStatus = '';
+      }
+      if (!pendingStreamText) {
+        return;
+      }
+      $('runDetail').value += pendingStreamText;
+      $('runDetail').scrollTop = $('runDetail').scrollHeight;
+      pendingStreamText = '';
+    }
+
+    function queueStreamChunk(streamChunk, statusText) {
+      if (typeof streamChunk === 'string' && streamChunk.length) {
+        pendingStreamText += streamChunk;
+      }
+      if (typeof statusText === 'string' && statusText.trim()) {
+        pendingStreamStatus = statusText.trim();
+      }
+      if (streamFlushTimer) {
+        return;
+      }
+      streamFlushTimer = window.setTimeout(() => {
+        streamFlushTimer = 0;
+        flushPendingStreamChunks();
+      }, STREAM_FLUSH_INTERVAL_MS);
+    }
+
     function log(level, msg, payload) {
       const upper = String(level || 'INFO').toUpperCase();
       const entry = {
@@ -1114,7 +1179,7 @@
       if (logEntries.length > LOG_MAX) {
         logEntries.splice(0, logEntries.length - LOG_MAX);
       }
-      renderLogs();
+      scheduleLogRender();
     }
 
     function renderLogs() {
@@ -1218,12 +1283,13 @@
     function applyLocalConfigImmediate(reason, options) {
       const opts = options && typeof options === 'object' ? options : {};
       syncConfigFromForm();
+      persistLocalDebugPrefs(reason, { quiet: true });
       if (opts.maskApiInput) {
         const selectedPlan = getSelectedPlan(store.config);
         $('cfgApi').value = String(selectedPlan?.api_key || '').trim() ? API_KEY_MASK : '';
       }
       if (!opts.quiet) {
-        setAutoApplyStatus('ok', '本地调试项已更新。');
+        setAutoApplyStatus('ok', '本地调试项已更新并保存在当前设备。');
       }
       if (reason) {
         log('INFO', '本地调试配置已更新。', { reason });
@@ -1258,6 +1324,7 @@
           notification_templates: store.config.notification_templates
         });
         lastLoadedBackendConfig = clone(store.config);
+        persistLocalDebugPrefs(`load_config:${reason || 'manual'}`, { quiet: true });
         renderConfig();
         setBackendConfigDirtyState(false, '正式配置已从 FastAPI 重载。');
         log('OK', 'FastAPI 正式配置加载成功。', {
@@ -1324,15 +1391,12 @@
           const detail = data.detail || data.message || `HTTP ${response.status}`;
           throw new Error(detail);
         }
-        store.config = normalizeConfig({
-          ...store.config,
-          ...data,
-          per_day: store.config.per_day,
-          notification_templates: store.config.notification_templates
-        });
-        lastLoadedBackendConfig = clone(store.config);
-        renderConfig();
-        setBackendConfigDirtyState(false, `正式配置已保存到 FastAPI（版本 ${store.config.version}）。`);
+        const reloaded = await loadConfigFromBackend('post_save_verify');
+        if (!reloaded) {
+          throw new Error('正式配置保存后校验失败，请重新加载确认。');
+        }
+        persistLocalDebugPrefs(`save_config:${reason || 'manual'}`, { quiet: true });
+        setBackendConfigDirtyState(false, `正式配置已保存并校验通过（版本 ${store.config.version}）。`);
         log('OK', 'FastAPI 正式配置保存成功。', {
           reason: reason || 'manual',
           version: store.config.version,
@@ -1418,18 +1482,6 @@
 
     function applyRosterImmediate(reason, options) {
       const opts = options && typeof options === 'object' ? options : {};
-      if (runtimeMode === 'bridge') {
-        const ok = bridgePost('save_roster', { roster: store.roster });
-        if (!ok) {
-          setAutoApplyStatus('err', '名单自动同步失败：宿主不可用。');
-          log('ERROR', '名单自动同步失败：宿主不可用。', { reason: reason || 'unknown' });
-          return false;
-        }
-        if (!opts.quiet) {
-          setAutoApplyStatus('ok', '名单已自动应用并同步到宿主。');
-        }
-        return true;
-      }
       if (runtimeMode === 'backend') {
         const rosterSnapshot = normalizeRoster(store.roster);
         if (!opts.quiet) {
@@ -1455,78 +1507,20 @@
     }
 
     function setMode(mode) {
-      runtimeMode = mode === 'bridge' ? 'bridge' : mode === 'backend' ? 'backend' : 'mock';
+      runtimeMode = mode === 'backend' ? 'backend' : 'mock';
       $('mode').value = runtimeMode;
-      $('runtimeTag').textContent = runtimeMode === 'bridge'
-        ? '运行模式：宿主模式'
-        : runtimeMode === 'backend'
-          ? '运行模式：FastAPI 模式'
-          : '运行模式：本地模拟';
-      log('INFO', `切换运行模式：${runtimeMode === 'bridge' ? '宿主模式' : runtimeMode === 'backend' ? 'FastAPI 模式' : '本地模拟'}`);
-      if (runtimeMode === 'bridge' && hasBridge) {
-        $('bridgeDot').className = 'dot ok';
-        $('bridgeText').textContent = '宿主已连接';
-        setAutoApplyStatus('warn', 'Bridge 模式仅保留历史能力；正式配置以 FastAPI 保存链路为准。');
-        bridgePost('ready', { features: ['config', 'roster', 'state', 'run', 'notification'], version: 'test-html-1' });
-      } else if (runtimeMode === 'bridge') {
-        $('bridgeDot').className = 'dot warn';
-        $('bridgeText').textContent = '宿主不可用';
-        setAutoApplyStatus('warn', 'Bridge 模式不可用。');
-      } else if (runtimeMode === 'backend') {
-        $('bridgeDot').className = hasBackendTransport ? 'dot ok' : 'dot warn';
-        $('bridgeText').textContent = hasBackendTransport ? 'FastAPI 已连接' : 'FastAPI 不可用';
+      $('runtimeTag').textContent = runtimeMode === 'backend'
+        ? '运行模式：FastAPI 模式'
+        : '运行模式：本地模拟';
+      log('INFO', `切换运行模式：${runtimeMode === 'backend' ? 'FastAPI 模式' : '本地模拟'}`);
+      $('bridgeDot').className = hasBridge ? 'dot ok' : 'dot';
+      $('bridgeText').textContent = hasBridge ? '宿主能力可用' : '宿主能力未启用';
+      if (runtimeMode === 'backend') {
         setBackendConfigDirtyState(backendConfigDirty);
-        setApiOverwriteUrl('');
       } else {
-        $('bridgeDot').className = 'dot';
-        $('bridgeText').textContent = '宿主未启用';
         setAutoApplyStatus('ok', '当前为本地模拟模式；正式配置不会自动写回后端。');
       }
       updateBackendConfigUiState();
-    }
-
-    function setLocalPreviewUrl(url) {
-      const text = String(url || '').trim();
-      localPreviewUrl = text;
-      $('previewUrlTag').textContent = text ? `本地调试URL：${text}` : '本地调试URL：-';
-      if (!apiOverwriteUrl && text && !hasBackendTransport) {
-        try {
-          setApiOverwriteUrl(`${new URL(text).origin}/api/v1/schedule/overwrite`);
-        } catch {
-        }
-      }
-    }
-
-    function setApiOverwriteUrl(url) {
-      const text = String(url || '').trim();
-      apiOverwriteUrl = text;
-      $('apiOverwriteUrlTag').textContent = text ? `覆盖排班API：${text}` : '覆盖排班API：-';
-      if (text) {
-        try {
-          $('apiBaseUrl').value = new URL(text).origin;
-        } catch {
-        }
-      }
-    }
-
-    function resolveOverwriteApiEndpoint() {
-      const fromInput = String($('apiBaseUrl').value || '').trim();
-      if (fromInput) {
-        return `${fromInput.replace(/\/+$/, '')}/api/v1/schedule/overwrite`;
-      }
-      if (apiOverwriteUrl) {
-        return apiOverwriteUrl;
-      }
-      if (localPreviewUrl) {
-        try {
-          return `${new URL(localPreviewUrl).origin}/api/v1/schedule/overwrite`;
-        } catch {
-        }
-      }
-      if (window.location.protocol.startsWith('http')) {
-        return `${window.location.origin}/api/v1/schedule/overwrite`;
-      }
-      return '';
     }
 
     function renderOptions(selectId, values) {
@@ -1717,11 +1711,9 @@
       renderRoster();
       renderSchedule();
       renderLegacy();
-      $('runtimeTag').textContent = runtimeMode === 'bridge'
-        ? '运行模式：宿主模式'
-        : runtimeMode === 'backend'
-          ? '运行模式：FastAPI 模式'
-          : '运行模式：本地模拟';
+      $('runtimeTag').textContent = runtimeMode === 'backend'
+        ? '运行模式：FastAPI 模式'
+        : '运行模式：本地模拟';
     }
 
     async function loadSnapshotFromBackend(reason) {
@@ -1935,101 +1927,6 @@
       runMockInternal(days, applyMode, instruction, $('runDetail').value.trim() || '模拟执行成功');
     }
 
-    function buildOverwriteApiPayload(instruction) {
-      syncConfigFromForm();
-      const selectedPlan = getSelectedPlan(store.config);
-      return {
-        instruction,
-        config: {
-          api_key: selectedPlan.api_key,
-          base_url: selectedPlan.base_url,
-          model: selectedPlan.model,
-          per_day: store.config.per_day,
-          duty_rule: store.config.duty_rule
-        }
-      };
-    }
-
-    async function runOverwriteByApi() {
-      if (runtimeMode === 'backend') {
-        setStatus('warn', '当前页面已切到 FastAPI 中枢模式；旧的 overwrite API 已停用。');
-        log('WARN', '忽略 overwrite API 请求：FastAPI 中枢模式下不再使用宿主调试接口。');
-        return;
-      }
-
-      const instruction = String($('apiInstruction').value || '').trim() || String($('instruction').value || '').trim();
-      if (!instruction) {
-        setStatus('err', '请输入覆盖排班指令。');
-        $('apiStatus').value = '失败';
-        log('ERROR', '本地接口覆盖排班失败：排班指令为空。');
-        return;
-      }
-
-      const endpoint = resolveOverwriteApiEndpoint();
-      if (!endpoint) {
-        setStatus('err', '未能解析覆盖排班 API 地址。');
-        $('apiStatus').value = '失败';
-        log('ERROR', '本地接口覆盖排班失败：API 地址不可用。');
-        return;
-      }
-
-      const payload = buildOverwriteApiPayload(instruction);
-      const button = $('apiOverwriteBtn');
-      button.disabled = true;
-      $('apiStatus').value = '请求中...';
-      try {
-        log('INFO', '开始请求本地覆盖排班 API。', { endpoint, instruction_length: instruction.length });
-        const response = await fetch(endpoint, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json'
-          },
-          body: JSON.stringify(payload)
-        });
-        const text = await response.text();
-        let data = null;
-        try {
-          data = JSON.parse(text);
-        } catch {
-        }
-
-        $('apiResponse').value = data ? JSON.stringify(data, null, 2) : text;
-        if (!response.ok || !data || data.success !== true) {
-          const message = (data && data.message) ? String(data.message) : `HTTP ${response.status}`;
-          $('apiStatus').value = `失败(${response.status})`;
-          setStatus('err', `接口覆盖排班失败：${message}`);
-          log('ERROR', '本地接口覆盖排班失败。', { status: response.status, response: data ?? text });
-          return;
-        }
-
-        $('apiStatus').value = '成功';
-        if (data.state) {
-          store.state = normalizeState(data.state);
-          renderAll();
-        }
-        if (typeof data.preview_url === 'string') {
-          setLocalPreviewUrl(data.preview_url);
-        }
-        if (typeof data.api_overwrite_url === 'string') {
-          setApiOverwriteUrl(data.api_overwrite_url);
-        }
-
-        setStatus('ok', '接口覆盖排班成功。');
-        log('OK', '本地接口覆盖排班成功。', {
-          code: data.code || 'ok',
-          message: data.message || '',
-          duration_ms: data.duration_ms || 0
-        });
-      } catch (e) {
-        const message = e instanceof Error ? e.message : String(e);
-        $('apiStatus').value = '失败';
-        setStatus('err', `接口覆盖排班失败：${message}`);
-        log('ERROR', '本地接口覆盖排班异常。', { message, endpoint });
-      } finally {
-        button.disabled = false;
-      }
-    }
-
     function renderTpl(tpl, tokens) {
       return String(tpl || '').replace(/\{([a-zA-Z0-9_]+)\}/g, (_, k) => (k in tokens ? tokens[k] : `{${k}}`)).trim();
     }
@@ -2065,7 +1962,7 @@
         div.className = `notice ${success ? '' : 'fail'}`.trim();
         div.textContent = m;
         $('noticeList').appendChild(div);
-        if (sendHost && runtimeMode === 'bridge') {
+        if (sendHost && hasBridge) {
           bridgePost('publish_notification', { text: m, duration_seconds: duration });
         }
       }
@@ -2104,11 +2001,11 @@
     }
 
     function openTestInBrowser() {
-      if (runtimeMode === 'bridge') {
+      if (hasBridge) {
         const ok = bridgePost('open_test_in_browser', {});
         if (ok) {
-          setStatus('warn', '已请求宿主在本地浏览器打开 test.html。');
-          log('OK', '已请求宿主在本地浏览器打开 test.html。');
+          setStatus('warn', '已请求宿主在本地浏览器打开当前页面。');
+          log('OK', '已请求宿主在本地浏览器打开当前页面。');
         } else {
           setStatus('err', '宿主不可用，无法请求打开。');
           log('ERROR', '请求宿主打开浏览器失败：宿主不可用。');
@@ -2116,10 +2013,10 @@
         return;
       }
 
-      const target = localPreviewUrl || window.location.href;
+      const target = window.location.href;
       window.open(target, '_blank');
-      setStatus('ok', '已在浏览器打开 test.html。');
-      log('OK', '已在浏览器打开 test.html。', { target });
+      setStatus('ok', '已在浏览器打开当前页面。');
+      log('OK', '已在浏览器打开当前页面。', { target });
     }
 
     function handleBackendRunProgress(progress) {
@@ -2127,10 +2024,7 @@
       const message = String(progress?.message || '').trim();
       const streamChunk = String(progress?.stream_chunk || '');
       if (phase === 'stream_chunk') {
-        setRunInProgress(true, message || '正在接收模型流式输出...');
-        if (streamChunk.trim()) {
-          log('STREAM', 'FastAPI 模型流式片段。', { chunk: streamChunk });
-        }
+        queueStreamChunk(streamChunk, message || '正在接收模型流式输出...');
         return;
       }
       setRunInProgress(true, message || '正在执行排班，请稍候...');
@@ -2294,6 +2188,7 @@
           throw new Error(message || '未知错误');
         }
 
+        flushPendingStreamChunks();
         setRunInProgress(false);
         log('OK', 'FastAPI 排班成功。', {
           trace_id: traceId,
@@ -2309,33 +2204,10 @@
         }
       } catch (e) {
         const message = e instanceof Error ? e.message : String(e);
+        flushPendingStreamChunks();
         setRunInProgress(false);
         setStatus('err', `FastAPI 排班失败：${message}`);
         log('ERROR', 'FastAPI 排班失败。', { trace_id: traceId, message });
-      }
-    }
-
-    function runBridge() {
-      if (runInProgress) {
-        setStatus('warn', '已有排班任务在执行中，请稍候。');
-        log('WARN', '忽略重复执行请求：已有任务进行中。');
-        return;
-      }
-      syncConfigFromForm();
-      const instruction = $('instruction').value.trim();
-      const applyMode = $('applyMode').value;
-      if (!instruction) {
-        setStatus('err', '请输入排班指令。');
-        log('ERROR', '宿主排班失败：排班指令为空。');
-        return;
-      }
-      log('INFO', '开始请求宿主执行排班。', { mode: applyMode });
-      setRunInProgress(true, '正在执行排班，请稍候...');
-      const ok = bridgePost('run_core', { instruction, apply_mode: applyMode });
-      setStatus(ok ? 'warn' : 'err', ok ? '已发送排班请求到宿主。' : '宿主不可用，无法发送排班请求。');
-      if (!ok) {
-        setRunInProgress(false);
-        log('ERROR', '宿主排班失败：宿主不可用。');
       }
     }
 
@@ -2464,6 +2336,7 @@
         };
         selectedRosterId = null;
         renderAll();
+        persistLocalDebugPrefs('import_snapshot', { quiet: true });
         setBackendConfigDirtyState(true, '快照已导入，正式配置尚未保存到 FastAPI。');
         applyRosterImmediate('import_snapshot', { quiet: true });
         setStatus('ok', '快照导入成功。');
@@ -2488,6 +2361,7 @@
       $('nMsg').value = '';
       $('noticeList').innerHTML = '';
       renderAll();
+      persistLocalDebugPrefs('reset_all', { quiet: true });
       setBackendConfigDirtyState(true, '已重置为默认测试数据，正式配置尚未保存到 FastAPI。');
       applyRosterImmediate('reset_all', { quiet: true });
       setStatus('ok', '已重置为默认测试数据。');
@@ -2499,70 +2373,11 @@
         log('WARN', '收到无效宿主消息。', data);
         return;
       }
-      let changed = false;
-      if ('config' in data) {
-        store.config = normalizeConfig({
-          ...store.config,
-          ...data.config,
-          per_day: store.config.per_day,
-          notification_templates: store.config.notification_templates
-        });
-        lastLoadedBackendConfig = clone(store.config);
-        setBackendConfigDirtyState(false, '已应用宿主返回的配置。');
-        changed = true;
-      }
-      if ('roster' in data) { store.roster = normalizeRoster(data.roster); changed = true; }
-      if ('state' in data) { store.state = normalizeState(data.state); changed = true; }
       if (data.type === 'host_theme' && data.payload) {
         applyHostTheme(data.payload);
       }
-      if (data.type === 'run_status') {
-        const phase = String(data.phase || '').trim().toLowerCase();
-        const message = String(data.message || '').trim();
-        const streamChunk = String(data.stream_chunk || '');
-        if (phase === 'stream_chunk') {
-          setRunInProgress(true, message || '正在接收模型流式输出...');
-          if (streamChunk.trim()) {
-            log('STREAM', '模型流式片段。', { chunk: streamChunk });
-          }
-          return;
-        }
-        if (phase === 'started' || phase === 'running') {
-          setRunInProgress(true, message || '正在执行排班，请稍候...');
-        } else if (phase === 'completed' || phase === 'failed' || phase === 'error') {
-          setRunInProgress(false);
-        }
-        log('INFO', '宿主执行状态更新。', { phase, message });
-      }
-      if (data.type === 'run_result') {
-        setRunInProgress(false);
-        const ok = !!data.success;
-        const message = data.message || '未知错误';
-        setStatus(ok ? 'ok' : 'err', ok ? '宿主排班成功。' : `宿主排班失败：${message}`);
-        if (data.message) $('nMsg').value = String(data.message);
-        log(ok ? 'OK' : 'ERROR', ok ? '宿主排班成功。' : '宿主排班失败。', { message });
-        const aiResponse = String(data.ai_response || '').trim();
-        if (aiResponse) {
-          log('INFO', 'AI 返回内容。', { ai_response: aiResponse });
-        }
-      }
       if (data.type === 'error') {
-        if (String(data.action || '').trim().toLowerCase() === 'run_core') {
-          setRunInProgress(false);
-        }
         log('ERROR', `宿主返回错误：${data.code || '未知错误'}`, data);
-      }
-      if (changed) {
-        selectedRosterId = null;
-        renderAll();
-        log('INFO', '已应用宿主返回的最新数据。');
-      }
-
-      if (typeof data.local_preview_url === 'string') {
-        setLocalPreviewUrl(data.local_preview_url);
-      }
-      if (typeof data.api_overwrite_url === 'string') {
-        setApiOverwriteUrl(data.api_overwrite_url);
       }
     }
 
@@ -2630,29 +2445,16 @@
       $('mode').addEventListener('change', () => setMode($('mode').value));
       $('saveConfigBtn').addEventListener('click', () => { void saveConfigToBackend('manual_save'); });
       $('reloadConfigBtn').addEventListener('click', () => { void loadConfigFromBackend('manual_reload'); });
-      $('runBtn').addEventListener('click', () => runtimeMode === 'bridge' ? runBridge() : runtimeMode === 'backend' ? void runBackend() : runMock());
-      $('apiOverwriteBtn').addEventListener('click', () => { void runOverwriteByApi(); });
+      $('runBtn').addEventListener('click', () => runtimeMode === 'backend' ? void runBackend() : runMock());
       $('instruction').addEventListener('keydown', (event) => {
         if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) {
           event.preventDefault();
-          runtimeMode === 'bridge' ? runBridge() : runtimeMode === 'backend' ? void runBackend() : runMock();
-        }
-      });
-      $('apiInstruction').addEventListener('keydown', (event) => {
-        if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) {
-          event.preventDefault();
-          void runOverwriteByApi();
+          runtimeMode === 'backend' ? void runBackend() : runMock();
         }
       });
       $('loadBtn').addEventListener('click', () => {
         log('INFO', '触发加载数据。', { mode: runtimeMode });
-        if (runtimeMode === 'bridge') {
-          const ok = bridgePost('load_all', {});
-          setStatus(ok ? 'warn' : 'err', ok ? '已请求宿主加载数据。' : '宿主不可用，无法加载。');
-          if (!ok) {
-            log('ERROR', '加载数据失败：宿主不可用。');
-          }
-        } else if (runtimeMode === 'backend') {
+        if (runtimeMode === 'backend') {
           void loadSnapshotFromBackend('manual_refresh');
         } else {
           renderAll();
@@ -2687,7 +2489,7 @@
 
       $('sendNotice').addEventListener('click', () => {
         notifyByTemplates($('nScene').value, $('nStatus').value === 'success', $('nMsg').value.trim(), $('instruction').value.trim(), $('applyMode').value, clamp(int($('nDuration').value, 7), 1, 30), true);
-        if (runtimeMode === 'bridge' && hasBridge) setStatus('warn', '通知已发送到宿主。');
+        if (hasBridge) setStatus('warn', '通知已发送到宿主。');
         else setStatus('ok', '宿主不可用，仅本地预览。');
       });
       $('triggerRunCompletionNotice').addEventListener('click', triggerRunCompletionNotification);
@@ -2712,12 +2514,10 @@
     }
 
     bind();
-    setMode(hasBackendTransport ? 'backend' : hasBridge ? 'bridge' : 'mock');
+    setMode(hasBackendTransport ? 'backend' : 'mock');
     renderAll();
     requestAnimationFrame(() => document.body.classList.add('page-ready'));
     if (hasBackendTransport) {
-      setLocalPreviewUrl(window.location.href);
-      setApiOverwriteUrl('');
       void loadSnapshotFromBackend('startup');
     }
     setStatus('warn', '测试控制台已就绪。');

@@ -19,6 +19,10 @@ LLM_RETRY_BACKOFF_SECONDS = 2
 LLM_STREAM_ENABLED_DEFAULT = True
 LLM_PARSE_MAX_RETRIES = 1
 LLM_STREAM_PROGRESS_MIN_INTERVAL_SECONDS = 0.2
+_REASONING_BLOCK_PATTERN = re.compile(
+    r"<(?P<tag>think|thinking|reasoning|analysis)\b[^>]*>.*?</(?P=tag)>",
+    re.DOTALL | re.IGNORECASE,
+)
 
 
 class StreamUnsupportedError(RuntimeError):
@@ -289,25 +293,93 @@ def call_llm_raw(
     return content
 
 
+def _extract_fenced_block(content: str, language: Optional[str] = None) -> str:
+    text = str(content or "")
+    if not text.strip():
+        return ""
+
+    language_pattern = re.escape(language) if language else r"[a-zA-Z0-9_-]*"
+    matches = re.findall(
+        rf"```(?:{language_pattern})?\s*(.*?)```",
+        text,
+        re.DOTALL | re.IGNORECASE,
+    )
+    for fragment in reversed(matches):
+        candidate = str(fragment or "").strip()
+        if candidate:
+            return candidate
+    return ""
+
+
+def _extract_tag_content(content: str, tag_name: str) -> str:
+    text = str(content or "")
+    if not text.strip():
+        return ""
+
+    matches = re.findall(
+        rf"<{re.escape(tag_name)}\b[^>]*>(.*?)</{re.escape(tag_name)}>",
+        text,
+        re.DOTALL | re.IGNORECASE,
+    )
+    for fragment in reversed(matches):
+        candidate = str(fragment or "").strip()
+        if candidate:
+            return candidate
+    return ""
+
+
+def _normalize_structured_output(content: str) -> str:
+    text = str(content or "").replace("\ufeff", "").strip()
+    if not text:
+        return ""
+
+    stripped = text
+    while True:
+        updated = _REASONING_BLOCK_PATTERN.sub("", stripped)
+        if updated == stripped:
+            break
+        stripped = updated
+
+    fragments = re.split(r"(?im)^\s*RESET\s*$", stripped)
+    normalized = fragments[-1] if fragments else stripped
+    return normalized.strip()
+
+
 def _extract_json_candidate(content: str) -> dict:
-    text = (content or "").strip()
+    text = _normalize_structured_output(content)
     if not text:
         raise ValueError("empty JSON content")
 
-    candidates = [text]
-    fenced = re.findall(r"```(?:json)?\s*(.*?)```", text, re.DOTALL | re.IGNORECASE)
-    candidates.extend(fragment.strip() for fragment in fenced if fragment and fragment.strip())
+    candidates: List[str] = [text]
+    json_block = _extract_tag_content(text, "json")
+    if json_block:
+        candidates.append(json_block)
 
-    first_brace = text.find("{")
-    last_brace = text.rfind("}")
-    if first_brace >= 0 and last_brace > first_brace:
-        candidates.append(text[first_brace:last_brace + 1].strip())
+    fenced_json = _extract_fenced_block(text, "json")
+    if fenced_json:
+        candidates.append(fenced_json)
+
+    fenced_any = _extract_fenced_block(text)
+    if fenced_any:
+        candidates.append(fenced_any)
+
+    decoder = json.JSONDecoder()
+    seen_candidates = set()
 
     for candidate in candidates:
-        if not candidate:
+        if not candidate or candidate in seen_candidates:
             continue
+        seen_candidates.add(candidate)
         try:
             parsed = json.loads(candidate)
+        except Exception:
+            continue
+        if isinstance(parsed, dict):
+            return parsed
+
+    for match in re.finditer(r"{", text):
+        try:
+            parsed, _ = decoder.raw_decode(text, match.start())
         except Exception:
             continue
         if isinstance(parsed, dict):
@@ -373,14 +445,15 @@ def call_llm(
     original_message_count = len(payload["messages"])
     for attempt in range(LLM_PARSE_MAX_RETRIES + 1):
         try:
-            if "RESET" in content:
-                content = content.split("RESET")[-1].strip()
-            csv_match = re.search(r"<csv>(.*?)</csv>", content, re.DOTALL)
-            if not csv_match:
+            normalized_content = _normalize_structured_output(content)
+            csv_text = _extract_tag_content(normalized_content, "csv")
+            if not csv_text:
+                csv_text = _extract_fenced_block(normalized_content, "csv")
+            if not csv_text:
                 raise ValueError("missing <csv> tags.")
 
             schedule_raw = []
-            reader = csv.DictReader(io.StringIO(csv_match.group(1).strip()))
+            reader = csv.DictReader(io.StringIO(csv_text.strip()))
             for row in reader:
                 date_str = str(row.get("Date", "")).strip()
                 assigned_ids = str(row.get("Assigned_IDs", "")).strip()
@@ -393,15 +466,11 @@ def call_llm(
                         }
                     )
 
-            def extract_tag(tag_name: str) -> str:
-                match = re.search(f"<{tag_name}>(.*?)</{tag_name}>", content, re.DOTALL)
-                return match.group(1).strip() if match else ""
-
             return {
                 "schedule": schedule_raw,
-                "next_run_note": extract_tag("next_run_note"),
-                "new_debt_ids": extract_tag("new_debt_ids"),
-                "new_credit_ids": extract_tag("new_credit_ids"),
+                "next_run_note": _extract_tag_content(normalized_content, "next_run_note"),
+                "new_debt_ids": _extract_tag_content(normalized_content, "new_debt_ids"),
+                "new_credit_ids": _extract_tag_content(normalized_content, "new_credit_ids"),
             }, content
         except Exception as ex:
             last_parse_error = ex
