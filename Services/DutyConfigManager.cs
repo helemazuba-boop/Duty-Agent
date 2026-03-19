@@ -25,6 +25,7 @@ public class DutyConfigManager : IConfigManager, IDisposable
     private readonly object _configLock = new();
     private FileSystemWatcher? _watcher;
     private DutyConfig _config = new();
+    private DutyConfig? _lastPersistedConfig;
     private bool _disposed;
     private bool _suppressAutoSave;
     private DateTime _ignoreWatcherEventsUntilUtc = DateTime.MinValue;
@@ -73,8 +74,10 @@ public class DutyConfigManager : IConfigManager, IDisposable
                 try
                 {
                     loadedConfig = ConfigureFileHelper.LoadConfig<DutyConfig>(_configPath);
+                    loadedConfig.Version = Math.Max(1, loadedConfig.Version);
                     loadedConfig.DutyReminderTimes = NormalizeDutyReminderTimes(loadedConfig.DutyReminderTimes);
                     _config = loadedConfig;
+                    _lastPersistedConfig = CloneConfig(_config);
                 }
                 catch (Exception ex)
                 {
@@ -95,6 +98,7 @@ public class DutyConfigManager : IConfigManager, IDisposable
     {
         return new DutyConfig
         {
+            Version = 1,
             DutyReminderTimes = [DefaultDutyReminderTime]
         };
     }
@@ -103,6 +107,7 @@ public class DutyConfigManager : IConfigManager, IDisposable
     {
         return new DutyConfig
         {
+            Version = source.Version,
             PythonPath = source.PythonPath,
             AutoRunMode = source.AutoRunMode,
             AutoRunParameter = source.AutoRunParameter,
@@ -122,8 +127,16 @@ public class DutyConfigManager : IConfigManager, IDisposable
 
     private void SaveConfigInternal()
     {
+        var baselineVersion = Math.Max(1, _lastPersistedConfig?.Version ?? _config.Version);
+        var hasChanges = _lastPersistedConfig == null || HasPersistedDifferences(_config, _lastPersistedConfig);
+        _config.Version = _lastPersistedConfig == null
+            ? Math.Max(1, _config.Version)
+            : hasChanges
+                ? baselineVersion + 1
+                : baselineVersion;
         _ignoreWatcherEventsUntilUtc = DateTime.UtcNow.Add(WatcherIgnoreWindow);
         ConfigureFileHelper.SaveConfig(_configPath, _config);
+        _lastPersistedConfig = CloneConfig(_config);
     }
 
     public void SaveConfig()
@@ -153,6 +166,7 @@ public class DutyConfigManager : IConfigManager, IDisposable
             {
                 var nextConfig = CloneConfig(_config);
                 update(nextConfig);
+                nextConfig.Version = Math.Max(1, _config.Version);
                 nextConfig.DutyReminderTimes = NormalizeDutyReminderTimes(nextConfig.DutyReminderTimes);
                 _config.PropertyChanged -= OnConfigPropertyChangedCurrent;
                 _config = nextConfig;
@@ -268,6 +282,27 @@ public class DutyConfigManager : IConfigManager, IDisposable
         }
 
         return val;
+    }
+
+    private static bool HasPersistedDifferences(DutyConfig current, DutyConfig persisted)
+    {
+        return !string.Equals(current.PythonPath, persisted.PythonPath, StringComparison.Ordinal) ||
+               !string.Equals(current.AutoRunMode, persisted.AutoRunMode, StringComparison.Ordinal) ||
+               !string.Equals(current.AutoRunParameter, persisted.AutoRunParameter, StringComparison.Ordinal) ||
+               current.EnableMcp != persisted.EnableMcp ||
+               current.EnableWebViewDebugLayer != persisted.EnableWebViewDebugLayer ||
+               !string.Equals(current.AutoRunTime, persisted.AutoRunTime, StringComparison.Ordinal) ||
+               current.AutoRunTriggerNotificationEnabled != persisted.AutoRunTriggerNotificationEnabled ||
+               current.AutoRunRetryTimes != persisted.AutoRunRetryTimes ||
+               current.AiConsecutiveFailures != persisted.AiConsecutiveFailures ||
+               !string.Equals(current.LastAutoRunDate, persisted.LastAutoRunDate, StringComparison.Ordinal) ||
+               !string.Equals(current.ComponentRefreshTime, persisted.ComponentRefreshTime, StringComparison.Ordinal) ||
+               current.NotificationDurationSeconds != persisted.NotificationDurationSeconds ||
+               current.DutyReminderEnabled != persisted.DutyReminderEnabled ||
+               !Enumerable.SequenceEqual(
+                   NormalizeDutyReminderTimes(current.DutyReminderTimes),
+                   NormalizeDutyReminderTimes(persisted.DutyReminderTimes),
+                   StringComparer.Ordinal);
     }
 
     public void Dispose()

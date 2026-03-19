@@ -42,6 +42,7 @@ internal sealed class DutySettingsSaveContext
     public DutySettingsPageValues Current { get; init; } = new();
     public DutyHostSettingsValues LastAppliedHost { get; init; } = new();
     public DutyBackendConfig? LastAppliedBackend { get; init; }
+    public DutySettingsDocument? LastLoadedDocument { get; init; }
     public DutyBackendConfigLoadState BackendLoadState { get; init; } = DutyBackendConfigLoadState.NotLoaded;
     public string BackendErrorMessage { get; init; } = string.Empty;
 }
@@ -63,6 +64,7 @@ internal readonly record struct DutySettingsSaveOutcome(
     bool BackendSaved,
     string Message,
     DutySettingsSaveMessageLevel MessageLevel,
+    DutySettingsDocument? AppliedDocument = null,
     DutyHostSettingsValues? AppliedHost = null,
     DutyBackendConfig? AppliedBackend = null);
 

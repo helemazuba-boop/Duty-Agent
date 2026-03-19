@@ -120,6 +120,85 @@ public class DutyScheduleOrchestrator : IDisposable
         return _ipcService.WebAppUrl;
     }
 
+    public async Task<DutySettingsDocument> LoadSettingsAsync(
+        string requestSource = "host_settings",
+        string? traceId = null,
+        CancellationToken cancellationToken = default)
+    {
+        var effectiveTraceId = string.IsNullOrWhiteSpace(traceId)
+            ? DutyDiagnosticsLogger.CreateTraceId("settings-load")
+            : traceId.Trim();
+        var stopwatch = Stopwatch.StartNew();
+        DutyDiagnosticsLogger.Info("SettingsUnified", "Loading unified settings.",
+            new { traceId = effectiveTraceId, requestSource });
+        try
+        {
+            var document = await _ipcService.GetSettingsAsync(requestSource, effectiveTraceId, cancellationToken).ConfigureAwait(false);
+            stopwatch.Stop();
+            DutyDiagnosticsLogger.Info("SettingsUnified", "Unified settings loaded.",
+                new
+                {
+                    traceId = effectiveTraceId,
+                    requestSource,
+                    durationMs = stopwatch.ElapsedMilliseconds,
+                    hostVersion = document.HostVersion,
+                    backendVersion = document.BackendVersion
+                });
+            return document;
+        }
+        catch (Exception ex)
+        {
+            stopwatch.Stop();
+            DutyDiagnosticsLogger.Error("SettingsUnified", "Failed to load unified settings.", ex,
+                new { traceId = effectiveTraceId, requestSource, durationMs = stopwatch.ElapsedMilliseconds });
+            throw;
+        }
+    }
+
+    public async Task<DutySettingsMutationResult> PatchSettingsAsync(
+        DutySettingsPatchRequest patch,
+        string requestSource = "host_settings",
+        string? traceId = null,
+        CancellationToken cancellationToken = default)
+    {
+        var effectiveTraceId = string.IsNullOrWhiteSpace(traceId)
+            ? DutyDiagnosticsLogger.CreateTraceId("settings-save")
+            : traceId.Trim();
+        var stopwatch = Stopwatch.StartNew();
+        DutyDiagnosticsLogger.Info("SettingsUnified", "Saving unified settings.",
+            new
+            {
+                traceId = effectiveTraceId,
+                requestSource,
+                hostExpectedVersion = patch.Expected.HostVersion,
+                backendExpectedVersion = patch.Expected.BackendVersion
+            });
+        try
+        {
+            var result = await _ipcService.PatchSettingsAsync(patch, requestSource, effectiveTraceId, cancellationToken).ConfigureAwait(false);
+            stopwatch.Stop();
+            DutyDiagnosticsLogger.Info("SettingsUnified", "Unified settings save completed.",
+                new
+                {
+                    traceId = effectiveTraceId,
+                    requestSource,
+                    durationMs = stopwatch.ElapsedMilliseconds,
+                    success = result.Success,
+                    restartRequired = result.RestartRequired,
+                    hostVersion = result.Document.HostVersion,
+                    backendVersion = result.Document.BackendVersion
+                });
+            return result;
+        }
+        catch (Exception ex)
+        {
+            stopwatch.Stop();
+            DutyDiagnosticsLogger.Error("SettingsUnified", "Unified settings save failed.", ex,
+                new { traceId = effectiveTraceId, requestSource, durationMs = stopwatch.ElapsedMilliseconds });
+            throw;
+        }
+    }
+
     public async Task<DutyBackendConfig> LoadBackendConfigAsync(
         string requestSource = "host_settings",
         string? traceId = null,

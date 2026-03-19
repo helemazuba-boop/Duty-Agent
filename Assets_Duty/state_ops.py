@@ -22,6 +22,14 @@ DEFAULT_SINGLE_PASS_STRATEGY = "auto"
 INCREMENTAL_SINGLE_PASS_STRATEGY = "incremental_thinking"
 DEFAULT_SELECTED_PLAN_ID = "standard"
 DEFAULT_CONFIG_VERSION = 1
+DEFAULT_HOST_CONFIG_VERSION = 1
+DEFAULT_PYTHON_PATH = r".\Assets_Duty\python-embed\python.exe"
+DEFAULT_AUTO_RUN_MODE = "Off"
+DEFAULT_AUTO_RUN_PARAMETER = "Monday"
+DEFAULT_AUTO_RUN_TIME = "08:00"
+DEFAULT_COMPONENT_REFRESH_TIME = "08:00"
+DEFAULT_NOTIFICATION_DURATION_SECONDS = 8
+DEFAULT_DUTY_REMINDER_TIME = "07:40"
 STATE_LOCK_TIMEOUT_SECONDS = 20
 STATE_LOCK_RETRY_INTERVAL_SECONDS = 0.2
 STATE_LOCK_STALE_SECONDS = 120
@@ -33,6 +41,7 @@ class Context:
         self.data_dir = data_dir
         self.paths = {
             "config": data_dir / "config.json",
+            "host_config": data_dir / "host-config.json",
             "roster": data_dir / "roster.csv",
             "state": data_dir / "state.json",
             "input": data_dir / "ipc_input.json",
@@ -609,6 +618,186 @@ def patch_config(ctx: Context, patch: dict) -> dict:
         release_file_lock(lock_path)
 
     return _hydrate_runtime_config(persisted)
+
+
+def _normalize_time_string(value: object, default: str) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return default
+    for fmt in ("%H:%M", "%H:%M:%S"):
+        try:
+            parsed = datetime.strptime(text, fmt)
+            return parsed.strftime("%H:%M")
+        except ValueError:
+            continue
+    return default
+
+
+def _parse_int_range(value: object, default: int, minimum: int, maximum: int) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return default
+    return max(minimum, min(maximum, parsed))
+
+
+def _normalize_duty_reminder_times(raw_times: object) -> List[str]:
+    normalized: List[str] = []
+    seen: set[str] = set()
+    candidates = raw_times if isinstance(raw_times, list) else [raw_times]
+    for raw in candidates:
+        text = str(raw or "").strip()
+        if not text:
+            continue
+        for token in re.split(r"[,;\r\n]+", text):
+            value = _normalize_time_string(token, "")
+            if value and value not in seen:
+                seen.add(value)
+                normalized.append(value)
+    return normalized or [DEFAULT_DUTY_REMINDER_TIME]
+
+
+def _create_default_persisted_host_config() -> dict:
+    return {
+        "version": DEFAULT_HOST_CONFIG_VERSION,
+        "python_path": DEFAULT_PYTHON_PATH,
+        "auto_run_mode": DEFAULT_AUTO_RUN_MODE,
+        "auto_run_parameter": DEFAULT_AUTO_RUN_PARAMETER,
+        "enable_mcp": False,
+        "enable_webview_debug_layer": False,
+        "auto_run_time": DEFAULT_AUTO_RUN_TIME,
+        "auto_run_trigger_notification_enabled": True,
+        "auto_run_retry_times": 3,
+        "ai_consecutive_failures": 0,
+        "last_auto_run_date": "",
+        "component_refresh_time": DEFAULT_COMPONENT_REFRESH_TIME,
+        "notification_duration_seconds": DEFAULT_NOTIFICATION_DURATION_SECONDS,
+        "duty_reminder_enabled": False,
+        "duty_reminder_times": [DEFAULT_DUTY_REMINDER_TIME],
+    }
+
+
+def _normalize_host_config_version(value: object) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return DEFAULT_HOST_CONFIG_VERSION
+    return max(DEFAULT_HOST_CONFIG_VERSION, parsed)
+
+
+def _normalize_persisted_host_config(config: dict | None) -> dict:
+    source = dict(config) if isinstance(config, dict) else {}
+    return {
+        "version": _normalize_host_config_version(source.get("version", DEFAULT_HOST_CONFIG_VERSION)),
+        "python_path": str(source.get("python_path", DEFAULT_PYTHON_PATH) or DEFAULT_PYTHON_PATH).strip() or DEFAULT_PYTHON_PATH,
+        "auto_run_mode": {
+            "weekly": "Weekly",
+            "monthly": "Monthly",
+            "custom": "Custom",
+        }.get(str(source.get("auto_run_mode", DEFAULT_AUTO_RUN_MODE) or DEFAULT_AUTO_RUN_MODE).strip().lower(), "Off"),
+        "auto_run_parameter": str(source.get("auto_run_parameter", DEFAULT_AUTO_RUN_PARAMETER) or DEFAULT_AUTO_RUN_PARAMETER).strip()
+        or DEFAULT_AUTO_RUN_PARAMETER,
+        "enable_mcp": parse_bool(source.get("enable_mcp"), False),
+        "enable_webview_debug_layer": parse_bool(source.get("enable_webview_debug_layer"), False),
+        "auto_run_time": _normalize_time_string(source.get("auto_run_time"), DEFAULT_AUTO_RUN_TIME),
+        "auto_run_trigger_notification_enabled": parse_bool(source.get("auto_run_trigger_notification_enabled"), True),
+        "auto_run_retry_times": _parse_int_range(source.get("auto_run_retry_times"), 3, 0, 20),
+        "ai_consecutive_failures": _parse_int_range(source.get("ai_consecutive_failures"), 0, 0, 1000),
+        "last_auto_run_date": str(source.get("last_auto_run_date", "") or "").strip(),
+        "component_refresh_time": _normalize_time_string(source.get("component_refresh_time"), DEFAULT_COMPONENT_REFRESH_TIME),
+        "notification_duration_seconds": _parse_int_range(
+            source.get("notification_duration_seconds"),
+            DEFAULT_NOTIFICATION_DURATION_SECONDS,
+            3,
+            15,
+        ),
+        "duty_reminder_enabled": parse_bool(source.get("duty_reminder_enabled"), False),
+        "duty_reminder_times": _normalize_duty_reminder_times(source.get("duty_reminder_times", [DEFAULT_DUTY_REMINDER_TIME])),
+    }
+
+
+def _load_persisted_host_config_unlocked(config_path: Path) -> tuple[dict, bool]:
+    if not config_path.exists():
+        return _create_default_persisted_host_config(), True
+
+    with open(config_path, "r", encoding="utf-8-sig") as file:
+        raw = json.load(file)
+
+    normalized = _normalize_persisted_host_config(raw)
+    return normalized, raw != normalized
+
+
+def _persisted_host_config_body(config: dict | None) -> dict:
+    normalized = _normalize_persisted_host_config(config)
+    return {
+        "python_path": normalized["python_path"],
+        "auto_run_mode": normalized["auto_run_mode"],
+        "auto_run_parameter": normalized["auto_run_parameter"],
+        "enable_mcp": normalized["enable_mcp"],
+        "enable_webview_debug_layer": normalized["enable_webview_debug_layer"],
+        "auto_run_time": normalized["auto_run_time"],
+        "auto_run_trigger_notification_enabled": normalized["auto_run_trigger_notification_enabled"],
+        "auto_run_retry_times": normalized["auto_run_retry_times"],
+        "ai_consecutive_failures": normalized["ai_consecutive_failures"],
+        "last_auto_run_date": normalized["last_auto_run_date"],
+        "component_refresh_time": normalized["component_refresh_time"],
+        "notification_duration_seconds": normalized["notification_duration_seconds"],
+        "duty_reminder_enabled": normalized["duty_reminder_enabled"],
+        "duty_reminder_times": normalized["duty_reminder_times"],
+    }
+
+
+def _host_config_lock_path(ctx: Context) -> Path:
+    return ctx.paths["host_config"].with_suffix(ctx.paths["host_config"].suffix + ".lock")
+
+
+def load_host_config(ctx: Context) -> dict:
+    config_path = ctx.paths["host_config"]
+    _log(ctx, "INFO", "HostConfigStore", "Loading host config.", config_path=str(config_path))
+    lock_path = _host_config_lock_path(ctx)
+    acquire_file_lock(lock_path, CONFIG_LOCK_TIMEOUT_SECONDS)
+    try:
+        persisted, changed = _load_persisted_host_config_unlocked(config_path)
+        if changed:
+            save_json_atomic(config_path, persisted)
+    finally:
+        release_file_lock(lock_path)
+
+    _log(
+        ctx,
+        "INFO",
+        "HostConfigStore",
+        "Loaded host config.",
+        config_path=str(config_path),
+        auto_run_mode=persisted.get("auto_run_mode", ""),
+        enable_mcp=str(persisted.get("enable_mcp", False)).lower(),
+        enable_webview_debug_layer=str(persisted.get("enable_webview_debug_layer", False)).lower(),
+        version=str(persisted.get("version", DEFAULT_HOST_CONFIG_VERSION)),
+    )
+    return persisted
+
+
+def save_host_config(ctx: Context, config: dict) -> dict:
+    persisted = _normalize_persisted_host_config(config)
+    lock_path = _host_config_lock_path(ctx)
+    acquire_file_lock(lock_path, CONFIG_LOCK_TIMEOUT_SECONDS)
+    try:
+        save_json_atomic(ctx.paths["host_config"], persisted)
+    finally:
+        release_file_lock(lock_path)
+
+    _log(
+        ctx,
+        "INFO",
+        "HostConfigStore",
+        "Saved host config.",
+        config_path=str(ctx.paths["host_config"]),
+        auto_run_mode=persisted.get("auto_run_mode", ""),
+        enable_mcp=str(persisted.get("enable_mcp", False)).lower(),
+        enable_webview_debug_layer=str(persisted.get("enable_webview_debug_layer", False)).lower(),
+        version=str(persisted.get("version", DEFAULT_HOST_CONFIG_VERSION)),
+    )
+    return persisted
 
 
 def load_api_key_from_env() -> str:

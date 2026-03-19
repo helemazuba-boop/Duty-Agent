@@ -6,6 +6,10 @@ namespace DutyAgent.Models;
 public partial class DutyConfig : ObservableObject
 {
     [ObservableProperty]
+    [property: JsonPropertyName("version")]
+    private int _version = 1;
+
+    [ObservableProperty]
     [property: JsonPropertyName("python_path")]
     private string _pythonPath = @".\Assets_Duty\python-embed\python.exe";
 

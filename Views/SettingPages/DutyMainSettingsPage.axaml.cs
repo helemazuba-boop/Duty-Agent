@@ -54,6 +54,7 @@ public partial class DutyMainSettingsPage : SettingsPageBase
     private int _dataLoadRevision;
     private int _runSessionRevision;
     private int _activeRunSessionRevision;
+    private DutySettingsDocument? _lastLoadedSettingsDocument;
     private DutyHostSettingsValues _lastAppliedHostSettings = new();
     private DutyBackendConfig? _lastAppliedBackendConfig;
     private List<DutyPlanPreset> _planPresetDrafts = [];
@@ -65,7 +66,7 @@ public partial class DutyMainSettingsPage : SettingsPageBase
         InitializeComponent();
         _hostModule = new DutyMainSettingsHostModule(Service);
         _backendModule = new DutyMainSettingsBackendModule(Service);
-        _saveCoordinator = new DutyMainSettingsSaveCoordinator(_hostModule, _backendModule);
+        _saveCoordinator = new DutyMainSettingsSaveCoordinator(Service, _hostModule, _backendModule);
         _rosterModule = new DutyMainSettingsRosterModule(Service);
         _scheduleModule = new DutyMainSettingsScheduleModule(Service);
         _configApplyDebounceTimer = new DispatcherTimer
@@ -87,16 +88,17 @@ public partial class DutyMainSettingsPage : SettingsPageBase
         InitializeScheduleDayOptions();
         UpdateExecutionModeVisibility();
         SetDataView(showScheduleView: true);
-        LoadLocalConfigForm();
-        UpdateConfigTracking("已加载本地配置");
+        SetSettingsControlsEnabled(false);
+        UpdateConfigTracking("正在加载设置");
+        SetStatus("正在加载统一设置...", Brushes.Gray);
         UpdateRunTracking("待命");
         _ = LoadDataAsync("页面初始化");
     }
 
     private async void OnPageLoaded(object? sender, RoutedEventArgs e)
     {
-        DutyDiagnosticsLogger.Info("SettingsPage", "Settings page loaded; beginning backend config load.");
-        await LoadBackendConfigAsync();
+        DutyDiagnosticsLogger.Info("SettingsPage", "Settings page loaded; beginning unified settings load.");
+        await LoadSettingsAsync();
     }
 
     private async void OnPageUnloaded(object? sender, RoutedEventArgs e)
@@ -587,6 +589,7 @@ public partial class DutyMainSettingsPage : SettingsPageBase
                 Current = BuildSettingsPageValuesFromControls(),
                 LastAppliedHost = _lastAppliedHostSettings,
                 LastAppliedBackend = _lastAppliedBackendConfig,
+                LastLoadedDocument = _lastLoadedSettingsDocument,
                 BackendLoadState = _backendConfigState,
                 BackendErrorMessage = _backendConfigErrorMessage ?? string.Empty
             });
@@ -601,12 +604,22 @@ public partial class DutyMainSettingsPage : SettingsPageBase
                 _lastAppliedHostSettings = outcome.AppliedHost;
             }
 
+            if (outcome.AppliedDocument != null)
+            {
+                _lastLoadedSettingsDocument = outcome.AppliedDocument;
+            }
+
             if (outcome.AppliedBackend != null)
             {
                 _lastAppliedBackendConfig = _backendModule.CloneConfig(outcome.AppliedBackend);
                 _backendConfigState = DutyBackendConfigLoadState.Loaded;
                 _backendConfigErrorMessage = null;
                 ApplyBackendConfig(outcome.AppliedBackend);
+            }
+
+            if (outcome.AppliedHost != null)
+            {
+                ApplyHostFormModel(outcome.AppliedHost);
             }
 
             if (!outcome.Success)
@@ -865,7 +878,7 @@ public partial class DutyMainSettingsPage : SettingsPageBase
         {
             await Task.WhenAll(
                 LoadDataAsync("手动刷新"),
-                LoadBackendConfigAsync(forceReload: true));
+                LoadSettingsAsync(forceReload: true));
             if (_backendConfigState == DutyBackendConfigLoadState.Loaded)
             {
                 SetStatus("预览已刷新。", Brushes.Green);
@@ -877,22 +890,7 @@ public partial class DutyMainSettingsPage : SettingsPageBase
         }
     }
 
-    private void LoadLocalConfigForm()
-    {
-        var hostSettings = _hostModule.Load();
-        ApplyHostFormModel(hostSettings);
-        _lastAppliedHostSettings = hostSettings;
-        _backendConfigState = DutyBackendConfigLoadState.NotLoaded;
-        _backendConfigErrorMessage = null;
-        _lastAppliedBackendConfig = null;
-        _planPresetDrafts = [];
-        _currentPlanId = string.Empty;
-        SetBackendConfigControlsEnabled(false);
-        SetStatus("正在连接后端配置...", Brushes.Gray);
-        DutyDiagnosticsLogger.Info("SettingsPage", "Loaded host-only settings and marked backend config as not loaded.");
-    }
-
-    private async Task<bool> LoadBackendConfigAsync(bool forceReload = false)
+    private async Task<bool> LoadSettingsAsync(bool forceReload = false)
     {
         if (_isLoadingBackendConfig)
         {
@@ -905,12 +903,12 @@ public partial class DutyMainSettingsPage : SettingsPageBase
         }
 
         var revision = Interlocked.Increment(ref _configLoadRevision);
-        var traceId = DutyDiagnosticsLogger.CreateTraceId("cfg-load");
+        var traceId = DutyDiagnosticsLogger.CreateTraceId("settings-load");
         var stopwatch = Stopwatch.StartNew();
         _isLoadingBackendConfig = true;
-        SetBackendConfigControlsEnabled(false);
-        SetStatus(forceReload ? "正在刷新后端配置..." : "正在连接后端配置...", Brushes.Gray);
-        DutyDiagnosticsLogger.Info("SettingsPage", "Starting async backend config load.",
+        SetSettingsControlsEnabled(false);
+        SetStatus(forceReload ? "正在刷新统一设置..." : "正在连接统一设置...", Brushes.Gray);
+        DutyDiagnosticsLogger.Info("SettingsPage", "Starting async unified settings load.",
             new
             {
                 traceId,
@@ -920,27 +918,33 @@ public partial class DutyMainSettingsPage : SettingsPageBase
 
         try
         {
-            var backendConfig = await _backendModule.LoadAsync("host_settings", traceId);
+            var settingsDocument = await Service.LoadSettingsAsync("host_settings", traceId);
             if (revision != _configLoadRevision)
             {
-                DutyDiagnosticsLogger.Warn("SettingsPage", "Discarded stale backend config load result.",
+                DutyDiagnosticsLogger.Warn("SettingsPage", "Discarded stale unified settings load result.",
                     new { traceId, revision, latestRevision = _configLoadRevision });
                 return _backendConfigState == DutyBackendConfigLoadState.Loaded;
             }
 
+            ApplyHostFormModel(CreateHostValues(settingsDocument.Host));
+            var backendConfig = CreateBackendConfig(settingsDocument);
             ApplyBackendConfig(backendConfig);
+            _lastLoadedSettingsDocument = settingsDocument;
+            _lastAppliedHostSettings = CreateHostValues(settingsDocument.Host);
             _lastAppliedBackendConfig = _backendModule.CloneConfig(backendConfig);
             _backendConfigState = DutyBackendConfigLoadState.Loaded;
             _backendConfigErrorMessage = null;
             UpdateConfigTracking("已加载");
-            SetStatus("后端配置已加载。", Brushes.Gray);
+            SetStatus("统一设置已加载。", Brushes.Gray);
             stopwatch.Stop();
-            DutyDiagnosticsLogger.Info("SettingsPage", "Backend config load succeeded.",
+            DutyDiagnosticsLogger.Info("SettingsPage", "Unified settings load succeeded.",
                 new
                 {
                     traceId,
                     revision,
                     durationMs = stopwatch.ElapsedMilliseconds,
+                    hostVersion = settingsDocument.HostVersion,
+                    backendVersion = settingsDocument.BackendVersion,
                     baseUrl = backendConfig.BaseUrl,
                     model = backendConfig.Model,
                     modelProfile = backendConfig.ModelProfile,
@@ -954,18 +958,19 @@ public partial class DutyMainSettingsPage : SettingsPageBase
         {
             if (revision != _configLoadRevision)
             {
-                DutyDiagnosticsLogger.Warn("SettingsPage", "Discarded stale backend config load failure.",
+                DutyDiagnosticsLogger.Warn("SettingsPage", "Discarded stale unified settings load failure.",
                     new { traceId, revision, latestRevision = _configLoadRevision });
                 return _backendConfigState == DutyBackendConfigLoadState.Loaded;
             }
 
             _backendConfigState = DutyBackendConfigLoadState.LoadFailed;
             _backendConfigErrorMessage = ex.Message;
+            _lastLoadedSettingsDocument = null;
             _lastAppliedBackendConfig = null;
-            UpdateConfigTracking("后端不可用");
-            SetStatus($"后端配置不可用：{ex.Message}", Brushes.Orange);
+            UpdateConfigTracking("设置不可用");
+            SetStatus($"统一设置不可用：{ex.Message}", Brushes.Orange);
             stopwatch.Stop();
-            DutyDiagnosticsLogger.Error("SettingsPage", "Backend config load failed.", ex,
+            DutyDiagnosticsLogger.Error("SettingsPage", "Unified settings load failed.", ex,
                 new
                 {
                     traceId,
@@ -979,6 +984,7 @@ public partial class DutyMainSettingsPage : SettingsPageBase
             if (revision == _configLoadRevision)
             {
                 _isLoadingBackendConfig = false;
+                SetSettingsControlsEnabled(_backendConfigState == DutyBackendConfigLoadState.Loaded);
             }
         }
     }
@@ -1018,12 +1024,31 @@ public partial class DutyMainSettingsPage : SettingsPageBase
             UpdateExecutionModeVisibility();
             UpdatePlanModeHint();
             DutyRuleBox.Text = backendConfig.DutyRule;
-            SetBackendConfigControlsEnabled(true);
         }
         finally
         {
             _isLoadingConfig = false;
         }
+    }
+
+    private void SetSettingsControlsEnabled(bool enabled)
+    {
+        AutoRunModeComboBox.IsEnabled = enabled;
+        AutoRunDayComboBox.IsEnabled = enabled;
+        AutoRunMonthDayComboBox.IsEnabled = enabled;
+        AutoRunIntervalBox.IsEnabled = enabled;
+        AutoRunHourComboBox.IsEnabled = enabled;
+        AutoRunMinuteComboBox.IsEnabled = enabled;
+        AutoRunTriggerNotificationSwitch.IsEnabled = enabled;
+        DutyReminderEnabledSwitch.IsEnabled = enabled;
+        DutyReminderHourComboBox.IsEnabled = enabled;
+        DutyReminderMinuteComboBox.IsEnabled = enabled;
+        EnableMcpSwitch.IsEnabled = enabled;
+        EnableWebDebugLayerSwitch.IsEnabled = enabled;
+        ComponentRefreshHourComboBox.IsEnabled = enabled;
+        ComponentRefreshMinuteComboBox.IsEnabled = enabled;
+        NotificationDurationSlider.IsEnabled = enabled;
+        SetBackendConfigControlsEnabled(enabled);
     }
 
     private void SetBackendConfigControlsEnabled(bool enabled)
@@ -1042,6 +1067,54 @@ public partial class DutyMainSettingsPage : SettingsPageBase
         DutyRuleBox.IsEnabled = enabled;
         RunAgentBtn.IsEnabled = enabled;
         UpdatePlanActionButtons();
+    }
+
+    private DutyHostSettingsValues CreateHostValues(DutyEditableHostSettingsDocument host)
+    {
+        return new DutyHostSettingsValues
+        {
+            AutoRunMode = host.AutoRunMode,
+            AutoRunParameter = host.AutoRunParameter,
+            AutoRunTime = host.AutoRunTime,
+            AutoRunTriggerNotificationEnabled = host.AutoRunTriggerNotificationEnabled,
+            DutyReminderEnabled = host.DutyReminderEnabled,
+            DutyReminderTime = (host.DutyReminderTimes ?? []).FirstOrDefault(x => !string.IsNullOrWhiteSpace(x)) ?? "07:40",
+            EnableMcp = host.EnableMcp,
+            EnableWebViewDebugLayer = host.EnableWebViewDebugLayer,
+            ComponentRefreshTime = host.ComponentRefreshTime,
+            NotificationDurationSeconds = host.NotificationDurationSeconds
+        };
+    }
+
+    private DutyBackendConfig CreateBackendConfig(DutySettingsDocument document)
+    {
+        var backend = document.Backend ?? new DutyEditableBackendSettingsDocument();
+        var planPresets = _backendModule.NormalizePlanPresets(backend.PlanPresets);
+        var selectedPlanId = _backendModule.NormalizeSelectedPlanId(backend.SelectedPlanId, planPresets);
+        var selectedPlan = _backendModule.GetSelectedPlan(planPresets, selectedPlanId) ?? planPresets.First();
+        var selectedModeId = _backendModule.NormalizePlanModeId(selectedPlan.ModeId);
+
+        return new DutyBackendConfig
+        {
+            Version = document.BackendVersion,
+            ApiKey = selectedPlan.ApiKey,
+            BaseUrl = selectedPlan.BaseUrl,
+            Model = selectedPlan.Model,
+            ModelProfile = selectedPlan.ModelProfile,
+            OrchestrationMode = string.Equals(selectedModeId, DutyBackendModeIds.Campus6Agent, StringComparison.Ordinal)
+                ? "multi_agent"
+                : "single_pass",
+            MultiAgentExecutionMode = string.Equals(selectedModeId, DutyBackendModeIds.Campus6Agent, StringComparison.Ordinal)
+                ? selectedPlan.MultiAgentExecutionMode
+                : "auto",
+            SinglePassStrategy = string.Equals(selectedModeId, DutyBackendModeIds.IncrementalSmall, StringComparison.Ordinal)
+                ? "incremental_thinking"
+                : "auto",
+            ProviderHint = selectedPlan.ProviderHint,
+            SelectedPlanId = selectedPlanId,
+            PlanPresets = _backendModule.ClonePlanPresets(planPresets),
+            DutyRule = backend.DutyRule ?? string.Empty
+        };
     }
 
     private async Task LoadDataAsync(string reason = "数据刷新")

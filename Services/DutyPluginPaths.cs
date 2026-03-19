@@ -11,6 +11,7 @@ public sealed class DutyPluginPaths
 
     public string ConfigPath => Path.Combine(DataDirectory, "config.json");
     public string HostConfigPath => Path.Combine(DataDirectory, "host-config.json");
+    public string SettingsDraftPath => Path.Combine(DataDirectory, "settings-draft.json");
     public string StatePath => Path.Combine(DataDirectory, "state.json");
     public string RosterPath => Path.Combine(DataDirectory, "roster.csv");
     public string ProcessSnapshotPath => Path.Combine(DataDirectory, ".engine-process.json");

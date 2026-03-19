@@ -20,7 +20,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from runtime import create_runtime
-from routers import config, duty, roster
+from routers import config, duty, roster, settings
 import uvicorn
 
 WEB_DIRECTORY = Path(__file__).resolve().parent / "web"
@@ -54,6 +54,7 @@ if WEB_DIRECTORY.is_dir():
 app.include_router(duty.router)
 app.include_router(config.router)
 app.include_router(roster.router)
+app.include_router(settings.router)
 
 @app.get("/")
 async def root(request: Request):

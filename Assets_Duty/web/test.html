@@ -472,9 +472,9 @@
               <button id="runBtn" class="primary">执行排班</button>
               <button id="loadBtn">加载数据</button>
             </div>
-            <div id="autoApplyStatus" class="status slim"><span class="dot warn"></span><span>正式配置改为显式保存；本地调试项仅在页面内即时生效。</span></div>
+            <div id="autoApplyStatus" class="status slim"><span class="dot warn"></span><span>正式配置会自动同步到 FastAPI；本地调试项仅在页面内即时生效。</span></div>
             <div id="runStatus" class="status"><span class="dot warn"></span><span>等待操作</span></div>
-            <div class="hint">快捷键：<span class="kbd">Ctrl</span> + <span class="kbd">Enter</span> 执行排班。正式配置需点击“保存配置”提交到 FastAPI；名单会自动同步到 FastAPI；导出快照会把接口密钥掩码为 <span class="mono">***仅运行时***</span>。</div>
+            <div class="hint">快捷键：<span class="kbd">Ctrl</span> + <span class="kbd">Enter</span> 执行排班。正式配置与名单都会自动同步到 FastAPI；导出快照会把接口密钥掩码为 <span class="mono">***仅运行时***</span>。</div>
           </div>
         </section>
 
@@ -775,8 +775,12 @@
       state: normalizeState(DEFAULT_STATE)
     };
     let lastLoadedBackendConfig = clone(store.config);
+    let lastLoadedHostVersion = 1;
     let backendConfigDirty = false;
     let pendingRosterSavePromise = Promise.resolve(true);
+    let settingsAutoSaveTimer = 0;
+    let settingsSaveInFlight = false;
+    let settingsSaveQueued = false;
 
     const $ = (id) => document.getElementById(id);
 
@@ -1298,45 +1302,52 @@
       return true;
     }
 
-    async function loadConfigFromBackend(reason) {
+    function applyUnifiedSettingsDocument(document, reason) {
+      const payload = document && typeof document === 'object' ? document : {};
+      lastLoadedHostVersion = Math.max(1, int(payload.host_version, lastLoadedHostVersion || 1));
+      store.config = normalizeConfig({
+        ...store.config,
+        ...(payload.backend && typeof payload.backend === 'object' ? payload.backend : {}),
+        version: Math.max(1, int(payload.backend_version, store.config.version)),
+        per_day: store.config.per_day,
+        notification_templates: store.config.notification_templates
+      });
+      lastLoadedBackendConfig = clone(store.config);
+      persistLocalDebugPrefs(`settings_sync:${reason || 'manual'}`, { quiet: true });
+      renderConfig();
+      setBackendConfigDirtyState(false, '正式配置已与 FastAPI 同步。');
+    }
+
+    async function loadSettingsFromBackend(reason) {
       if (!hasBackendTransport) {
         setAutoApplyStatus('err', '当前页面未连接到 FastAPI。');
         return false;
       }
-      const endpoint = `${window.location.origin}/api/v1/config`;
+      const endpoint = `${window.location.origin}/api/v1/settings`;
       try {
-        log('INFO', '开始从 FastAPI 加载正式配置。', { reason: reason || 'manual', endpoint });
+        log('INFO', '开始从 FastAPI 加载统一设置。', { reason: reason || 'manual', endpoint });
         const response = await fetch(endpoint, {
           headers: {
             'Accept': 'application/json',
             'X-Duty-Request-Source': 'web_app'
           }
         });
-        const text = await response.text();
-        const data = text ? JSON.parse(text) : {};
+        const data = await readResponsePayload(response);
         if (!response.ok) {
-          throw new Error(data.detail || data.message || `HTTP ${response.status}`);
+          throw new Error(responseErrorMessage(response, data));
         }
-        store.config = normalizeConfig({
-          ...store.config,
-          ...data,
-          per_day: store.config.per_day,
-          notification_templates: store.config.notification_templates
-        });
-        lastLoadedBackendConfig = clone(store.config);
-        persistLocalDebugPrefs(`load_config:${reason || 'manual'}`, { quiet: true });
-        renderConfig();
-        setBackendConfigDirtyState(false, '正式配置已从 FastAPI 重载。');
-        log('OK', 'FastAPI 正式配置加载成功。', {
+        applyUnifiedSettingsDocument(data, reason || 'manual');
+        log('OK', 'FastAPI 统一设置加载成功。', {
           reason: reason || 'manual',
+          host_version: lastLoadedHostVersion,
           version: store.config.version,
           selected_plan_id: store.config.selected_plan_id
         });
         return true;
       } catch (e) {
         const message = e instanceof Error ? e.message : String(e);
-        setAutoApplyStatus('err', `正式配置加载失败：${message}`);
-        log('ERROR', 'FastAPI 正式配置加载失败。', { reason: reason || 'manual', message, endpoint });
+        setAutoApplyStatus('err', `统一设置加载失败：${message}`);
+        log('ERROR', 'FastAPI 统一设置加载失败。', { reason: reason || 'manual', message, endpoint });
         return false;
       }
     }
@@ -1345,17 +1356,61 @@
       syncConfigFromForm();
       const currentBody = configBody(store.config);
       const loadedBody = configBody(lastLoadedBackendConfig);
-      const patch = {
-        expected_version: lastLoadedBackendConfig.version
-      };
+      const backendPatch = {};
       let hasChanges = false;
       for (const key of ['selected_plan_id', 'plan_presets', 'duty_rule']) {
         if (JSON.stringify(currentBody[key]) !== JSON.stringify(loadedBody[key])) {
-          patch[key] = currentBody[key];
+          backendPatch[key] = currentBody[key];
           hasChanges = true;
         }
       }
-      return hasChanges ? patch : null;
+      if (!hasChanges) return null;
+      return {
+        expected: {
+          host_version: lastLoadedHostVersion,
+          backend_version: lastLoadedBackendConfig.version
+        },
+        changes: {
+          backend: backendPatch
+        }
+      };
+    }
+
+    function queueBackendSettingsAutoSave(reason, options) {
+      const opts = options && typeof options === 'object' ? options : {};
+      if (runtimeMode !== 'backend' || !hasBackendTransport) return;
+      syncConfigFromForm();
+      markBackendConfigDirty(reason);
+      if (!backendConfigDirty) return;
+      settingsSaveQueued = true;
+      if (settingsAutoSaveTimer) {
+        clearTimeout(settingsAutoSaveTimer);
+      }
+      const delay = opts.immediate ? 0 : 500;
+      settingsAutoSaveTimer = window.setTimeout(() => {
+        settingsAutoSaveTimer = 0;
+        void flushBackendSettingsAutoSave(reason || 'auto');
+      }, delay);
+      setAutoApplyStatus('warn', '正式配置已变更，正在自动同步到 FastAPI...');
+    }
+
+    async function flushBackendSettingsAutoSave(reason) {
+      if (settingsSaveInFlight) {
+        settingsSaveQueued = true;
+        return false;
+      }
+
+      settingsSaveInFlight = true;
+      settingsSaveQueued = false;
+      try {
+        return await saveConfigToBackend(reason || 'auto');
+      } finally {
+        settingsSaveInFlight = false;
+        if (settingsSaveQueued || backendConfigDirty) {
+          settingsSaveQueued = false;
+          queueBackendSettingsAutoSave('requeue');
+        }
+      }
     }
 
     async function saveConfigToBackend(reason) {
@@ -1368,13 +1423,13 @@
         setBackendConfigDirtyState(false, '正式配置没有变化。');
         return true;
       }
-      const endpoint = `${window.location.origin}/api/v1/config`;
+      const endpoint = `${window.location.origin}/api/v1/settings`;
       $('saveConfigBtn').disabled = true;
       try {
-        log('INFO', '开始保存正式配置到 FastAPI。', {
+        log('INFO', '开始保存统一设置到 FastAPI。', {
           reason: reason || 'manual',
           endpoint,
-          patch_keys: Object.keys(patch)
+          patch_keys: Object.keys((patch.changes && patch.changes.backend) || {})
         });
         const response = await fetch(endpoint, {
           method: 'PATCH',
@@ -1385,33 +1440,41 @@
           },
           body: JSON.stringify(patch)
         });
-        const text = await response.text();
-        const data = text ? JSON.parse(text) : {};
-        if (!response.ok) {
-          const detail = data.detail || data.message || `HTTP ${response.status}`;
-          throw new Error(detail);
+        const data = await readResponsePayload(response);
+        if (data && data.document) {
+          applyUnifiedSettingsDocument(data.document, reason || 'save');
         }
-        const reloaded = await loadConfigFromBackend('post_save_verify');
-        if (!reloaded) {
-          throw new Error('正式配置保存后校验失败，请重新加载确认。');
+        if (!response.ok || !data.success) {
+          const detail = responseErrorMessage(response, data);
+          setAutoApplyStatus('err', `统一设置保存失败：${detail}`);
+          log('ERROR', 'FastAPI 统一设置保存失败。', {
+            reason: reason || 'manual',
+            message: detail,
+            endpoint,
+            expected_host_version: patch.expected.host_version,
+            expected_backend_version: patch.expected.backend_version
+          });
+          return false;
         }
         persistLocalDebugPrefs(`save_config:${reason || 'manual'}`, { quiet: true });
-        setBackendConfigDirtyState(false, `正式配置已保存并校验通过（版本 ${store.config.version}）。`);
-        log('OK', 'FastAPI 正式配置保存成功。', {
+        setBackendConfigDirtyState(false, `正式配置已自动保存（版本 ${store.config.version}）。`);
+        log('OK', 'FastAPI 统一设置保存成功。', {
           reason: reason || 'manual',
+          host_version: lastLoadedHostVersion,
           version: store.config.version,
           selected_plan_id: store.config.selected_plan_id
         });
         return true;
       } catch (e) {
         const message = e instanceof Error ? e.message : String(e);
-        if (message.includes('Config version mismatch')) {
-          await loadConfigFromBackend('version_conflict');
-          setAutoApplyStatus('err', '保存失败：配置版本已变化，已自动重载最新配置。');
-        } else {
-          setAutoApplyStatus('err', `正式配置保存失败：${message}`);
-        }
-        log('ERROR', 'FastAPI 正式配置保存失败。', { reason: reason || 'manual', message, endpoint, expected_version: patch.expected_version });
+        setAutoApplyStatus('err', `统一设置保存失败：${message}`);
+        log('ERROR', 'FastAPI 统一设置保存失败。', {
+          reason: reason || 'manual',
+          message,
+          endpoint,
+          expected_host_version: patch.expected.host_version,
+          expected_backend_version: patch.expected.backend_version
+        });
         return false;
       } finally {
         updateBackendConfigUiState();
@@ -1738,18 +1801,11 @@
         }
 
         store = {
-          config: normalizeConfig({
-            ...store.config,
-            ...data.config,
-            per_day: store.config.per_day,
-            notification_templates: store.config.notification_templates
-          }),
+          config: normalizeConfig(store.config),
           roster: normalizeRoster(data.roster),
           state: normalizeState(data.state)
         };
-        lastLoadedBackendConfig = clone(store.config);
         pendingRosterSavePromise = Promise.resolve(true);
-        setBackendConfigDirtyState(false, '正式配置与快照已从 FastAPI 同步。');
         selectedRosterId = null;
         renderAll();
         setStatus('ok', '已从 FastAPI 加载最新数据。');
@@ -2337,7 +2393,8 @@
         selectedRosterId = null;
         renderAll();
         persistLocalDebugPrefs('import_snapshot', { quiet: true });
-        setBackendConfigDirtyState(true, '快照已导入，正式配置尚未保存到 FastAPI。');
+        setBackendConfigDirtyState(true, '快照已导入，正式配置正在同步到 FastAPI。');
+        queueBackendSettingsAutoSave('import_snapshot', { immediate: true });
         applyRosterImmediate('import_snapshot', { quiet: true });
         setStatus('ok', '快照导入成功。');
         log('OK', '快照导入成功。');
@@ -2362,7 +2419,8 @@
       $('noticeList').innerHTML = '';
       renderAll();
       persistLocalDebugPrefs('reset_all', { quiet: true });
-      setBackendConfigDirtyState(true, '已重置为默认测试数据，正式配置尚未保存到 FastAPI。');
+      setBackendConfigDirtyState(true, '已重置为默认测试数据，正式配置正在同步到 FastAPI。');
+      queueBackendSettingsAutoSave('reset_all', { immediate: true });
       applyRosterImmediate('reset_all', { quiet: true });
       setStatus('ok', '已重置为默认测试数据。');
       log('OK', '已重置为默认测试数据。');
@@ -2392,28 +2450,24 @@
         const tag = el.tagName.toLowerCase();
         if (tag === 'select') {
           el.addEventListener('change', () => {
-            syncConfigFromForm();
-            markBackendConfigDirty(`change:${id}`);
+            queueBackendSettingsAutoSave(`change:${id}`);
           });
           continue;
         }
         if (tag === 'textarea') {
           el.addEventListener('blur', () => {
-            syncConfigFromForm();
-            markBackendConfigDirty(`blur:${id}`);
+            queueBackendSettingsAutoSave(`blur:${id}`);
           });
           el.addEventListener('keydown', (event) => {
             if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) {
               event.preventDefault();
-              syncConfigFromForm();
-              markBackendConfigDirty(`hotkey:${id}`);
+              queueBackendSettingsAutoSave(`hotkey:${id}`, { immediate: true });
             }
           });
           continue;
         }
         el.addEventListener('blur', () => {
-          syncConfigFromForm();
-          markBackendConfigDirty(`blur:${id}`);
+          queueBackendSettingsAutoSave(`blur:${id}`);
         });
       }
 
@@ -2427,7 +2481,7 @@
           selected_plan_id: $('cfgPlan').value
         });
         renderConfig();
-        markBackendConfigDirty('change:cfgPlan');
+        queueBackendSettingsAutoSave('change:cfgPlan');
       });
 
       $('cfgPer').addEventListener('blur', () => {
@@ -2443,8 +2497,8 @@
 
     function bind() {
       $('mode').addEventListener('change', () => setMode($('mode').value));
-      $('saveConfigBtn').addEventListener('click', () => { void saveConfigToBackend('manual_save'); });
-      $('reloadConfigBtn').addEventListener('click', () => { void loadConfigFromBackend('manual_reload'); });
+      $('saveConfigBtn').addEventListener('click', () => { void flushBackendSettingsAutoSave('manual_save'); });
+      $('reloadConfigBtn').addEventListener('click', () => { void loadSettingsFromBackend('manual_reload'); });
       $('runBtn').addEventListener('click', () => runtimeMode === 'backend' ? void runBackend() : runMock());
       $('instruction').addEventListener('keydown', (event) => {
         if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) {
@@ -2455,7 +2509,10 @@
       $('loadBtn').addEventListener('click', () => {
         log('INFO', '触发加载数据。', { mode: runtimeMode });
         if (runtimeMode === 'backend') {
-          void loadSnapshotFromBackend('manual_refresh');
+          void Promise.all([
+            loadSettingsFromBackend('manual_refresh'),
+            loadSnapshotFromBackend('manual_refresh')
+          ]);
         } else {
           renderAll();
           setStatus('ok', '本地模拟数据已刷新。');
@@ -2518,7 +2575,10 @@
     renderAll();
     requestAnimationFrame(() => document.body.classList.add('page-ready'));
     if (hasBackendTransport) {
-      void loadSnapshotFromBackend('startup');
+      void Promise.all([
+        loadSettingsFromBackend('startup'),
+        loadSnapshotFromBackend('startup')
+      ]);
     }
     setStatus('warn', '测试控制台已就绪。');
     log('INFO', '页面初始化完成。');

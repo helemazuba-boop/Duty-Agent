@@ -1,3 +1,5 @@
+using System;
+using System.Linq;
 using DutyAgent.Models;
 using DutyAgent.Services;
 
@@ -5,13 +7,16 @@ namespace DutyAgent.Views.SettingPages.Modules;
 
 internal sealed class DutyMainSettingsSaveCoordinator
 {
+    private readonly DutyScheduleOrchestrator _service;
     private readonly DutyMainSettingsHostModule _hostModule;
     private readonly DutyMainSettingsBackendModule _backendModule;
 
     public DutyMainSettingsSaveCoordinator(
+        DutyScheduleOrchestrator service,
         DutyMainSettingsHostModule hostModule,
         DutyMainSettingsBackendModule backendModule)
     {
+        _service = service;
         _hostModule = hostModule;
         _backendModule = backendModule;
     }
@@ -27,7 +32,7 @@ internal sealed class DutyMainSettingsSaveCoordinator
             : null;
         var backendChanged = backendPatch != null;
 
-        DutyDiagnosticsLogger.Info("SettingsPage", "Applying settings from controls.",
+        DutyDiagnosticsLogger.Info("SettingsPage", "Applying unified settings from controls.",
             new
             {
                 traceId,
@@ -40,12 +45,6 @@ internal sealed class DutyMainSettingsSaveCoordinator
 
         if (!hostChanged && !backendChanged)
         {
-            DutyDiagnosticsLogger.Info("SettingsPage", "No settings changes detected.",
-                new
-                {
-                    traceId,
-                    backendState = context.BackendLoadState.ToString()
-                });
             return new DutySettingsSaveOutcome(
                 Success: true,
                 NoChanges: true,
@@ -58,145 +57,160 @@ internal sealed class DutyMainSettingsSaveCoordinator
                 MessageLevel: DutySettingsSaveMessageLevel.Info);
         }
 
-        DutyHostSettingsValues? appliedHost = null;
-        var restartRequired = false;
-        if (hostChanged)
+        var request = BuildPatchRequest(context, hostChanged, backendPatch);
+        try
         {
-            try
-            {
-                var hostResult = _hostModule.Save(context.Current.Host, traceId);
-                restartRequired = hostResult.RestartRequired;
-                appliedHost = hostResult.AppliedValues;
-            }
-            catch (Exception ex)
-            {
-                DutyDiagnosticsLogger.Error("SettingsPage", "Host settings save failed.", ex,
-                    new
-                    {
-                        traceId,
-                        backendState = context.BackendLoadState.ToString(),
-                        backendError = context.BackendErrorMessage ?? string.Empty
-                    });
-                return new DutySettingsSaveOutcome(
-                    Success: false,
-                    NoChanges: false,
-                    RestartRequired: false,
-                    HostChanged: true,
-                    HostSaved: false,
-                    BackendChanged: backendChanged,
-                    BackendSaved: false,
-                    Message: $"宿主设置保存失败：{ex.Message}",
-                    MessageLevel: DutySettingsSaveMessageLevel.Error);
-            }
-        }
+            var mutation = await _service.PatchSettingsAsync(
+                request,
+                requestSource: "host_settings",
+                traceId: traceId,
+                cancellationToken: cancellationToken).ConfigureAwait(false);
 
-        DutyBackendConfig? appliedBackend = null;
-        if (backendChanged && backendPatch != null)
-        {
-            try
-            {
-                await _backendModule.SaveAsync(
-                    backendPatch,
-                    requestSource: "host_settings",
-                    traceId: traceId,
-                    cancellationToken: cancellationToken).ConfigureAwait(false);
-                appliedBackend = await _backendModule.LoadAsync(
-                    requestSource: "host_settings_verify",
-                    traceId: traceId,
-                    cancellationToken: cancellationToken).ConfigureAwait(false);
-                if (!_backendModule.MatchesSettings(context.Current.Backend, appliedBackend))
-                {
-                    return new DutySettingsSaveOutcome(
-                        Success: false,
-                        NoChanges: false,
-                        RestartRequired: restartRequired,
-                        HostChanged: hostChanged,
-                        HostSaved: appliedHost != null,
-                        BackendChanged: true,
-                        BackendSaved: false,
-                        Message: appliedHost != null
-                            ? "宿主设置已保存，但后端配置回读校验失败，已重新加载当前后端值。"
-                            : "后端配置回读校验失败，已重新加载当前后端值。",
-                        MessageLevel: appliedHost != null
-                            ? DutySettingsSaveMessageLevel.Warning
-                            : DutySettingsSaveMessageLevel.Error,
-                        AppliedHost: appliedHost,
-                        AppliedBackend: appliedBackend);
-                }
-            }
-            catch (Exception ex)
-            {
-                DutyDiagnosticsLogger.Error("SettingsPage", "Backend settings save failed.", ex,
-                    new
-                    {
-                        traceId,
-                        hostSaved = appliedHost != null,
-                        backendState = context.BackendLoadState.ToString(),
-                        backendError = context.BackendErrorMessage ?? string.Empty
-                    });
-                return new DutySettingsSaveOutcome(
-                    Success: false,
-                    NoChanges: false,
-                    RestartRequired: restartRequired,
-                    HostChanged: hostChanged,
-                    HostSaved: appliedHost != null,
-                    BackendChanged: true,
-                    BackendSaved: false,
-                    Message: appliedHost != null
-                        ? $"宿主设置已保存，但后端设置失败：{ex.Message}"
-                        : $"后端设置失败：{ex.Message}",
-                    MessageLevel: appliedHost != null
+            var appliedHost = mutation.Document?.Host != null ? CreateHostValues(mutation.Document.Host) : null;
+            var appliedBackend = mutation.Document?.Backend != null
+                ? CreateBackendConfig(mutation.Document)
+                : null;
+
+            return new DutySettingsSaveOutcome(
+                Success: mutation.Success,
+                NoChanges: false,
+                RestartRequired: mutation.RestartRequired,
+                HostChanged: hostChanged,
+                HostSaved: mutation.Applied.Host != null,
+                BackendChanged: backendChanged,
+                BackendSaved: mutation.Applied.Backend != null,
+                Message: string.IsNullOrWhiteSpace(mutation.Message)
+                    ? (mutation.Success ? "设置已保存。" : "设置保存失败。")
+                    : mutation.Message,
+                MessageLevel: mutation.Success
+                    ? DutySettingsSaveMessageLevel.Info
+                    : mutation.Warnings.Count > 0
                         ? DutySettingsSaveMessageLevel.Warning
                         : DutySettingsSaveMessageLevel.Error,
-                    AppliedHost: appliedHost);
-            }
+                AppliedDocument: mutation.Document,
+                AppliedHost: appliedHost,
+                AppliedBackend: appliedBackend);
         }
-        else if (context.BackendLoadState != DutyBackendConfigLoadState.Loaded)
+        catch (Exception ex)
         {
-            DutyDiagnosticsLogger.Warn("SettingsPage", "Skipped backend save because backend config is not loaded.",
+            DutyDiagnosticsLogger.Error("SettingsPage", "Unified settings save threw exception.", ex,
                 new
                 {
                     traceId,
                     backendState = context.BackendLoadState.ToString(),
                     backendError = context.BackendErrorMessage ?? string.Empty
                 });
+            return new DutySettingsSaveOutcome(
+                Success: false,
+                NoChanges: false,
+                RestartRequired: false,
+                HostChanged: hostChanged,
+                HostSaved: false,
+                BackendChanged: backendChanged,
+                BackendSaved: false,
+                Message: $"设置保存失败：{ex.Message}",
+                MessageLevel: DutySettingsSaveMessageLevel.Error);
         }
-
-        return new DutySettingsSaveOutcome(
-            Success: true,
-            NoChanges: false,
-            RestartRequired: restartRequired,
-            HostChanged: hostChanged,
-            HostSaved: appliedHost != null,
-            BackendChanged: backendChanged,
-            BackendSaved: appliedBackend != null,
-            Message: BuildSuccessMessage(hostChanged, backendChanged, restartRequired, appliedHost),
-            MessageLevel: DutySettingsSaveMessageLevel.Info,
-            AppliedHost: appliedHost,
-            AppliedBackend: appliedBackend);
     }
 
-    private static string BuildSuccessMessage(
+    private DutySettingsPatchRequest BuildPatchRequest(
+        DutySettingsSaveContext context,
         bool hostChanged,
-        bool backendChanged,
-        bool restartRequired,
-        DutyHostSettingsValues? appliedHost)
+        DutyBackendConfigPatch? backendPatch)
     {
-        if (hostChanged && backendChanged)
+        var lastLoadedDocument = context.LastLoadedDocument ?? new DutySettingsDocument();
+        var request = new DutySettingsPatchRequest
         {
-            return restartRequired ? "设置已保存，重启后启用相关宿主功能。" : "设置已保存。";
+            Expected = new DutySettingsExpectedVersions
+            {
+                HostVersion = lastLoadedDocument.HostVersion,
+                BackendVersion = lastLoadedDocument.BackendVersion
+            },
+            Changes = new DutySettingsPatchChanges()
+        };
+
+        if (hostChanged)
+        {
+            request.Changes.Host = new DutyEditableHostSettingsPatch
+            {
+                AutoRunMode = DutyScheduleOrchestrator.NormalizeAutoRunMode(context.Current.Host.AutoRunMode),
+                AutoRunParameter = (context.Current.Host.AutoRunParameter ?? string.Empty).Trim(),
+                AutoRunTime = DutyScheduleOrchestrator.NormalizeTimeOrThrow(context.Current.Host.AutoRunTime),
+                AutoRunTriggerNotificationEnabled = context.Current.Host.AutoRunTriggerNotificationEnabled,
+                DutyReminderEnabled = context.Current.Host.DutyReminderEnabled,
+                DutyReminderTimes = [NormalizeDutyReminderTime(context.Current.Host.DutyReminderTime)],
+                EnableMcp = context.Current.Host.EnableMcp,
+                EnableWebViewDebugLayer = context.Current.Host.EnableWebViewDebugLayer,
+                ComponentRefreshTime = DutyScheduleOrchestrator.NormalizeTimeOrThrow(context.Current.Host.ComponentRefreshTime),
+                NotificationDurationSeconds = Math.Clamp(context.Current.Host.NotificationDurationSeconds, 3, 15)
+            };
         }
 
-        if (backendChanged)
+        if (backendPatch != null)
         {
-            return "后端设置已保存。";
+            request.Changes.Backend = new DutyEditableBackendSettingsPatch
+            {
+                SelectedPlanId = backendPatch.SelectedPlanId,
+                PlanPresets = backendPatch.PlanPresets,
+                DutyRule = backendPatch.DutyRule
+            };
         }
 
-        if (appliedHost != null)
-        {
-            return restartRequired ? "宿主设置已保存，调试层 / MCP 将在重启后生效。" : "宿主设置已保存。";
-        }
+        return request;
+    }
 
-        return "设置已保存。";
+    private DutyHostSettingsValues CreateHostValues(DutyEditableHostSettingsDocument host)
+    {
+        return new DutyHostSettingsValues
+        {
+            AutoRunMode = host.AutoRunMode,
+            AutoRunParameter = host.AutoRunParameter,
+            AutoRunTime = host.AutoRunTime,
+            AutoRunTriggerNotificationEnabled = host.AutoRunTriggerNotificationEnabled,
+            DutyReminderEnabled = host.DutyReminderEnabled,
+            DutyReminderTime = (host.DutyReminderTimes ?? []).FirstOrDefault(x => !string.IsNullOrWhiteSpace(x)) ?? "07:40",
+            EnableMcp = host.EnableMcp,
+            EnableWebViewDebugLayer = host.EnableWebViewDebugLayer,
+            ComponentRefreshTime = host.ComponentRefreshTime,
+            NotificationDurationSeconds = host.NotificationDurationSeconds
+        };
+    }
+
+    private DutyBackendConfig CreateBackendConfig(DutySettingsDocument document)
+    {
+        var backend = document.Backend ?? new DutyEditableBackendSettingsDocument();
+        var selectedPlanId = _backendModule.NormalizeSelectedPlanId(backend.SelectedPlanId, backend.PlanPresets);
+        var plans = _backendModule.NormalizePlanPresets(backend.PlanPresets);
+        var selectedPlan = _backendModule.GetSelectedPlan(plans, selectedPlanId) ?? plans.First();
+        var selectedModeId = _backendModule.NormalizePlanModeId(selectedPlan.ModeId);
+
+        return new DutyBackendConfig
+        {
+            Version = document.BackendVersion,
+            ApiKey = selectedPlan.ApiKey,
+            BaseUrl = selectedPlan.BaseUrl,
+            Model = selectedPlan.Model,
+            ModelProfile = selectedPlan.ModelProfile,
+            OrchestrationMode = string.Equals(selectedModeId, DutyBackendModeIds.Campus6Agent, StringComparison.Ordinal)
+                ? "multi_agent"
+                : "single_pass",
+            MultiAgentExecutionMode = string.Equals(selectedModeId, DutyBackendModeIds.Campus6Agent, StringComparison.Ordinal)
+                ? selectedPlan.MultiAgentExecutionMode
+                : "auto",
+            SinglePassStrategy = string.Equals(selectedModeId, DutyBackendModeIds.IncrementalSmall, StringComparison.Ordinal)
+                ? "incremental_thinking"
+                : "auto",
+            ProviderHint = selectedPlan.ProviderHint,
+            SelectedPlanId = selectedPlanId,
+            PlanPresets = _backendModule.ClonePlanPresets(plans),
+            DutyRule = backend.DutyRule ?? string.Empty
+        };
+    }
+
+    private static string NormalizeDutyReminderTime(string? input)
+    {
+        return TimeSpan.TryParse(input, out var parsed)
+            ? $"{parsed.Hours:D2}:{parsed.Minutes:D2}"
+            : "07:40";
     }
 }
