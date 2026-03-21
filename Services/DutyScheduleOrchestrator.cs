@@ -572,24 +572,7 @@ public class DutyScheduleOrchestrator : IDisposable
 
 
 
-    public bool TryUpdateScheduleEntry(
-        string? date,
-        IDictionary<string, List<string>>? areaAssignments,
-        string? note,
-        out string message)
-    {
-        return TrySaveScheduleEntry(
-            sourceDate: date,
-            targetDate: date,
-            day: null,
-            areaAssignments: areaAssignments,
-            note: note,
-            createIfMissing: false,
-            recordDebtCreditChanges: true,
-            out message);
-    }
-
-    public bool TrySaveScheduleEntry(
+    public async Task<DutyScheduleEntrySaveResponse> SaveScheduleEntryAsync(
         string? sourceDate,
         string? targetDate,
         string? day,
@@ -597,125 +580,30 @@ public class DutyScheduleOrchestrator : IDisposable
         string? note,
         bool createIfMissing,
         bool recordDebtCreditChanges,
-        out string message)
+        CancellationToken cancellationToken = default)
     {
         if (!TryNormalizeScheduleDate(targetDate, out var normalizedTargetDate, out var parsedDate))
         {
-            message = "Date format is invalid.";
-            return false;
+            throw new ArgumentException("Date format is invalid.", nameof(targetDate));
         }
 
-        var normalizedSourceDate = (sourceDate ?? string.Empty).Trim();
         var normalizedDay = NormalizeScheduleDay(day, parsedDate.DayOfWeek);
-        var normalizedAssignments = NormalizeAreaAssignmentsForState(areaAssignments);
-        var normalizedNote = (note ?? string.Empty).Trim();
-        var state = LoadState();
-
-        SchedulePoolItem? item = null;
-        if (normalizedSourceDate.Length > 0)
+        var request = new DutyScheduleEntrySaveRequest
         {
-            item = state.SchedulePool.LastOrDefault(x =>
-                string.Equals(x.Date, normalizedSourceDate, StringComparison.Ordinal));
-        }
+            SourceDate = string.IsNullOrWhiteSpace(sourceDate) ? null : sourceDate.Trim(),
+            TargetDate = normalizedTargetDate,
+            Day = normalizedDay,
+            AreaAssignments = NormalizeAreaAssignmentsForState(areaAssignments),
+            Note = (note ?? string.Empty).Trim(),
+            CreateIfMissing = createIfMissing,
+            LedgerMode = recordDebtCreditChanges ? "record" : "skip"
+        };
 
-        var duplicate = state.SchedulePool.LastOrDefault(x =>
-            string.Equals(x.Date, normalizedTargetDate, StringComparison.Ordinal));
-
-        if (item == null)
-        {
-            if (!createIfMissing)
-            {
-                message = "Schedule entry not found.";
-                return false;
-            }
-
-            if (duplicate != null)
-            {
-                message = "Schedule entry already exists for target date.";
-                return false;
-            }
-
-            item = new SchedulePoolItem();
-            state.SchedulePool.Add(item);
-        }
-        else if (!string.Equals(item.Date, normalizedTargetDate, StringComparison.Ordinal) && duplicate != null)
-        {
-            message = "Schedule entry already exists for target date.";
-            return false;
-        }
-
-        // --- Debt/Credit Diff: Extract OLD names before overwriting ---
-        var oldNames = new HashSet<string>(StringComparer.Ordinal);
-        if (item.AreaAssignments is { Count: > 0 })
-        {
-            foreach (var names in item.AreaAssignments.Values)
-            {
-                if (names == null) continue;
-                foreach (var n in names) oldNames.Add(n.Trim());
-            }
-        }
-
-        item.Date = normalizedTargetDate;
-        item.Day = normalizedDay;
-        item.AreaAssignments = normalizedAssignments;
-        item.Note = normalizedNote;
-
-        // --- Debt/Credit Diff: Extract NEW names and reconcile ---
-        var newNames = new HashSet<string>(StringComparer.Ordinal);
-        if (normalizedAssignments is { Count: > 0 })
-        {
-            foreach (var names in normalizedAssignments.Values)
-            {
-                if (names == null) continue;
-                foreach (var n in names) newNames.Add(n.Trim());
-            }
-        }
-
-        var removedNames = oldNames.Except(newNames).ToArray();
-        var addedNames = newNames.Except(oldNames).ToArray();
-
-        if (recordDebtCreditChanges && (removedNames.Length > 0 || addedNames.Length > 0))
-        {
-            var roster = LoadRosterEntries();
-            var nameToId = new Dictionary<string, int>(StringComparer.Ordinal);
-            foreach (var r in roster)
-            {
-                if (r.Active && !string.IsNullOrWhiteSpace(r.Name))
-                    nameToId.TryAdd(r.Name.Trim(), r.Id);
-            }
-
-            var debtSet = new HashSet<int>(state.DebtList ?? []);
-            var creditSet = new HashSet<int>(state.CreditList ?? []);
-
-            // Removed people: they escaped duty
-            foreach (var name in removedNames)
-            {
-                if (!nameToId.TryGetValue(name, out var id)) continue;
-                if (creditSet.Remove(id)) { /* had credit, consume it */ }
-                else { debtSet.Add(id); /* no credit, they owe */ }
-            }
-
-            // Added people: they did extra work
-            foreach (var name in addedNames)
-            {
-                if (!nameToId.TryGetValue(name, out var id)) continue;
-                if (debtSet.Remove(id)) { /* had debt, pay it off */ }
-                else { creditSet.Add(id); /* no debt, earn credit */ }
-            }
-
-            state.DebtList = debtSet.OrderBy(x => x).ToList();
-            state.CreditList = creditSet.OrderBy(x => x).ToList();
-        }
-
-        state.SchedulePool = state.SchedulePool
-            .OrderBy(x => x.Date, StringComparer.Ordinal)
-            .ToList();
-        SaveState(state);
-
-        message = createIfMissing && normalizedSourceDate.Length == 0
-            ? "Schedule created."
-            : "Schedule updated.";
-        return true;
+        return await _ipcService.SaveScheduleEntryAsync(
+            request,
+            requestSource: "host_schedule_editor",
+            traceId: DutyDiagnosticsLogger.CreateTraceId("schedule-edit"),
+            cancellationToken: cancellationToken).ConfigureAwait(false);
     }
 
 

@@ -18,6 +18,7 @@ public interface IPythonIpcService: IDisposable
     Task<CoreRunResult> RunScheduleAsync(object requestPayload, Action<CoreRunProgress>? progressCallback, CancellationToken cancellationToken = default);
     Task<DutyBackendConfig> GetBackendConfigAsync(string requestSource = "host_settings", string? traceId = null, CancellationToken cancellationToken = default);
     Task<DutyBackendConfig> UpdateBackendConfigAsync(DutyBackendConfigPatch patch, string requestSource = "host_settings", string? traceId = null, CancellationToken cancellationToken = default);
+    Task<DutyScheduleEntrySaveResponse> SaveScheduleEntryAsync(DutyScheduleEntrySaveRequest request, string requestSource = "host_settings", string? traceId = null, CancellationToken cancellationToken = default);
     Task<DutyBackendSnapshot> GetBackendSnapshotAsync(string requestSource = "host_settings", string? traceId = null, CancellationToken cancellationToken = default);
     Task EnsureReadyAsync(CancellationToken cancellationToken = default);
     Task RestartEngineAsync();
@@ -521,6 +522,21 @@ public class DutyPythonIpcService : IPythonIpcService
             cancellationToken).ConfigureAwait(false);
     }
 
+    public async Task<DutyScheduleEntrySaveResponse> SaveScheduleEntryAsync(
+        DutyScheduleEntrySaveRequest request,
+        string requestSource = "host_settings",
+        string? traceId = null,
+        CancellationToken cancellationToken = default)
+    {
+        return await SendJsonAsync<DutyScheduleEntrySaveResponse>(
+            HttpMethod.Post,
+            "/api/v1/duty/schedule-entry",
+            request,
+            requestSource,
+            traceId,
+            cancellationToken).ConfigureAwait(false);
+    }
+
     private async Task<ClientWebSocket> EnsureControlSocketConnectedAsync(
         string requestSource,
         string traceId,
@@ -750,6 +766,14 @@ public class DutyPythonIpcService : IPythonIpcService
                 selectedPlanId = patch.SelectedPlanId ?? "<unchanged>",
                 planPresetCount = patch.PlanPresets?.Count.ToString() ?? "<unchanged>",
                 dutyRule = patch.DutyRule is null ? "<unchanged>" : TruncateForLog(patch.DutyRule, 160)
+            },
+            DutyScheduleEntrySaveRequest request => new
+            {
+                sourceDate = request.SourceDate ?? "<new>",
+                targetDate = request.TargetDate,
+                createIfMissing = request.CreateIfMissing,
+                ledgerMode = request.LedgerMode,
+                areaCount = request.AreaAssignments?.Count ?? 0
             },
             _ => new
             {

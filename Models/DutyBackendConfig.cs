@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using System.Text.Json.Serialization;
 
@@ -108,4 +109,49 @@ public sealed class DutyBackendSnapshot
 
     [JsonPropertyName("state")]
     public DutyState State { get; set; } = new();
+}
+
+public sealed class DutyScheduleEntrySaveRequest
+{
+    [JsonPropertyName("source_date")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? SourceDate { get; set; }
+
+    [JsonPropertyName("target_date")]
+    public string TargetDate { get; set; } = string.Empty;
+
+    [JsonPropertyName("day")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Day { get; set; }
+
+    [JsonPropertyName("area_assignments")]
+    public Dictionary<string, List<string>> AreaAssignments { get; set; } = new(StringComparer.Ordinal);
+
+    [JsonPropertyName("note")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Note { get; set; }
+
+    [JsonPropertyName("create_if_missing")]
+    public bool CreateIfMissing { get; set; }
+
+    [JsonPropertyName("ledger_mode")]
+    public string LedgerMode { get; set; } = "record";
+}
+
+public sealed class DutyScheduleEntrySaveResponse
+{
+    [JsonPropertyName("status")]
+    public string Status { get; set; } = string.Empty;
+
+    [JsonPropertyName("message")]
+    public string Message { get; set; } = string.Empty;
+
+    [JsonPropertyName("ledger_mode")]
+    public string LedgerMode { get; set; } = "record";
+
+    [JsonPropertyName("ledger_applied")]
+    public bool LedgerApplied { get; set; }
+
+    [JsonPropertyName("snapshot")]
+    public DutyBackendSnapshot Snapshot { get; set; } = new();
 }

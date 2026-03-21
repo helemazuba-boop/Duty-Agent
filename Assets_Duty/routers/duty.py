@@ -4,22 +4,24 @@ import asyncio
 import json
 import threading
 
-from fastapi import APIRouter, Request, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import StreamingResponse
 
 try:
-    from models.schemas import DutyRequest
+    from models.schemas import DutyRequest, DutyScheduleEntrySaveRequest, DutyScheduleEntrySaveResponse
 except ImportError:
-    from ..models.schemas import DutyRequest
+    from ..models.schemas import DutyRequest, DutyScheduleEntrySaveRequest, DutyScheduleEntrySaveResponse
 
 router = APIRouter(prefix="/api/v1/duty", tags=["Duty"])
 
 
-def _resolve_request_meta(request: Request, runtime, request_data: DutyRequest) -> tuple[str, str]:
-    trace_id = (request.headers.get("X-Duty-Trace-Id") or "").strip() or (request_data.trace_id or "").strip() or runtime.new_trace_id()
+def _resolve_request_meta(request: Request, runtime, request_data) -> tuple[str, str]:
+    trace_value = str(getattr(request_data, "trace_id", "") or "").strip()
+    source_value = str(getattr(request_data, "request_source", "") or "").strip()
+    trace_id = (request.headers.get("X-Duty-Trace-Id") or "").strip() or trace_value or runtime.new_trace_id()
     request_source = (
         (request.headers.get("X-Duty-Request-Source") or "").strip()
-        or (request_data.request_source or "").strip()
+        or source_value
         or "api"
     )
     return trace_id, request_source
@@ -109,6 +111,24 @@ async def schedule(request_data: DutyRequest, request: Request):
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 
 
+@router.post("/schedule-entry", response_model=DutyScheduleEntrySaveResponse)
+async def save_schedule_entry(request_data: DutyScheduleEntrySaveRequest, request: Request):
+    runtime = getattr(request.app.state, "runtime", None)
+    if runtime is None:
+        raise HTTPException(status_code=503, detail="Runtime is not initialized.")
+
+    trace_id, request_source = _resolve_request_meta(request, runtime, request_data)
+    payload = request_data.model_dump(exclude_none=True, exclude_unset=True)
+    payload.setdefault("trace_id", trace_id)
+    payload.setdefault("request_source", request_source)
+    return await asyncio.to_thread(
+        runtime.command_service.save_schedule_entry,
+        payload,
+        trace_id,
+        request_source,
+    )
+
+
 @router.websocket("/live")
 async def duty_live(websocket: WebSocket):
     await websocket.accept()
@@ -154,6 +174,15 @@ async def duty_live(websocket: WebSocket):
                 if task is not None:
                     active_schedule_tasks[client_change_id] = task
                     active_schedule_stops[client_change_id] = stop_event
+            elif message_type == "schedule_entry_save":
+                await _handle_schedule_entry_save(
+                    send_queue,
+                    runtime,
+                    message,
+                    client_change_id,
+                    msg_trace_id,
+                    msg_request_source,
+                )
             elif message_type == "schedule_cancel":
                 _cancel_schedule_run(active_schedule_stops, client_change_id, runtime, msg_trace_id)
             else:
@@ -299,3 +328,55 @@ def _cancel_schedule_run(active_stops: dict[str, threading.Event], client_change
             trace_id=trace_id,
             client_change_id=client_change_id,
         )
+
+
+async def _handle_schedule_entry_save(
+    send_queue: asyncio.Queue,
+    runtime,
+    message: dict,
+    client_change_id: str,
+    trace_id: str,
+    request_source: str,
+):
+    payload = {
+        "source_date": (message or {}).get("source_date"),
+        "target_date": (message or {}).get("target_date"),
+        "day": (message or {}).get("day"),
+        "area_assignments": (message or {}).get("area_assignments"),
+        "note": (message or {}).get("note"),
+        "create_if_missing": bool((message or {}).get("create_if_missing", False)),
+        "ledger_mode": str((message or {}).get("ledger_mode") or "record").strip().lower() or "record",
+        "trace_id": trace_id,
+        "request_source": request_source,
+    }
+
+    try:
+        response = await asyncio.to_thread(
+            runtime.command_service.save_schedule_entry,
+            payload,
+            trace_id,
+            request_source,
+        )
+        await _enqueue_send(send_queue, {
+            "type": "schedule_entry_saved",
+            "client_change_id": client_change_id,
+            "trace_id": trace_id,
+            "request_source": request_source,
+            **response,
+        })
+    except Exception as ex:
+        runtime.logger.error(
+            "DutyLive",
+            "Failed to save schedule entry.",
+            trace_id=trace_id,
+            request_source=request_source,
+            client_change_id=client_change_id,
+            exc=ex,
+        )
+        await _enqueue_send(send_queue, {
+            "type": "error",
+            "client_change_id": client_change_id,
+            "trace_id": trace_id,
+            "request_source": request_source,
+            "message": str(ex),
+        })

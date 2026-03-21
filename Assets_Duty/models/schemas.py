@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import List, Optional
+from typing import Dict, List, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict
 
@@ -12,6 +12,18 @@ class DutyRequest(BaseModel):
     apply_mode: Optional[str] = None
     trace_id: Optional[str] = None
     request_source: Optional[str] = None
+
+
+class DutyScheduleEntrySaveRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    source_date: Optional[str] = None
+    target_date: str
+    day: Optional[str] = None
+    area_assignments: Dict[str, List[str]] = {}
+    note: Optional[str] = None
+    create_if_missing: bool = False
+    ledger_mode: Literal["record", "skip"] = "record"
 
 
 class DutyPlanPresetModel(BaseModel):
@@ -88,3 +100,13 @@ class DutySnapshotResponse(BaseModel):
     config: DutyBackendConfigModel
     roster: List[SnapshotRosterEntry] = []
     state: dict
+
+
+class DutyScheduleEntrySaveResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    status: str
+    message: str
+    ledger_mode: Literal["record", "skip"]
+    ledger_applied: bool = False
+    snapshot: DutySnapshotResponse

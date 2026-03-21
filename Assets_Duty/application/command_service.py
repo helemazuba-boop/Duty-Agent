@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any, Callable, Dict, Optional
 
 from engine import run_schedule
-from state_ops import Context, patch_config, save_roster_entries
+from state_ops import Context, load_config, load_roster_entries, load_state, patch_config, save_roster_entries, save_schedule_entry_edit
 
 
 class CommandService:
@@ -132,3 +132,54 @@ class CommandService:
             active_count=sum(1 for item in result if item.get("active")),
         )
         return result
+
+    def save_schedule_entry(
+        self,
+        schedule_payload: Dict[str, Any],
+        trace_id: str | None = None,
+        request_source: str = "api",
+    ) -> Dict[str, Any]:
+        effective_trace_id = trace_id or self._runtime.new_trace_id()
+        self._runtime.logger.info(
+            "CommandService",
+            "Starting save_schedule_entry.",
+            trace_id=effective_trace_id,
+            request_source=request_source,
+            ledger_mode=str((schedule_payload or {}).get("ledger_mode", "") or ""),
+            target_date=str((schedule_payload or {}).get("target_date", "") or ""),
+            source_date=str((schedule_payload or {}).get("source_date", "") or ""),
+            create_if_missing=bool((schedule_payload or {}).get("create_if_missing", False)),
+        )
+        context = Context(
+            self._runtime.data_dir,
+            logger=self._runtime.logger,
+            trace_id=effective_trace_id,
+            request_source=request_source,
+        )
+        result = save_schedule_entry_edit(context, schedule_payload)
+        try:
+            roster = load_roster_entries(context.paths["roster"])
+        except (FileNotFoundError, ValueError):
+            roster = []
+        response = {
+            "status": result.get("status", "error"),
+            "message": result.get("message", ""),
+            "ledger_mode": result.get("ledger_mode", "record"),
+            "ledger_applied": bool(result.get("ledger_applied", False)),
+            "snapshot": {
+                "config": load_config(context),
+                "roster": roster,
+                "state": result.get("state") or load_state(context.paths["state"]),
+            },
+        }
+        self._runtime.logger.info(
+            "CommandService",
+            "Finished save_schedule_entry.",
+            trace_id=effective_trace_id,
+            request_source=request_source,
+            status=response["status"],
+            ledger_mode=response["ledger_mode"],
+            ledger_applied=response["ledger_applied"],
+            schedule_count=len(response["snapshot"]["state"].get("schedule_pool", [])),
+        )
+        return response

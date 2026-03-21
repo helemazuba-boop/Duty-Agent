@@ -997,6 +997,196 @@ def load_state(path: Path) -> dict:
     return data
 
 
+def _normalize_schedule_entry_day(value: object, parsed_date: date) -> str:
+    text = str(value or "").strip()
+    if text:
+        return text
+    return {
+        0: "周一",
+        1: "周二",
+        2: "周三",
+        3: "周四",
+        4: "周五",
+        5: "周六",
+        6: "周日",
+    }.get(parsed_date.weekday(), "")
+
+
+def _normalize_schedule_entry_area_assignments(raw_assignments: object) -> Dict[str, List[str]]:
+    normalized: Dict[str, List[str]] = {}
+    if not isinstance(raw_assignments, dict):
+        return normalized
+
+    for raw_area, raw_students in raw_assignments.items():
+        area = str(raw_area or "").strip()
+        if not area:
+            continue
+
+        students: List[str] = []
+        seen: set[str] = set()
+        for raw_student in raw_students if isinstance(raw_students, list) else []:
+            student = str(raw_student or "").strip()
+            if not student or student in seen:
+                continue
+            seen.add(student)
+            students.append(student)
+        normalized[area] = students
+
+    return normalized
+
+
+def _collect_assignment_names(area_assignments: object) -> set[str]:
+    names: set[str] = set()
+    if not isinstance(area_assignments, dict):
+        return names
+
+    for raw_students in area_assignments.values():
+        if not isinstance(raw_students, list):
+            continue
+        for raw_student in raw_students:
+            student = str(raw_student or "").strip()
+            if student:
+                names.add(student)
+    return names
+
+
+def _load_active_name_to_id(roster_path: Path) -> Dict[str, int]:
+    try:
+        _, id_to_name, all_ids, id_to_active = load_roster(roster_path)
+    except (FileNotFoundError, ValueError):
+        return {}
+
+    return {
+        id_to_name[person_id].strip(): person_id
+        for person_id in all_ids
+        if id_to_active.get(person_id, 0) != 0 and id_to_name.get(person_id, "").strip()
+    }
+
+
+def _normalize_existing_id_list(raw_values: object) -> set[int]:
+    normalized: set[int] = set()
+    for raw_value in raw_values if isinstance(raw_values, list) else []:
+        try:
+            person_id = int(raw_value)
+        except (TypeError, ValueError):
+            continue
+        if person_id > 0:
+            normalized.add(person_id)
+    return normalized
+
+
+def save_schedule_entry_edit(ctx: Context, payload: dict) -> dict:
+    request = dict(payload or {})
+    ledger_mode = str(request.get("ledger_mode", "record") or "record").strip().lower()
+    if ledger_mode not in {"record", "skip"}:
+        raise ValueError("ledger_mode must be either 'record' or 'skip'.")
+
+    source_date = str(request.get("source_date", "") or "").strip()
+    target_date_raw = str(request.get("target_date", "") or "").strip()
+    if not target_date_raw:
+        raise ValueError("target_date is required.")
+
+    try:
+        parsed_target_date = datetime.strptime(target_date_raw, "%Y-%m-%d").date()
+    except ValueError:
+        raise ValueError("target_date must be in yyyy-MM-dd format.") from None
+
+    normalized_target_date = parsed_target_date.strftime("%Y-%m-%d")
+    normalized_day = _normalize_schedule_entry_day(request.get("day"), parsed_target_date)
+    normalized_assignments = _normalize_schedule_entry_area_assignments(request.get("area_assignments"))
+    normalized_note = str(request.get("note", "") or "").strip()
+    create_if_missing = bool(request.get("create_if_missing", False))
+    active_name_to_id = _load_active_name_to_id(ctx.paths["roster"])
+
+    ledger_applied = False
+
+    def _apply_state_update(current_state: dict) -> dict:
+        nonlocal ledger_applied
+        next_state = dict(current_state)
+        schedule_pool = [dict(entry) for entry in next_state.get("schedule_pool", []) if isinstance(entry, dict)]
+
+        item = None
+        if source_date:
+            item = next((entry for entry in schedule_pool if str(entry.get("date", "")).strip() == source_date), None)
+
+        duplicate = next((entry for entry in schedule_pool if str(entry.get("date", "")).strip() == normalized_target_date), None)
+        if item is None:
+            if not create_if_missing:
+                raise ValueError("Schedule entry not found.")
+            if duplicate is not None:
+                raise ValueError("Schedule entry already exists for target date.")
+            item = {}
+            schedule_pool.append(item)
+        elif item is not duplicate and duplicate is not None:
+            raise ValueError("Schedule entry already exists for target date.")
+
+        old_names = _collect_assignment_names(item.get("area_assignments"))
+
+        item["date"] = normalized_target_date
+        item["day"] = normalized_day
+        item["area_assignments"] = normalized_assignments
+        item["note"] = normalized_note
+
+        if ledger_mode == "record":
+            new_names = _collect_assignment_names(normalized_assignments)
+            removed_names = old_names - new_names
+            added_names = new_names - old_names
+
+            debt_set = _normalize_existing_id_list(next_state.get("debt_list", []))
+            credit_set = _normalize_existing_id_list(next_state.get("credit_list", []))
+            original_debt = set(debt_set)
+            original_credit = set(credit_set)
+
+            for name in removed_names:
+                person_id = active_name_to_id.get(name)
+                if person_id is None:
+                    continue
+                if person_id in credit_set:
+                    credit_set.remove(person_id)
+                else:
+                    debt_set.add(person_id)
+
+            for name in added_names:
+                person_id = active_name_to_id.get(name)
+                if person_id is None:
+                    continue
+                if person_id in debt_set:
+                    debt_set.remove(person_id)
+                else:
+                    credit_set.add(person_id)
+
+            ledger_applied = debt_set != original_debt or credit_set != original_credit
+            next_state["debt_list"] = sorted(debt_set)
+            next_state["credit_list"] = sorted(credit_set)
+
+        next_state["schedule_pool"] = sorted(
+            schedule_pool,
+            key=lambda entry: str(entry.get("date", "")).strip(),
+        )
+        return next_state
+
+    updated_state = update_state(ctx.paths["state"], _apply_state_update)
+
+    if create_if_missing and not source_date:
+        message = "Schedule created."
+    else:
+        message = "Schedule updated."
+    if ledger_mode == "skip":
+        message = f"{message} Ledger changes skipped."
+    elif ledger_applied:
+        message = f"{message} Ledger updated."
+    else:
+        message = f"{message} Ledger unchanged."
+
+    return {
+        "status": "success",
+        "message": message,
+        "ledger_mode": ledger_mode,
+        "ledger_applied": ledger_applied,
+        "state": updated_state,
+    }
+
+
 def parse_bool(value, default: bool) -> bool:
     if value is None:
         return default

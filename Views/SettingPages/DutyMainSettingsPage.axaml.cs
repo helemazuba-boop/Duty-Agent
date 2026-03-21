@@ -1693,7 +1693,7 @@ public partial class DutyMainSettingsPage : SettingsPageBase
         PopulateScheduleEditorFromSelection();
     }
 
-    private void OnSaveScheduleEditClick(object? sender, RoutedEventArgs e)
+    private async void OnSaveScheduleEditClick(object? sender, RoutedEventArgs e)
     {
         var sourceDate = !string.IsNullOrWhiteSpace(_scheduleEditorSourceDate)
             ? _scheduleEditorSourceDate
@@ -1726,28 +1726,30 @@ public partial class DutyMainSettingsPage : SettingsPageBase
 
         var note = (ScheduleNoteEditorBox.Text ?? string.Empty).Trim();
         var recordDebtCreditChanges = ShouldRecordScheduleEditorChanges();
-        if (!Service.TrySaveScheduleEntry(
+        try
+        {
+            var response = await Service.SaveScheduleEntryAsync(
                 sourceDate: sourceDate,
                 targetDate: targetDate,
                 day: targetDay,
                 areaAssignments: areaAssignments,
                 note: note,
                 createIfMissing: false,
-                recordDebtCreditChanges: recordDebtCreditChanges,
-                out var message))
-        {
-            SetStatus($"保存失败：{message}", Brushes.Red);
-            return;
-        }
+                recordDebtCreditChanges: recordDebtCreditChanges);
 
-        _pendingScheduleSelectionDate = targetDate;
-        _scheduleEditorSourceDate = targetDate;
-        _isScheduleEditorDirty = false;
-        _ = LoadDataAsync("手动编辑排班");
-        SetStatus(recordDebtCreditChanges ? "排班编辑已保存，并已更新记录。" : "排班编辑已保存，未更新记录。", Brushes.Green);
+            _pendingScheduleSelectionDate = targetDate;
+            _scheduleEditorSourceDate = targetDate;
+            _isScheduleEditorDirty = false;
+            ApplySnapshotPreview(response.Snapshot, "手动编辑排班");
+            SetStatus(response.Message, Brushes.Green);
+        }
+        catch (Exception ex)
+        {
+            SetStatus($"保存失败：{ex.Message}", Brushes.Red);
+        }
     }
 
-    private void OnCreateScheduleEditClick(object? sender, RoutedEventArgs e)
+    private async void OnCreateScheduleEditClick(object? sender, RoutedEventArgs e)
     {
         if (!TryParseAreaAssignmentsEditorText(
                 ScheduleAssignmentsEditorBox.Text,
@@ -1770,32 +1772,43 @@ public partial class DutyMainSettingsPage : SettingsPageBase
             : selectedDay.Trim();
         var note = (ScheduleNoteEditorBox.Text ?? string.Empty).Trim();
         var recordDebtCreditChanges = ShouldRecordScheduleEditorChanges();
-
-        if (!Service.TrySaveScheduleEntry(
+        try
+        {
+            var response = await Service.SaveScheduleEntryAsync(
                 sourceDate: null,
                 targetDate: targetDate,
                 day: targetDay,
                 areaAssignments: areaAssignments,
                 note: note,
                 createIfMissing: true,
-                recordDebtCreditChanges: recordDebtCreditChanges,
-                out var message))
-        {
-            SetStatus($"新建失败：{message}", Brushes.Red);
-            return;
-        }
+                recordDebtCreditChanges: recordDebtCreditChanges);
 
-        _pendingScheduleSelectionDate = targetDate;
-        _scheduleEditorSourceDate = targetDate;
-        _isScheduleEditorDirty = false;
-        _ = LoadDataAsync("手动新建排班");
-        SetStatus(recordDebtCreditChanges ? "已新建值日安排，并已更新记录。" : "已新建值日安排，未更新记录。", Brushes.Green);
+            _pendingScheduleSelectionDate = targetDate;
+            _scheduleEditorSourceDate = targetDate;
+            _isScheduleEditorDirty = false;
+            ApplySnapshotPreview(response.Snapshot, "手动新建排班");
+            SetStatus(response.Message, Brushes.Green);
+        }
+        catch (Exception ex)
+        {
+            SetStatus($"新建失败：{ex.Message}", Brushes.Red);
+        }
     }
 
     private bool ShouldRecordScheduleEditorChanges()
     {
         return _scheduleRecordModeComboBox?.SelectedItem is ComboBoxItem { Tag: string tag }
                && string.Equals(tag, "record", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private void ApplySnapshotPreview(DutyBackendSnapshot snapshot, string reason)
+    {
+        var rosterPreview = _rosterModule.BuildPreview(snapshot.Roster ?? [], snapshot.State ?? new DutyState(), DateTime.Today);
+        var schedulePreview = _scheduleModule.BuildPreview(snapshot.State ?? new DutyState());
+        ApplyRosterPreview(rosterPreview);
+        ApplySchedulePreview(schedulePreview);
+        UpdateStudentActionButtons();
+        UpdateDataTracking(reason);
     }
 
     private void PopulateScheduleEditorFromSelection()
