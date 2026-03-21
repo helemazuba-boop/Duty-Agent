@@ -1,7 +1,6 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
-using System.Threading;
 using DutyAgent.Models;
 using DutyAgent.Services;
 
@@ -11,30 +10,6 @@ internal sealed class DutyMainSettingsBackendModule
 {
     private const string DefaultBaseUrl = "https://integrate.api.nvidia.com/v1";
     private const string DefaultModel = "moonshotai/kimi-k2-thinking";
-
-    private readonly DutyScheduleOrchestrator _service;
-
-    public DutyMainSettingsBackendModule(DutyScheduleOrchestrator service)
-    {
-        _service = service;
-    }
-
-    public Task<DutyBackendConfig> LoadAsync(
-        string requestSource = "host_settings",
-        string? traceId = null,
-        CancellationToken cancellationToken = default)
-    {
-        return _service.LoadBackendConfigAsync(requestSource, traceId, cancellationToken);
-    }
-
-    public Task<DutyBackendConfig> SaveAsync(
-        DutyBackendConfigPatch patch,
-        string requestSource = "host_settings",
-        string? traceId = null,
-        CancellationToken cancellationToken = default)
-    {
-        return _service.SaveBackendConfigAsync(patch, requestSource, traceId, cancellationToken);
-    }
 
     public DutyBackendConfig CloneConfig(DutyBackendConfig config)
     {

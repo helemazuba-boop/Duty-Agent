@@ -29,9 +29,12 @@ public class Plugin : PluginBase
         DutyDiagnosticsLogger.Configure(pluginPaths.LogsDirectory);
 
         services.AddSingleton(pluginPaths);
+        services.AddSingleton<DutySettingsTraceService>();
+        services.AddSingleton<IDutySettingsRepository, DutySettingsRepository>();
         services.AddSingleton<IConfigManager, DutyConfigManager>();
         services.AddSingleton<IStateAndRosterManager, DutyStateManager>();
         services.AddSingleton<IPythonIpcService, DutyPythonIpcService>();
+        services.AddSingleton<DutyBackendSettingsSyncService>();
         services.AddSingleton<DutyScheduleOrchestrator>();
         services.AddSingleton<DutyAutomationBridgeService>();
         services.AddSingleton<DutyRuleHandlerService>();
@@ -94,15 +97,25 @@ public class Plugin : PluginBase
     {
         try
         {
-            var configPath = File.Exists(pluginPaths.HostConfigPath)
+            if (File.Exists(pluginPaths.SettingsPath))
+            {
+                using var settingsDoc = JsonDocument.Parse(File.ReadAllText(pluginPaths.SettingsPath));
+                if (settingsDoc.RootElement.TryGetProperty("host", out var host))
+                {
+                    return new BootstrapFlags(
+                        EnableWebViewDebugLayer: TryReadBoolean(host, "enable_webview_debug_layer"));
+                }
+            }
+
+            var fallbackPath = File.Exists(pluginPaths.HostConfigPath)
                 ? pluginPaths.HostConfigPath
                 : pluginPaths.ConfigPath;
-            if (!File.Exists(configPath))
+            if (!File.Exists(fallbackPath))
             {
                 return BootstrapFlags.Disabled;
             }
 
-            using var doc = JsonDocument.Parse(File.ReadAllText(configPath));
+            using var doc = JsonDocument.Parse(File.ReadAllText(fallbackPath));
             var root = doc.RootElement;
             return new BootstrapFlags(
                 EnableWebViewDebugLayer: TryReadBoolean(root, "enable_webview_debug_layer"));

@@ -120,170 +120,6 @@ public class DutyScheduleOrchestrator : IDisposable
         return _ipcService.WebAppUrl;
     }
 
-    public async Task<DutySettingsDocument> LoadSettingsAsync(
-        string requestSource = "host_settings",
-        string? traceId = null,
-        CancellationToken cancellationToken = default)
-    {
-        var effectiveTraceId = string.IsNullOrWhiteSpace(traceId)
-            ? DutyDiagnosticsLogger.CreateTraceId("settings-load")
-            : traceId.Trim();
-        var stopwatch = Stopwatch.StartNew();
-        DutyDiagnosticsLogger.Info("SettingsUnified", "Loading unified settings.",
-            new { traceId = effectiveTraceId, requestSource });
-        try
-        {
-            var document = await _ipcService.GetSettingsAsync(requestSource, effectiveTraceId, cancellationToken).ConfigureAwait(false);
-            stopwatch.Stop();
-            DutyDiagnosticsLogger.Info("SettingsUnified", "Unified settings loaded.",
-                new
-                {
-                    traceId = effectiveTraceId,
-                    requestSource,
-                    durationMs = stopwatch.ElapsedMilliseconds,
-                    hostVersion = document.HostVersion,
-                    backendVersion = document.BackendVersion
-                });
-            return document;
-        }
-        catch (Exception ex)
-        {
-            stopwatch.Stop();
-            DutyDiagnosticsLogger.Error("SettingsUnified", "Failed to load unified settings.", ex,
-                new { traceId = effectiveTraceId, requestSource, durationMs = stopwatch.ElapsedMilliseconds });
-            throw;
-        }
-    }
-
-    public async Task<DutySettingsMutationResult> PatchSettingsAsync(
-        DutySettingsPatchRequest patch,
-        string requestSource = "host_settings",
-        string? traceId = null,
-        CancellationToken cancellationToken = default)
-    {
-        var effectiveTraceId = string.IsNullOrWhiteSpace(traceId)
-            ? DutyDiagnosticsLogger.CreateTraceId("settings-save")
-            : traceId.Trim();
-        var stopwatch = Stopwatch.StartNew();
-        DutyDiagnosticsLogger.Info("SettingsUnified", "Saving unified settings.",
-            new
-            {
-                traceId = effectiveTraceId,
-                requestSource,
-                hostExpectedVersion = patch.Expected.HostVersion,
-                backendExpectedVersion = patch.Expected.BackendVersion
-            });
-        try
-        {
-            var result = await _ipcService.PatchSettingsAsync(patch, requestSource, effectiveTraceId, cancellationToken).ConfigureAwait(false);
-            stopwatch.Stop();
-            DutyDiagnosticsLogger.Info("SettingsUnified", "Unified settings save completed.",
-                new
-                {
-                    traceId = effectiveTraceId,
-                    requestSource,
-                    durationMs = stopwatch.ElapsedMilliseconds,
-                    success = result.Success,
-                    restartRequired = result.RestartRequired,
-                    hostVersion = result.Document.HostVersion,
-                    backendVersion = result.Document.BackendVersion
-                });
-            return result;
-        }
-        catch (Exception ex)
-        {
-            stopwatch.Stop();
-            DutyDiagnosticsLogger.Error("SettingsUnified", "Unified settings save failed.", ex,
-                new { traceId = effectiveTraceId, requestSource, durationMs = stopwatch.ElapsedMilliseconds });
-            throw;
-        }
-    }
-
-    public async Task<DutyBackendConfig> LoadBackendConfigAsync(
-        string requestSource = "host_settings",
-        string? traceId = null,
-        CancellationToken cancellationToken = default)
-    {
-        var effectiveTraceId = string.IsNullOrWhiteSpace(traceId)
-            ? DutyDiagnosticsLogger.CreateTraceId("cfg-load")
-            : traceId.Trim();
-        var stopwatch = Stopwatch.StartNew();
-        DutyDiagnosticsLogger.Info("SettingsBackend", "Loading backend config.",
-            new { traceId = effectiveTraceId, requestSource });
-        try
-        {
-            var config = await _ipcService.GetBackendConfigAsync(requestSource, effectiveTraceId, cancellationToken).ConfigureAwait(false);
-            stopwatch.Stop();
-            DutyDiagnosticsLogger.Info("SettingsBackend", "Backend config loaded.",
-                new
-                {
-                    traceId = effectiveTraceId,
-                    requestSource,
-                    durationMs = stopwatch.ElapsedMilliseconds,
-                    baseUrl = config.BaseUrl,
-                    model = config.Model,
-                    modelProfile = config.ModelProfile,
-                    orchestrationMode = config.OrchestrationMode,
-                    multiAgentExecutionMode = config.MultiAgentExecutionMode,
-                    apiKey = DutyDiagnosticsLogger.MaskSecret(config.ApiKey)
-                });
-            return config;
-        }
-        catch (Exception ex)
-        {
-            stopwatch.Stop();
-            DutyDiagnosticsLogger.Error("SettingsBackend", "Failed to load backend config.", ex,
-                new { traceId = effectiveTraceId, requestSource, durationMs = stopwatch.ElapsedMilliseconds });
-            throw;
-        }
-    }
-
-    public async Task<DutyBackendConfig> SaveBackendConfigAsync(
-        DutyBackendConfigPatch patch,
-        string requestSource = "host_settings",
-        string? traceId = null,
-        CancellationToken cancellationToken = default)
-    {
-        var effectiveTraceId = string.IsNullOrWhiteSpace(traceId)
-            ? DutyDiagnosticsLogger.CreateTraceId("cfg-save")
-            : traceId.Trim();
-        var stopwatch = Stopwatch.StartNew();
-        DutyDiagnosticsLogger.Info("SettingsBackend", "Saving backend config.",
-            new
-            {
-                traceId = effectiveTraceId,
-                requestSource,
-                selectedPlanId = patch.SelectedPlanId ?? "<unchanged>",
-                planPresetCount = patch.PlanPresets?.Count.ToString() ?? "<unchanged>",
-                dutyRule = patch.DutyRule is null ? "<unchanged>" : TruncateForLog(patch.DutyRule, 160)
-            });
-        try
-        {
-            var config = await _ipcService.UpdateBackendConfigAsync(patch, requestSource, effectiveTraceId, cancellationToken).ConfigureAwait(false);
-            stopwatch.Stop();
-            DutyDiagnosticsLogger.Info("SettingsBackend", "Backend config saved.",
-                new
-                {
-                    traceId = effectiveTraceId,
-                    requestSource,
-                    durationMs = stopwatch.ElapsedMilliseconds,
-                    baseUrl = config.BaseUrl,
-                    model = config.Model,
-                    modelProfile = config.ModelProfile,
-                    orchestrationMode = config.OrchestrationMode,
-                    multiAgentExecutionMode = config.MultiAgentExecutionMode
-                });
-            return config;
-        }
-        catch (Exception ex)
-        {
-            stopwatch.Stop();
-            DutyDiagnosticsLogger.Error("SettingsBackend", "Failed to save backend config.", ex,
-                new { traceId = effectiveTraceId, requestSource, durationMs = stopwatch.ElapsedMilliseconds });
-            throw;
-        }
-    }
-
     public async Task<DutyBackendSnapshot> LoadBackendSnapshotAsync(
         string requestSource = "host_settings",
         string? traceId = null,
@@ -488,6 +324,34 @@ public class DutyScheduleOrchestrator : IDisposable
             "serial" or "sequential" => "serial",
             _ => "auto"
         };
+    }
+
+    private static List<DutyPlanPreset> ClonePlanPresets(IEnumerable<DutyPlanPreset>? planPresets)
+    {
+        return (planPresets ?? [])
+            .Select(plan => new DutyPlanPreset
+            {
+                Id = plan.Id,
+                Name = plan.Name,
+                ModeId = plan.ModeId,
+                ApiKey = plan.ApiKey,
+                BaseUrl = plan.BaseUrl,
+                Model = plan.Model,
+                ModelProfile = plan.ModelProfile,
+                ProviderHint = plan.ProviderHint,
+                MultiAgentExecutionMode = plan.MultiAgentExecutionMode
+            })
+            .ToList();
+    }
+
+    private static string NormalizeTimeOrDefault(string? value, string fallback)
+    {
+        if (TimeSpan.TryParse(value, out var parsed))
+        {
+            return $"{parsed.Hours:D2}:{parsed.Minutes:D2}";
+        }
+
+        return fallback;
     }
 
     private void TryRunAutoSchedule()
@@ -721,6 +585,7 @@ public class DutyScheduleOrchestrator : IDisposable
             areaAssignments: areaAssignments,
             note: note,
             createIfMissing: false,
+            recordDebtCreditChanges: true,
             out message);
     }
 
@@ -731,6 +596,7 @@ public class DutyScheduleOrchestrator : IDisposable
         IDictionary<string, List<string>>? areaAssignments,
         string? note,
         bool createIfMissing,
+        bool recordDebtCreditChanges,
         out string message)
     {
         if (!TryNormalizeScheduleDate(targetDate, out var normalizedTargetDate, out var parsedDate))
@@ -808,7 +674,7 @@ public class DutyScheduleOrchestrator : IDisposable
         var removedNames = oldNames.Except(newNames).ToArray();
         var addedNames = newNames.Except(oldNames).ToArray();
 
-        if (removedNames.Length > 0 || addedNames.Length > 0)
+        if (recordDebtCreditChanges && (removedNames.Length > 0 || addedNames.Length > 0))
         {
             var roster = LoadRosterEntries();
             var nameToId = new Dictionary<string, int>(StringComparer.Ordinal);

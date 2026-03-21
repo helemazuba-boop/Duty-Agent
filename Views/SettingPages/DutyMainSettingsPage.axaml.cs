@@ -25,6 +25,10 @@ public partial class DutyMainSettingsPage : SettingsPageBase
 {
     private DutyScheduleOrchestrator Service { get; } = IAppHost.GetService<DutyScheduleOrchestrator>();
     private DutyNotificationService NotificationService { get; } = IAppHost.GetService<DutyNotificationService>();
+    private IDutySettingsRepository SettingsRepository { get; } = IAppHost.GetService<IDutySettingsRepository>();
+    private DutyBackendSettingsSyncService BackendSettingsSyncService { get; } = IAppHost.GetService<DutyBackendSettingsSyncService>();
+    private DutyPluginPaths PluginPaths { get; } = IAppHost.GetService<DutyPluginPaths>();
+    private DutySettingsTraceService SettingsTrace { get; } = IAppHost.GetService<DutySettingsTraceService>();
     private readonly DutyMainSettingsHostModule _hostModule;
     private readonly DutyMainSettingsBackendModule _backendModule;
     private readonly DutyMainSettingsSaveCoordinator _saveCoordinator;
@@ -33,8 +37,10 @@ public partial class DutyMainSettingsPage : SettingsPageBase
     private readonly DispatcherTimer _reasoningStreamFlushTimer;
     private readonly object _reasoningStreamLock = new();
     private readonly StringBuilder _pendingReasoningStreamText = new();
+    private ComboBox? _scheduleRecordModeComboBox;
     private bool _isLoadingConfig;
     private bool _isApplyingConfig;
+    private string _lastLocalConfigState = "未应用";
     private string _lastConfigState = "未应用";
     private DateTime? _lastConfigAt;
     private string _lastRunState = "待命";
@@ -54,19 +60,27 @@ public partial class DutyMainSettingsPage : SettingsPageBase
     private int _dataLoadRevision;
     private int _runSessionRevision;
     private int _activeRunSessionRevision;
+    private int _configEditRevision;
+    private DutyBackendSyncStatusSnapshot _backendSyncStatus = new();
     private DutySettingsDocument? _lastLoadedSettingsDocument;
     private DutyHostSettingsValues _lastAppliedHostSettings = new();
     private DutyBackendConfig? _lastAppliedBackendConfig;
     private List<DutyPlanPreset> _planPresetDrafts = [];
     private string _currentPlanId = string.Empty;
     private bool _isRosterDropActive;
+    private string _scheduleEditorSourceDate = string.Empty;
+    private bool _isScheduleEditorDirty;
+    private bool _settingsDiagnosticsExported;
+    private int _configEventSuspendDepth;
+    private bool _backendSyncStatusSubscribed;
+    private readonly string _pageInstanceId = Guid.NewGuid().ToString("N");
 
     public DutyMainSettingsPage()
     {
         InitializeComponent();
-        _hostModule = new DutyMainSettingsHostModule(Service);
-        _backendModule = new DutyMainSettingsBackendModule(Service);
-        _saveCoordinator = new DutyMainSettingsSaveCoordinator(Service, _hostModule, _backendModule);
+        _hostModule = new DutyMainSettingsHostModule();
+        _backendModule = new DutyMainSettingsBackendModule();
+        _saveCoordinator = new DutyMainSettingsSaveCoordinator(SettingsRepository, BackendSettingsSyncService, _hostModule, _backendModule, SettingsTrace);
         _rosterModule = new DutyMainSettingsRosterModule(Service);
         _scheduleModule = new DutyMainSettingsScheduleModule(Service);
         _configApplyDebounceTimer = new DispatcherTimer
@@ -81,39 +95,205 @@ public partial class DutyMainSettingsPage : SettingsPageBase
         _reasoningStreamFlushTimer.Tick += OnReasoningStreamFlushTick;
         Loaded += OnPageLoaded;
         Unloaded += OnPageUnloaded;
-        InitializeAutoRunTimeOptions();
-        InitializeAutoRunModeOptions();
-        InitializeComponentRefreshTimeOptions();
-        InitializeDutyReminderTimeOptions();
-        InitializeScheduleDayOptions();
-        UpdateExecutionModeVisibility();
-        SetDataView(showScheduleView: true);
-        SetSettingsControlsEnabled(false);
+        _backendSyncStatus = BackendSettingsSyncService.GetStatusSnapshot();
+        ExecuteWithoutConfigEvents(() =>
+        {
+            InitializeAutoRunTimeOptions();
+            InitializeAutoRunModeOptions();
+            InitializeComponentRefreshTimeOptions();
+            InitializeDutyReminderTimeOptions();
+            InitializeScheduleDayOptions();
+            InitializeScheduleRecordModeOptions();
+            UpdateExecutionModeVisibility();
+            SetDataView(showScheduleView: true);
+            SetSettingsControlsEnabled(false);
+            ClearPendingConfigApply("constructor_setup");
+        });
         UpdateConfigTracking("正在加载设置");
-        SetStatus("正在加载统一设置...", Brushes.Gray);
+        SetStatus("正在加载本地设置...", Brushes.Gray);
+        TraceSettings("page_ctor");
+        TryLoadInitialSettings();
         UpdateRunTracking("待命");
         _ = LoadDataAsync("页面初始化");
     }
 
-    private async void OnPageLoaded(object? sender, RoutedEventArgs e)
+    private void OnPageLoaded(object? sender, RoutedEventArgs e)
     {
+        EnsureBackendSyncSubscription();
         DutyDiagnosticsLogger.Info("SettingsPage", "Settings page loaded; beginning unified settings load.");
-        await LoadSettingsAsync();
+        TraceSettings("page_loaded");
+        _ = WarnIfInitialSettingsStillUnavailableAsync();
+        if (_backendConfigState != DutyBackendConfigLoadState.Loaded)
+        {
+            QueueSettingsLoad("page_loaded", forceReload: _backendConfigState == DutyBackendConfigLoadState.LoadFailed);
+        }
     }
 
-    private async void OnPageUnloaded(object? sender, RoutedEventArgs e)
+    private void QueueSettingsLoad(string reason, bool forceReload = false)
     {
+        TraceSettings("queue_settings_load", new
+        {
+            reason,
+            force_reload = forceReload
+        });
+        Dispatcher.UIThread.Post(
+            () => { _ = EnsureSettingsLoadedAsync(reason, forceReload); },
+            DispatcherPriority.Background);
+    }
+
+    private async Task EnsureSettingsLoadedAsync(string reason, bool forceReload = false)
+    {
+        for (var attempt = 1; attempt <= 3; attempt++)
+        {
+            if (_backendConfigState == DutyBackendConfigLoadState.Loaded && !forceReload)
+            {
+                return;
+            }
+
+            if (_isLoadingBackendConfig)
+            {
+                DutyDiagnosticsLogger.Info("SettingsPage", "Deferred local settings load because another load is active.",
+                    new
+                    {
+                        reason,
+                        attempt,
+                        state = _backendConfigState.ToString()
+                    });
+                await Task.Delay(150);
+                continue;
+            }
+
+            var shouldForceReload = forceReload || attempt > 1;
+            var loaded = await LoadSettingsAsync(shouldForceReload);
+            if (loaded || _backendConfigState == DutyBackendConfigLoadState.Loaded)
+            {
+                return;
+            }
+
+            if (attempt < 3)
+            {
+                DutyDiagnosticsLogger.Warn("SettingsPage", "Retrying local settings load after unsuccessful attempt.",
+                    new
+                    {
+                        reason,
+                        attempt,
+                        state = _backendConfigState.ToString()
+                    });
+                await Task.Delay(150);
+            }
+        }
+    }
+
+    private void TryLoadInitialSettings()
+    {
+        if (_backendConfigState == DutyBackendConfigLoadState.Loaded || _isLoadingBackendConfig)
+        {
+            TraceSettings("initial_settings_load_skipped", new
+            {
+                state = _backendConfigState.ToString(),
+                is_loading_backend = _isLoadingBackendConfig
+            });
+            return;
+        }
+
+        var traceId = DutyDiagnosticsLogger.CreateTraceId("settings-load");
+        var stopwatch = Stopwatch.StartNew();
+        _isLoadingConfig = true;
+        _isLoadingBackendConfig = true;
+        DutyDiagnosticsLogger.Info("SettingsPage", "Starting initial local settings load.",
+            new { traceId });
+        TraceSettings("initial_settings_load_started", new { trace_id = traceId });
+
+        try
+        {
+            var settingsDocument = SettingsRepository.LoadSettingsDocument();
+            ApplyLoadedSettingsDocument(settingsDocument, showStatusMessage: true);
+            stopwatch.Stop();
+            DutyDiagnosticsLogger.Info("SettingsPage", "Initial local settings load succeeded.",
+                new
+                {
+                    traceId,
+                    durationMs = stopwatch.ElapsedMilliseconds,
+                    hostVersion = settingsDocument.HostVersion,
+                    backendVersion = settingsDocument.BackendVersion
+                });
+            TraceSettings("initial_settings_load_completed", new
+            {
+                trace_id = traceId,
+                duration_ms = stopwatch.ElapsedMilliseconds,
+                host_version = settingsDocument.HostVersion,
+                backend_version = settingsDocument.BackendVersion,
+                selected_plan_id = settingsDocument.Backend?.SelectedPlanId
+            });
+        }
+        catch (Exception ex)
+        {
+            _backendConfigState = DutyBackendConfigLoadState.LoadFailed;
+            _backendConfigErrorMessage = ex.Message;
+            _lastLoadedSettingsDocument = null;
+            _lastAppliedBackendConfig = null;
+            UpdateConfigTracking("本地设置不可用");
+            SetStatus($"本地设置不可用：{ex.Message}", Brushes.Orange);
+            stopwatch.Stop();
+            DutyDiagnosticsLogger.Error("SettingsPage", "Initial local settings load failed.", ex,
+                new
+                {
+                    traceId,
+                    durationMs = stopwatch.ElapsedMilliseconds
+                });
+            TraceSettings("initial_settings_load_failed", new
+            {
+                trace_id = traceId,
+                duration_ms = stopwatch.ElapsedMilliseconds,
+                error = ex.Message
+            }, "ERROR");
+            ExportSettingsDiagnosticsOnce("initial_settings_load_failed");
+        }
+        finally
+        {
+            _isLoadingBackendConfig = false;
+            _isLoadingConfig = false;
+            SetSettingsControlsEnabled(_backendConfigState == DutyBackendConfigLoadState.Loaded);
+        }
+    }
+
+    private void OnPageUnloaded(object? sender, RoutedEventArgs e)
+    {
+        ReleaseBackendSyncSubscription();
         Interlocked.Increment(ref _configLoadRevision);
         _configApplyDebounceTimer.Stop();
         StopReasoningStreamFlush();
+        TraceSettings("page_unloaded");
         if (_isLoadingConfig)
         {
+            SettingsTrace.Invariant("page_unloaded_while_loading", "Settings page unloaded while local settings were still loading.", BuildSettingsTraceSnapshot());
             return;
         }
 
         CaptureCurrentPlanDraft();
-        _hasPendingConfigApply = true;
-        await FlushPendingConfigApplyAsync();
+        QueueConfigApply(immediate: true);
+    }
+
+    private void EnsureBackendSyncSubscription()
+    {
+        if (_backendSyncStatusSubscribed)
+        {
+            return;
+        }
+
+        BackendSettingsSyncService.StatusChanged += OnBackendSyncStatusChanged;
+        _backendSyncStatusSubscribed = true;
+    }
+
+    private void ReleaseBackendSyncSubscription()
+    {
+        if (!_backendSyncStatusSubscribed)
+        {
+            return;
+        }
+
+        BackendSettingsSyncService.StatusChanged -= OnBackendSyncStatusChanged;
+        _backendSyncStatusSubscribed = false;
     }
 
     private void InitializeAutoRunTimeOptions()
@@ -193,6 +373,34 @@ public partial class DutyMainSettingsPage : SettingsPageBase
             "周日"
         };
         ScheduleDayEditorComboBox.SelectedItem = "周一";
+    }
+
+    private void InitializeScheduleRecordModeOptions()
+    {
+        if (CreateScheduleEditBtn?.Parent is not Panel parent)
+        {
+            return;
+        }
+
+        if (_scheduleRecordModeComboBox != null)
+        {
+            return;
+        }
+
+        _scheduleRecordModeComboBox = new ComboBox
+        {
+            Width = 190,
+            HorizontalAlignment = Avalonia.Layout.HorizontalAlignment.Stretch
+        };
+        _scheduleRecordModeComboBox.ItemsSource = new List<ComboBoxItem>
+        {
+            new() { Content = "变更并进行记录", Tag = "record" },
+            new() { Content = "变更但不进行记录", Tag = "skip" }
+        };
+        _scheduleRecordModeComboBox.SelectedIndex = 0;
+
+        var insertIndex = Math.Max(0, parent.Children.IndexOf(CreateScheduleEditBtn));
+        parent.Children.Insert(insertIndex, _scheduleRecordModeComboBox);
     }
 
     private async void OnRunAgentClick(object? sender, RoutedEventArgs e)
@@ -324,8 +532,27 @@ public partial class DutyMainSettingsPage : SettingsPageBase
 
     private void OnConfigInputLostFocus(object? sender, RoutedEventArgs e)
     {
+        if (ShouldIgnoreConfigEvent())
+        {
+            return;
+        }
+
         CaptureCurrentPlanDraft();
         RefreshPlanSelectorsIfNeeded(sender);
+        TraceSettings("control_changed", new { control = GetControlName(sender), reason = "lost_focus" });
+        QueueConfigApply();
+    }
+
+    private void OnConfigInputTextChanged(object? sender, TextChangedEventArgs e)
+    {
+        if (ShouldIgnoreConfigEvent())
+        {
+            return;
+        }
+
+        CaptureCurrentPlanDraft();
+        RefreshPlanSelectorsIfNeeded(sender);
+        TraceSettings("control_changed", new { control = GetControlName(sender), reason = "text_changed" });
         QueueConfigApply();
     }
 
@@ -336,14 +563,25 @@ public partial class DutyMainSettingsPage : SettingsPageBase
             return;
         }
 
+        if (ShouldIgnoreConfigEvent())
+        {
+            return;
+        }
+
         e.Handled = true;
         CaptureCurrentPlanDraft();
         RefreshPlanSelectorsIfNeeded(sender);
+        TraceSettings("control_changed", new { control = GetControlName(sender), reason = "enter_key" });
         QueueConfigApply(immediate: true);
     }
 
     private void OnConfigSelectionChanged(object? sender, SelectionChangedEventArgs e)
     {
+        if (ShouldIgnoreConfigEvent())
+        {
+            return;
+        }
+
         if (sender == AutoRunModeComboBox)
         {
             UpdateAutoRunSecondaryVisibility();
@@ -355,18 +593,25 @@ public partial class DutyMainSettingsPage : SettingsPageBase
         }
 
         CaptureCurrentPlanDraft();
+        TraceSettings("control_changed", new { control = GetControlName(sender), reason = "selection_changed" });
         QueueConfigApply();
     }
 
     private void OnCurrentPlanSelectionChanged(object? sender, SelectionChangedEventArgs e)
     {
-        if (_isLoadingConfig)
+        if (ShouldIgnoreConfigEvent())
         {
             return;
         }
 
         CaptureCurrentPlanDraft();
+        var previousPlanId = _currentPlanId;
         _currentPlanId = GetSelectedPlanOptionId();
+        TraceSettings("plan_selection_changed", new
+        {
+            previous_plan_id = previousPlanId,
+            next_plan_id = _currentPlanId
+        });
         ApplyCurrentPlanToControls();
         RefreshPlanSelectors();
         QueueConfigApply();
@@ -431,31 +676,50 @@ public partial class DutyMainSettingsPage : SettingsPageBase
 
     private void OnConfigToggleChanged(object? sender, RoutedEventArgs e)
     {
+        if (ShouldIgnoreConfigEvent())
+        {
+            return;
+        }
+
         QueueConfigApply();
     }
 
     private void QueueConfigApply(bool immediate = false)
     {
-        if (_isLoadingConfig || _isApplyingConfig)
+        if (_isLoadingConfig)
+        {
+            SettingsTrace.Invariant("save_requested_while_loading", "Ignored settings save request because local settings are still loading.", BuildSettingsTraceSnapshot(new { immediate }));
+            return;
+        }
+
+        Interlocked.Increment(ref _configEditRevision);
+        _hasPendingConfigApply = true;
+        _configApplyDebounceTimer.Stop();
+        TraceSettings("queue_save_requested", new
+        {
+            immediate,
+            edit_revision = _configEditRevision
+        });
+        if (_isApplyingConfig)
         {
             return;
         }
 
-        _hasPendingConfigApply = true;
-
-        _configApplyDebounceTimer.Stop();
         if (immediate)
         {
+            TraceSettings("save_immediate_triggered", new { edit_revision = _configEditRevision });
             _ = FlushPendingConfigApplyAsync();
             return;
         }
 
+        TraceSettings("debounce_started", new { edit_revision = _configEditRevision });
         _configApplyDebounceTimer.Start();
     }
 
     private void OnConfigApplyDebounceTick(object? sender, EventArgs e)
     {
         _configApplyDebounceTimer.Stop();
+        TraceSettings("debounce_fired", new { edit_revision = _configEditRevision });
         _ = FlushPendingConfigApplyAsync();
     }
 
@@ -567,10 +831,17 @@ public partial class DutyMainSettingsPage : SettingsPageBase
     {
         if (!_hasPendingConfigApply || _isApplyingConfig || _isLoadingConfig)
         {
+            TraceSettings("save_flush_skipped", new
+            {
+                has_pending = _hasPendingConfigApply,
+                is_applying = _isApplyingConfig,
+                is_loading = _isLoadingConfig
+            });
             return;
         }
 
         _hasPendingConfigApply = false;
+        TraceSettings("save_started", new { edit_revision = _configEditRevision });
         await ApplyConfigFromControlsAsync();
     }
 
@@ -578,30 +849,41 @@ public partial class DutyMainSettingsPage : SettingsPageBase
     {
         if (_isLoadingConfig || _isApplyingConfig)
         {
+            TraceSettings("save_apply_skipped", new
+            {
+                is_loading = _isLoadingConfig,
+                is_applying = _isApplyingConfig
+            });
             return false;
         }
 
         try
         {
             _isApplyingConfig = true;
+            var applyRevision = Volatile.Read(ref _configEditRevision);
+            var pendingValues = BuildSettingsPageValuesFromControls();
+            TraceSettings("save_apply_invoked", new
+            {
+                apply_revision = applyRevision,
+                selected_plan_id = pendingValues.Backend.SelectedPlanId,
+                plan_count = pendingValues.Backend.PlanPresets?.Count ?? 0
+            });
             var outcome = await _saveCoordinator.ApplyAsync(new DutySettingsSaveContext
             {
-                Current = BuildSettingsPageValuesFromControls(),
+                Current = pendingValues,
                 LastAppliedHost = _lastAppliedHostSettings,
-                LastAppliedBackend = _lastAppliedBackendConfig,
-                LastLoadedDocument = _lastLoadedSettingsDocument,
-                BackendLoadState = _backendConfigState,
-                BackendErrorMessage = _backendConfigErrorMessage ?? string.Empty
+                LastAppliedBackend = _lastAppliedBackendConfig
             });
 
             if (outcome.NoChanges)
             {
+                TraceSettings("save_apply_completed", new
+                {
+                    apply_revision = applyRevision,
+                    success = true,
+                    no_changes = true
+                });
                 return true;
-            }
-
-            if (outcome.AppliedHost != null)
-            {
-                _lastAppliedHostSettings = outcome.AppliedHost;
             }
 
             if (outcome.AppliedDocument != null)
@@ -614,37 +896,65 @@ public partial class DutyMainSettingsPage : SettingsPageBase
                 _lastAppliedBackendConfig = _backendModule.CloneConfig(outcome.AppliedBackend);
                 _backendConfigState = DutyBackendConfigLoadState.Loaded;
                 _backendConfigErrorMessage = null;
-                ApplyBackendConfig(outcome.AppliedBackend);
             }
 
             if (outcome.AppliedHost != null)
             {
-                ApplyHostFormModel(outcome.AppliedHost);
+                _lastAppliedHostSettings = outcome.AppliedHost;
             }
+
+            var hasNewerLocalEdits = Volatile.Read(ref _configEditRevision) != applyRevision;
 
             if (!outcome.Success)
             {
+                TraceSettings("save_apply_completed", new
+                {
+                    apply_revision = applyRevision,
+                    success = false,
+                    no_changes = false,
+                    has_newer_local_edits = hasNewerLocalEdits,
+                    message = outcome.Message
+                }, "ERROR");
                 if (outcome.RestartRequired)
                 {
                     RequestRestart();
                 }
 
-                UpdateConfigTracking("应用失败");
-                SetStatus(outcome.Message, GetStatusBrush(outcome.MessageLevel));
+                UpdateConfigTracking(hasNewerLocalEdits ? "本地草稿待同步" : "应用失败");
+                SetStatus(
+                    hasNewerLocalEdits
+                        ? "较早的设置已返回，最新更改仍在等待同步。"
+                        : outcome.Message,
+                    hasNewerLocalEdits ? Brushes.Orange : GetStatusBrush(outcome.MessageLevel));
                 return false;
             }
 
             UpdateConfigTracking(
-                outcome.RestartRequired
-                    ? "自动保存（需重启）"
-                    : "自动保存");
+                hasNewerLocalEdits
+                    ? "本地已保存，等待提交最新更改"
+                    : outcome.RestartRequired
+                    ? "本地已保存（需重启）"
+                    : "本地已保存");
 
             if (outcome.RestartRequired)
             {
                 RequestRestart();
             }
 
-            SetStatus(outcome.Message, GetStatusBrush(outcome.MessageLevel));
+            TraceSettings("save_apply_completed", new
+            {
+                apply_revision = applyRevision,
+                success = true,
+                no_changes = false,
+                has_newer_local_edits = hasNewerLocalEdits,
+                restart_required = outcome.RestartRequired,
+                selected_plan_id = outcome.AppliedDocument?.Backend?.SelectedPlanId
+            });
+            SetStatus(
+                hasNewerLocalEdits
+                    ? "较早的本地保存已完成，正在继续提交最新更改..."
+                    : outcome.Message,
+                hasNewerLocalEdits ? Brushes.Orange : GetStatusBrush(outcome.MessageLevel));
             return true;
         }
         finally
@@ -874,6 +1184,7 @@ public partial class DutyMainSettingsPage : SettingsPageBase
 
     private async void OnRefreshDataClick(object? sender, RoutedEventArgs e)
     {
+        TraceSettings("manual_refresh_requested");
         try
         {
             await Task.WhenAll(
@@ -894,50 +1205,62 @@ public partial class DutyMainSettingsPage : SettingsPageBase
     {
         if (_isLoadingBackendConfig)
         {
+            DutyDiagnosticsLogger.Info("SettingsPage", "Skipped local settings load because another load is active.",
+                new
+                {
+                    forceReload,
+                    state = _backendConfigState.ToString()
+                });
+            TraceSettings("local_settings_load_skipped_busy", new
+            {
+                force_reload = forceReload,
+                state = _backendConfigState.ToString()
+            });
             return _backendConfigState == DutyBackendConfigLoadState.Loaded;
         }
 
         if (_backendConfigState == DutyBackendConfigLoadState.Loaded && !forceReload)
         {
+            DutyDiagnosticsLogger.Info("SettingsPage", "Skipped local settings load because cached settings are already loaded.");
+            TraceSettings("local_settings_load_skipped_cached");
             return true;
         }
 
         var revision = Interlocked.Increment(ref _configLoadRevision);
         var traceId = DutyDiagnosticsLogger.CreateTraceId("settings-load");
         var stopwatch = Stopwatch.StartNew();
+        _isLoadingConfig = true;
         _isLoadingBackendConfig = true;
-        SetSettingsControlsEnabled(false);
-        SetStatus(forceReload ? "正在刷新统一设置..." : "正在连接统一设置...", Brushes.Gray);
-        DutyDiagnosticsLogger.Info("SettingsPage", "Starting async unified settings load.",
+        DutyDiagnosticsLogger.Info("SettingsPage", "Starting local settings load.",
             new
             {
                 traceId,
                 forceReload,
                 revision
             });
+        TraceSettings("local_settings_load_started", new
+        {
+            trace_id = traceId,
+            force_reload = forceReload,
+            revision
+        });
+        SetSettingsControlsEnabled(false);
+        SetStatus(forceReload ? "正在刷新本地设置..." : "正在加载本地设置...", Brushes.Gray);
 
         try
         {
-            var settingsDocument = await Service.LoadSettingsAsync("host_settings", traceId);
+            var settingsDocument = await Task.Run(() => SettingsRepository.LoadSettingsDocument());
             if (revision != _configLoadRevision)
             {
-                DutyDiagnosticsLogger.Warn("SettingsPage", "Discarded stale unified settings load result.",
+                DutyDiagnosticsLogger.Warn("SettingsPage", "Discarded stale local settings load result.",
                     new { traceId, revision, latestRevision = _configLoadRevision });
                 return _backendConfigState == DutyBackendConfigLoadState.Loaded;
             }
 
-            ApplyHostFormModel(CreateHostValues(settingsDocument.Host));
-            var backendConfig = CreateBackendConfig(settingsDocument);
-            ApplyBackendConfig(backendConfig);
-            _lastLoadedSettingsDocument = settingsDocument;
-            _lastAppliedHostSettings = CreateHostValues(settingsDocument.Host);
-            _lastAppliedBackendConfig = _backendModule.CloneConfig(backendConfig);
-            _backendConfigState = DutyBackendConfigLoadState.Loaded;
-            _backendConfigErrorMessage = null;
-            UpdateConfigTracking("已加载");
-            SetStatus("统一设置已加载。", Brushes.Gray);
+            ApplyLoadedSettingsDocument(settingsDocument, showStatusMessage: true);
             stopwatch.Stop();
-            DutyDiagnosticsLogger.Info("SettingsPage", "Unified settings load succeeded.",
+            var backendConfig = _lastAppliedBackendConfig ?? CreateBackendConfig(settingsDocument);
+            DutyDiagnosticsLogger.Info("SettingsPage", "Local settings load succeeded.",
                 new
                 {
                     traceId,
@@ -952,13 +1275,22 @@ public partial class DutyMainSettingsPage : SettingsPageBase
                     multiAgentExecutionMode = backendConfig.MultiAgentExecutionMode,
                     apiKey = DutyDiagnosticsLogger.MaskSecret(backendConfig.ApiKey)
                 });
+            TraceSettings("local_settings_load_completed", new
+            {
+                trace_id = traceId,
+                revision,
+                duration_ms = stopwatch.ElapsedMilliseconds,
+                host_version = settingsDocument.HostVersion,
+                backend_version = settingsDocument.BackendVersion,
+                selected_plan_id = settingsDocument.Backend?.SelectedPlanId
+            });
             return true;
         }
         catch (Exception ex)
         {
             if (revision != _configLoadRevision)
             {
-                DutyDiagnosticsLogger.Warn("SettingsPage", "Discarded stale unified settings load failure.",
+                DutyDiagnosticsLogger.Warn("SettingsPage", "Discarded stale local settings load failure.",
                     new { traceId, revision, latestRevision = _configLoadRevision });
                 return _backendConfigState == DutyBackendConfigLoadState.Loaded;
             }
@@ -967,16 +1299,24 @@ public partial class DutyMainSettingsPage : SettingsPageBase
             _backendConfigErrorMessage = ex.Message;
             _lastLoadedSettingsDocument = null;
             _lastAppliedBackendConfig = null;
-            UpdateConfigTracking("设置不可用");
-            SetStatus($"统一设置不可用：{ex.Message}", Brushes.Orange);
+            UpdateConfigTracking("本地设置不可用");
+            SetStatus($"本地设置不可用：{ex.Message}", Brushes.Orange);
             stopwatch.Stop();
-            DutyDiagnosticsLogger.Error("SettingsPage", "Unified settings load failed.", ex,
+            DutyDiagnosticsLogger.Error("SettingsPage", "Local settings load failed.", ex,
                 new
                 {
                     traceId,
                     revision,
                     durationMs = stopwatch.ElapsedMilliseconds
                 });
+            TraceSettings("local_settings_load_failed", new
+            {
+                trace_id = traceId,
+                revision,
+                duration_ms = stopwatch.ElapsedMilliseconds,
+                error = ex.Message
+            }, "ERROR");
+            ExportSettingsDiagnosticsOnce("local_settings_load_failed");
             return false;
         }
         finally
@@ -984,51 +1324,98 @@ public partial class DutyMainSettingsPage : SettingsPageBase
             if (revision == _configLoadRevision)
             {
                 _isLoadingBackendConfig = false;
+                _isLoadingConfig = false;
                 SetSettingsControlsEnabled(_backendConfigState == DutyBackendConfigLoadState.Loaded);
             }
         }
     }
 
+    private void ApplyLoadedSettingsDocument(DutySettingsDocument settingsDocument, bool showStatusMessage)
+    {
+        var hostValues = CreateHostValues(settingsDocument.Host);
+        var backendConfig = CreateBackendConfig(settingsDocument);
+        ExecuteWithoutConfigEvents(() =>
+        {
+            ApplyHostFormModel(hostValues);
+            ApplyBackendConfig(backendConfig);
+        });
+        ClearPendingConfigApply("settings_document_applied");
+        _lastLoadedSettingsDocument = settingsDocument;
+        _lastAppliedHostSettings = hostValues;
+        _lastAppliedBackendConfig = _backendModule.CloneConfig(backendConfig);
+        _backendConfigState = DutyBackendConfigLoadState.Loaded;
+        _backendConfigErrorMessage = null;
+        RefreshBackendSyncStatus(BackendSettingsSyncService.GetStatusSnapshot(), showStatusMessage: false);
+        TraceSettings("settings_document_applied", new
+        {
+            host_version = settingsDocument.HostVersion,
+            backend_version = settingsDocument.BackendVersion,
+            selected_plan_id = settingsDocument.Backend?.SelectedPlanId,
+            plan_count = settingsDocument.Backend?.PlanPresets?.Count ?? 0
+        });
+        if (_planPresetDrafts.Count == 0 || !_planPresetDrafts.Any(plan => string.Equals(plan.Id, _currentPlanId, StringComparison.Ordinal)))
+        {
+            SettingsTrace.Invariant("selected_plan_missing_after_apply", "Selected plan was not present after applying the loaded settings document.", BuildSettingsTraceSnapshot(new
+            {
+                selected_plan_id = _currentPlanId,
+                plan_ids = _planPresetDrafts.Select(plan => plan.Id).ToArray()
+            }));
+        }
+        UpdateConfigTracking("本地已加载");
+        if (showStatusMessage)
+        {
+            SetStatus("本地设置已加载。", Brushes.Gray);
+        }
+    }
+
     private void ApplyHostFormModel(DutyHostSettingsValues hostSettings)
     {
+        var wasLoadingConfig = _isLoadingConfig;
         _isLoadingConfig = true;
-        try
+        ExecuteWithoutConfigEvents(() =>
         {
-            SetAutoRunModeSelection(hostSettings.AutoRunMode);
-            SetAutoRunParameterSelection(hostSettings.AutoRunMode, hostSettings.AutoRunParameter);
-            SetAutoRunTimeSelection(hostSettings.AutoRunTime);
-            AutoRunTriggerNotificationSwitch.IsChecked = hostSettings.AutoRunTriggerNotificationEnabled;
-            DutyReminderEnabledSwitch.IsChecked = hostSettings.DutyReminderEnabled;
-            SetDutyReminderTimeSelection(hostSettings.DutyReminderTime);
-            EnableMcpSwitch.IsChecked = hostSettings.EnableMcp;
-            EnableWebDebugLayerSwitch.IsChecked = hostSettings.EnableWebViewDebugLayer;
-            SetComponentRefreshTimeSelection(hostSettings.ComponentRefreshTime);
-            NotificationDurationSlider.Value = hostSettings.NotificationDurationSeconds;
-            NotificationDurationLabel.Text = $"{hostSettings.NotificationDurationSeconds} 秒";
-        }
-        finally
-        {
-            _isLoadingConfig = false;
-        }
+            try
+            {
+                SetAutoRunModeSelection(hostSettings.AutoRunMode);
+                SetAutoRunParameterSelection(hostSettings.AutoRunMode, hostSettings.AutoRunParameter);
+                SetAutoRunTimeSelection(hostSettings.AutoRunTime);
+                AutoRunTriggerNotificationSwitch.IsChecked = hostSettings.AutoRunTriggerNotificationEnabled;
+                DutyReminderEnabledSwitch.IsChecked = hostSettings.DutyReminderEnabled;
+                SetDutyReminderTimeSelection(hostSettings.DutyReminderTime);
+                EnableMcpSwitch.IsChecked = hostSettings.EnableMcp;
+                EnableWebDebugLayerSwitch.IsChecked = hostSettings.EnableWebViewDebugLayer;
+                SetComponentRefreshTimeSelection(hostSettings.ComponentRefreshTime);
+                NotificationDurationSlider.Value = hostSettings.NotificationDurationSeconds;
+                NotificationDurationLabel.Text = $"{hostSettings.NotificationDurationSeconds} 秒";
+            }
+            finally
+            {
+                _isLoadingConfig = wasLoadingConfig;
+            }
+        });
     }
 
     private void ApplyBackendConfig(DutyBackendConfig backendConfig)
     {
+        var wasLoadingConfig = _isLoadingConfig;
         _isLoadingConfig = true;
-        try
+        ExecuteWithoutConfigEvents(() =>
         {
-            _planPresetDrafts = _backendModule.NormalizePlanPresets(backendConfig.PlanPresets, backendConfig);
-            _currentPlanId = _backendModule.NormalizeSelectedPlanId(backendConfig.SelectedPlanId, _planPresetDrafts, backendConfig);
-            RefreshPlanSelectors();
-            ApplyCurrentPlanToControls();
-            UpdateExecutionModeVisibility();
-            UpdatePlanModeHint();
-            DutyRuleBox.Text = backendConfig.DutyRule;
-        }
-        finally
-        {
-            _isLoadingConfig = false;
-        }
+            try
+            {
+                _planPresetDrafts = _backendModule.NormalizePlanPresets(backendConfig.PlanPresets, backendConfig);
+                _currentPlanId = _backendModule.NormalizeSelectedPlanId(backendConfig.SelectedPlanId, _planPresetDrafts, backendConfig);
+                RefreshPlanSelectors();
+                ApplyCurrentPlanToControls();
+                UpdateExecutionModeVisibility();
+                UpdatePlanModeHint();
+                DutyRuleBox.Text = backendConfig.DutyRule;
+            }
+            finally
+            {
+                _isLoadingConfig = wasLoadingConfig;
+            }
+        });
     }
 
     private void SetSettingsControlsEnabled(bool enabled)
@@ -1086,9 +1473,58 @@ public partial class DutyMainSettingsPage : SettingsPageBase
         };
     }
 
+    private void OnBackendSyncStatusChanged(object? sender, DutyBackendSyncStatusSnapshot snapshot)
+    {
+        Dispatcher.UIThread.Post(() => RefreshBackendSyncStatus(snapshot, showStatusMessage: true));
+    }
+
+    private void RefreshBackendSyncStatus(DutyBackendSyncStatusSnapshot snapshot, bool showStatusMessage)
+    {
+        var previousState = _backendSyncStatus.State;
+        _backendSyncStatus = snapshot;
+        UpdateConfigTracking(_lastLocalConfigState);
+        if (previousState != snapshot.State || showStatusMessage)
+        {
+            TraceSettings("backend_sync_status_changed", new
+            {
+                state = snapshot.State.ToString(),
+                settings_version = snapshot.SettingsVersion,
+                last_error = snapshot.LastError,
+                show_status_message = showStatusMessage
+            });
+        }
+
+        if (!showStatusMessage)
+        {
+            return;
+        }
+
+        switch (snapshot.State)
+        {
+            case DutyBackendSyncState.Syncing:
+                SetStatus("本地设置已保存，后端正在同步...", Brushes.Gray);
+                break;
+            case DutyBackendSyncState.Synced:
+                SetStatus("本地设置已保存，后端已同步。", Brushes.Green);
+                break;
+            case DutyBackendSyncState.Failed:
+                SetStatus(
+                    string.IsNullOrWhiteSpace(snapshot.LastError)
+                        ? "本地设置已保存，但后端同步失败，将自动重试。"
+                        : $"本地设置已保存，但后端同步失败：{snapshot.LastError}",
+                    Brushes.Orange);
+                break;
+        }
+    }
+
     private DutyBackendConfig CreateBackendConfig(DutySettingsDocument document)
     {
-        var backend = document.Backend ?? new DutyEditableBackendSettingsDocument();
+        return CreateBackendConfig(document.Backend, document.BackendVersion);
+    }
+
+    private DutyBackendConfig CreateBackendConfig(DutyEditableBackendSettingsDocument? backend, int backendVersion)
+    {
+        backend ??= new DutyEditableBackendSettingsDocument();
         var planPresets = _backendModule.NormalizePlanPresets(backend.PlanPresets);
         var selectedPlanId = _backendModule.NormalizeSelectedPlanId(backend.SelectedPlanId, planPresets);
         var selectedPlan = _backendModule.GetSelectedPlan(planPresets, selectedPlanId) ?? planPresets.First();
@@ -1096,7 +1532,7 @@ public partial class DutyMainSettingsPage : SettingsPageBase
 
         return new DutyBackendConfig
         {
-            Version = document.BackendVersion,
+            Version = backendVersion,
             ApiKey = selectedPlan.ApiKey,
             BaseUrl = selectedPlan.BaseUrl,
             Model = selectedPlan.Model,
@@ -1200,7 +1636,9 @@ public partial class DutyMainSettingsPage : SettingsPageBase
     private void ApplySchedulePreview(DutySchedulePreview preview)
     {
         var previousSelectedDate = string.IsNullOrWhiteSpace(_pendingScheduleSelectionDate)
-            ? (ScheduleListBox.SelectedItem as DutyScheduleRow)?.Date
+            ? string.IsNullOrWhiteSpace(_scheduleEditorSourceDate)
+                ? (ScheduleListBox.SelectedItem as DutyScheduleRow)?.Date
+                : _scheduleEditorSourceDate
             : _pendingScheduleSelectionDate;
 
         ScheduleListBox.ItemsSource = preview.Rows;
@@ -1218,6 +1656,35 @@ public partial class DutyMainSettingsPage : SettingsPageBase
 
     private void OnScheduleSelectionChanged(object? sender, SelectionChangedEventArgs e)
     {
+        if (_isPopulatingEditor)
+        {
+            return;
+        }
+
+        if (_isScheduleEditorDirty && !string.IsNullOrWhiteSpace(_scheduleEditorSourceDate))
+        {
+            var selectedDate = (ScheduleListBox.SelectedItem as DutyScheduleRow)?.Date ?? string.Empty;
+            if (!string.Equals(selectedDate, _scheduleEditorSourceDate, StringComparison.Ordinal))
+            {
+                try
+                {
+                    _isPopulatingEditor = true;
+                    if (ScheduleListBox.ItemsSource is IEnumerable<DutyScheduleRow> rows)
+                    {
+                        ScheduleListBox.SelectedItem = rows.LastOrDefault(x =>
+                            string.Equals(x.Date, _scheduleEditorSourceDate, StringComparison.Ordinal));
+                    }
+                }
+                finally
+                {
+                    _isPopulatingEditor = false;
+                }
+
+                SetStatus("当前排班有未保存修改，请先保存或点击【放弃更改】。", Brushes.Orange);
+                return;
+            }
+        }
+
         PopulateScheduleEditorFromSelection();
     }
 
@@ -1228,7 +1695,10 @@ public partial class DutyMainSettingsPage : SettingsPageBase
 
     private void OnSaveScheduleEditClick(object? sender, RoutedEventArgs e)
     {
-        if (ScheduleListBox.SelectedItem is not DutyScheduleRow selected)
+        var sourceDate = !string.IsNullOrWhiteSpace(_scheduleEditorSourceDate)
+            ? _scheduleEditorSourceDate
+            : (ScheduleListBox.SelectedItem as DutyScheduleRow)?.Date;
+        if (string.IsNullOrWhiteSpace(sourceDate))
         {
             SetStatus("请先选择要编辑的排班记录。", Brushes.Orange);
             return;
@@ -1255,13 +1725,15 @@ public partial class DutyMainSettingsPage : SettingsPageBase
             : selectedDay.Trim();
 
         var note = (ScheduleNoteEditorBox.Text ?? string.Empty).Trim();
+        var recordDebtCreditChanges = ShouldRecordScheduleEditorChanges();
         if (!Service.TrySaveScheduleEntry(
-                sourceDate: selected.Date,
+                sourceDate: sourceDate,
                 targetDate: targetDate,
                 day: targetDay,
                 areaAssignments: areaAssignments,
                 note: note,
                 createIfMissing: false,
+                recordDebtCreditChanges: recordDebtCreditChanges,
                 out var message))
         {
             SetStatus($"保存失败：{message}", Brushes.Red);
@@ -1269,8 +1741,10 @@ public partial class DutyMainSettingsPage : SettingsPageBase
         }
 
         _pendingScheduleSelectionDate = targetDate;
+        _scheduleEditorSourceDate = targetDate;
+        _isScheduleEditorDirty = false;
         _ = LoadDataAsync("手动编辑排班");
-        SetStatus("排班编辑已保存。", Brushes.Green);
+        SetStatus(recordDebtCreditChanges ? "排班编辑已保存，并已更新记录。" : "排班编辑已保存，未更新记录。", Brushes.Green);
     }
 
     private void OnCreateScheduleEditClick(object? sender, RoutedEventArgs e)
@@ -1295,6 +1769,7 @@ public partial class DutyMainSettingsPage : SettingsPageBase
             ? ToChineseWeekday(targetDateValue.DayOfWeek)
             : selectedDay.Trim();
         var note = (ScheduleNoteEditorBox.Text ?? string.Empty).Trim();
+        var recordDebtCreditChanges = ShouldRecordScheduleEditorChanges();
 
         if (!Service.TrySaveScheduleEntry(
                 sourceDate: null,
@@ -1303,6 +1778,7 @@ public partial class DutyMainSettingsPage : SettingsPageBase
                 areaAssignments: areaAssignments,
                 note: note,
                 createIfMissing: true,
+                recordDebtCreditChanges: recordDebtCreditChanges,
                 out var message))
         {
             SetStatus($"新建失败：{message}", Brushes.Red);
@@ -1310,8 +1786,16 @@ public partial class DutyMainSettingsPage : SettingsPageBase
         }
 
         _pendingScheduleSelectionDate = targetDate;
+        _scheduleEditorSourceDate = targetDate;
+        _isScheduleEditorDirty = false;
         _ = LoadDataAsync("手动新建排班");
-        SetStatus("已新建值日安排。", Brushes.Green);
+        SetStatus(recordDebtCreditChanges ? "已新建值日安排，并已更新记录。" : "已新建值日安排，未更新记录。", Brushes.Green);
+    }
+
+    private bool ShouldRecordScheduleEditorChanges()
+    {
+        return _scheduleRecordModeComboBox?.SelectedItem is ComboBoxItem { Tag: string tag }
+               && string.Equals(tag, "record", StringComparison.OrdinalIgnoreCase);
     }
 
     private void PopulateScheduleEditorFromSelection()
@@ -1321,6 +1805,8 @@ public partial class DutyMainSettingsPage : SettingsPageBase
         {
             if (ScheduleListBox.SelectedItem is not DutyScheduleRow selected)
             {
+                _scheduleEditorSourceDate = string.Empty;
+                _isScheduleEditorDirty = false;
                 SelectedScheduleMetaText.Text = "请先在上方列表选择一条排班记录。";
                 ScheduleDateEditorBox.Text = DateTime.Today.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
                 ScheduleDayEditorComboBox.SelectedItem = ToChineseWeekday(DateTime.Today.DayOfWeek);
@@ -1333,6 +1819,8 @@ public partial class DutyMainSettingsPage : SettingsPageBase
             var editorData = _scheduleModule.GetEditorData(selected.Date);
             if (!editorData.Exists)
             {
+                _scheduleEditorSourceDate = string.Empty;
+                _isScheduleEditorDirty = false;
                 SelectedScheduleMetaText.Text = "当前记录不存在，可能已被刷新。";
                 ScheduleDateEditorBox.Text = string.Empty;
                 ScheduleDayEditorComboBox.SelectedItem = null;
@@ -1346,6 +1834,8 @@ public partial class DutyMainSettingsPage : SettingsPageBase
             ScheduleDayEditorComboBox.SelectedItem = ResolveScheduleDaySelection(editorData.Day, editorData.Date);
             ScheduleAssignmentsEditorBox.Text = FormatAreaAssignmentsForEditor(editorData.AreaAssignments);
             ScheduleNoteEditorBox.Text = editorData.Note;
+            _scheduleEditorSourceDate = selected.Date;
+            _isScheduleEditorDirty = false;
             SelectedScheduleMetaText.Text = $"当前编辑：{selected.Date} {selected.Day}";
             SaveScheduleEditBtn.IsEnabled = true;
         }
@@ -1369,7 +1859,7 @@ public partial class DutyMainSettingsPage : SettingsPageBase
     private void HandleScheduleEditorChanged()
     {
         if (_isPopulatingEditor) return;
-        ScheduleListBox.IsEnabled = false;
+        _isScheduleEditorDirty = true;
         SelectedScheduleMetaText.Text = "（您有未保存的修改。若想切换日期，请先保存或点击【重新载入】）";
     }
 
@@ -1416,7 +1906,7 @@ public partial class DutyMainSettingsPage : SettingsPageBase
 
     private void OnNotificationDurationChanged(object? sender, Avalonia.Controls.Primitives.RangeBaseValueChangedEventArgs e)
     {
-        if (_isLoadingConfig) return;
+        if (ShouldIgnoreConfigEvent()) return;
         var val = (int)e.NewValue;
         NotificationDurationLabel.Text = $"{val} \u79d2";
         QueueConfigApply();
@@ -1568,7 +2058,7 @@ public partial class DutyMainSettingsPage : SettingsPageBase
 
     private string GetSelectedPlanId()
     {
-        return GetSelectedPlanOptionId();
+        return _backendModule.NormalizeSelectedPlanId(_currentPlanId, _planPresetDrafts, _lastAppliedBackendConfig);
     }
 
     private void SetSelectedPlanId(string selectedPlanId)
@@ -1615,20 +2105,23 @@ public partial class DutyMainSettingsPage : SettingsPageBase
 
         var previousLoadingState = _isLoadingConfig;
         _isLoadingConfig = true;
-        try
+        ExecuteWithoutConfigEvents(() =>
         {
-            var options = _planPresetDrafts
-                .Select(plan => new PlanSelectOption(plan.Id, plan.Name))
-                .ToList();
+            try
+            {
+                var options = _planPresetDrafts
+                    .Select(plan => new PlanSelectOption(plan.Id, plan.Name))
+                    .ToList();
 
-            CurrentPlanComboBox.ItemsSource = options;
-            SetSelectedPlanOptionId(CurrentPlanComboBox, _currentPlanId);
-            UpdatePlanActionButtons();
-        }
-        finally
-        {
-            _isLoadingConfig = previousLoadingState;
-        }
+                CurrentPlanComboBox.ItemsSource = options;
+                SetSelectedPlanOptionId(CurrentPlanComboBox, _currentPlanId);
+                UpdatePlanActionButtons();
+            }
+            finally
+            {
+                _isLoadingConfig = previousLoadingState;
+            }
+        });
     }
 
     private void RefreshPlanSelectorsIfNeeded(object? sender)
@@ -1685,22 +2178,25 @@ public partial class DutyMainSettingsPage : SettingsPageBase
 
         var previousLoadingState = _isLoadingConfig;
         _isLoadingConfig = true;
-        try
+        ExecuteWithoutConfigEvents(() =>
         {
-            _currentPlanId = plan.Id;
-            SetSelectedPlanOptionId(CurrentPlanComboBox, plan.Id);
-            PlanNameBox.Text = plan.Name;
-            SetPlanModeSelection(plan.ModeId);
-            ApiKeyBox.Text = string.IsNullOrWhiteSpace(plan.ApiKey) ? string.Empty : "********";
-            ModelBox.Text = plan.Model;
-            BaseUrlBox.Text = plan.BaseUrl;
-            SetModelProfileSelection(plan.ModelProfile);
-            SetMultiAgentExecutionModeSelection(plan.MultiAgentExecutionMode);
-        }
-        finally
-        {
-            _isLoadingConfig = previousLoadingState;
-        }
+            try
+            {
+                _currentPlanId = plan.Id;
+                SetSelectedPlanOptionId(CurrentPlanComboBox, plan.Id);
+                PlanNameBox.Text = plan.Name;
+                SetPlanModeSelection(plan.ModeId);
+                ApiKeyBox.Text = string.IsNullOrWhiteSpace(plan.ApiKey) ? string.Empty : "********";
+                ModelBox.Text = plan.Model;
+                BaseUrlBox.Text = plan.BaseUrl;
+                SetModelProfileSelection(plan.ModelProfile);
+                SetMultiAgentExecutionModeSelection(plan.MultiAgentExecutionMode);
+            }
+            finally
+            {
+                _isLoadingConfig = previousLoadingState;
+            }
+        });
 
         UpdateExecutionModeVisibility();
         UpdatePlanModeHint();
@@ -1981,7 +2477,8 @@ public partial class DutyMainSettingsPage : SettingsPageBase
 
     private void UpdateConfigTracking(string state)
     {
-        _lastConfigState = string.IsNullOrWhiteSpace(state) ? "未应用" : state.Trim();
+        _lastLocalConfigState = string.IsNullOrWhiteSpace(state) ? "未应用" : state.Trim();
+        _lastConfigState = $"{_lastLocalConfigState}｜后端{DescribeBackendSyncState(_backendSyncStatus)}";
         _lastConfigAt = DateTime.Now;
         RefreshTrackingMeta();
     }
@@ -2014,6 +2511,19 @@ public partial class DutyMainSettingsPage : SettingsPageBase
         return $"{safeLabel}：{safeState}（{time}）";
     }
 
+    private static string DescribeBackendSyncState(DutyBackendSyncStatusSnapshot snapshot)
+    {
+        return snapshot.State switch
+        {
+            DutyBackendSyncState.Syncing => $"同步中(v{snapshot.SettingsVersion})",
+            DutyBackendSyncState.Synced => $"已同步(v{snapshot.SettingsVersion})",
+            DutyBackendSyncState.Failed => string.IsNullOrWhiteSpace(snapshot.LastError)
+                ? $"同步失败(v{snapshot.SettingsVersion})"
+                : $"同步失败(v{snapshot.SettingsVersion})",
+            _ => snapshot.SettingsVersion > 0 ? $"待同步(v{snapshot.SettingsVersion})" : "未同步"
+        };
+    }
+
     private static IBrush GetStatusBrush(DutySettingsSaveMessageLevel level)
     {
         return level switch
@@ -2022,6 +2532,148 @@ public partial class DutyMainSettingsPage : SettingsPageBase
             DutySettingsSaveMessageLevel.Error => Brushes.Red,
             _ => Brushes.Gray
         };
+    }
+
+    private async void OnExportSettingsDiagnosticsClick(object? sender, RoutedEventArgs e)
+    {
+        try
+        {
+            TraceSettings("diagnostics_export_requested");
+            var zipPath = await Task.Run(() => SettingsTrace.ExportDiagnosticsBundle(BuildSettingsTraceSnapshot()));
+            SetStatus($"诊断包已导出：{zipPath}", Brushes.Green);
+            TraceSettings("diagnostics_export_completed", new { zip_path = zipPath });
+        }
+        catch (Exception ex)
+        {
+            SetStatus($"导出诊断包失败：{ex.Message}", Brushes.Red);
+            TraceSettings("diagnostics_export_failed", new { error = ex.Message }, "ERROR");
+        }
+    }
+
+    private async Task WarnIfInitialSettingsStillUnavailableAsync()
+    {
+        await Task.Delay(TimeSpan.FromSeconds(2));
+        await Dispatcher.UIThread.InvokeAsync(() =>
+        {
+            if (_backendConfigState == DutyBackendConfigLoadState.Loaded)
+            {
+                return;
+            }
+
+            SettingsTrace.Invariant("initial_settings_load_timeout", "Settings page is still not in loaded state two seconds after opening.", BuildSettingsTraceSnapshot());
+            ExportSettingsDiagnosticsOnce("initial_settings_load_timeout");
+        });
+    }
+
+    private bool ShouldIgnoreConfigEvent()
+    {
+        return _isLoadingConfig || _configEventSuspendDepth > 0;
+    }
+
+    private void ExecuteWithoutConfigEvents(Action action)
+    {
+        _configEventSuspendDepth++;
+        try
+        {
+            action();
+        }
+        finally
+        {
+            _configEventSuspendDepth--;
+        }
+    }
+
+    private void ClearPendingConfigApply(string reason)
+    {
+        _configApplyDebounceTimer.Stop();
+        _hasPendingConfigApply = false;
+        TraceSettings("pending_save_cleared", new { reason });
+    }
+
+    private void TraceSettings(string eventType, object? extra = null, string level = "INFO")
+    {
+        var payload = BuildSettingsTraceSnapshot(extra);
+        switch (level)
+        {
+            case "WARN":
+                SettingsTrace.Warn(eventType, payload);
+                break;
+            case "ERROR":
+                SettingsTrace.Error(eventType, payload);
+                break;
+            default:
+                SettingsTrace.Info(eventType, payload);
+                break;
+        }
+    }
+
+    private object BuildSettingsTraceSnapshot(object? extra = null)
+    {
+        return new
+        {
+            page_instance_id = _pageInstanceId,
+            is_loading_config = _isLoadingConfig,
+            is_loading_backend_config = _isLoadingBackendConfig,
+            is_applying_config = _isApplyingConfig,
+            has_pending_config_apply = _hasPendingConfigApply,
+            config_load_revision = _configLoadRevision,
+            config_edit_revision = _configEditRevision,
+            backend_config_state = _backendConfigState.ToString(),
+            backend_sync_state = _backendSyncStatus.State.ToString(),
+            backend_sync_version = _backendSyncStatus.SettingsVersion,
+            current_plan_id = _currentPlanId,
+            selected_plan_option_id = CurrentPlanComboBox?.SelectedItem is PlanSelectOption option ? option.Id : null,
+            last_local_state = _lastLocalConfigState,
+            last_combined_state = _lastConfigState,
+            last_loaded_host_version = _lastLoadedSettingsDocument?.HostVersion,
+            last_loaded_backend_version = _lastLoadedSettingsDocument?.BackendVersion,
+            last_loaded_selected_plan_id = _lastLoadedSettingsDocument?.Backend?.SelectedPlanId,
+            plan_ids = _planPresetDrafts.Select(plan => plan.Id).ToArray(),
+            settings_path = PluginPaths.SettingsPath,
+            extra
+        };
+    }
+
+    private static string GetControlName(object? sender)
+    {
+        return sender switch
+        {
+            Control control when !string.IsNullOrWhiteSpace(control.Name) => control.Name,
+            _ => sender?.GetType().Name ?? "unknown"
+        };
+    }
+
+    private void ExportSettingsDiagnosticsOnce(string reason)
+    {
+        if (_settingsDiagnosticsExported)
+        {
+            return;
+        }
+
+        _settingsDiagnosticsExported = true;
+        try
+        {
+            var zipPath = SettingsTrace.ExportDiagnosticsBundle(BuildSettingsTraceSnapshot(new { reason }));
+            DutyDiagnosticsLogger.Warn("SettingsPage", "Auto-exported settings diagnostics bundle.",
+                new { reason, zipPath });
+            TraceSettings("diagnostics_export_completed", new
+            {
+                reason,
+                zip_path = zipPath,
+                automatic = true
+            });
+        }
+        catch (Exception ex)
+        {
+            DutyDiagnosticsLogger.Error("SettingsPage", "Failed to auto-export settings diagnostics bundle.", ex,
+                new { reason });
+            TraceSettings("diagnostics_export_failed", new
+            {
+                reason,
+                automatic = true,
+                error = ex.Message
+            }, "ERROR");
+        }
     }
 
     private void SetStatus(string text, IBrush brush)

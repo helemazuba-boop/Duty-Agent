@@ -3,6 +3,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Net.Http;
 using System.Net.Http.Json;
+using System.Net.WebSockets;
 using System.Text;
 using System.Text.Json;
 using System.Threading;
@@ -15,8 +16,6 @@ namespace DutyAgent.Services;
 public interface IPythonIpcService: IDisposable
 {
     Task<CoreRunResult> RunScheduleAsync(object requestPayload, Action<CoreRunProgress>? progressCallback, CancellationToken cancellationToken = default);
-    Task<DutySettingsDocument> GetSettingsAsync(string requestSource = "host_settings", string? traceId = null, CancellationToken cancellationToken = default);
-    Task<DutySettingsMutationResult> PatchSettingsAsync(DutySettingsPatchRequest patch, string requestSource = "host_settings", string? traceId = null, CancellationToken cancellationToken = default);
     Task<DutyBackendConfig> GetBackendConfigAsync(string requestSource = "host_settings", string? traceId = null, CancellationToken cancellationToken = default);
     Task<DutyBackendConfig> UpdateBackendConfigAsync(DutyBackendConfigPatch patch, string requestSource = "host_settings", string? traceId = null, CancellationToken cancellationToken = default);
     Task<DutyBackendSnapshot> GetBackendSnapshotAsync(string requestSource = "host_settings", string? traceId = null, CancellationToken cancellationToken = default);
@@ -47,6 +46,7 @@ public class DutyPythonIpcService : IPythonIpcService
     private IntPtr _pythonJobHandle = IntPtr.Zero;
     private int _serverPort = 0;
     private readonly HttpClient _httpClient;
+    private readonly SemaphoreSlim _controlSocketGate = new(1, 1);
     private bool _disposed;
     private readonly StringBuilder _errorBuffer = new();
     private const int EngineStartupTimeoutSeconds = 15;
@@ -59,6 +59,7 @@ public class DutyPythonIpcService : IPythonIpcService
 
     private TaskCompletionSource<int> _portTcs = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private volatile EngineState _state = EngineState.NotStarted;
+    private ClientWebSocket? _controlSocket;
     public EngineState State => _state;
     public bool IsReady => _state == EngineState.Ready;
     public string? LastErrorMessage { get; private set; }
@@ -289,6 +290,7 @@ public class DutyPythonIpcService : IPythonIpcService
 
     public Task StopAsync()
     {
+        DisposeControlSocket();
         ShutdownPythonServer();
 
         lock (_stateLock)
@@ -308,11 +310,108 @@ public class DutyPythonIpcService : IPythonIpcService
     {
         await EnsureReadyAsync(cancellationToken).ConfigureAwait(false);
 
+        await _controlSocketGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            try
+            {
+                return await RunScheduleViaSocketAsync(requestPayload, progressCallback, cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception ex) when (IsControlSocketRecoverable(ex))
+            {
+                DutyDiagnosticsLogger.Warn("BackendIpc", "Schedule run via WebSocket failed; falling back to HTTP SSE.",
+                    new { error = ex.Message });
+                DisposeControlSocket();
+                return await RunScheduleViaHttpAsync(requestPayload, progressCallback, cancellationToken).ConfigureAwait(false);
+            }
+        }
+        finally
+        {
+            _controlSocketGate.Release();
+        }
+    }
+
+    private async Task<CoreRunResult> RunScheduleViaSocketAsync(object requestPayload, Action<CoreRunProgress>? progressCallback, CancellationToken cancellationToken)
+    {
+        var clientChangeId = Guid.NewGuid().ToString("N");
+        var traceId = DutyDiagnosticsLogger.CreateTraceId("schedule");
+        var socket = await EnsureControlSocketConnectedAsync("host", traceId, cancellationToken).ConfigureAwait(false);
+
+        // Parse instruction and apply_mode from requestPayload
+        var payloadJson = JsonSerializer.Serialize(requestPayload, JsonOptions);
+        var payloadElement = JsonSerializer.Deserialize<JsonElement>(payloadJson);
+        var instruction = payloadElement.TryGetProperty("instruction", out var instrProp) ? instrProp.GetString() ?? "" : "";
+        var applyMode = payloadElement.TryGetProperty("apply_mode", out var modeProp) ? modeProp.GetString() ?? "append" : "append";
+        var requestSource = payloadElement.TryGetProperty("request_source", out var srcProp) ? srcProp.GetString() ?? "host" : "host";
+
+        await SendControlSocketMessageAsync(socket, new
+        {
+            type = "schedule_run",
+            client_change_id = clientChangeId,
+            trace_id = traceId,
+            request_source = requestSource,
+            instruction,
+            apply_mode = applyMode
+        }, cancellationToken).ConfigureAwait(false);
+
+        while (true)
+        {
+            using var message = await ReceiveControlSocketMessageAsync(socket, cancellationToken).ConfigureAwait(false);
+            var root = message.RootElement;
+            var messageType = root.TryGetProperty("type", out var typeElement)
+                ? (typeElement.GetString() ?? string.Empty).Trim().ToLowerInvariant()
+                : string.Empty;
+            var messageClientChangeId = root.TryGetProperty("client_change_id", out var changeElement)
+                ? (changeElement.GetString() ?? string.Empty).Trim()
+                : string.Empty;
+
+            if (messageClientChangeId.Length > 0 && !string.Equals(messageClientChangeId, clientChangeId, StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            switch (messageType)
+            {
+                case "accepted":
+                case "hello":
+                    continue;
+                case "schedule_progress":
+                {
+                    var phase = root.TryGetProperty("phase", out var phaseProp) ? phaseProp.GetString() ?? "" : "";
+                    var msg = root.TryGetProperty("message", out var msgProp) ? msgProp.GetString() ?? "" : "";
+                    var chunk = root.TryGetProperty("stream_chunk", out var chunkProp) ? chunkProp.GetString() : null;
+                    progressCallback?.Invoke(new CoreRunProgress(phase, msg, chunk));
+                    continue;
+                }
+                case "schedule_complete":
+                {
+                    var status = root.TryGetProperty("status", out var statusProp) ? statusProp.GetString() ?? "" : "";
+                    if (string.Equals(status, "success", StringComparison.OrdinalIgnoreCase))
+                    {
+                        var aiResponse = root.TryGetProperty("ai_response", out var aiProp) ? aiProp.GetString() : null;
+                        return CoreRunResult.Ok("Success", aiResponse);
+                    }
+                    var errMsg = root.TryGetProperty("message", out var errProp) ? errProp.GetString() ?? "Unknown error" : "Unknown error";
+                    return CoreRunResult.Fail(errMsg);
+                }
+                case "error":
+                {
+                    var errMsg = root.TryGetProperty("message", out var errProp) ? errProp.GetString() ?? "Unknown error" : "Unknown error";
+                    return CoreRunResult.Fail(errMsg);
+                }
+                default:
+                    continue;
+            }
+        }
+    }
+
+    private async Task<CoreRunResult> RunScheduleViaHttpAsync(object requestPayload, Action<CoreRunProgress>? progressCallback, CancellationToken cancellationToken)
+    {
         var url = $"http://127.0.0.1:{_serverPort}/api/v1/duty/schedule";
         var jsonPayload = JsonSerializer.Serialize(requestPayload);
         using var request = new HttpRequestMessage(HttpMethod.Post, url);
         request.Content = new StringContent(jsonPayload, Encoding.UTF8, "application/json");
-        
+
         try
         {
             using var response = await _httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken).ConfigureAwait(false);
@@ -320,7 +419,7 @@ public class DutyPythonIpcService : IPythonIpcService
 
             using var stream = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
             using var reader = new StreamReader(stream);
-            
+
             CoreRunResult? finalResult = null;
             string? currentEvent = null;
             var dataBuffer = new StringBuilder();
@@ -329,10 +428,9 @@ public class DutyPythonIpcService : IPythonIpcService
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 var line = await reader.ReadLineAsync().ConfigureAwait(false);
-                
+
                 if (string.IsNullOrEmpty(line))
                 {
-                    // Full message received, dispatch
                     if (currentEvent == "complete")
                     {
                         try
@@ -354,19 +452,17 @@ public class DutyPythonIpcService : IPythonIpcService
                     }
                     else if (dataBuffer.Length > 0)
                     {
-                        // Progress data
                         try
                         {
                             var evt = JsonSerializer.Deserialize<JsonElement>(dataBuffer.ToString());
                             var phase = evt.GetProperty("phase").GetString() ?? "";
-                            var message = evt.GetProperty("message").GetString() ?? "";
+                            var progressMessage = evt.GetProperty("message").GetString() ?? "";
                             var chunk = evt.TryGetProperty("stream_chunk", out var cp) ? cp.GetString() : null;
-                            progressCallback?.Invoke(new CoreRunProgress(phase, message, chunk));
+                            progressCallback?.Invoke(new CoreRunProgress(phase, progressMessage, chunk));
                         }
                         catch { }
                     }
 
-                    // Reset for next message
                     currentEvent = null;
                     dataBuffer.Clear();
                     continue;
@@ -396,101 +492,18 @@ public class DutyPythonIpcService : IPythonIpcService
         }
     }
 
-    public async Task<DutySettingsDocument> GetSettingsAsync(
-        string requestSource = "host_settings",
-        string? traceId = null,
-        CancellationToken cancellationToken = default)
-    {
-        return await SendJsonAsync<DutySettingsDocument>(
-            HttpMethod.Get,
-            "/api/v1/settings",
-            null,
-            requestSource,
-            traceId,
-            cancellationToken).ConfigureAwait(false);
-    }
-
-    public async Task<DutySettingsMutationResult> PatchSettingsAsync(
-        DutySettingsPatchRequest patch,
-        string requestSource = "host_settings",
-        string? traceId = null,
-        CancellationToken cancellationToken = default)
-    {
-        var effectiveTraceId = string.IsNullOrWhiteSpace(traceId)
-            ? DutyDiagnosticsLogger.CreateTraceId("settings")
-            : traceId.Trim();
-        var effectiveRequestSource = string.IsNullOrWhiteSpace(requestSource) ? "host_settings" : requestSource.Trim();
-        var stopwatch = Stopwatch.StartNew();
-
-        DutyDiagnosticsLogger.Info("BackendConfigHttp", "Sending unified settings PATCH request.",
-            new
-            {
-                traceId = effectiveTraceId,
-                requestSource = effectiveRequestSource,
-                payload = SummarizePayload(patch)
-            });
-
-        await EnsureReadyAsync(cancellationToken).ConfigureAwait(false);
-
-        using var request = new HttpRequestMessage(HttpMethod.Patch, $"http://127.0.0.1:{_serverPort}/api/v1/settings");
-        request.Headers.TryAddWithoutValidation(TraceHeaderName, effectiveTraceId);
-        request.Headers.TryAddWithoutValidation(RequestSourceHeaderName, effectiveRequestSource);
-        request.Content = new StringContent(
-            JsonSerializer.Serialize(patch, JsonOptions),
-            Encoding.UTF8,
-            "application/json");
-
-        try
-        {
-            using var response = await _httpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
-            var responseText = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
-            stopwatch.Stop();
-
-            var parsed = JsonSerializer.Deserialize<DutySettingsMutationResult>(responseText, JsonOptions);
-            if (parsed == null)
-            {
-                if (!response.IsSuccessStatusCode)
-                {
-                    response.EnsureSuccessStatusCode();
-                }
-
-                throw new InvalidOperationException("Failed to parse unified settings response.");
-            }
-
-            DutyDiagnosticsLogger.Info("BackendConfigHttp", "Unified settings PATCH request completed.",
-                new
-                {
-                    traceId = effectiveTraceId,
-                    requestSource = effectiveRequestSource,
-                    statusCode = (int)response.StatusCode,
-                    durationMs = stopwatch.ElapsedMilliseconds,
-                    success = parsed.Success,
-                    restartRequired = parsed.RestartRequired
-                });
-
-            return parsed;
-        }
-        catch (Exception ex)
-        {
-            stopwatch.Stop();
-            DutyDiagnosticsLogger.Error("BackendConfigHttp", "Unified settings PATCH request threw exception.", ex,
-                new
-                {
-                    traceId = effectiveTraceId,
-                    requestSource = effectiveRequestSource,
-                    durationMs = stopwatch.ElapsedMilliseconds,
-                    payload = SummarizePayload(patch)
-                });
-            throw;
-        }
-    }
-
     public async Task<DutyBackendConfig> GetBackendConfigAsync(
         string requestSource = "host_settings",
         string? traceId = null,
         CancellationToken cancellationToken = default)
     {
-        return await SendJsonAsync<DutyBackendConfig>(HttpMethod.Get, "/api/v1/config", null, requestSource, traceId, cancellationToken).ConfigureAwait(false);
+        return await SendJsonAsync<DutyBackendConfig>(
+            HttpMethod.Get,
+            "/api/v1/config",
+            null,
+            requestSource,
+            traceId,
+            cancellationToken).ConfigureAwait(false);
     }
 
     public async Task<DutyBackendConfig> UpdateBackendConfigAsync(
@@ -499,8 +512,129 @@ public class DutyPythonIpcService : IPythonIpcService
         string? traceId = null,
         CancellationToken cancellationToken = default)
     {
-        return await SendJsonAsync<DutyBackendConfig>(HttpMethod.Patch, "/api/v1/config", patch, requestSource, traceId, cancellationToken).ConfigureAwait(false);
+        return await SendJsonAsync<DutyBackendConfig>(
+            HttpMethod.Patch,
+            "/api/v1/config",
+            patch,
+            requestSource,
+            traceId,
+            cancellationToken).ConfigureAwait(false);
     }
+
+    private async Task<ClientWebSocket> EnsureControlSocketConnectedAsync(
+        string requestSource,
+        string traceId,
+        CancellationToken cancellationToken)
+    {
+        if (_controlSocket is { State: WebSocketState.Open })
+        {
+            return _controlSocket;
+        }
+
+        DisposeControlSocket();
+
+        var socket = new ClientWebSocket
+        {
+            Options =
+            {
+                KeepAliveInterval = TimeSpan.FromSeconds(20)
+            }
+        };
+        socket.Options.SetRequestHeader(TraceHeaderName, traceId);
+        socket.Options.SetRequestHeader(RequestSourceHeaderName, requestSource);
+        var uri = new Uri($"ws://127.0.0.1:{_serverPort}/api/v1/duty/live");
+        await socket.ConnectAsync(uri, cancellationToken).ConfigureAwait(false);
+        _controlSocket = socket;
+
+        await SendControlSocketMessageAsync(socket, new
+        {
+            type = "hello",
+            trace_id = traceId,
+            request_source = requestSource
+        }, cancellationToken).ConfigureAwait(false);
+
+        using var helloDocument = await ReceiveControlSocketMessageAsync(socket, cancellationToken).ConfigureAwait(false);
+        var root = helloDocument.RootElement;
+        var messageType = root.TryGetProperty("type", out var typeElement)
+            ? (typeElement.GetString() ?? string.Empty).Trim().ToLowerInvariant()
+            : string.Empty;
+        if (!string.Equals(messageType, "hello", StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException("Duty control channel handshake returned an unexpected message.");
+        }
+
+        return socket;
+    }
+
+    private static async Task SendControlSocketMessageAsync(
+        ClientWebSocket socket,
+        object payload,
+        CancellationToken cancellationToken)
+    {
+        var json = JsonSerializer.Serialize(payload, JsonOptions);
+        var buffer = Encoding.UTF8.GetBytes(json);
+        await socket.SendAsync(new ArraySegment<byte>(buffer), WebSocketMessageType.Text, true, cancellationToken).ConfigureAwait(false);
+    }
+
+    private static async Task<JsonDocument> ReceiveControlSocketMessageAsync(
+        ClientWebSocket socket,
+        CancellationToken cancellationToken)
+    {
+        var buffer = new byte[8192];
+        using var stream = new MemoryStream();
+
+        while (true)
+        {
+            var result = await socket.ReceiveAsync(new ArraySegment<byte>(buffer), cancellationToken).ConfigureAwait(false);
+            if (result.MessageType == WebSocketMessageType.Close)
+            {
+                throw new WebSocketException("Duty control channel was closed by the server.");
+            }
+
+            if (result.Count > 0)
+            {
+                stream.Write(buffer, 0, result.Count);
+            }
+
+            if (result.EndOfMessage)
+            {
+                break;
+            }
+        }
+
+        stream.Position = 0;
+        return await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken).ConfigureAwait(false);
+    }
+
+    private static bool IsControlSocketRecoverable(Exception ex)
+    {
+        return ex is WebSocketException ||
+               ex is IOException ||
+               ex is ObjectDisposedException ||
+               ex is InvalidOperationException;
+    }
+
+    private void DisposeControlSocket()
+    {
+        if (_controlSocket == null)
+        {
+            return;
+        }
+
+        try
+        {
+            _controlSocket.Dispose();
+        }
+        catch
+        {
+        }
+        finally
+        {
+            _controlSocket = null;
+        }
+    }
+
+
 
     public async Task<DutyBackendSnapshot> GetBackendSnapshotAsync(
         string requestSource = "host_settings",
@@ -611,13 +745,6 @@ public class DutyPythonIpcService : IPythonIpcService
         return payload switch
         {
             null => null,
-            DutySettingsPatchRequest settingsPatch => new
-            {
-                hostExpectedVersion = settingsPatch.Expected.HostVersion?.ToString() ?? "<unchanged>",
-                backendExpectedVersion = settingsPatch.Expected.BackendVersion?.ToString() ?? "<unchanged>",
-                hostPatchKeys = SummarizeHostPatchKeys(settingsPatch.Changes.Host),
-                backendPatchKeys = SummarizeBackendPatchKeys(settingsPatch.Changes.Backend)
-            },
             DutyBackendConfigPatch patch => new
             {
                 selectedPlanId = patch.SelectedPlanId ?? "<unchanged>",
@@ -631,41 +758,6 @@ public class DutyPythonIpcService : IPythonIpcService
         };
     }
 
-    private static string SummarizeHostPatchKeys(DutyEditableHostSettingsPatch? patch)
-    {
-        if (patch == null)
-        {
-            return "<unchanged>";
-        }
-
-        var keys = new List<string>();
-        if (patch.AutoRunMode != null) keys.Add("auto_run_mode");
-        if (patch.AutoRunParameter != null) keys.Add("auto_run_parameter");
-        if (patch.AutoRunTime != null) keys.Add("auto_run_time");
-        if (patch.AutoRunTriggerNotificationEnabled.HasValue) keys.Add("auto_run_trigger_notification_enabled");
-        if (patch.DutyReminderEnabled.HasValue) keys.Add("duty_reminder_enabled");
-        if (patch.DutyReminderTimes != null) keys.Add("duty_reminder_times");
-        if (patch.EnableMcp.HasValue) keys.Add("enable_mcp");
-        if (patch.EnableWebViewDebugLayer.HasValue) keys.Add("enable_webview_debug_layer");
-        if (patch.ComponentRefreshTime != null) keys.Add("component_refresh_time");
-        if (patch.NotificationDurationSeconds.HasValue) keys.Add("notification_duration_seconds");
-        return keys.Count == 0 ? "<unchanged>" : string.Join(",", keys);
-    }
-
-    private static string SummarizeBackendPatchKeys(DutyEditableBackendSettingsPatch? patch)
-    {
-        if (patch == null)
-        {
-            return "<unchanged>";
-        }
-
-        var keys = new List<string>();
-        if (patch.SelectedPlanId != null) keys.Add("selected_plan_id");
-        if (patch.PlanPresets != null) keys.Add("plan_presets");
-        if (patch.DutyRule != null) keys.Add("duty_rule");
-        return keys.Count == 0 ? "<unchanged>" : string.Join(",", keys);
-    }
-
     private static string TruncateForLog(string? value, int maxLength)
     {
         var normalized = (value ?? string.Empty).Replace('\r', ' ').Replace('\n', ' ').Trim();
@@ -674,6 +766,7 @@ public class DutyPythonIpcService : IPythonIpcService
 
     private void ShutdownPythonServer()
     {
+        DisposeControlSocket();
         var process = _pythonProcess;
         if (process == null)
         {
@@ -847,6 +940,7 @@ public class DutyPythonIpcService : IPythonIpcService
         _disposed = true;
         StopAsync().GetAwaiter().GetResult();
         DisposeJobObject();
+        _controlSocketGate.Dispose();
         _httpClient.Dispose();
     }
 }

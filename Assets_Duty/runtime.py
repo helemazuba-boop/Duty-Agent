@@ -7,7 +7,6 @@ from pathlib import Path
 
 from application.command_service import CommandService
 from application.query_service import QueryService
-from application.settings_service import SettingsService
 from diagnostics import DutyDiagnosticsLogger
 
 APP_VERSION = "0.50.0"
@@ -25,7 +24,6 @@ class DutyRuntime:
         self.schedule_run_lock = threading.Lock()
         self.command_service = CommandService(self)
         self.query_service = QueryService(self)
-        self.settings_service = SettingsService(self)
 
     def new_trace_id(self) -> str:
         return uuid.uuid4().hex

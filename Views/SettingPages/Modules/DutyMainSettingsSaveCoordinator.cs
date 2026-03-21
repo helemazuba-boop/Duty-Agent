@@ -1,4 +1,3 @@
-using System;
 using System.Linq;
 using DutyAgent.Models;
 using DutyAgent.Services;
@@ -7,45 +6,47 @@ namespace DutyAgent.Views.SettingPages.Modules;
 
 internal sealed class DutyMainSettingsSaveCoordinator
 {
-    private readonly DutyScheduleOrchestrator _service;
+    private readonly IDutySettingsRepository _settingsRepository;
+    private readonly DutyBackendSettingsSyncService _backendSyncService;
     private readonly DutyMainSettingsHostModule _hostModule;
     private readonly DutyMainSettingsBackendModule _backendModule;
+    private readonly DutySettingsTraceService _settingsTrace;
 
     public DutyMainSettingsSaveCoordinator(
-        DutyScheduleOrchestrator service,
+        IDutySettingsRepository settingsRepository,
+        DutyBackendSettingsSyncService backendSyncService,
         DutyMainSettingsHostModule hostModule,
-        DutyMainSettingsBackendModule backendModule)
+        DutyMainSettingsBackendModule backendModule,
+        DutySettingsTraceService settingsTrace)
     {
-        _service = service;
+        _settingsRepository = settingsRepository;
+        _backendSyncService = backendSyncService;
         _hostModule = hostModule;
         _backendModule = backendModule;
+        _settingsTrace = settingsTrace;
     }
 
-    public async Task<DutySettingsSaveOutcome> ApplyAsync(
+    public Task<DutySettingsSaveOutcome> ApplyAsync(
         DutySettingsSaveContext context,
         CancellationToken cancellationToken = default)
     {
-        var traceId = DutyDiagnosticsLogger.CreateTraceId("settings");
+        cancellationToken.ThrowIfCancellationRequested();
+
         var hostChanged = _hostModule.HasChanges(context.Current.Host, context.LastAppliedHost);
-        var backendPatch = context.BackendLoadState == DutyBackendConfigLoadState.Loaded
-            ? _backendModule.TryBuildPatch(context.Current.Backend, context.LastAppliedBackend)
-            : null;
+        var backendPatch = _backendModule.TryBuildPatch(context.Current.Backend, context.LastAppliedBackend);
         var backendChanged = backendPatch != null;
 
-        DutyDiagnosticsLogger.Info("SettingsPage", "Applying unified settings from controls.",
-            new
-            {
-                traceId,
-                hostChanged,
-                backendChanged,
-                backendState = context.BackendLoadState.ToString(),
-                backendError = context.BackendErrorMessage ?? string.Empty,
-                backendPatch = _backendModule.SummarizePatch(backendPatch)
-            });
+        _settingsTrace.Info("save_patch_built", new
+        {
+            host_changed = hostChanged,
+            backend_changed = backendChanged,
+            selected_plan_id = backendPatch?.SelectedPlanId ?? context.Current.Backend.SelectedPlanId,
+            plan_count = backendPatch?.PlanPresets?.Count ?? context.Current.Backend.PlanPresets?.Count ?? 0
+        });
 
         if (!hostChanged && !backendChanged)
         {
-            return new DutySettingsSaveOutcome(
+            return Task.FromResult(new DutySettingsSaveOutcome(
                 Success: true,
                 NoChanges: true,
                 RestartRequired: false,
@@ -54,53 +55,63 @@ internal sealed class DutyMainSettingsSaveCoordinator
                 BackendChanged: false,
                 BackendSaved: false,
                 Message: string.Empty,
-                MessageLevel: DutySettingsSaveMessageLevel.Info);
+                MessageLevel: DutySettingsSaveMessageLevel.Info));
         }
 
-        var request = BuildPatchRequest(context, hostChanged, backendPatch);
         try
         {
-            var mutation = await _service.PatchSettingsAsync(
-                request,
-                requestSource: "host_settings",
-                traceId: traceId,
-                cancellationToken: cancellationToken).ConfigureAwait(false);
+            var patchRequest = BuildPatchRequest(context, hostChanged, backendPatch);
+            var savedLocalSettings = _settingsRepository.SavePatch(patchRequest);
+            var appliedDocument = CreateSettingsDocument(savedLocalSettings);
+            var appliedHost = CreateHostValues(appliedDocument.Host);
+            var appliedBackend = CreateBackendConfig(appliedDocument);
 
-            var appliedHost = mutation.Document?.Host != null ? CreateHostValues(mutation.Document.Host) : null;
-            var appliedBackend = mutation.Document?.Backend != null
-                ? CreateBackendConfig(mutation.Document)
-                : null;
+            if (backendChanged)
+            {
+                _backendSyncService.RequestSync("settings_edit");
+            }
 
-            return new DutySettingsSaveOutcome(
-                Success: mutation.Success,
+            var restartRequired = hostChanged &&
+                                  (context.LastAppliedHost.EnableMcp != context.Current.Host.EnableMcp ||
+                                   context.LastAppliedHost.EnableWebViewDebugLayer != context.Current.Host.EnableWebViewDebugLayer);
+
+            _settingsTrace.Info("local_settings_saved", new
+            {
+                version = savedLocalSettings.Version,
+                host_changed = hostChanged,
+                backend_changed = backendChanged,
+                restart_required = restartRequired,
+                selected_plan_id = savedLocalSettings.Backend.SelectedPlanId
+            });
+
+            var message = backendChanged
+                ? "本地设置已保存，后端同步中。"
+                : "本地设置已保存。";
+
+            return Task.FromResult(new DutySettingsSaveOutcome(
+                Success: true,
                 NoChanges: false,
-                RestartRequired: mutation.RestartRequired,
+                RestartRequired: restartRequired,
                 HostChanged: hostChanged,
-                HostSaved: mutation.Applied.Host != null,
+                HostSaved: hostChanged,
                 BackendChanged: backendChanged,
-                BackendSaved: mutation.Applied.Backend != null,
-                Message: string.IsNullOrWhiteSpace(mutation.Message)
-                    ? (mutation.Success ? "设置已保存。" : "设置保存失败。")
-                    : mutation.Message,
-                MessageLevel: mutation.Success
-                    ? DutySettingsSaveMessageLevel.Info
-                    : mutation.Warnings.Count > 0
-                        ? DutySettingsSaveMessageLevel.Warning
-                        : DutySettingsSaveMessageLevel.Error,
-                AppliedDocument: mutation.Document,
+                BackendSaved: backendChanged,
+                Message: message,
+                MessageLevel: DutySettingsSaveMessageLevel.Info,
+                AppliedDocument: appliedDocument,
                 AppliedHost: appliedHost,
-                AppliedBackend: appliedBackend);
+                AppliedBackend: appliedBackend));
         }
         catch (Exception ex)
         {
-            DutyDiagnosticsLogger.Error("SettingsPage", "Unified settings save threw exception.", ex,
-                new
-                {
-                    traceId,
-                    backendState = context.BackendLoadState.ToString(),
-                    backendError = context.BackendErrorMessage ?? string.Empty
-                });
-            return new DutySettingsSaveOutcome(
+            DutyDiagnosticsLogger.Error("SettingsPage", "Failed to persist local settings.", ex);
+            _settingsTrace.Error("local_settings_save_failed", new
+            {
+                host_changed = hostChanged,
+                backend_changed = backendChanged,
+                error = ex.Message
+            });
+            return Task.FromResult(new DutySettingsSaveOutcome(
                 Success: false,
                 NoChanges: false,
                 RestartRequired: false,
@@ -108,8 +119,8 @@ internal sealed class DutyMainSettingsSaveCoordinator
                 HostSaved: false,
                 BackendChanged: backendChanged,
                 BackendSaved: false,
-                Message: $"设置保存失败：{ex.Message}",
-                MessageLevel: DutySettingsSaveMessageLevel.Error);
+                Message: $"本地设置保存失败：{ex.Message}",
+                MessageLevel: DutySettingsSaveMessageLevel.Error));
         }
     }
 
@@ -118,14 +129,8 @@ internal sealed class DutyMainSettingsSaveCoordinator
         bool hostChanged,
         DutyBackendConfigPatch? backendPatch)
     {
-        var lastLoadedDocument = context.LastLoadedDocument ?? new DutySettingsDocument();
         var request = new DutySettingsPatchRequest
         {
-            Expected = new DutySettingsExpectedVersions
-            {
-                HostVersion = lastLoadedDocument.HostVersion,
-                BackendVersion = lastLoadedDocument.BackendVersion
-            },
             Changes = new DutySettingsPatchChanges()
         };
 
@@ -159,7 +164,35 @@ internal sealed class DutyMainSettingsSaveCoordinator
         return request;
     }
 
-    private DutyHostSettingsValues CreateHostValues(DutyEditableHostSettingsDocument host)
+    private DutySettingsDocument CreateSettingsDocument(DutyLocalSettingsDocument localSettings)
+    {
+        return new DutySettingsDocument
+        {
+            HostVersion = Math.Max(1, localSettings.Version),
+            BackendVersion = Math.Max(1, localSettings.Version),
+            Host = new DutyEditableHostSettingsDocument
+            {
+                AutoRunMode = localSettings.Host.AutoRunMode,
+                AutoRunParameter = localSettings.Host.AutoRunParameter,
+                AutoRunTime = localSettings.Host.AutoRunTime,
+                AutoRunTriggerNotificationEnabled = localSettings.Host.AutoRunTriggerNotificationEnabled,
+                DutyReminderEnabled = localSettings.Host.DutyReminderEnabled,
+                DutyReminderTimes = [.. (localSettings.Host.DutyReminderTimes ?? [])],
+                EnableMcp = localSettings.Host.EnableMcp,
+                EnableWebViewDebugLayer = localSettings.Host.EnableWebViewDebugLayer,
+                ComponentRefreshTime = localSettings.Host.ComponentRefreshTime,
+                NotificationDurationSeconds = localSettings.Host.NotificationDurationSeconds
+            },
+            Backend = new DutyEditableBackendSettingsDocument
+            {
+                SelectedPlanId = localSettings.Backend.SelectedPlanId,
+                PlanPresets = _backendModule.ClonePlanPresets(localSettings.Backend.PlanPresets),
+                DutyRule = localSettings.Backend.DutyRule
+            }
+        };
+    }
+
+    private static DutyHostSettingsValues CreateHostValues(DutyEditableHostSettingsDocument host)
     {
         return new DutyHostSettingsValues
         {

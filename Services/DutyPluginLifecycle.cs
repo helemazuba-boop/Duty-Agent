@@ -4,16 +4,19 @@ public sealed class DutyPluginLifecycle
 {
     private readonly DutyScheduleOrchestrator _orchestrator;
     private readonly IPythonIpcService _pythonIpcService;
+    private readonly DutyBackendSettingsSyncService _backendSettingsSyncService;
     private readonly DutyPluginPaths _paths;
     private int _started;
 
     public DutyPluginLifecycle(
         DutyScheduleOrchestrator orchestrator,
         IPythonIpcService pythonIpcService,
+        DutyBackendSettingsSyncService backendSettingsSyncService,
         DutyPluginPaths paths)
     {
         _orchestrator = orchestrator;
         _pythonIpcService = pythonIpcService;
+        _backendSettingsSyncService = backendSettingsSyncService;
         _paths = paths;
     }
 
@@ -28,6 +31,7 @@ public sealed class DutyPluginLifecycle
         PythonProcessTracker.CleanupPersistedProcess(_paths.ProcessSnapshotPath);
 
         _orchestrator.StartRuntime();
+        _backendSettingsSyncService.RequestSync("plugin_startup");
     }
 
     public async Task StopAsync(CancellationToken cancellationToken = default)

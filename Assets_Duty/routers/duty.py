@@ -1,7 +1,10 @@
-import json
+from __future__ import annotations
+
 import asyncio
+import json
 import threading
-from fastapi import APIRouter, Request
+
+from fastapi import APIRouter, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import StreamingResponse
 
 try:
@@ -22,6 +25,34 @@ def _resolve_request_meta(request: Request, runtime, request_data: DutyRequest) 
     return trace_id, request_source
 
 
+def _resolve_websocket_meta(websocket: WebSocket, runtime) -> tuple[str, str]:
+    trace_id = (websocket.headers.get("X-Duty-Trace-Id") or "").strip() or runtime.new_trace_id()
+    request_source = (websocket.headers.get("X-Duty-Request-Source") or "").strip() or "api"
+    return trace_id, request_source
+
+
+async def _enqueue_send(send_queue: asyncio.Queue, payload: dict | None):
+    await send_queue.put(payload)
+
+
+async def _socket_sender(websocket: WebSocket, send_queue: asyncio.Queue, runtime, trace_id: str, request_source: str):
+    try:
+        while True:
+            payload = await send_queue.get()
+            if payload is None:
+                return
+            await websocket.send_json(payload)
+    except Exception as ex:
+        runtime.logger.error(
+            "DutyLive",
+            "Duty control channel sender failed.",
+            trace_id=trace_id,
+            request_source=request_source,
+            exc=ex,
+        )
+        raise
+
+
 @router.post("/schedule")
 async def schedule(request_data: DutyRequest, request: Request):
     runtime = getattr(request.app.state, "runtime", None)
@@ -32,7 +63,7 @@ async def schedule(request_data: DutyRequest, request: Request):
         )
     trace_id, request_source = _resolve_request_meta(request, runtime, request_data)
     stop_event = threading.Event()
-    
+
     async def event_generator():
         loop = asyncio.get_event_loop()
         queue = asyncio.Queue()
@@ -76,3 +107,195 @@ async def schedule(request_data: DutyRequest, request: Request):
             stop_event.set()
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
+
+
+@router.websocket("/live")
+async def duty_live(websocket: WebSocket):
+    await websocket.accept()
+    runtime = getattr(websocket.app.state, "runtime", None)
+    if runtime is None:
+        await websocket.send_json({"type": "error", "message": "Runtime is not initialized."})
+        await websocket.close(code=1011)
+        return
+
+    trace_id, request_source = _resolve_websocket_meta(websocket, runtime)
+    runtime.logger.info(
+        "DutyLive",
+        "Accepted WebSocket duty control channel.",
+        trace_id=trace_id,
+        request_source=request_source,
+    )
+
+    active_schedule_tasks: dict[str, asyncio.Task] = {}
+    active_schedule_stops: dict[str, threading.Event] = {}
+    send_queue: asyncio.Queue = asyncio.Queue()
+    sender_task = asyncio.create_task(_socket_sender(websocket, send_queue, runtime, trace_id, request_source))
+
+    try:
+        while True:
+            if sender_task.done():
+                await sender_task
+            message = await websocket.receive_json()
+            message_type = str((message or {}).get("type") or "").strip().lower()
+            msg_trace_id = str((message or {}).get("trace_id") or "").strip() or trace_id
+            msg_request_source = str((message or {}).get("request_source") or "").strip() or request_source
+            client_change_id = str((message or {}).get("client_change_id") or "").strip()
+
+            if message_type == "hello":
+                await _enqueue_send(send_queue, {
+                    "type": "hello",
+                    "trace_id": msg_trace_id,
+                    "request_source": msg_request_source,
+                })
+            elif message_type == "schedule_run":
+                task, stop_event = _start_schedule_run(
+                    send_queue, runtime, message, client_change_id, msg_trace_id, msg_request_source
+                )
+                if task is not None:
+                    active_schedule_tasks[client_change_id] = task
+                    active_schedule_stops[client_change_id] = stop_event
+            elif message_type == "schedule_cancel":
+                _cancel_schedule_run(active_schedule_stops, client_change_id, runtime, msg_trace_id)
+            else:
+                await _enqueue_send(send_queue, {
+                    "type": "error",
+                    "client_change_id": client_change_id,
+                    "trace_id": msg_trace_id,
+                    "request_source": msg_request_source,
+                    "message": f"Unsupported message type: {message_type or '<empty>'}",
+                })
+
+            done_ids = [cid for cid, task in active_schedule_tasks.items() if task.done()]
+            for cid in done_ids:
+                active_schedule_tasks.pop(cid, None)
+                active_schedule_stops.pop(cid, None)
+
+    except WebSocketDisconnect:
+        runtime.logger.info(
+            "DutyLive",
+            "WebSocket duty control channel disconnected.",
+            trace_id=trace_id,
+            request_source=request_source,
+        )
+    except Exception as ex:
+        runtime.logger.error(
+            "DutyLive",
+            "WebSocket duty control channel error.",
+            trace_id=trace_id,
+            request_source=request_source,
+            exc=ex,
+        )
+    finally:
+        for stop_event in active_schedule_stops.values():
+            stop_event.set()
+        for task in active_schedule_tasks.values():
+            task.cancel()
+        try:
+            await _enqueue_send(send_queue, None)
+            await sender_task
+        except Exception:
+            pass
+
+
+def _start_schedule_run(
+    send_queue: asyncio.Queue, runtime,
+    message: dict, client_change_id: str, trace_id: str, request_source: str,
+) -> tuple[asyncio.Task | None, threading.Event]:
+    stop_event = threading.Event()
+    loop = asyncio.get_event_loop()
+
+    async def _run():
+        await _enqueue_send(send_queue, {
+            "type": "accepted",
+            "client_change_id": client_change_id,
+            "trace_id": trace_id,
+            "request_source": request_source,
+        })
+
+        queue: asyncio.Queue = asyncio.Queue()
+
+        def put_progress(phase, msg, stream_chunk=None):
+            loop.call_soon_threadsafe(queue.put_nowait, {
+                "type": "progress",
+                "data": {"phase": phase, "message": msg, "stream_chunk": stream_chunk},
+            })
+
+        def run_task():
+            try:
+                payload = {
+                    "instruction": str((message or {}).get("instruction") or "").strip(),
+                    "apply_mode": str((message or {}).get("apply_mode") or "append").strip(),
+                    "request_source": request_source,
+                    "trace_id": trace_id,
+                }
+                result = runtime.command_service.run_schedule(payload, put_progress, stop_event)
+                loop.call_soon_threadsafe(queue.put_nowait, {"type": "done", "data": result})
+            except InterruptedError:
+                loop.call_soon_threadsafe(queue.put_nowait, {"type": "error", "message": "Cancelled by user."})
+            except Exception as e:
+                loop.call_soon_threadsafe(queue.put_nowait, {"type": "error", "message": str(e)})
+
+        worker_thread = threading.Thread(target=run_task, daemon=True)
+        worker_thread.start()
+
+        try:
+            while True:
+                msg_item = await queue.get()
+                if msg_item["type"] == "progress":
+                    await _enqueue_send(send_queue, {
+                        "type": "schedule_progress",
+                        "client_change_id": client_change_id,
+                        "trace_id": trace_id,
+                        "request_source": request_source,
+                        **msg_item["data"],
+                    })
+                elif msg_item["type"] == "done":
+                    result_data = msg_item.get("data") or {}
+                    result_data.setdefault("trace_id", trace_id)
+                    await _enqueue_send(send_queue, {
+                        "type": "schedule_complete",
+                        "client_change_id": client_change_id,
+                        "trace_id": trace_id,
+                        "request_source": request_source,
+                        **result_data,
+                    })
+                    break
+                elif msg_item["type"] == "error":
+                    await _enqueue_send(send_queue, {
+                        "type": "schedule_complete",
+                        "client_change_id": client_change_id,
+                        "trace_id": trace_id,
+                        "request_source": request_source,
+                        "status": "error",
+                        "message": msg_item.get("message", "Unknown error."),
+                    })
+                    break
+        except asyncio.CancelledError:
+            stop_event.set()
+        finally:
+            stop_event.set()
+
+    try:
+        task = asyncio.ensure_future(_run())
+        return task, stop_event
+    except Exception as ex:
+        runtime.logger.error(
+            "DutyLive",
+            "Failed to start schedule run.",
+            trace_id=trace_id,
+            client_change_id=client_change_id,
+            exc=ex,
+        )
+        return None, stop_event
+
+
+def _cancel_schedule_run(active_stops: dict[str, threading.Event], client_change_id: str, runtime, trace_id: str):
+    stop_event = active_stops.get(client_change_id)
+    if stop_event is not None:
+        stop_event.set()
+        runtime.logger.info(
+            "DutyLive",
+            "Schedule run cancel requested.",
+            trace_id=trace_id,
+            client_change_id=client_change_id,
+        )

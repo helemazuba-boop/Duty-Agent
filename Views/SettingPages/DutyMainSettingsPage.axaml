@@ -106,6 +106,7 @@
                     <ui:SettingsExpanderItem.Footer>
                         <TextBox x:Name="PlanNameBox"
                                  Width="320"
+                                 TextChanged="OnConfigInputTextChanged"
                                  LostFocus="OnConfigInputLostFocus"
                                  KeyDown="OnConfigInputKeyDown" />
                     </ui:SettingsExpanderItem.Footer>
@@ -153,6 +154,7 @@
                         <TextBox x:Name="ApiKeyBox"
                                  Width="320"
                                  PasswordChar="*"
+                                 TextChanged="OnConfigInputTextChanged"
                                  LostFocus="OnConfigInputLostFocus"
                                  KeyDown="OnConfigInputKeyDown" />
                     </ui:SettingsExpanderItem.Footer>
@@ -163,6 +165,7 @@
                         <TextBox x:Name="ModelBox"
                                  Width="320"
                                  Watermark="moonshotai/kimi-k2-thinking"
+                                 TextChanged="OnConfigInputTextChanged"
                                  LostFocus="OnConfigInputLostFocus"
                                  KeyDown="OnConfigInputKeyDown" />
                     </ui:SettingsExpanderItem.Footer>
@@ -173,6 +176,7 @@
                         <TextBox x:Name="BaseUrlBox"
                                  Width="320"
                                  Watermark="https://integrate.api.nvidia.com/v1"
+                                 TextChanged="OnConfigInputTextChanged"
                                  LostFocus="OnConfigInputLostFocus"
                                  KeyDown="OnConfigInputKeyDown" />
                     </ui:SettingsExpanderItem.Footer>
@@ -207,6 +211,7 @@
                              AcceptsReturn="True"
                              TextWrapping="Wrap"
                              Watermark="示例：&#10;每天排班 2 人，跳过周末&#10;区域：教室、清洁区&#10;教室每天 2 人，清洁区每天 2 人&#10;排班周期：7 天"
+                             TextChanged="OnConfigInputTextChanged"
                              LostFocus="OnConfigInputLostFocus"
                              KeyDown="OnConfigInputKeyDown" />
                 </StackPanel>
@@ -543,6 +548,7 @@
                                  Width="220"
                                  HorizontalAlignment="Stretch"
                                  Watermark="间隔天数，例如 14"
+                                 TextChanged="OnConfigInputTextChanged"
                                  LostFocus="OnConfigInputLostFocus"
                                  KeyDown="OnConfigInputKeyDown" />
                     </ui:SettingsExpanderItem.Footer>
