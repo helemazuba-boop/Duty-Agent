@@ -10,15 +10,23 @@ from core import app
 from runtime import create_runtime
 
 
+def _auth_headers(runtime, extra: dict | None = None) -> dict:
+    headers = {"Authorization": f"Bearer {runtime.access_token}"}
+    if extra:
+        headers.update(extra)
+    return headers
+
+
 class TestDutyLiveApi(unittest.TestCase):
     def test_settings_endpoints_are_removed(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             original_runtime = getattr(app.state, "runtime", None)
-            app.state.runtime = create_runtime(Path(temp_dir))
+            runtime = create_runtime(Path(temp_dir))
+            app.state.runtime = runtime
             try:
                 with TestClient(app) as client:
-                    get_response = client.get("/api/v1/settings")
-                    patch_response = client.patch("/api/v1/settings", json={})
+                    get_response = client.get("/api/v1/settings", headers=_auth_headers(runtime))
+                    patch_response = client.patch("/api/v1/settings", json={}, headers=_auth_headers(runtime))
             finally:
                 app.state.runtime = original_runtime
 
@@ -41,7 +49,7 @@ class TestDutyLiveApi(unittest.TestCase):
                     with TestClient(app) as client:
                         with client.websocket_connect(
                             "/api/v1/duty/live",
-                            headers={"X-Duty-Request-Source": "test_suite"},
+                            headers=_auth_headers(runtime, {"X-Duty-Request-Source": "test_suite"}),
                         ) as websocket:
                             websocket.send_json({"type": "hello", "request_source": "test_suite"})
                             hello = websocket.receive_json()
@@ -82,7 +90,7 @@ class TestDutyLiveApi(unittest.TestCase):
                 with TestClient(app) as client:
                     with client.websocket_connect(
                         "/api/v1/duty/live",
-                        headers={"X-Duty-Request-Source": "test_suite"},
+                        headers=_auth_headers(app.state.runtime, {"X-Duty-Request-Source": "test_suite"}),
                     ) as websocket:
                         websocket.send_json(
                             {
@@ -97,6 +105,18 @@ class TestDutyLiveApi(unittest.TestCase):
 
         self.assertEqual(error_message["type"], "error")
         self.assertIn("Unsupported message type", error_message["message"])
+
+    def test_snapshot_requires_bearer_token(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            original_runtime = getattr(app.state, "runtime", None)
+            app.state.runtime = create_runtime(Path(temp_dir))
+            try:
+                with TestClient(app) as client:
+                    response = client.get("/api/v1/snapshot")
+            finally:
+                app.state.runtime = original_runtime
+
+        self.assertEqual(response.status_code, 401)
 
 
 if __name__ == "__main__":

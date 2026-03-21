@@ -5,10 +5,18 @@ from pathlib import Path
 from unittest import mock
 
 from fastapi.testclient import TestClient
+from starlette.websockets import WebSocketDisconnect
 
 from core import app
 from runtime import create_runtime
 from state_ops import Context, load_state, save_json_atomic, save_roster_entries, save_schedule_entry_edit
+
+
+def _auth_headers(runtime, extra: dict | None = None) -> dict:
+    headers = {"Authorization": f"Bearer {runtime.access_token}"}
+    if extra:
+        headers.update(extra)
+    return headers
 
 
 def _seed_roster(context: Context, entries: list[dict]) -> None:
@@ -255,6 +263,7 @@ class TestScheduleEntryEditApi(unittest.TestCase):
                             "create_if_missing": False,
                             "ledger_mode": "skip",
                         },
+                        headers=_auth_headers(runtime),
                     )
             finally:
                 app.state.runtime = original_runtime
@@ -299,7 +308,7 @@ class TestScheduleEntryEditApi(unittest.TestCase):
 
                 with mock.patch.object(runtime.command_service, "run_schedule", side_effect=fake_run_schedule):
                     with TestClient(app) as client:
-                        with client.websocket_connect("/api/v1/duty/live") as websocket:
+                        with client.websocket_connect("/api/v1/duty/live", headers=_auth_headers(runtime)) as websocket:
                             websocket.send_json({"type": "hello"})
                             self.assertEqual(websocket.receive_json()["type"], "hello")
 
@@ -342,6 +351,20 @@ class TestScheduleEntryEditApi(unittest.TestCase):
         self.assertIn("schedule_complete", received_types)
         self.assertIsNotNone(saved_payload)
         self.assertEqual(saved_payload["snapshot"]["state"]["schedule_pool"][0]["area_assignments"], {"教室": ["Bob"]})
+
+    def test_duty_live_requires_bearer_token(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            original_runtime = getattr(app.state, "runtime", None)
+            app.state.runtime = create_runtime(Path(temp_dir))
+            try:
+                with TestClient(app) as client:
+                    with self.assertRaises(WebSocketDisconnect) as ctx:
+                        with client.websocket_connect("/api/v1/duty/live") as websocket:
+                            websocket.receive_json()
+            finally:
+                app.state.runtime = original_runtime
+
+        self.assertEqual(ctx.exception.code, 4401)
 
 
 if __name__ == "__main__":

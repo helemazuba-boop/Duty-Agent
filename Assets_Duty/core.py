@@ -17,8 +17,11 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from fastapi import FastAPI, BackgroundTasks, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
+from auth import build_http_unauthorized_response, is_mcp_path, is_protected_http_path, is_public_http_path, is_request_authorized
+from mcp_server import build_mcp_http_app
 from runtime import create_runtime
 from routers import config, duty, roster
 import uvicorn
@@ -29,7 +32,10 @@ WEB_DIRECTORY = Path(__file__).resolve().parent / "web"
 async def lifespan(app: FastAPI):
     # Startup logic
     print(f"[Lifespan] Engine starting in {os.getcwd()}", flush=True)
-    yield
+    app.state.mcp_http_app = build_mcp_http_app(app)
+    async with app.state.mcp_http_app.router.lifespan_context(app.state.mcp_http_app):
+        yield
+    app.state.mcp_http_app = None
     # Shutdown logic
     print("[Lifespan] Engine shutting down", flush=True)
 
@@ -41,7 +47,44 @@ app.add_middleware(
     allow_origins=["*"],
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["Mcp-Session-Id"],
 )
+
+
+async def mcp_mount(scope, receive, send):
+    mounted_app = getattr(app.state, "mcp_http_app", None)
+    if mounted_app is None:
+        response = JSONResponse(status_code=503, content={"detail": "MCP app is not initialized."})
+        await response(scope, receive, send)
+        return
+    await mounted_app(scope, receive, send)
+
+
+app.mount("/mcp", mcp_mount, name="mcp")
+
+
+@app.middleware("http")
+async def require_bearer_for_protected_routes(request: Request, call_next):
+    path = request.url.path
+    if request.method.upper() == "OPTIONS" or is_public_http_path(path):
+        return await call_next(request)
+
+    if is_mcp_path(path):
+        runtime = getattr(request.app.state, "runtime", None)
+        if runtime is None or not getattr(runtime, "enable_mcp", False):
+            return JSONResponse(status_code=404, content={"detail": "Not Found"})
+        if not is_request_authorized(request, runtime):
+            return build_http_unauthorized_response()
+        return await call_next(request)
+
+    if is_protected_http_path(path):
+        runtime = getattr(request.app.state, "runtime", None)
+        if runtime is None:
+            return JSONResponse(status_code=503, content={"detail": "Runtime is not initialized."})
+        if not is_request_authorized(request, runtime):
+            return build_http_unauthorized_response()
+
+    return await call_next(request)
 
 @app.get("/app")
 async def web_app_root():
@@ -154,6 +197,7 @@ def main():
             temp_sock.close()
         
         print(f"__DUTY_SERVER_PORT__:{actual_port}", flush=True)
+        print(f"__DUTY_SERVER_TOKEN__:{app.state.runtime.access_token}", flush=True)
         
         # Start suicide watch thread
         watch_thread = threading.Thread(

@@ -9,6 +9,13 @@ from runtime import create_runtime
 from state_ops import Context, load_roster_entries, save_roster_entries
 
 
+def _auth_headers(runtime, extra: dict | None = None) -> dict:
+    headers = {"Authorization": f"Bearer {runtime.access_token}"}
+    if extra:
+        headers.update(extra)
+    return headers
+
+
 class TestRosterStore(unittest.TestCase):
     def test_save_roster_entries_normalizes_duplicates_and_persists(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -52,11 +59,11 @@ class TestRosterApi(unittest.TestCase):
                                 {"id": 1, "name": "Alice", "active": False},
                             ]
                         },
-                        headers={"X-Duty-Request-Source": "test_suite"},
+                        headers=_auth_headers(app.state.runtime, {"X-Duty-Request-Source": "test_suite"}),
                     )
                     get_response = client.get(
                         "/api/v1/roster",
-                        headers={"X-Duty-Request-Source": "test_suite"},
+                        headers=_auth_headers(app.state.runtime, {"X-Duty-Request-Source": "test_suite"}),
                     )
             finally:
                 app.state.runtime = original_runtime
@@ -73,6 +80,19 @@ class TestRosterApi(unittest.TestCase):
             },
         )
         self.assertEqual(get_response.json(), put_response.json())
+
+    def test_roster_requires_bearer_token(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            original_runtime = getattr(app.state, "runtime", None)
+            app.state.runtime = create_runtime(Path(temp_dir))
+            try:
+                with TestClient(app) as client:
+                    response = client.get("/api/v1/roster")
+            finally:
+                app.state.runtime = original_runtime
+
+        self.assertEqual(response.status_code, 401)
+        self.assertEqual(response.json()["detail"], "Missing or invalid bearer token.")
 
 
 if __name__ == "__main__":

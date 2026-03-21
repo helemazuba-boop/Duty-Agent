@@ -53,21 +53,30 @@ public class DutyPythonIpcService : IPythonIpcService
     private const int EngineStartupTimeoutSeconds = 15;
     private const string TraceHeaderName = "X-Duty-Trace-Id";
     private const string RequestSourceHeaderName = "X-Duty-Request-Source";
+    private const string AuthorizationHeaderName = "Authorization";
+    private const string PortBootstrapPrefix = "__DUTY_SERVER_PORT__:";
+    private const string TokenBootstrapPrefix = "__DUTY_SERVER_TOKEN__:";
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         PropertyNameCaseInsensitive = true
     };
 
     private TaskCompletionSource<int> _portTcs = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private TaskCompletionSource<string> _tokenTcs = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private volatile EngineState _state = EngineState.NotStarted;
     private ClientWebSocket? _controlSocket;
     public EngineState State => _state;
     public bool IsReady => _state == EngineState.Ready;
     public string? LastErrorMessage { get; private set; }
     public string ServerBaseUrl => _serverPort > 0 ? $"http://127.0.0.1:{_serverPort}" : string.Empty;
-    public string WebAppUrl => string.IsNullOrWhiteSpace(ServerBaseUrl) ? string.Empty : $"{ServerBaseUrl}/app/";
+    public string WebAppUrl => string.IsNullOrWhiteSpace(ServerBaseUrl)
+        ? string.Empty
+        : string.IsNullOrWhiteSpace(_accessToken)
+            ? $"{ServerBaseUrl}/app/"
+            : $"{ServerBaseUrl}/app/#access_token={Uri.EscapeDataString(_accessToken)}";
     private readonly object _stateLock = new();
     private Task? _initializeTask;
+    private string? _accessToken;
 
     public DutyPythonIpcService(IConfigManager configManager, DutyPluginPaths pluginPaths)
     {
@@ -100,6 +109,10 @@ public class DutyPythonIpcService : IPythonIpcService
             if (_portTcs.Task.IsCompleted)
             {
                 _portTcs = new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously);
+            }
+            if (_tokenTcs.Task.IsCompleted)
+            {
+                _tokenTcs = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
             }
 
             _initializeTask = InitializeBackgroundAsync();
@@ -137,14 +150,16 @@ public class DutyPythonIpcService : IPythonIpcService
             var process = new Process { StartInfo = startInfo, EnableRaisingEvents = true };
             _pythonProcess = process;
             var startupPortTcs = _portTcs;
+            var startupTokenTcs = _tokenTcs;
 
             process.OutputDataReceived += (s, e) =>
             {
                 if (string.IsNullOrEmpty(e.Data)) return;
                 Debug.WriteLine($"[Python] {e.Data}");
-                if (e.Data.StartsWith("__DUTY_SERVER_PORT__:"))
+                if (e.Data.StartsWith(PortBootstrapPrefix, StringComparison.Ordinal))
                 {
-                    if (int.TryParse(e.Data.Split(':')[1], out var port))
+                    var portText = e.Data[PortBootstrapPrefix.Length..];
+                    if (int.TryParse(portText, out var port))
                     {
                         lock (_stateLock)
                         {
@@ -158,6 +173,28 @@ public class DutyPythonIpcService : IPythonIpcService
 
                         startupPortTcs.TrySetResult(port);
                     }
+                    return;
+                }
+
+                if (e.Data.StartsWith(TokenBootstrapPrefix, StringComparison.Ordinal))
+                {
+                    var token = e.Data[TokenBootstrapPrefix.Length..].Trim();
+                    if (string.IsNullOrWhiteSpace(token))
+                    {
+                        return;
+                    }
+
+                    lock (_stateLock)
+                    {
+                        if (!ReferenceEquals(_pythonProcess, process))
+                        {
+                            return;
+                        }
+
+                        _accessToken = token;
+                    }
+
+                    startupTokenTcs.TrySetResult(token);
                 }
             };
 
@@ -195,6 +232,7 @@ public class DutyPythonIpcService : IPythonIpcService
                 }
 
                 startupPortTcs.TrySetException(new Exception($"Python engine process exited unexpectedly with code {exitCode}"));
+                startupTokenTcs.TrySetException(new Exception($"Python engine process exited unexpectedly with code {exitCode}"));
 
                 if (shouldFaultActiveEngine)
                 {
@@ -203,6 +241,7 @@ public class DutyPythonIpcService : IPythonIpcService
                         if (ReferenceEquals(_pythonProcess, process))
                         {
                             _serverPort = 0;
+                            _accessToken = null;
                         }
                     }
                 }
@@ -224,6 +263,10 @@ public class DutyPythonIpcService : IPythonIpcService
             {
                 await startupPortTcs.Task.ConfigureAwait(false);
             }
+            using (cts.Token.Register(() => startupTokenTcs.TrySetException(new TimeoutException($"Python engine token bootstrap timed out ({EngineStartupTimeoutSeconds}s)."))))
+            {
+                await startupTokenTcs.Task.ConfigureAwait(false);
+            }
 
             _state = EngineState.Ready;
             Debug.WriteLine($"Python Engine effectively ready on port {_serverPort}");
@@ -234,12 +277,13 @@ public class DutyPythonIpcService : IPythonIpcService
             _state = EngineState.Faulted;
             string forensicLog;
             lock (_errorBuffer) forensicLog = _errorBuffer.ToString();
-            
+                
             LastErrorMessage = string.IsNullOrWhiteSpace(forensicLog) 
                 ? ex.Message 
                 : $"{ex.Message}\n--- Python Error ---\n{forensicLog}";
                 
             _portTcs.TrySetException(new Exception(LastErrorMessage));
+            _tokenTcs.TrySetException(new Exception(LastErrorMessage));
             ShutdownPythonServer();
         }
         finally
@@ -259,6 +303,7 @@ public class DutyPythonIpcService : IPythonIpcService
         }
         
         Task<int> waitTask;
+        Task<string> tokenWaitTask;
         lock (_stateLock)
         {
             if (_state == EngineState.Faulted)
@@ -267,11 +312,13 @@ public class DutyPythonIpcService : IPythonIpcService
             }
 
             waitTask = _portTcs.Task;
+            tokenWaitTask = _tokenTcs.Task;
         }
 
         await EnsureStartedAsync().ConfigureAwait(false);
 
         await waitTask.WaitAsync(cancellationToken).ConfigureAwait(false);
+        await tokenWaitTask.WaitAsync(cancellationToken).ConfigureAwait(false);
     }
 
     public async Task RestartEngineAsync()
@@ -285,6 +332,11 @@ public class DutyPythonIpcService : IPythonIpcService
             {
                 _portTcs = new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously);
             }
+            if (_tokenTcs.Task.IsCompleted)
+            {
+                _tokenTcs = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+            }
+            _accessToken = null;
         }
         await EnsureReadyAsync().ConfigureAwait(false);
     }
@@ -302,6 +354,11 @@ public class DutyPythonIpcService : IPythonIpcService
             {
                 _portTcs = new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously);
             }
+            if (_tokenTcs.Task.IsCompleted)
+            {
+                _tokenTcs = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+            }
+            _accessToken = null;
         }
 
         return Task.CompletedTask;
@@ -411,6 +468,7 @@ public class DutyPythonIpcService : IPythonIpcService
         var url = $"http://127.0.0.1:{_serverPort}/api/v1/duty/schedule";
         var jsonPayload = JsonSerializer.Serialize(requestPayload);
         using var request = new HttpRequestMessage(HttpMethod.Post, url);
+        ApplyAuthorizationHeader(request);
         request.Content = new StringContent(jsonPayload, Encoding.UTF8, "application/json");
 
         try
@@ -558,6 +616,7 @@ public class DutyPythonIpcService : IPythonIpcService
         };
         socket.Options.SetRequestHeader(TraceHeaderName, traceId);
         socket.Options.SetRequestHeader(RequestSourceHeaderName, requestSource);
+        ApplyAuthorizationHeader(socket.Options);
         var uri = new Uri($"ws://127.0.0.1:{_serverPort}/api/v1/duty/live");
         await socket.ConnectAsync(uri, cancellationToken).ConfigureAwait(false);
         _controlSocket = socket;
@@ -687,6 +746,7 @@ public class DutyPythonIpcService : IPythonIpcService
         await EnsureReadyAsync(cancellationToken).ConfigureAwait(false);
 
         using var request = new HttpRequestMessage(method, $"http://127.0.0.1:{_serverPort}{relativePath}");
+        ApplyAuthorizationHeader(request);
         request.Headers.TryAddWithoutValidation(TraceHeaderName, effectiveTraceId);
         request.Headers.TryAddWithoutValidation(RequestSourceHeaderName, effectiveRequestSource);
         if (payload != null)
@@ -788,6 +848,27 @@ public class DutyPythonIpcService : IPythonIpcService
         return normalized.Length <= maxLength ? normalized : normalized[..maxLength];
     }
 
+    private void ApplyAuthorizationHeader(HttpRequestMessage request)
+    {
+        if (string.IsNullOrWhiteSpace(_accessToken))
+        {
+            throw new InvalidOperationException("Backend access token is unavailable.");
+        }
+
+        request.Headers.Remove(AuthorizationHeaderName);
+        request.Headers.TryAddWithoutValidation(AuthorizationHeaderName, $"Bearer {_accessToken}");
+    }
+
+    private void ApplyAuthorizationHeader(ClientWebSocketOptions options)
+    {
+        if (string.IsNullOrWhiteSpace(_accessToken))
+        {
+            throw new InvalidOperationException("Backend access token is unavailable.");
+        }
+
+        options.SetRequestHeader(AuthorizationHeaderName, $"Bearer {_accessToken}");
+    }
+
     private void ShutdownPythonServer()
     {
         DisposeControlSocket();
@@ -803,7 +884,12 @@ public class DutyPythonIpcService : IPythonIpcService
             if (_serverPort > 0 && !process.HasExited)
             {
                 using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(2) };
-                var shutdownTask = client.PostAsync($"http://127.0.0.1:{_serverPort}/shutdown", null);
+                using var request = new HttpRequestMessage(HttpMethod.Post, $"http://127.0.0.1:{_serverPort}/shutdown");
+                if (!string.IsNullOrWhiteSpace(_accessToken))
+                {
+                    request.Headers.TryAddWithoutValidation(AuthorizationHeaderName, $"Bearer {_accessToken}");
+                }
+                var shutdownTask = client.SendAsync(request);
                 shutdownTask.Wait(2000); // Wait up to 2s for the request to be sent
             }
         }
@@ -823,6 +909,7 @@ public class DutyPythonIpcService : IPythonIpcService
             process.Dispose();
             _pythonProcess = null;
             _serverPort = 0;
+            _accessToken = null;
             DisposeJobObject();
         }
     }

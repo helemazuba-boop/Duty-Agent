@@ -744,9 +744,11 @@
     const LEGACY_API_KEY_MASK = '***runtime-only***';
     const HOST_API_KEY_MASK = '********';
     const urlParams = new URLSearchParams(window.location.search);
+    const hashParams = new URLSearchParams(window.location.hash.startsWith('#') ? window.location.hash.slice(1) : '');
     const forceHttpTransport = urlParams.get('transport') === 'http';
     const hasBridge = !!(window.chrome && window.chrome.webview) && !forceHttpTransport;
     const hasBackendTransport = window.location.protocol.startsWith('http');
+    const accessToken = String(hashParams.get('access_token') || '').trim();
 
     let runtimeMode = 'mock';
     let selectedRosterId = null;
@@ -789,6 +791,24 @@
         return `${prefix}-${window.crypto.randomUUID().replace(/-/g, '')}`;
       }
       return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+    }
+    function createBackendHeaders(extraHeaders) {
+      const headers = new Headers(extraHeaders || {});
+      if (accessToken) {
+        headers.set('Authorization', `Bearer ${accessToken}`);
+      }
+      return headers;
+    }
+    async function backendFetch(endpoint, options) {
+      if (!hasBackendTransport) {
+        throw new Error('当前页面未连接到 FastAPI。');
+      }
+      if (!accessToken) {
+        throw new Error('当前页面缺少访问令牌，请从宿主重新打开。');
+      }
+      const requestOptions = options && typeof options === 'object' ? { ...options } : {};
+      requestOptions.headers = createBackendHeaders(requestOptions.headers);
+      return fetch(endpoint, requestOptions);
     }
     function int(v, d) { const n = Number(v); return Number.isFinite(n) ? Math.trunc(n) : d; }
     function bool(v, d) {
@@ -1328,7 +1348,7 @@
       const endpoint = `${window.location.origin}/api/v1/config`;
       try {
         log('INFO', '开始从 FastAPI 加载后端配置。', { reason: reason || 'manual', endpoint });
-        const response = await fetch(endpoint, {
+        const response = await backendFetch(endpoint, {
           headers: {
             'Accept': 'application/json',
             'X-Duty-Request-Source': 'web_app'
@@ -1410,7 +1430,7 @@
           trace_id: traceId,
           roster_count: rosterSnapshot.length
         });
-        const response = await fetch(endpoint, {
+        const response = await backendFetch(endpoint, {
           method: 'PUT',
           headers: {
             'Accept': 'application/json',
@@ -1701,7 +1721,7 @@
       const endpoint = `${window.location.origin}/api/v1/snapshot`;
       try {
         log('INFO', '开始从 FastAPI 加载快照。', { reason: reason || 'manual', endpoint });
-        const response = await fetch(endpoint, {
+        const response = await backendFetch(endpoint, {
           headers: {
             'Accept': 'application/json',
             'X-Duty-Request-Source': 'web_app'
@@ -2121,7 +2141,7 @@
           apply_mode: applyMode
         });
         setRunInProgress(true, '正在执行排班，请稍候...');
-        const response = await fetch(endpoint, {
+        const response = await backendFetch(endpoint, {
           method: 'POST',
           headers: {
             'Accept': 'text/event-stream',

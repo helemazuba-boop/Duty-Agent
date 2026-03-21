@@ -6,6 +6,7 @@ import threading
 
 from fastapi import APIRouter, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import StreamingResponse
+from auth import WEBSOCKET_UNAUTHORIZED_CODE, is_websocket_authorized
 
 try:
     from models.schemas import DutyRequest, DutyScheduleEntrySaveRequest, DutyScheduleEntrySaveResponse
@@ -131,12 +132,17 @@ async def save_schedule_entry(request_data: DutyScheduleEntrySaveRequest, reques
 
 @router.websocket("/live")
 async def duty_live(websocket: WebSocket):
-    await websocket.accept()
     runtime = getattr(websocket.app.state, "runtime", None)
     if runtime is None:
+        await websocket.accept()
         await websocket.send_json({"type": "error", "message": "Runtime is not initialized."})
         await websocket.close(code=1011)
         return
+    if not is_websocket_authorized(websocket, runtime):
+        await websocket.close(code=WEBSOCKET_UNAUTHORIZED_CODE, reason="Unauthorized")
+        return
+
+    await websocket.accept()
 
     trace_id, request_source = _resolve_websocket_meta(websocket, runtime)
     runtime.logger.info(
