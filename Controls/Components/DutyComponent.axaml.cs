@@ -14,7 +14,7 @@ namespace DutyAgent.Controls.Components;
 public partial class DutyComponent : ComponentBase<DutyComponentSettings>
 {
     private readonly DispatcherTimer _timer;
-    private readonly DutyBackendService _service = IAppHost.GetService<DutyBackendService>();
+    private readonly DutyScheduleOrchestrator _service = IAppHost.GetService<DutyScheduleOrchestrator>();
 
     public DutyComponent()
     {
@@ -58,21 +58,7 @@ public partial class DutyComponent : ComponentBase<DutyComponentSettings>
                 return;
             }
 
-            _service.LoadConfig();
-            var now = DateTime.Now;
-            var targetDate = now.Date;
-            if (TimeSpan.TryParse(_service.Config.ComponentRefreshTime, out var refreshTime))
-            {
-                // The refresh time is the daily handover point:
-                // before this moment keep showing the previous day; after it show today.
-                if (now.TimeOfDay < refreshTime)
-                {
-                    targetDate = targetDate.AddDays(-1);
-                }
-            }
-
-            var targetDateString = targetDate.ToString("yyyy-MM-dd");
-            var item = state.SchedulePool.LastOrDefault(x => x.Date == targetDateString);
+            var item = _service.GetCurrentScheduleItem();
             if (item == null)
             {
                 ShowSingleRow("\u8BE5\u65E5\u6682\u65E0\u503C\u65E5\u5B89\u6392", isError: true);

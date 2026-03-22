@@ -1,0 +1,27 @@
+<UserControl x:Class="DutyAgent.Controls.Automations.ActionSettingsControls.RunDutyScheduleActionSettingsControl"
+             xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+             xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+             xmlns:ci="http://classisland.tech/schemas/xaml/core"
+             xmlns:local="using:DutyAgent.Controls.Automations.ActionSettingsControls"
+             mc:Ignorable="d">
+    <StackPanel DataContext="{Binding RelativeSource={RelativeSource Mode=FindAncestor, AncestorType=local:RunDutyScheduleActionSettingsControl}}"
+                Orientation="Vertical"
+                Spacing="8">
+        <ci:Field Label="指令">
+            <TextBox AcceptsReturn="True"
+                     MinHeight="72"
+                     Text="{Binding Settings.Instruction}"
+                     Watermark="留空则使用插件默认排班指令" />
+        </ci:Field>
+
+        <ci:Field Label="写入模式">
+            <ComboBox ItemsSource="{Binding ApplyModeOptions}"
+                      SelectedItem="{Binding Settings.ApplyMode}" />
+        </ci:Field>
+
+        <ToggleSwitch IsChecked="{Binding Settings.PublishCompletionNotification}"
+                      Content="执行后发送 Duty-Agent 通知" />
+    </StackPanel>
+</UserControl>

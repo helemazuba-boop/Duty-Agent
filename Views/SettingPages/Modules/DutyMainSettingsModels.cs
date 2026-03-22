@@ -1,46 +1,84 @@
 ﻿using DutyAgent.Models;
+using DutyAgent.Services;
 
 namespace DutyAgent.Views.SettingPages.Modules;
 
-internal sealed class DutySettingsFormModel
+internal enum DutyBackendConfigLoadState
 {
-    public string ApiKeyMask { get; init; } = string.Empty;
-    public string BaseUrl { get; init; } = string.Empty;
-    public string Model { get; init; } = string.Empty;
-    public string PromptMode { get; init; } = "Regular";
+    NotLoaded,
+    Loaded,
+    LoadFailed
+}
+
+internal sealed class DutyHostSettingsValues
+{
     public string AutoRunMode { get; init; } = "Off";
     public string AutoRunParameter { get; init; } = "Monday";
     public string AutoRunTime { get; init; } = "08:00";
     public bool AutoRunTriggerNotificationEnabled { get; init; }
     public bool DutyReminderEnabled { get; init; }
     public string DutyReminderTime { get; init; } = "07:40";
+    public string ServerPortMode { get; init; } = DutyServerPortModes.Random;
+    public string FixedServerPortText { get; init; } = string.Empty;
     public bool EnableMcp { get; init; }
     public bool EnableWebViewDebugLayer { get; init; }
     public string ComponentRefreshTime { get; init; } = "08:00";
-    public string DutyRule { get; init; } = string.Empty;
     public int NotificationDurationSeconds { get; init; } = 8;
 }
 
-internal sealed class DutySettingsApplyRequest
+internal sealed class DutyAccessSecurityValues
 {
-    public string? ApiKeyInput { get; init; }
-    public string? BaseUrl { get; init; }
-    public string? Model { get; init; }
-    public string PromptMode { get; init; } = "Regular";
-    public string AutoRunMode { get; init; } = "Off";
-    public string AutoRunParameter { get; init; } = "Monday";
-    public string AutoRunTime { get; init; } = "08:00";
-    public string ComponentRefreshTime { get; init; } = "08:00";
-    public bool AutoRunTriggerNotificationEnabled { get; init; }
-    public bool DutyReminderEnabled { get; init; }
-    public string DutyReminderTime { get; init; } = "07:40";
-    public bool EnableMcp { get; init; }
-    public bool EnableWebViewDebugLayer { get; init; }
+    public string AccessTokenMode { get; init; } = DutyAccessTokenModes.Dynamic;
+    public bool StaticAccessTokenConfigured { get; init; }
+}
+
+internal sealed class DutyBackendSettingsValues
+{
+    public string SelectedPlanId { get; init; } = DutyBackendModeIds.Standard;
+    public List<DutyPlanPreset> PlanPresets { get; init; } = [];
     public string? DutyRule { get; init; }
-    public int NotificationDurationSeconds { get; init; } = 8;
 }
 
-internal readonly record struct DutySettingsApplyResult(bool RestartRequired);
+internal sealed class DutySettingsPageValues
+{
+    public DutyHostSettingsValues Host { get; init; } = new();
+    public DutyBackendSettingsValues Backend { get; init; } = new();
+}
+
+internal sealed class DutySettingsSaveContext
+{
+    public DutySettingsPageValues Current { get; init; } = new();
+    public DutyHostSettingsValues LastAppliedHost { get; init; } = new();
+    public DutyBackendConfig? LastAppliedBackend { get; init; }
+    public DutySettingsDocument? LastLoadedDocument { get; init; }
+    public DutyBackendConfigLoadState BackendLoadState { get; init; } = DutyBackendConfigLoadState.NotLoaded;
+    public string BackendErrorMessage { get; init; } = string.Empty;
+}
+
+internal enum DutySettingsSaveMessageLevel
+{
+    Info,
+    Warning,
+    Error
+}
+
+internal readonly record struct DutySettingsSaveOutcome(
+    bool Success,
+    bool NoChanges,
+    bool RestartRequired,
+    bool HostChanged,
+    bool HostSaved,
+    bool BackendChanged,
+    bool BackendSaved,
+    string Message,
+    DutySettingsSaveMessageLevel MessageLevel,
+    DutySettingsDocument? AppliedDocument = null,
+    DutyHostSettingsValues? AppliedHost = null,
+    DutyBackendConfig? AppliedBackend = null);
+
+internal readonly record struct DutyHostSettingsSaveResult(
+    bool RestartRequired,
+    DutyHostSettingsValues AppliedValues);
 
 public sealed class DutyRosterRow
 {
@@ -78,6 +116,8 @@ internal sealed class DutySchedulePreview
 {
     public List<DutyScheduleRow> Rows { get; init; } = [];
     public string Summary { get; init; } = "暂无排班数据。";
+    public EngineState EngineStatus { get; init; }
+    public string? EngineLastError { get; init; }
 }
 
 internal sealed class DutyScheduleEditorData

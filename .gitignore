@@ -32,4 +32,6 @@ Thumbs.db
 .tmp/
 CLAUDE.md
 deploy.bat
-gitignore
+*.cipx
+
+!Assets_Duty/python-embed/**/*.pyd

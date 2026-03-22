@@ -6,9 +6,9 @@ namespace DutyAgent.Views.SettingPages.Modules;
 
 internal sealed class DutyMainSettingsRosterModule
 {
-    private readonly DutyBackendService _service;
+    private readonly DutyScheduleOrchestrator _service;
 
-    public DutyMainSettingsRosterModule(DutyBackendService service)
+    public DutyMainSettingsRosterModule(DutyScheduleOrchestrator service)
     {
         _service = service;
     }

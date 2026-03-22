@@ -5,15 +5,16 @@ namespace DutyAgent.Views.SettingPages.Modules;
 
 internal sealed class DutyMainSettingsScheduleModule
 {
-    private readonly DutyBackendService _service;
+    private readonly DutyScheduleOrchestrator _service;
 
-    public DutyMainSettingsScheduleModule(DutyBackendService service)
+    public DutyMainSettingsScheduleModule(DutyScheduleOrchestrator service)
     {
         _service = service;
     }
 
     public DutySchedulePreview BuildPreview(DutyState state)
     {
+
         var rows = state.SchedulePool
             .OrderBy(x => x.Date, StringComparer.Ordinal)
             .Select(item =>
@@ -24,7 +25,7 @@ internal sealed class DutyMainSettingsScheduleModule
                     .Select(x =>
                     {
                         var students = x.Value?.Where(n => !string.IsNullOrWhiteSpace(n)).ToList() ?? [];
-                        var text = students.Count > 0 ? string.Join("、", students) : "无";
+                        var text = students.Count > 0 ? string.Join("、", students) : "休";
                         return $"{x.Key}: {text}";
                     })
                     .ToList();
@@ -43,7 +44,9 @@ internal sealed class DutyMainSettingsScheduleModule
         return new DutySchedulePreview
         {
             Rows = rows,
-            Summary = rows.Count == 0 ? "暂无排班数据。" : $"共 {rows.Count} 条排班记录。"
+            Summary = rows.Count == 0 ? "暂无排班数据。" : $"共 {rows.Count} 条排班记录。",
+            EngineStatus = _service.EngineStatus,
+            EngineLastError = _service.EngineLastError
         };
     }
 

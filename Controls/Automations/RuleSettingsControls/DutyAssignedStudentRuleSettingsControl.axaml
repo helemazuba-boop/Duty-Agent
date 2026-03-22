@@ -1,0 +1,24 @@
+<ci:RuleSettingsControlBase x:Class="DutyAgent.Controls.Automations.RuleSettingsControls.DutyAssignedStudentRuleSettingsControl"
+                            x:TypeArguments="ruleSettings:DutyAssignedStudentRuleSettings"
+                            xmlns="https://github.com/avaloniaui"
+                            xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+                            xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+                            xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+                            xmlns:ci="http://classisland.tech/schemas/xaml/core"
+                            xmlns:local="using:DutyAgent.Controls.Automations.RuleSettingsControls"
+                            xmlns:ruleSettings="using:DutyAgent.Models.Automations.Rules"
+                            mc:Ignorable="d">
+    <StackPanel DataContext="{Binding RelativeSource={RelativeSource Mode=FindAncestor, AncestorType=local:DutyAssignedStudentRuleSettingsControl}}"
+                Orientation="Vertical"
+                Spacing="8">
+        <ci:Field Label="学生姓名">
+            <TextBox Text="{Binding Settings.StudentName}"
+                     Watermark="留空则忽略姓名条件" />
+        </ci:Field>
+
+        <ci:Field Label="区域名称">
+            <TextBox Text="{Binding Settings.AreaName}"
+                     Watermark="留空则匹配任意区域" />
+        </ci:Field>
+    </StackPanel>
+</ci:RuleSettingsControlBase>

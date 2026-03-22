@@ -14,14 +14,13 @@ from unittest.mock import patch, MagicMock
 # Ensure the module under test is importable
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from core import (
+from engine import (
     merge_schedule_pool,
     reconcile_credit_list,
     call_llm,
     anonymize_instruction,
     save_json_atomic,
     dedupe_pool_by_date,
-    merge_input_config,
     normalize_area_names,
     normalize_multi_area_schedule_ids,
     restore_schedule,
@@ -35,25 +34,6 @@ class TestAreaNameNormalization(unittest.TestCase):
 
     def test_missing_area_names_remains_empty(self):
         self.assertEqual(normalize_area_names(None), [])
-
-
-class TestMergeInputConfig(unittest.TestCase):
-    def test_root_fields_override_config_fields(self):
-        merged = merge_input_config(
-            {
-                "instruction": "root-instruction",
-                "model": "root-model",
-                "config": {
-                    "instruction": "config-instruction",
-                    "model": "config-model",
-                    "base_url": "https://example.com",
-                },
-            }
-        )
-        self.assertEqual(merged["instruction"], "root-instruction")
-        self.assertEqual(merged["model"], "root-model")
-        self.assertEqual(merged["base_url"], "https://example.com")
-
 
 class TestNormalizeScheduleNoValidation(unittest.TestCase):
     """Test the new 'no-validation' normalization logic."""
@@ -81,7 +61,7 @@ class TestNormalizeScheduleNoValidation(unittest.TestCase):
         self.assertEqual(len(normalized), 0)
 
     def test_no_force_fill(self):
-        """Should NOT fill up to per_day count if IDs are missing."""
+        """Should NOT fill up to the default slot count if IDs are missing."""
         # Request says 2 per day, but AI gives 0 or 1
         raw = [{"date": "2023-10-23", "area_ids": {"A": [1]}}]
         active = [1, 2, 3]
@@ -310,11 +290,14 @@ class TestCallLlmPayloadIsolation(unittest.TestCase):
             "llm_stream": False,
         }
         with patch(
-            "core.request_llm_non_stream",
-            side_effect=['{"bad": ]}', '{"ok": true}'],
+            "llm_transport.call_llm_raw",
+            return_value="no csv here",
+        ), patch(
+            "llm_transport.request_llm_non_stream",
+            return_value="<csv>\nDate,Assigned_IDs,Note\n2023-10-10,4,ok\n</csv>",
         ):
             parsed, _ = call_llm(messages, config)
-        self.assertEqual(parsed, {"ok": True})
+        self.assertEqual(parsed["schedule"][0]["date"], "2023-10-10")
         self.assertEqual(messages, [{"role": "user", "content": "hello"}])
 
 
