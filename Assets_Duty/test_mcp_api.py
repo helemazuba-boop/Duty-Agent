@@ -11,6 +11,7 @@ from auth import create_pbkdf2_sha256_verifier
 from core import app
 from mcp_server import MCP_SDK_IMPORT_ERROR
 from runtime import create_runtime
+from state_ops import Context, load_config, save_config
 
 
 def _mcp_headers(runtime, extra: dict | None = None, token: str | None = None) -> dict:
@@ -134,6 +135,11 @@ class TestMcpApi(unittest.TestCase):
     def test_mcp_initialize_list_tools_and_call_tools(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             original_runtime = getattr(app.state, "runtime", None)
+            context = Context(Path(temp_dir))
+            config = load_config(context)
+            config["api_key"] = "top-level-secret"
+            config["plan_presets"][0]["api_key"] = "preset-secret"
+            save_config(context, config)
             runtime = create_runtime(Path(temp_dir))
             runtime.enable_mcp = True
             app.state.runtime = runtime
@@ -199,6 +205,8 @@ class TestMcpApi(unittest.TestCase):
         snapshot = (inspect_payload or {}).get("snapshot", {})
         roster = snapshot.get("roster", [])
         self.assertEqual([item["name"] for item in roster], ["Alice", "Bob"])
+        self.assertEqual(snapshot.get("config", {}).get("api_key"), "")
+        self.assertEqual((snapshot.get("config", {}).get("plan_presets") or [])[0].get("api_key"), "")
         self.assertEqual((run_payload or {}).get("status"), "success")
         self.assertEqual((run_payload or {}).get("ai_response"), "result")
 

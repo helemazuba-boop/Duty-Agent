@@ -24,12 +24,26 @@ class DutyLoopbackRecoverableWebSocketError(DutyLoopbackError):
     pass
 
 
+def _redact_api_keys(value: Any) -> Any:
+    if isinstance(value, dict):
+        redacted: dict[str, Any] = {}
+        for key, item in value.items():
+            if str(key) == "api_key":
+                redacted[key] = ""
+            else:
+                redacted[key] = _redact_api_keys(item)
+        return redacted
+    if isinstance(value, list):
+        return [_redact_api_keys(item) for item in value]
+    return value
+
+
 def _normalize_schedule_result(payload: dict[str, Any] | None) -> dict[str, Any]:
     result = dict(payload or {})
     result.pop("type", None)
     result.pop("client_change_id", None)
     result.pop("request_source", None)
-    return result
+    return dict(_redact_api_keys(result))
 
 
 def _extract_response_detail(response: httpx.Response) -> str:
@@ -86,7 +100,7 @@ class DutyLoopbackClient:
         if response.status_code >= 400:
             raise DutyLoopbackError(f"{method.upper()} {path} failed: {_extract_response_detail(response)}")
 
-        return dict(response.json() or {})
+        return dict(_redact_api_keys(response.json() or {}))
 
     async def inspect_workspace(self) -> dict[str, Any]:
         transport = httpx.ASGITransport(app=self._app)
@@ -105,7 +119,7 @@ class DutyLoopbackClient:
 
         return {
             "engine_info": dict(engine_info_response.json() or {}),
-            "snapshot": dict(snapshot_response.json() or {}),
+            "snapshot": dict(_redact_api_keys(snapshot_response.json() or {})),
         }
 
     async def update_scheduler_config(self, payload: dict[str, Any]) -> dict[str, Any]:
