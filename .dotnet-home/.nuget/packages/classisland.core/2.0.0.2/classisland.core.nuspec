@@ -1,0 +1,41 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<package xmlns="http://schemas.microsoft.com/packaging/2013/05/nuspec.xsd">
+  <metadata>
+    <id>ClassIsland.Core</id>
+    <version>2.0.0.2</version>
+    <authors>HelloWRC</authors>
+    <requireLicenseAcceptance>true</requireLicenseAcceptance>
+    <license type="expression">LGPL-3.0-only</license>
+    <licenseUrl>https://licenses.nuget.org/LGPL-3.0-only</licenseUrl>
+    <readme>README.md</readme>
+    <projectUrl>https://classisland.tech/</projectUrl>
+    <description>ClassIsland 应用核心依赖库，包括 ClassIsland 封装的一些常用控件和方法。</description>
+    <copyright>Copyright (c) 2024 HelloWRC</copyright>
+    <tags>classisland avalonia</tags>
+    <repository type="git" url="https://github.com/ClassIsland/ClassIsland" commit="af9cdeaaa8226ec589f401219d379f5be43396ec" />
+    <dependencies>
+      <group targetFramework="net8.0">
+        <dependency id="ClassIsland.Platforms.Abstractions" version="2.0.0.2" exclude="Build,Analyzers" />
+        <dependency id="ClassIsland.Shared.IPC" version="2.0.0.2" exclude="Build,Analyzers" />
+        <dependency id="ClassIsland.Shared" version="2.0.0.2" exclude="Build,Analyzers" />
+        <dependency id="AsyncImageLoader.Avalonia" version="3.3.0" exclude="Build,Analyzers" />
+        <dependency id="Avalonia" version="11.3.6" exclude="Build,Analyzers" />
+        <dependency id="Avalonia.Controls.ColorPicker" version="11.3.6" exclude="Build,Analyzers" />
+        <dependency id="Avalonia.Desktop" version="11.3.6" exclude="Build,Analyzers" />
+        <dependency id="Avalonia.Labs.CommandManager" version="11.3.0" exclude="Build,Analyzers" />
+        <dependency id="ClassIsland.Markdown.Avalonia" version="11.0.3.4" exclude="Build,Analyzers" />
+        <dependency id="FluentAvaloniaUI" version="2.4.1" exclude="Build,Analyzers" />
+        <dependency id="Lib.Harmony.Thin" version="2.4.2" exclude="Build,Analyzers" />
+        <dependency id="Microsoft.Extensions.Configuration.UserSecrets" version="8.0.0" exclude="Build,Analyzers" />
+        <dependency id="Microsoft.Extensions.Hosting" version="8.0.0" exclude="Build,Analyzers" />
+        <dependency id="Microsoft.Extensions.Hosting.Abstractions" version="8.0.0" exclude="Build,Analyzers" />
+        <dependency id="Octokit" version="9.1.0" exclude="Build,Analyzers" />
+        <dependency id="ReactiveUI" version="20.2.45" exclude="Build,Analyzers" />
+        <dependency id="SoundFlow" version="1.2.1" exclude="Build,Analyzers" />
+        <dependency id="System.Text.Encoding.CodePages" version="8.0.0" exclude="Build,Analyzers" />
+        <dependency id="Xaml.Behaviors" version="11.2.0.14" exclude="Build,Analyzers" />
+        <dependency id="YamlDotNet" version="16.3.0" exclude="Build,Analyzers" />
+      </group>
+    </dependencies>
+  </metadata>
+</package>

@@ -1,0 +1,23 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<package xmlns="http://schemas.microsoft.com/packaging/2013/05/nuspec.xsd">
+  <metadata>
+    <id>ClassIsland.Platforms.Abstractions</id>
+    <version>2.0.0.2</version>
+    <authors>HelloWRC</authors>
+    <requireLicenseAcceptance>true</requireLicenseAcceptance>
+    <license type="expression">LGPL-3.0-only</license>
+    <licenseUrl>https://licenses.nuget.org/LGPL-3.0-only</licenseUrl>
+    <readme>README.md</readme>
+    <projectUrl>https://classisland.tech/</projectUrl>
+    <description>ClassIsland 应用跨平台抽象基类。</description>
+    <copyright>Copyright (c) 2024 HelloWRC</copyright>
+    <tags>classisland avalonia</tags>
+    <repository type="git" url="https://github.com/ClassIsland/ClassIsland" commit="af9cdeaaa8226ec589f401219d379f5be43396ec" />
+    <dependencies>
+      <group targetFramework="net8.0">
+        <dependency id="ClassIsland.Shared" version="2.0.0.2" exclude="Build,Analyzers" />
+        <dependency id="Avalonia" version="11.3.6" exclude="Build,Analyzers" />
+      </group>
+    </dependencies>
+  </metadata>
+</package>

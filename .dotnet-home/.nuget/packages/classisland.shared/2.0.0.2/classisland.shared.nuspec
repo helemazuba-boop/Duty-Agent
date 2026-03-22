@@ -1,0 +1,34 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<package xmlns="http://schemas.microsoft.com/packaging/2013/05/nuspec.xsd">
+  <metadata>
+    <id>ClassIsland.Shared</id>
+    <version>2.0.0.2</version>
+    <authors>HelloWRC</authors>
+    <requireLicenseAcceptance>true</requireLicenseAcceptance>
+    <license type="expression">LGPL-3.0-only</license>
+    <licenseUrl>https://licenses.nuget.org/LGPL-3.0-only</licenseUrl>
+    <readme>README.md</readme>
+    <projectUrl>https://classisland.tech/</projectUrl>
+    <description>ClassIsland 的核心共享库。</description>
+    <copyright>Copyright (c) 2024 HelloWRC</copyright>
+    <tags>classisland</tags>
+    <repository type="git" url="https://github.com/ClassIsland/ClassIsland" commit="af9cdeaaa8226ec589f401219d379f5be43396ec" />
+    <dependencies>
+      <group targetFramework=".NETFramework4.7.2">
+        <dependency id="CommunityToolkit.Mvvm" version="8.2.1" exclude="Build,Analyzers" />
+        <dependency id="CsesSharp" version="1.0.0" exclude="Build,Analyzers" />
+        <dependency id="Google.Protobuf" version="3.27.0-rc1" exclude="Build,Analyzers" />
+        <dependency id="Grpc.Net.Client" version="2.71.0" exclude="Build,Analyzers" />
+        <dependency id="Microsoft.Extensions.Hosting.Abstractions" version="8.0.0" exclude="Build,Analyzers" />
+        <dependency id="System.Text.Json" version="8.0.5" exclude="Build,Analyzers" />
+      </group>
+      <group targetFramework="net8.0">
+        <dependency id="CommunityToolkit.Mvvm" version="8.2.1" exclude="Build,Analyzers" />
+        <dependency id="CsesSharp" version="1.0.0" exclude="Build,Analyzers" />
+        <dependency id="Google.Protobuf" version="3.27.0-rc1" exclude="Build,Analyzers" />
+        <dependency id="Grpc.Net.Client" version="2.71.0" exclude="Build,Analyzers" />
+        <dependency id="Microsoft.Extensions.Hosting.Abstractions" version="8.0.0" exclude="Build,Analyzers" />
+      </group>
+    </dependencies>
+  </metadata>
+</package>

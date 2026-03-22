@@ -1,0 +1,22 @@
+﻿Found 3 matching types.
+Type: ClassIsland.Core.Models.Notification.NotificationContent (IsInterface: False)
+  Property: Object Content
+  Property: DataTemplate ContentTemplate
+  Property: Object ContentTemplateResourceKey
+  Property: Boolean IsSpeechEnabled
+  Property: String SpeechContent
+  Property: IBrush Color
+  Property: TimeSpan Duration
+  Property: Nullable`1 EndTime
+  Constructor: .ctor()
+  Constructor: .ctor(Object content)
+Type: ClassIsland.Core.Models.Notification.NotificationRequest (IsInterface: False)
+  Property: NotificationContent MaskContent
+  Property: NotificationContent OverlayContent
+  Property: NotificationSettings RequestNotificationSettings
+  Property: CancellationToken CancellationToken
+  Property: CancellationToken CompletedToken
+  Property: Guid ChannelId
+  Constructor: .ctor()
+Type: ClassIsland.Core.Controls.NotificationTemplates.RollingTextTemplate (IsInterface: False)
+  Constructor: .ctor(RollingTextTemplateData data)

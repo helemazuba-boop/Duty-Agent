@@ -1,0 +1,29 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<package xmlns="http://schemas.microsoft.com/packaging/2013/05/nuspec.xsd">
+  <metadata>
+    <id>Xaml.Behaviors</id>
+    <version>11.2.0.14</version>
+    <authors>Wiesław Šoltés</authors>
+    <license type="expression">MIT</license>
+    <licenseUrl>https://licenses.nuget.org/MIT</licenseUrl>
+    <projectUrl>https://github.com/wieslawsoltes/Xaml.Behaviors</projectUrl>
+    <description>Easily add interactivity to your Avalonia apps using XAML Behaviors. Behaviors encapsulate reusable functionalities for elements that can be easily added to your XAML without the need for more imperative code.</description>
+    <copyright>Copyright © Wiesław Šoltés 2025</copyright>
+    <tags>Avalonia Behavior Action Behaviors Actions Managed C# Interaction Interactivity Interactions Xaml</tags>
+    <repository type="git" url="https://github.com/wieslawsoltes/Xaml.Behaviors" commit="0c303a6909ff6b9c8e95b1ad134108892682bb47" />
+    <dependencies>
+      <group targetFramework="net6.0">
+        <dependency id="Avalonia" version="11.2.0" exclude="Build,Analyzers" />
+        <dependency id="System.Reactive" version="6.0.1" exclude="Build,Analyzers" />
+      </group>
+      <group targetFramework="net8.0">
+        <dependency id="Avalonia" version="11.2.0" exclude="Build,Analyzers" />
+        <dependency id="System.Reactive" version="6.0.1" exclude="Build,Analyzers" />
+      </group>
+      <group targetFramework=".NETStandard2.0">
+        <dependency id="Avalonia" version="11.2.0" exclude="Build,Analyzers" />
+        <dependency id="System.Reactive" version="6.0.1" exclude="Build,Analyzers" />
+      </group>
+    </dependencies>
+  </metadata>
+</package>

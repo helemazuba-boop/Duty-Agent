@@ -1,0 +1,30 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<package xmlns="http://schemas.microsoft.com/packaging/2013/05/nuspec.xsd">
+  <metadata>
+    <id>AsyncImageLoader.Avalonia</id>
+    <version>3.3.0</version>
+    <title>AsyncImageLoader.Avalonia</title>
+    <authors>SKProCH</authors>
+    <licenseUrl>https://github.com/AvaloniaUtils/AsyncImageLoader.Avalonia/blob/master/LICENSE</licenseUrl>
+    <readme>README.md</readme>
+    <projectUrl>https://github.com/AvaloniaUtils/AsyncImageLoader.Avalonia</projectUrl>
+    <description>Provides way to asynchronous bitmap loading from web for Avalonia Image control and more</description>
+    <releaseNotes>## What's Changed
+* Add errors logging to loaders by @SKProCH in https://github.com/AvaloniaUtils/AsyncImageLoader.Avalonia/pull/24
+
+## New Contributors
+* @SKProCH made their first contribution in https://github.com/AvaloniaUtils/AsyncImageLoader.Avalonia/pull/24
+
+**Full Changelog**: https://github.com/AvaloniaUtils/AsyncImageLoader.Avalonia/compare/v3.2.1...v3.3.0</releaseNotes>
+    <tags>image cross-platform avalonia avaloniaui c-sharp-library</tags>
+    <repository type="git" url="https://github.com/AvaloniaUtils/AsyncImageLoader.Avalonia.git" commit="00edb42cdbf008f87f42c49d6f57034171bff02f" />
+    <dependencies>
+      <group targetFramework=".NETStandard2.0">
+        <dependency id="Avalonia" version="11.0.0" exclude="Build,Analyzers" />
+      </group>
+      <group targetFramework=".NETStandard2.1">
+        <dependency id="Avalonia" version="11.0.0" exclude="Build,Analyzers" />
+      </group>
+    </dependencies>
+  </metadata>
+</package>

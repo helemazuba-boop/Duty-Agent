@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "python_path": ".\\Assets_Duty\\python-embed\\python.exe",
+  "auto_run_mode": "Off",
+  "auto_run_parameter": "Monday",
+  "enable_mcp": false,
+  "enable_webview_debug_layer": false,
+  "auto_run_time": "08:00",
+  "auto_run_trigger_notification_enabled": true,
+  "auto_run_retry_times": 3,
+  "ai_consecutive_failures": 0,
+  "last_auto_run_date": "",
+  "component_refresh_time": "08:00",
+  "notification_duration_seconds": 8,
+  "duty_reminder_enabled": false,
+  "duty_reminder_times": [
+    "07:40"
+  ]
+}

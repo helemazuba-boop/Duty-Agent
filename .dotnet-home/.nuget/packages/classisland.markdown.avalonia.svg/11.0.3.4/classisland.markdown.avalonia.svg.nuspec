@@ -1,0 +1,22 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<package xmlns="http://schemas.microsoft.com/packaging/2013/05/nuspec.xsd">
+  <metadata>
+    <id>ClassIsland.Markdown.Avalonia.Svg</id>
+    <version>11.0.3.4</version>
+    <authors>grifsun,whistyun</authors>
+    <license type="expression">MIT</license>
+    <licenseUrl>https://licenses.nuget.org/MIT</licenseUrl>
+    <readme>Markdown.Avalonia.Svg.md</readme>
+    <projectUrl>https://github.com/ClassIsland/Markdown.Avalonia</projectUrl>
+    <description>Package Description</description>
+    <copyright>Copyright (c) 2023 grifsun, whistyun</copyright>
+    <repository type="git" commit="ff10b453feda8e9fe7aa627137fab3c3954981aa" />
+    <dependencies>
+      <group targetFramework="net8.0">
+        <dependency id="ClassIsland.Markdown.Avalonia.Tight" version="11.0.3.4" exclude="Build,Analyzers" />
+        <dependency id="Avalonia" version="11.3.6" exclude="Build,Analyzers" />
+        <dependency id="Avalonia.Svg" version="11.0.0" exclude="Build,Analyzers" />
+      </group>
+    </dependencies>
+  </metadata>
+</package>

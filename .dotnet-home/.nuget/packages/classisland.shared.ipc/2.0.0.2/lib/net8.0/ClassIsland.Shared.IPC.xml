@@ -1,0 +1,248 @@
+<?xml version="1.0"?>
+<doc>
+    <assembly>
+        <name>ClassIsland.Shared.IPC</name>
+    </assembly>
+    <members>
+        <member name="T:ClassIsland.Shared.IPC.Abstractions.Services.IFooService">
+            <summary>
+            测试服务。
+            </summary>
+        </member>
+        <member name="M:ClassIsland.Shared.IPC.Abstractions.Services.IFooService.DoSomething">
+            <summary>
+            随便干点啥。
+            </summary>
+        </member>
+        <member name="T:ClassIsland.Shared.IPC.Abstractions.Services.IPublicLessonsService">
+            <summary>
+            向其它进程公开的课程服务，用于存储当前课表状态与信息。
+            </summary>
+        </member>
+        <member name="P:ClassIsland.Shared.IPC.Abstractions.Services.IPublicLessonsService.IsTimerRunning">
+            <summary>
+            主计时器是否正在工作。
+            </summary>
+        </member>
+        <member name="P:ClassIsland.Shared.IPC.Abstractions.Services.IPublicLessonsService.CurrentClassPlan">
+            <summary>
+            当前加载的课表。如果当前没有课表，则为 null。
+            </summary>
+        </member>
+        <member name="P:ClassIsland.Shared.IPC.Abstractions.Services.IPublicLessonsService.CurrentSelectedIndex">
+            <summary>
+            当前所处时间点<see cref="T:ClassIsland.Shared.Models.Profile.TimeLayoutItem"/>的索引。如无，则为 -1。
+            </summary>
+        </member>
+        <member name="P:ClassIsland.Shared.IPC.Abstractions.Services.IPublicLessonsService.NextClassSubject">
+            <summary>
+            当前或下一节课（下一个上课类型的时间点<see cref="T:ClassIsland.Shared.Models.Profile.TimeLayoutItem"/>）的科目。如无，则为 <see cref="F:ClassIsland.Shared.Models.Profile.Subject.Fallback"/>。
+            </summary>
+        </member>
+        <member name="P:ClassIsland.Shared.IPC.Abstractions.Services.IPublicLessonsService.NextBreakingTimeLayoutItem">
+            <summary>
+            当前或下一个课间休息类型的时间点。如无，则为 <see cref="F:ClassIsland.Shared.Models.Profile.TimeLayoutItem.Empty"/>。
+            </summary>
+        </member>
+        <member name="P:ClassIsland.Shared.IPC.Abstractions.Services.IPublicLessonsService.NextClassTimeLayoutItem">
+            <summary>
+            当前或下一个上课类型的时间点。如无，则为 <see cref="F:ClassIsland.Shared.Models.Profile.TimeLayoutItem.Empty"/>。
+            </summary>
+        </member>
+        <member name="P:ClassIsland.Shared.IPC.Abstractions.Services.IPublicLessonsService.OnClassLeftTime">
+            <summary>
+            距上课剩余时间。如果当前正在上课，或没有下一节课程，则为 <see cref="F:System.TimeSpan.Zero"/>。
+            </summary>
+        </member>
+        <member name="P:ClassIsland.Shared.IPC.Abstractions.Services.IPublicLessonsService.OnBreakingTimeLeftTime">
+            <summary>
+            距下课剩余时间。如果当前不在上课，则为 <see cref="F:System.TimeSpan.Zero"/>。
+            </summary>
+        </member>
+        <member name="P:ClassIsland.Shared.IPC.Abstractions.Services.IPublicLessonsService.CurrentState">
+            <summary>
+            当前时间点状态。
+            </summary>
+        </member>
+        <member name="P:ClassIsland.Shared.IPC.Abstractions.Services.IPublicLessonsService.CurrentTimeLayoutItem">
+            <summary>
+            当前所处的时间点。如果当前没有时间点，则为 <see cref="F:ClassIsland.Shared.Models.Profile.TimeLayoutItem.Empty"/>。
+            </summary>
+        </member>
+        <member name="P:ClassIsland.Shared.IPC.Abstractions.Services.IPublicLessonsService.CurrentSubject">
+            <summary>
+            当前所处时间点<see cref="T:ClassIsland.Shared.Models.Profile.TimeLayoutItem"/>的科目。<br/><br/>
+            如果当前是课间休息，则其中 <see cref="P:ClassIsland.Shared.Models.Profile.Subject.Name"/>(科目名) 为课间名称。<br/>
+            如果当前课程未定义，则为 <see cref="F:ClassIsland.Shared.Models.Profile.Subject.Fallback"/>。<br/>
+            如果当前没有时间点，或没有加载课表，则为 null。<br/>
+            </summary>
+        </member>
+        <member name="P:ClassIsland.Shared.IPC.Abstractions.Services.IPublicLessonsService.IsClassPlanEnabled">
+            <summary>
+            是否启用课表。
+            </summary>
+        </member>
+        <member name="P:ClassIsland.Shared.IPC.Abstractions.Services.IPublicLessonsService.IsClassPlanLoaded">
+            <summary>
+            是否已加载课表。
+            </summary>
+        </member>
+        <member name="P:ClassIsland.Shared.IPC.Abstractions.Services.IPublicLessonsService.IsLessonConfirmed">
+            <summary>
+            是否已确定当前时间点。
+            </summary>
+        </member>
+        <member name="M:ClassIsland.Shared.IPC.Abstractions.Services.IPublicLessonsService.GetClassPlanByDate(System.DateTime)">
+            <summary>
+            根据日期获取当天的课表<see cref="T:ClassIsland.Shared.Models.Profile.ClassPlan"/>。如果那天没有课表安排，则返回 null
+            </summary>
+            <param name="date">要获取课表的日期</param>
+            <returns>获取到的课表</returns>
+        </member>
+        <member name="T:ClassIsland.Shared.IPC.Abstractions.Services.IPublicProfileService">
+            <summary>
+            向其它进程公开的档案服务，用于管理ClassIsland档案信息。
+            </summary>
+        </member>
+        <member name="P:ClassIsland.Shared.IPC.Abstractions.Services.IPublicProfileService.CurrentProfilePath">
+            <summary>
+            当前加载的档案文件名
+            </summary>
+        </member>
+        <member name="P:ClassIsland.Shared.IPC.Abstractions.Services.IPublicProfileService.Profile">
+            <summary>
+            当前加载的档案
+            </summary>
+        </member>
+        <member name="M:ClassIsland.Shared.IPC.Abstractions.Services.IPublicProfileService.SaveProfile">
+            <summary>
+            保存档案到当前的档案。
+            </summary>
+        </member>
+        <member name="M:ClassIsland.Shared.IPC.Abstractions.Services.IPublicProfileService.SaveProfile(System.String)">
+            <summary>
+            将档案保存到指定的文件。
+            </summary>
+            <param name="filename">文件名</param>
+        </member>
+        <member name="M:ClassIsland.Shared.IPC.Abstractions.Services.IPublicProfileService.CreateTempClassPlan(System.Guid,System.Nullable{System.Guid},System.Nullable{System.DateTime})">
+            <summary>
+            创建临时层课表。如果已经存在临时层课表，则本方法不起作用。
+            </summary>
+            <param name="id">源课表ID</param>
+            <param name="timeLayoutId">要使用的时间表ID,留null将使用源课表的时间表</param>
+            <param name="enableDateTime">临时层的预定启用时间</param>
+            <returns>如果创建成功，则返回临时层课表的ID，否则返回null。</returns>
+        </member>
+        <member name="M:ClassIsland.Shared.IPC.Abstractions.Services.IPublicProfileService.ClearTempClassPlan">
+            <summary>
+            清空临时层课表
+            </summary>
+        </member>
+        <member name="M:ClassIsland.Shared.IPC.Abstractions.Services.IPublicProfileService.ConvertToStdClassPlan">
+            <summary>
+            将当前临时层课表转换为普通课表。
+            </summary>
+        </member>
+        <member name="M:ClassIsland.Shared.IPC.Abstractions.Services.IPublicProfileService.ConvertToStdClassPlan(System.Guid)">
+            <summary>
+            将指定临时层课表转换为普通课表。
+            </summary>
+            <param name="id">要转换的课表 GUID</param>
+        </member>
+        <member name="M:ClassIsland.Shared.IPC.Abstractions.Services.IPublicProfileService.SetupTempClassPlanGroup(System.Guid,System.Nullable{System.DateTime})">
+            <summary>
+            设置临时课表组。
+            </summary>
+            <param name="key">要设置的临时课表组ID</param>
+            <param name="expireTime">临时课表组过期时间，默认为完成一个周期后。</param>
+        </member>
+        <member name="M:ClassIsland.Shared.IPC.Abstractions.Services.IPublicProfileService.ClearTempClassPlanGroup">
+            <summary>
+            清除当前的临时课表组。
+            </summary>
+        </member>
+        <member name="P:ClassIsland.Shared.IPC.Abstractions.Services.IPublicProfileService.IsCurrentProfileTrusted">
+            <summary>
+            当前档案是否为信任档案。
+            </summary>
+        </member>
+        <member name="T:ClassIsland.Shared.IPC.Abstractions.Services.IPublicUriNavigationService">
+            <summary>
+            向其它进程公开的 Uri 导航服务，用于在ClassIsland内部和外部通过uri进行导航。
+            </summary>
+        </member>
+        <member name="M:ClassIsland.Shared.IPC.Abstractions.Services.IPublicUriNavigationService.Navigate(System.Uri)">
+            <summary>
+            导航到指定 Uri。
+            </summary>
+            <param name="uri">要导航的 Uri</param>
+        </member>
+        <member name="M:ClassIsland.Shared.IPC.Abstractions.Services.IPublicUriNavigationService.NavigateWrapped(System.Uri)">
+            <summary>
+            导航到指定 Uri，但在抛出异常时自动捕获，并显示错误提示。
+            </summary>
+            <param name="uri">要导航的 Uri</param>
+        </member>
+        <member name="T:ClassIsland.Shared.IPC.IpcClient">
+            <summary>
+            跨进程通信客户端，用于在其他进程中与 ClassIsland 本体进行通信。
+            </summary>
+        </member>
+        <member name="P:ClassIsland.Shared.IPC.IpcClient.PipeName">
+            <summary>
+            IPC 服务端管道名称
+            </summary>
+        </member>
+        <member name="P:ClassIsland.Shared.IPC.IpcClient.Provider">
+            <summary>
+            IPC 提供方。
+            </summary>
+        </member>
+        <member name="P:ClassIsland.Shared.IPC.IpcClient.PeerProxy">
+            <summary>
+            远程的对方
+            </summary>
+        </member>
+        <member name="P:ClassIsland.Shared.IPC.IpcClient.JsonIpcProvider">
+            <summary>
+            JSON IPC 提供方。
+            </summary>
+        </member>
+        <member name="M:ClassIsland.Shared.IPC.IpcClient.#ctor">
+            <summary>
+            初始化一个 <see cref="T:ClassIsland.Shared.IPC.IpcClient"/> 对象。
+            </summary>
+        </member>
+        <member name="M:ClassIsland.Shared.IPC.IpcClient.Connect">
+            <summary>
+            连接到 ClassIsland。
+            </summary>
+        </member>
+        <member name="T:ClassIsland.Shared.IPC.IpcRoutedNotifyIds">
+            <summary>
+            存储了 ClassIsland 内置的跨进程通信路由通知标识符。
+            </summary>
+        </member>
+        <member name="F:ClassIsland.Shared.IPC.IpcRoutedNotifyIds.OnClassNotifyId">
+            <summary>
+            上课事件通知标识符
+            </summary>
+        </member>
+        <member name="F:ClassIsland.Shared.IPC.IpcRoutedNotifyIds.OnBreakingTimeNotifyId">
+            <summary>
+            课间休息事件通知标识符
+            </summary>
+        </member>
+        <member name="F:ClassIsland.Shared.IPC.IpcRoutedNotifyIds.OnAfterSchoolNotifyId">
+            <summary>
+            放学事件通知标识符
+            </summary>
+        </member>
+        <member name="F:ClassIsland.Shared.IPC.IpcRoutedNotifyIds.CurrentTimeStateChangedNotifyId">
+            <summary>
+            当前时间点状态通知标识符
+            </summary>
+        </member>
+    </members>
+</doc>

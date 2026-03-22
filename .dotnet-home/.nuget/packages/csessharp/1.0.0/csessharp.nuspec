@@ -1,0 +1,21 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<package xmlns="http://schemas.microsoft.com/packaging/2013/05/nuspec.xsd">
+  <metadata>
+    <id>CsesSharp</id>
+    <version>1.0.0</version>
+    <authors>CSES-org</authors>
+    <requireLicenseAcceptance>true</requireLicenseAcceptance>
+    <license type="expression">MIT</license>
+    <licenseUrl>https://licenses.nuget.org/MIT</licenseUrl>
+    <readme>README.md</readme>
+    <projectUrl>https://github.com/CSES-org/</projectUrl>
+    <description>Package Description</description>
+    <copyright>Copyright (c) 2025 CSES-org</copyright>
+    <repository type="git" url="https://github.com/CSES-org/CsesSharp" commit="01405aa9e22227045d65a7e8d790316880883de8" />
+    <dependencies>
+      <group targetFramework=".NETStandard2.0">
+        <dependency id="YamlDotNet" version="16.3.0" exclude="Build,Analyzers" />
+      </group>
+    </dependencies>
+  </metadata>
+</package>

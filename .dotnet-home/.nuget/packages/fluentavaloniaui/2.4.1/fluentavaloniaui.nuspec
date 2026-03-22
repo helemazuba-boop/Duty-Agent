@@ -1,0 +1,39 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<package xmlns="http://schemas.microsoft.com/packaging/2013/05/nuspec.xsd">
+  <metadata>
+    <id>FluentAvaloniaUI</id>
+    <version>2.4.1</version>
+    <authors>FluentAvalonia</authors>
+    <license type="expression">MIT</license>
+    <licenseUrl>https://licenses.nuget.org/MIT</licenseUrl>
+    <icon>FAIcon.png</icon>
+    <description>Control library focused on fluent design and bringing more WinUI controls into Avalonia</description>
+    <tags>c-sharp xaml cross-platform dotnet dotnetcore avalonia avaloniaui fluent fluent-design</tags>
+    <repository type="git" url="https://github.com/amwx/FluentAvalonia" branch="refs/heads/2.4.1" commit="a1dc0c0428ff0a2d9e5368dc73ea0358eab459d7" />
+    <dependencies>
+      <group targetFramework="net6.0">
+        <dependency id="Avalonia" version="11.2.5" exclude="Build,Analyzers" />
+        <dependency id="Avalonia.Controls.ColorPicker" version="11.2.5" exclude="Build,Analyzers" />
+        <dependency id="Avalonia.Controls.DataGrid" version="11.2.5" exclude="Build,Analyzers" />
+        <dependency id="Avalonia.Skia" version="11.2.5" exclude="Build,Analyzers" />
+        <dependency id="MicroCom.Runtime" version="0.11.0" exclude="Build,Analyzers" />
+      </group>
+      <group targetFramework=".NETStandard2.0">
+        <dependency id="Avalonia" version="11.2.5" exclude="Build,Analyzers" />
+        <dependency id="Avalonia.Controls.ColorPicker" version="11.2.5" exclude="Build,Analyzers" />
+        <dependency id="Avalonia.Controls.DataGrid" version="11.2.5" exclude="Build,Analyzers" />
+        <dependency id="Avalonia.Skia" version="11.2.5" exclude="Build,Analyzers" />
+        <dependency id="MicroCom.Runtime" version="0.11.0" exclude="Build,Analyzers" />
+        <dependency id="System.Text.Json" version="7.0.3" exclude="Build,Analyzers" />
+      </group>
+      <group targetFramework=".NETStandard2.1">
+        <dependency id="Avalonia" version="11.2.5" exclude="Build,Analyzers" />
+        <dependency id="Avalonia.Controls.ColorPicker" version="11.2.5" exclude="Build,Analyzers" />
+        <dependency id="Avalonia.Controls.DataGrid" version="11.2.5" exclude="Build,Analyzers" />
+        <dependency id="Avalonia.Skia" version="11.2.5" exclude="Build,Analyzers" />
+        <dependency id="MicroCom.Runtime" version="0.11.0" exclude="Build,Analyzers" />
+        <dependency id="System.Text.Json" version="7.0.3" exclude="Build,Analyzers" />
+      </group>
+    </dependencies>
+  </metadata>
+</package>

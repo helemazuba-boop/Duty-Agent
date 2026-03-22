@@ -1,0 +1,237 @@
+<?xml version="1.0"?>
+<doc>
+    <assembly>
+        <name>Avalonia.Labs.CommandManager</name>
+    </assembly>
+    <members>
+        <member name="T:Avalonia.Labs.Input.AvaloniaCommands">
+            <summary>
+            Provides a standard set of application related commands.
+            </summary>
+        </member>
+        <member name="P:Avalonia.Labs.Input.AvaloniaCommands.NotACommand">
+            <summary>
+            Represents a command which is always ignored.
+            </summary>
+        </member>
+        <member name="T:Avalonia.Labs.Input.CanExecuteRoutedEventArgs">
+            <summary>
+            Provides data for the <see cref="F:Avalonia.Labs.Input.CommandManager.CanExecuteEvent"/> routed events.
+            </summary>
+        </member>
+        <member name="P:Avalonia.Labs.Input.CanExecuteRoutedEventArgs.Command">
+            <summary>
+            Gets the routed command that was invoked.
+            </summary>
+        </member>
+        <member name="P:Avalonia.Labs.Input.CanExecuteRoutedEventArgs.Parameter">
+            <summary>
+            Gets data parameter of the command.
+            </summary>
+        </member>
+        <member name="P:Avalonia.Labs.Input.CanExecuteRoutedEventArgs.CanExecute">
+            <summary>
+            Gets or sets a value that indicates whether the <see cref="T:Avalonia.Labs.Input.RoutedCommand"/> associated with this event can be executed on the command target.
+            </summary>
+        </member>
+        <member name="T:Avalonia.Labs.Input.CommandBinding">
+            <summary>
+            Binds a <see cref="T:Avalonia.Labs.Input.RoutedCommand"/> to the event handlers that implement the command.
+            </summary>
+        </member>
+        <member name="F:Avalonia.Labs.Input.CommandBinding.CommandProperty">
+            <summary>
+            Defines the <see cref="T:Avalonia.Labs.Input.RoutedCommand"/> property.
+            </summary>
+        </member>
+        <member name="F:Avalonia.Labs.Input.CommandBinding.ExecutingCommandProperty">
+            <summary>
+            Defines the <see cref="P:Avalonia.Labs.Input.CommandBinding.ExecutingCommand"/> property.
+            </summary>
+        </member>
+        <member name="M:Avalonia.Labs.Input.CommandBinding.#ctor">
+            <summary>
+            Initializes a new instance of the <see cref="T:Avalonia.Labs.Input.CommandBinding"/> class.
+            </summary>
+        </member>
+        <member name="M:Avalonia.Labs.Input.CommandBinding.#ctor(System.Windows.Input.ICommand,System.EventHandler{Avalonia.Labs.Input.ExecutedRoutedEventArgs})">
+            <summary>
+            Initializes a new instance of the <see cref="T:Avalonia.Labs.Input.CommandBinding"/> class by using the specified handler.
+            </summary>
+            <param name="command"><see cref="T:System.Windows.Input.ICommand"/> associated with this CommandBinding</param>
+            <param name="executed">Executed handler for the routed command.</param>
+        </member>
+        <member name="M:Avalonia.Labs.Input.CommandBinding.#ctor(System.Windows.Input.ICommand,System.EventHandler{Avalonia.Labs.Input.ExecutedRoutedEventArgs},System.EventHandler{Avalonia.Labs.Input.CanExecuteRoutedEventArgs})">
+            <summary>
+            Initializes a new instance of the <see cref="T:Avalonia.Labs.Input.CommandBinding"/> class by using the specified handler.
+            </summary>
+            <param name="command"><see cref="T:System.Windows.Input.ICommand"/> associated with this CommandBinding</param>
+            <param name="executed">Executed handler for the routed command.</param>
+            <param name="canExecute">Can execute handler for the routed command.</param>
+        </member>
+        <member name="P:Avalonia.Labs.Input.CommandBinding.Command">
+            <summary>
+            Gets or sets the <see cref="T:System.Windows.Input.ICommand"/> associated with this CommandBinding.
+            </summary>
+        </member>
+        <member name="P:Avalonia.Labs.Input.CommandBinding.ExecutingCommand">
+            <summary>
+            <see cref="T:System.Windows.Input.ICommand"/> handler for the routed command.
+            </summary>
+        </member>
+        <member name="E:Avalonia.Labs.Input.CommandBinding.Executed">
+            <summary>
+            Called when the command is executed.
+            </summary>
+        </member>
+        <member name="E:Avalonia.Labs.Input.CommandBinding.CanExecute">
+            <summary>
+            Called to determine if the command can be executed.
+            </summary>
+        </member>
+        <member name="M:Avalonia.Labs.Input.CommandBinding.OnPropertyChanged(Avalonia.AvaloniaPropertyChangedEventArgs)">
+            <inheritdoc />
+        </member>
+        <member name="T:Avalonia.Labs.Input.CommandManager">
+            <summary>
+            Provides command related utility methods that register <see cref="T:Avalonia.Labs.Input.CommandBinding"/> objects for class owners and commands,
+            add and remove command event handlers, and provides services for querying the status of a command.
+            </summary>
+        </member>
+        <member name="F:Avalonia.Labs.Input.CommandManager.CanExecuteEvent">
+            <summary>
+            Identifies the CanExecute attached event.
+            </summary>
+        </member>
+        <member name="F:Avalonia.Labs.Input.CommandManager.ExecutedEvent">
+            <summary>
+            Identifies the Executed attached event.
+            </summary>
+        </member>
+        <member name="F:Avalonia.Labs.Input.CommandManager.CommandBindingsProperty">
+            <summary>
+            Defines the <see cref="!:CommandBindings"/> property.
+            </summary>
+        </member>
+        <member name="E:Avalonia.Labs.Input.CommandManager.RequerySuggested">
+            <summary>
+            Occurs when the <see cref="T:Avalonia.Labs.Input.CommandManager"/> detects conditions that might change the ability of a command to execute.
+            </summary>
+        </member>
+        <member name="M:Avalonia.Labs.Input.CommandManager.InvalidateRequerySuggested">
+            <summary>
+            Invokes RequerySuggested listeners registered on the current thread.
+            </summary>
+        </member>
+        <member name="M:Avalonia.Labs.Input.CommandManager.GetCommandBindings(Avalonia.Input.InputElement)">
+            <summary>
+            Gets a collection of CommandBinding objects associated with this element. A CommandBinding enables command handling for this element, and declares the linkage between a command, its events, and the handlers attached by this element.
+            </summary>
+        </member>
+        <member name="M:Avalonia.Labs.Input.CommandManager.SetCommandBindings(Avalonia.Input.InputElement,System.Collections.Generic.IList{Avalonia.Labs.Input.CommandBinding})">
+            <summary>
+            Sets a collection of CommandBinding objects associated with this element. A CommandBinding enables command handling for this element, and declares the linkage between a command, its events, and the handlers attached by this element.
+            </summary>
+        </member>
+        <member name="T:Avalonia.Labs.Input.ExecutedRoutedEventArgs">
+            <summary>
+            Provides data for the <see cref="F:Avalonia.Labs.Input.CommandManager.ExecutedEvent"/> routed event.
+            </summary>
+        </member>
+        <member name="P:Avalonia.Labs.Input.ExecutedRoutedEventArgs.Command">
+            <summary>
+            Gets the routed command that was invoked.
+            </summary>
+        </member>
+        <member name="P:Avalonia.Labs.Input.ExecutedRoutedEventArgs.Parameter">
+            <summary>
+            Gets data parameter of the command.
+            </summary>
+        </member>
+        <member name="T:Avalonia.Labs.Input.RoutedCommand">
+            <summary>
+            Defines a command that implements <see cref="T:System.Windows.Input.ICommand"/> and is routed through the element tree.
+            </summary>
+        </member>
+        <member name="F:Avalonia.Labs.Input.RoutedCommand._canExecuteChanged">
+            <summary>
+            The weak collection of delegates for <see cref="E:System.Windows.Input.ICommand.CanExecuteChanged"/>.
+            </summary>
+        </member>
+        <member name="P:Avalonia.Labs.Input.RoutedCommand.Name">
+            <summary>
+            Gets the name of the command.
+            </summary>
+        </member>
+        <member name="P:Avalonia.Labs.Input.RoutedCommand.Gestures">
+            <summary>
+            Gets the list of <see cref="T:Avalonia.Input.KeyGesture"/> object that are associated with this command.
+            </summary>
+        </member>
+        <member name="M:Avalonia.Labs.Input.RoutedCommand.#ctor(System.String)">
+            <summary>
+            Initializes a new instance of the <see cref="T:Avalonia.Labs.Input.RoutedCommand"/> class with the specified name.
+            </summary>
+            <param name="name">Declared name.</param>
+        </member>
+        <member name="M:Avalonia.Labs.Input.RoutedCommand.#ctor(System.String,System.Collections.Generic.IList{Avalonia.Input.KeyGesture})">
+            <summary>
+            Initializes a new instance of the <see cref="T:Avalonia.Labs.Input.RoutedCommand"/> class with the specified name.
+            </summary>
+            <param name="name">Declared name.</param>
+            <param name="gestures">Default input gestures associated with this command.</param>
+        </member>
+        <member name="M:Avalonia.Labs.Input.RoutedCommand.#ctor(System.String,Avalonia.Input.KeyGesture)">
+            <summary>
+            Initializes a new instance of the <see cref="T:Avalonia.Labs.Input.RoutedCommand"/> class with the specified name.
+            </summary>
+            <param name="name">Declared name.</param>
+            <param name="gesture">Default input gestures associated with this command.</param>
+        </member>
+        <member name="M:Avalonia.Labs.Input.RoutedCommand.CanExecute(System.Object,Avalonia.Input.IInputElement)">
+            <summary>
+            Determines whether this <see cref="T:Avalonia.Labs.Input.RoutedCommand"/> can execute in its current state.
+            </summary>
+            <param name="parameter">A user defined data type.</param>
+            <param name="target">The command target.</param>
+            <returns>true if the command can execute on the current command target; otherwise, false.</returns>
+        </member>
+        <member name="M:Avalonia.Labs.Input.RoutedCommand.Execute(System.Object,Avalonia.Input.IInputElement)">
+            <summary>
+            Executes the RoutedCommand on the current command target.
+            </summary>
+            <param name="parameter">User defined parameter to be passed to the handler.</param>
+            <param name="target">Element at which to begin looking for command handlers.</param>
+        </member>
+        <member name="T:Avalonia.Utilities.WeakCollection`1">
+            <summary>
+            A collection of weak references to objects.
+            </summary>
+            <typeparam name="T">The type of object to hold weak references to.</typeparam>
+        </member>
+        <member name="F:Avalonia.Utilities.WeakCollection`1._list">
+            <summary>
+            The actual collection of strongly-typed weak references.
+            </summary>
+        </member>
+        <member name="M:Avalonia.Utilities.WeakCollection`1.GetLiveItems">
+            <summary>
+            Gets a list of live objects from this collection, causing a purge.
+            </summary>
+            <returns></returns>
+        </member>
+        <member name="M:Avalonia.Utilities.WeakCollection`1.Add(`0)">
+            <summary>
+            Adds a weak reference to an object to the collection. Does not cause a purge.
+            </summary>
+            <param name="item">The object to add a weak reference to.</param>
+        </member>
+        <member name="M:Avalonia.Utilities.WeakCollection`1.Remove(`0)">
+            <summary>
+            Removes a weak reference to an object from the collection. Does not cause a purge.
+            </summary>
+            <param name="item">The object to remove a weak reference to.</param>
+            <returns>True if the object was found and removed; false if the object was not found.</returns>
+        </member>
+    </members>
+</doc>

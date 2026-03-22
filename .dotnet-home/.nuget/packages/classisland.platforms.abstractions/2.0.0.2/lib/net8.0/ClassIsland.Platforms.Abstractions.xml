@@ -1,0 +1,463 @@
+<?xml version="1.0"?>
+<doc>
+    <assembly>
+        <name>ClassIsland.Platforms.Abstractions</name>
+    </assembly>
+    <members>
+        <member name="T:HotAvalonia.AvaloniaHotReloadAttribute">
+             <summary>
+             Indicates that the decorated method should be called whenever the associated Avalonia control is hot reloaded.
+             </summary>
+             <remarks>
+             This attribute is intended to be applied to parameterless instance methods of Avalonia controls.
+             When the control is hot reloaded, the method marked with this attribute is executed.
+             This can be used to refresh or update the control's state in response to hot reload events.
+            
+             <br/><br/>
+            
+             The method must meet the following requirements:
+             <list type="bullet">
+               <item>It must be an instance method (i.e., not static).</item>
+               <item>It must not have any parameters.</item>
+             </list>
+            
+             Example usage:
+             <code>
+             [AvaloniaHotReload]
+             private void Initialize()
+             {
+                 // Code to initialize or refresh
+                 // the control during hot reload.
+             }
+             </code>
+             </remarks>
+        </member>
+        <member name="T:ClassIsland.Platforms.Abstraction.Enums.WindowFeatures">
+            <summary>
+            代表一个窗口拥有的平台特性。
+            </summary>
+        </member>
+        <member name="F:ClassIsland.Platforms.Abstraction.Enums.WindowFeatures.None">
+            <summary>
+            无
+            </summary>
+        </member>
+        <member name="F:ClassIsland.Platforms.Abstraction.Enums.WindowFeatures.Transparent">
+            <summary>
+            窗口可以穿透指针
+            </summary>
+        </member>
+        <member name="F:ClassIsland.Platforms.Abstraction.Enums.WindowFeatures.Bottommost">
+            <summary>
+            窗口置于屏幕底层
+            </summary>
+        </member>
+        <member name="F:ClassIsland.Platforms.Abstraction.Enums.WindowFeatures.Topmost">
+            <summary>
+            窗口置于屏幕顶层
+            </summary>
+        </member>
+        <member name="F:ClassIsland.Platforms.Abstraction.Enums.WindowFeatures.Private">
+            <summary>
+            隐私窗口，窗口内容只对屏幕可见，对截图工具等不可见
+            </summary>
+        </member>
+        <member name="F:ClassIsland.Platforms.Abstraction.Enums.WindowFeatures.ToolWindow">
+            <summary>
+            工具窗口
+            </summary>
+        </member>
+        <member name="F:ClassIsland.Platforms.Abstraction.Enums.WindowFeatures.SkipManagement">
+            <summary>
+            跳过窗口管理器
+            </summary>
+        </member>
+        <member name="T:ClassIsland.Platforms.Abstraction.Models.DesktopToastContent">
+            <summary>
+            代表桌面通知的内容
+            </summary>
+        </member>
+        <member name="P:ClassIsland.Platforms.Abstraction.Models.DesktopToastContent.Title">
+            <summary>
+            通知标题
+            </summary>
+        </member>
+        <member name="P:ClassIsland.Platforms.Abstraction.Models.DesktopToastContent.Body">
+            <summary>
+            通知正文
+            </summary>
+        </member>
+        <member name="P:ClassIsland.Platforms.Abstraction.Models.DesktopToastContent.HeroImageUri">
+            <summary>
+            通知头图
+            </summary>
+        </member>
+        <member name="P:ClassIsland.Platforms.Abstraction.Models.DesktopToastContent.InlineImageUri">
+            <summary>
+            通知内容图片
+            </summary>
+        </member>
+        <member name="P:ClassIsland.Platforms.Abstraction.Models.DesktopToastContent.LogoImageUri">
+            <summary>
+            通知 Logo 图片 Uri
+            </summary>
+        </member>
+        <member name="F:ClassIsland.Platforms.Abstraction.Models.DesktopToastContent.Activated">
+            <summary>
+            在这条通知被激活后触发
+            </summary>
+        </member>
+        <member name="P:ClassIsland.Platforms.Abstraction.Models.DesktopToastContent.Buttons">
+            <summary>
+            通知的按钮
+            </summary>
+        </member>
+        <member name="T:ClassIsland.Platforms.Abstraction.Models.ForegroundWindowChangedEventArgs">
+            <summary>
+            代表前台窗口变化事件参数。
+            </summary>
+        </member>
+        <member name="P:ClassIsland.Platforms.Abstraction.Models.ForegroundWindowChangedEventArgs.Handle">
+            <summary>
+            前台窗口句柄
+            </summary>
+        </member>
+        <member name="M:ClassIsland.Platforms.Abstraction.Models.ForegroundWindowChangedEventArgs.#ctor(System.IntPtr)">
+            <summary>
+            初始化一个<see cref="T:ClassIsland.Platforms.Abstraction.Models.ForegroundWindowChangedEventArgs"/>对象。
+            </summary>
+            <param name="handle">前台窗口句柄</param>
+        </member>
+        <member name="T:ClassIsland.Platforms.Abstraction.Models.LocationCoordinate">
+            <summary>
+            代表一个位置坐标
+            </summary>
+        </member>
+        <member name="P:ClassIsland.Platforms.Abstraction.Models.LocationCoordinate.Longitude">
+            <summary>
+            经度
+            </summary>
+        </member>
+        <member name="P:ClassIsland.Platforms.Abstraction.Models.LocationCoordinate.Latitude">
+            <summary>
+            纬度
+            </summary>
+        </member>
+        <member name="T:ClassIsland.Platforms.Abstraction.PlatformServices">
+            <summary>
+            用于获取各个平台服务的基础类。
+            </summary>
+        </member>
+        <member name="P:ClassIsland.Platforms.Abstraction.PlatformServices.WindowPlatformService">
+            <summary>
+            平台窗口服务
+            </summary>
+        </member>
+        <member name="P:ClassIsland.Platforms.Abstraction.PlatformServices.LocationService">
+            <summary>
+            平台定位服务
+            </summary>
+        </member>
+        <member name="P:ClassIsland.Platforms.Abstraction.PlatformServices.DesktopService">
+            <summary>
+            平台桌面服务
+            </summary>
+        </member>
+        <member name="P:ClassIsland.Platforms.Abstraction.PlatformServices.IsLocationSupported">
+            <summary>
+            当前平台是否支持定位服务
+            </summary>
+        </member>
+        <member name="P:ClassIsland.Platforms.Abstraction.PlatformServices.SystemEventsService">
+            <summary>
+            系统事件注册服务
+            </summary>
+        </member>
+        <member name="P:ClassIsland.Platforms.Abstraction.PlatformServices.DesktopToastService">
+            <summary>
+            桌面通知服务
+            </summary>
+        </member>
+        <member name="P:ClassIsland.Platforms.Abstraction.PlatformServices.FilePickerService">
+            <summary>
+            平台文件选取服务
+            </summary>
+        </member>
+        <member name="T:ClassIsland.Platforms.Abstraction.Services.IDesktopService">
+            <summary>
+            桌面相关服务。
+            </summary>
+        </member>
+        <member name="P:ClassIsland.Platforms.Abstraction.Services.IDesktopService.IsAutoStartEnabled">
+            <summary>
+            已启用开机自启。
+            </summary>
+        </member>
+        <member name="P:ClassIsland.Platforms.Abstraction.Services.IDesktopService.IsUrlSchemeRegistered">
+            <summary>
+            已注册 Url 协议。
+            </summary>
+        </member>
+        <member name="T:ClassIsland.Platforms.Abstraction.Services.IDesktopToastService">
+            <summary>
+            桌面通知服务
+            </summary>
+        </member>
+        <member name="M:ClassIsland.Platforms.Abstraction.Services.IDesktopToastService.ShowToastAsync(ClassIsland.Platforms.Abstraction.Models.DesktopToastContent)">
+            <summary>
+            显示一条桌面通知。
+            </summary>
+            <param name="content">通知内容</param>
+        </member>
+        <member name="M:ClassIsland.Platforms.Abstraction.Services.IDesktopToastService.ShowToastAsync(System.String,System.String,System.Action)">
+            <summary>
+            显示一条桌面通知。
+            </summary>
+            <param name="title">通知标题</param>
+            <param name="body">通知正文</param>
+            <param name="activated">通知被点击时的回调方法</param>
+        </member>
+        <member name="M:ClassIsland.Platforms.Abstraction.Services.IDesktopToastService.ActivateNotificationAction(System.Guid)">
+            <summary>
+            处理通知激活
+            </summary>
+            <param name="id">激活 id</param>
+        </member>
+        <member name="T:ClassIsland.Platforms.Abstraction.Services.ILocationService">
+            <summary>
+            位置获取服务
+            </summary>
+        </member>
+        <member name="M:ClassIsland.Platforms.Abstraction.Services.ILocationService.GetLocationAsync">
+            <summary>
+            获取设备当前的地理位置
+            </summary>
+            <returns>地理位置坐标</returns>
+        </member>
+        <member name="T:ClassIsland.Platforms.Abstraction.Services.IPlatformFilePickerService">
+            <summary>
+            平台自定义文件选取服务
+            </summary>
+        </member>
+        <member name="M:ClassIsland.Platforms.Abstraction.Services.IPlatformFilePickerService.OpenFilesPickerAsync(Avalonia.Platform.Storage.FilePickerOpenOptions,Avalonia.Controls.TopLevel)">
+            <summary>
+            打开文件打开选择器
+            </summary>
+            <param name="options">文件浏览器选项</param>
+            <param name="root">根窗口</param>
+            <returns>选择的文件完整路径列表</returns>
+        </member>
+        <member name="M:ClassIsland.Platforms.Abstraction.Services.IPlatformFilePickerService.SaveFilePickerAsync(Avalonia.Platform.Storage.FilePickerSaveOptions,Avalonia.Controls.TopLevel)">
+            <summary>
+            打开文件保存选择器
+            </summary>
+            <param name="options">文件浏览器选项</param>
+            <param name="root">根窗口</param>
+            <returns>选择的文件路径</returns>
+        </member>
+        <member name="M:ClassIsland.Platforms.Abstraction.Services.IPlatformFilePickerService.OpenFoldersPickerAsync(Avalonia.Platform.Storage.FolderPickerOpenOptions,Avalonia.Controls.TopLevel)">
+            <summary>
+            打开文件夹打开选择器
+            </summary>
+            <param name="options">文件浏览器选项</param>
+            <param name="root">根窗口</param>
+            <returns>选择的文件夹完整路径列表</returns>
+        </member>
+        <member name="T:ClassIsland.Platforms.Abstraction.Services.ISystemEventsService">
+            <summary>
+            系统事件注册服务
+            </summary>
+        </member>
+        <member name="E:ClassIsland.Platforms.Abstraction.Services.ISystemEventsService.TimeChanged">
+            <summary>
+            系统时间变化时触发
+            </summary>
+        </member>
+        <member name="T:ClassIsland.Platforms.Abstraction.Services.IWindowPlatformService">
+            <summary>
+            窗口平台服务接口。
+            </summary>
+        </member>
+        <member name="M:ClassIsland.Platforms.Abstraction.Services.IWindowPlatformService.SetWindowFeature(Avalonia.Controls.TopLevel,ClassIsland.Platforms.Abstraction.Enums.WindowFeatures,System.Boolean)">
+            <summary>
+            设置窗口特性。
+            </summary>
+            <param name="toplevel">要设置的窗口</param>
+            <param name="features">要修改的特性</param>
+            <param name="state">修改的特性状态</param>
+        </member>
+        <member name="M:ClassIsland.Platforms.Abstraction.Services.IWindowPlatformService.GetWindowFeatures(Avalonia.Controls.TopLevel)">
+            <summary>
+            获取一个窗口的窗口特性。
+            </summary>
+            <param name="topLevel">要获取窗口特性的窗口</param>
+            <returns>窗口当前拥有的特性</returns>
+        </member>
+        <member name="M:ClassIsland.Platforms.Abstraction.Services.IWindowPlatformService.RegisterForegroundWindowChangedEvent(System.EventHandler{ClassIsland.Platforms.Abstraction.Models.ForegroundWindowChangedEventArgs})">
+            <summary>
+            注册前台窗口变化事件。
+            </summary>
+            <param name="handler">事件处理器</param>
+        </member>
+        <member name="M:ClassIsland.Platforms.Abstraction.Services.IWindowPlatformService.UnregisterForegroundWindowChangedEvent(System.EventHandler{ClassIsland.Platforms.Abstraction.Models.ForegroundWindowChangedEventArgs})">
+            <summary>
+            取消注册前台窗口变化事件。
+            </summary>
+            <param name="handler">事件处理器</param>
+        </member>
+        <member name="M:ClassIsland.Platforms.Abstraction.Services.IWindowPlatformService.GetWindowTitle(System.IntPtr)">
+            <summary>
+            获取指定窗口的标题。
+            </summary>
+            <param name="handle">窗口句柄</param>
+            <returns>获取到的标题</returns>
+        </member>
+        <member name="M:ClassIsland.Platforms.Abstraction.Services.IWindowPlatformService.GetWindowClassName(System.IntPtr)">
+            <summary>
+            获取指定窗口的类名。
+            </summary>
+            <param name="handle">窗口句柄</param>
+            <returns>获取到的类名</returns>
+        </member>
+        <member name="M:ClassIsland.Platforms.Abstraction.Services.IWindowPlatformService.IsWindowMaximized(System.IntPtr)">
+            <summary>
+            获取窗口是否最大化。
+            </summary>
+            <param name="handle">窗口句柄</param>
+            <returns>返回指定窗口是否为最大化状态</returns>
+        </member>
+        <member name="M:ClassIsland.Platforms.Abstraction.Services.IWindowPlatformService.IsWindowMinimized(System.IntPtr)">
+            <summary>
+            获取窗口是否最小化。
+            </summary>
+            <param name="handle">窗口句柄</param>
+            <returns>返回指定窗口是否为最小化状态</returns>
+        </member>
+        <member name="M:ClassIsland.Platforms.Abstraction.Services.IWindowPlatformService.IsForegroundWindowFullscreen(Avalonia.Platform.Screen)">
+            <summary>
+            获取窗口是否在指定屏幕上全屏。
+            </summary>
+            <param name="screen">目标屏幕</param>
+            <returns>返回前台窗口是否为全屏状态</returns>
+        </member>
+        <member name="M:ClassIsland.Platforms.Abstraction.Services.IWindowPlatformService.IsForegroundWindowMaximized(Avalonia.Platform.Screen)">
+            <summary>
+            获取前台窗口是否在指定屏幕上最大化。
+            </summary>
+            <param name="screen">目标屏幕</param>
+            <returns>返回前台窗口是否为最大化状态</returns>
+        </member>
+        <member name="M:ClassIsland.Platforms.Abstraction.Services.IWindowPlatformService.GetMousePos">
+            <summary>
+            获取当前指针位置
+            </summary>
+            <returns>指针位置</returns>
+        </member>
+        <member name="P:ClassIsland.Platforms.Abstraction.Services.IWindowPlatformService.ForegroundWindowHandle">
+            <summary>
+            获取当前前台窗口句柄
+            </summary>
+        </member>
+        <member name="M:ClassIsland.Platforms.Abstraction.Services.IWindowPlatformService.GetWindowPid(System.IntPtr)">
+            <summary>
+            获取窗口对应的进程 ID
+            </summary>
+            <param name="handle">窗口句柄</param>
+            <returns>目标 PID</returns>
+        </member>
+        <member name="M:ClassIsland.Platforms.Abstraction.Services.IWindowPlatformService.ClearWindow(Avalonia.Controls.TopLevel)">
+            <summary>
+            强制重绘目标窗口。
+            </summary>
+            <param name="topLevel">要重绘的窗口</param>
+        </member>
+        <member name="T:ClassIsland.Platforms.Abstraction.Stubs.Services.AvaloniaDefaultPlatformFilePickerService">
+            <inheritdoc />
+        </member>
+        <member name="M:ClassIsland.Platforms.Abstraction.Stubs.Services.AvaloniaDefaultPlatformFilePickerService.OpenFilesPickerAsync(Avalonia.Platform.Storage.FilePickerOpenOptions,Avalonia.Controls.TopLevel)">
+            <inheritdoc />
+        </member>
+        <member name="M:ClassIsland.Platforms.Abstraction.Stubs.Services.AvaloniaDefaultPlatformFilePickerService.SaveFilePickerAsync(Avalonia.Platform.Storage.FilePickerSaveOptions,Avalonia.Controls.TopLevel)">
+            <inheritdoc />
+        </member>
+        <member name="M:ClassIsland.Platforms.Abstraction.Stubs.Services.AvaloniaDefaultPlatformFilePickerService.OpenFoldersPickerAsync(Avalonia.Platform.Storage.FolderPickerOpenOptions,Avalonia.Controls.TopLevel)">
+            <inheritdoc />
+        </member>
+        <member name="P:ClassIsland.Platforms.Abstraction.Stubs.Services.DesktopServiceStub.IsAutoStartEnabled">
+            <inheritdoc />
+        </member>
+        <member name="P:ClassIsland.Platforms.Abstraction.Stubs.Services.DesktopServiceStub.IsUrlSchemeRegistered">
+            <inheritdoc />
+        </member>
+        <member name="T:ClassIsland.Platforms.Abstraction.Stubs.Services.DesktopToastServiceStub">
+            <inheritdoc />
+        </member>
+        <member name="M:ClassIsland.Platforms.Abstraction.Stubs.Services.DesktopToastServiceStub.ShowToastAsync(ClassIsland.Platforms.Abstraction.Models.DesktopToastContent)">
+            <inheritdoc />
+        </member>
+        <member name="M:ClassIsland.Platforms.Abstraction.Stubs.Services.DesktopToastServiceStub.ShowToastAsync(System.String,System.String,System.Action)">
+            <inheritdoc />
+        </member>
+        <member name="M:ClassIsland.Platforms.Abstraction.Stubs.Services.DesktopToastServiceStub.ActivateNotificationAction(System.Guid)">
+            <inheritdoc />
+        </member>
+        <member name="T:ClassIsland.Platforms.Abstraction.Stubs.Services.LocationServiceStub">
+            <summary>
+            位置服务桩
+            </summary>
+        </member>
+        <member name="T:ClassIsland.Platforms.Abstraction.Stubs.Services.SystemEventsServiceStub">
+            <inheritdoc />
+        </member>
+        <member name="E:ClassIsland.Platforms.Abstraction.Stubs.Services.SystemEventsServiceStub.TimeChanged">
+            <inheritdoc />
+        </member>
+        <member name="T:ClassIsland.Platforms.Abstraction.Stubs.Services.WindowPlatformServiceStub">
+            <summary>
+            平台窗口服务桩
+            </summary>
+        </member>
+        <member name="M:ClassIsland.Platforms.Abstraction.Stubs.Services.WindowPlatformServiceStub.SetWindowFeature(Avalonia.Controls.TopLevel,ClassIsland.Platforms.Abstraction.Enums.WindowFeatures,System.Boolean)">
+            <inheritdoc />
+        </member>
+        <member name="M:ClassIsland.Platforms.Abstraction.Stubs.Services.WindowPlatformServiceStub.GetWindowFeatures(Avalonia.Controls.TopLevel)">
+            <inheritdoc />
+        </member>
+        <member name="M:ClassIsland.Platforms.Abstraction.Stubs.Services.WindowPlatformServiceStub.RegisterForegroundWindowChangedEvent(System.EventHandler{ClassIsland.Platforms.Abstraction.Models.ForegroundWindowChangedEventArgs})">
+            <inheritdoc />
+        </member>
+        <member name="M:ClassIsland.Platforms.Abstraction.Stubs.Services.WindowPlatformServiceStub.UnregisterForegroundWindowChangedEvent(System.EventHandler{ClassIsland.Platforms.Abstraction.Models.ForegroundWindowChangedEventArgs})">
+            <inheritdoc />
+        </member>
+        <member name="M:ClassIsland.Platforms.Abstraction.Stubs.Services.WindowPlatformServiceStub.GetWindowTitle(System.IntPtr)">
+            <inheritdoc />
+        </member>
+        <member name="M:ClassIsland.Platforms.Abstraction.Stubs.Services.WindowPlatformServiceStub.GetWindowClassName(System.IntPtr)">
+            <inheritdoc />
+        </member>
+        <member name="M:ClassIsland.Platforms.Abstraction.Stubs.Services.WindowPlatformServiceStub.IsWindowMaximized(System.IntPtr)">
+            <inheritdoc />
+        </member>
+        <member name="M:ClassIsland.Platforms.Abstraction.Stubs.Services.WindowPlatformServiceStub.IsWindowMinimized(System.IntPtr)">
+            <inheritdoc />
+        </member>
+        <member name="M:ClassIsland.Platforms.Abstraction.Stubs.Services.WindowPlatformServiceStub.IsForegroundWindowFullscreen(Avalonia.Platform.Screen)">
+            <inheritdoc />
+        </member>
+        <member name="M:ClassIsland.Platforms.Abstraction.Stubs.Services.WindowPlatformServiceStub.IsForegroundWindowMaximized(Avalonia.Platform.Screen)">
+            <inheritdoc />
+        </member>
+        <member name="M:ClassIsland.Platforms.Abstraction.Stubs.Services.WindowPlatformServiceStub.GetMousePos">
+            <inheritdoc />
+        </member>
+        <member name="P:ClassIsland.Platforms.Abstraction.Stubs.Services.WindowPlatformServiceStub.ForegroundWindowHandle">
+            <inheritdoc />
+        </member>
+        <member name="M:ClassIsland.Platforms.Abstraction.Stubs.Services.WindowPlatformServiceStub.GetWindowPid(System.IntPtr)">
+            <inheritdoc />
+        </member>
+        <member name="M:ClassIsland.Platforms.Abstraction.Stubs.Services.WindowPlatformServiceStub.ClearWindow(Avalonia.Controls.TopLevel)">
+            <inheritdoc />
+        </member>
+    </members>
+</doc>
