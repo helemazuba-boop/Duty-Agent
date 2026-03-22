@@ -1,12 +1,14 @@
-# Duty-Agent
-
 <div align="center">
   <img src="icon.png" width="128" alt="Duty-Agent Logo" />
+  <h1>Duty-Agent</h1>
+  <p><em>"Reasoning via LLM, Reliability via Code." —— 面向 ClassIsland 的下一代混合智能排班系统</em></p>
+  <p><strong>当前版本: v0.51.2 Beta</strong></p>
 </div>
 
-`Duty-Agent` 是一个面向 [ClassIsland](https://github.com/ClassIsland/ClassIsland) 的 AI 值日排班插件。它把自然语言指令、规则约束、名单状态和排班结果连接到同一套执行链里，让“生成值日表”“调整缺席”“覆盖未来排班”“接入外部控制台”这些事情可以在一个项目内完成。
+> **注意：项目理论上的逻辑已经通过，正在真实环境下优化细节。如果您需要在生产环境中应用，请稍等正式版。**
 
-它不是一个单纯的随机排班器，也不是只靠一段 Prompt 直接输出结果的网页工具。当前版本已经形成了完整的插件形态：设置页、宿主组件、后端执行核心、WebView 页面、MCP 接入和 API 接口都已经接通，适合在 ClassIsland 环境中作为长期使用的值日排班工具。
+`Duty-Agent` 是一个专为 **[ClassIsland](https://github.com/ClassIsland/ClassIsland)** 设计的下一代智能排班插件。它首创了 **“混合智能”** 架构——将大语言模型 (LLM) 的**灵活性**（理解自然语言指令）与 Python 代码的**确定性**（算法兜底、状态持久化）深度融合，彻底解决了传统排班算法（如轮询、随机）僵硬且无法处理复杂人事变动的痛点。
+
 
 ## 项目定位
 
