@@ -46,9 +46,12 @@ def finalize_multi_agent_run(
             for person_id in extract_ids_from_value(state_data.get("credit_list", []), set(snapshot.all_ids))
             if person_id not in set(barrier2["consumed_credit_ids"])
         ]
+        merged_credit_ids = list(dict.fromkeys(
+            credit_seed + extract_ids_from_value(barrier1["new_credit_ids"], set(snapshot.all_ids))
+        ))
         state_data["credit_list"] = reconcile_credit_list(
             credit_seed,
-            extract_ids_from_value(barrier1["new_credit_ids"], set(snapshot.all_ids)),
+            merged_credit_ids,
             assembled_schedule,
             set(snapshot.all_ids),
             state_data["debt_list"],
