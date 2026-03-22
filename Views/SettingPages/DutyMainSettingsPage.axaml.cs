@@ -1,6 +1,7 @@
 ﻿using System.Diagnostics;
 using System.Globalization;
 using System.Text;
+using System.Text.Json;
 using System.Threading;
 using Avalonia.Controls;
 using Avalonia.Input;
@@ -24,6 +25,7 @@ namespace DutyAgent.Views.SettingPages;
 public partial class DutyMainSettingsPage : SettingsPageBase
 {
     private DutyScheduleOrchestrator Service { get; } = IAppHost.GetService<DutyScheduleOrchestrator>();
+    private IPythonIpcService PythonIpcService { get; } = IAppHost.GetService<IPythonIpcService>();
     private DutyNotificationService NotificationService { get; } = IAppHost.GetService<DutyNotificationService>();
     private IDutySettingsRepository SettingsRepository { get; } = IAppHost.GetService<IDutySettingsRepository>();
     private DutyBackendSettingsSyncService BackendSettingsSyncService { get; } = IAppHost.GetService<DutyBackendSettingsSyncService>();
@@ -64,6 +66,7 @@ public partial class DutyMainSettingsPage : SettingsPageBase
     private DutyBackendSyncStatusSnapshot _backendSyncStatus = new();
     private DutySettingsDocument? _lastLoadedSettingsDocument;
     private DutyHostSettingsValues _lastAppliedHostSettings = new();
+    private DutyAccessSecurityValues _lastAppliedAccessSecurity = new();
     private DutyBackendConfig? _lastAppliedBackendConfig;
     private List<DutyPlanPreset> _planPresetDrafts = [];
     private string _currentPlanId = string.Empty;
@@ -71,6 +74,7 @@ public partial class DutyMainSettingsPage : SettingsPageBase
     private string _scheduleEditorSourceDate = string.Empty;
     private bool _isScheduleEditorDirty;
     private bool _settingsDiagnosticsExported;
+    private bool _isApplyingAccessSecurity;
     private int _configEventSuspendDepth;
     private bool _backendSyncStatusSubscribed;
     private readonly string _pageInstanceId = Guid.NewGuid().ToString("N");
@@ -100,6 +104,8 @@ public partial class DutyMainSettingsPage : SettingsPageBase
         {
             InitializeAutoRunTimeOptions();
             InitializeAutoRunModeOptions();
+            InitializeAccessTokenModeOptions();
+            InitializeServerPortModeOptions();
             InitializeComponentRefreshTimeOptions();
             InitializeDutyReminderTimeOptions();
             InitializeScheduleDayOptions();
@@ -310,6 +316,21 @@ public partial class DutyMainSettingsPage : SettingsPageBase
         PopulateMonthDayComboBox();
         // Set initial visibility
         UpdateAutoRunSecondaryVisibility();
+    }
+
+    private void InitializeAccessTokenModeOptions()
+    {
+        AccessTokenModeComboBox.SelectedIndex = 0;
+        StaticAccessTokenBox.Text = string.Empty;
+        AccessTokenStatusText.Text = "访问鉴权尚未加载。";
+    }
+
+    private void InitializeServerPortModeOptions()
+    {
+        ServerPortModeComboBox.SelectedIndex = 0;
+        FixedServerPortBox.Text = string.Empty;
+        FixedServerPortItem.IsVisible = false;
+        McpEndpointStatusText.Text = "MCP 状态尚未加载。";
     }
 
     private void PopulateMonthDayComboBox()
@@ -550,6 +571,12 @@ public partial class DutyMainSettingsPage : SettingsPageBase
             return;
         }
 
+        if (sender == FixedServerPortBox)
+        {
+            UpdateMcpEndpointControlsState(_backendConfigState == DutyBackendConfigLoadState.Loaded);
+            UpdateMcpEndpointStatus();
+        }
+
         CaptureCurrentPlanDraft();
         RefreshPlanSelectorsIfNeeded(sender);
         TraceSettings("control_changed", new { control = GetControlName(sender), reason = "text_changed" });
@@ -585,6 +612,11 @@ public partial class DutyMainSettingsPage : SettingsPageBase
         if (sender == AutoRunModeComboBox)
         {
             UpdateAutoRunSecondaryVisibility();
+        }
+        else if (sender == ServerPortModeComboBox)
+        {
+            UpdateMcpEndpointControlsState(_backendConfigState == DutyBackendConfigLoadState.Loaded);
+            UpdateMcpEndpointStatus();
         }
         else if (sender == PlanModeComboBox)
         {
@@ -681,7 +713,223 @@ public partial class DutyMainSettingsPage : SettingsPageBase
             return;
         }
 
+        if (sender == EnableMcpSwitch)
+        {
+            UpdateMcpEndpointControlsState(_backendConfigState == DutyBackendConfigLoadState.Loaded);
+            UpdateMcpEndpointStatus();
+        }
+
         QueueConfigApply();
+    }
+
+    private void OnAccessTokenModeSelectionChanged(object? sender, SelectionChangedEventArgs e)
+    {
+        UpdateAccessSecurityControlsState(_backendConfigState == DutyBackendConfigLoadState.Loaded);
+        UpdateAccessSecurityStatus();
+        UpdateMcpEndpointControlsState(_backendConfigState == DutyBackendConfigLoadState.Loaded);
+        UpdateMcpEndpointStatus();
+    }
+
+    private async void OnApplyAccessSecurityClick(object? sender, RoutedEventArgs e)
+    {
+        await ApplyAccessSecurityAsync(clearStaticToken: false);
+    }
+
+    private async void OnClearStaticAccessTokenClick(object? sender, RoutedEventArgs e)
+    {
+        await ApplyAccessSecurityAsync(clearStaticToken: true);
+    }
+
+    private async void OnCopyAccessTokenClick(object? sender, RoutedEventArgs e)
+    {
+        try
+        {
+            var token = PythonIpcService.GetCurrentAccessToken();
+            if (string.IsNullOrWhiteSpace(token))
+            {
+                var runtimeStatus = PythonIpcService.GetAccessTokenStatus();
+                var message = runtimeStatus.ConfiguredMode == DutyAccessTokenModes.Static
+                    ? "静态 token 当前不可复制，请检查本地配置是否完整。"
+                    : "动态 token 仅在后端已启动后可复制。";
+                SetStatus(message, Brushes.Orange);
+                UpdateAccessSecurityStatus();
+                return;
+            }
+
+            var topLevel = TopLevel.GetTopLevel(this);
+            if (topLevel?.Clipboard == null)
+            {
+                throw new InvalidOperationException("Clipboard is unavailable.");
+            }
+
+            await topLevel.Clipboard.SetTextAsync(token);
+            SetStatus("当前 token 已复制。", Brushes.Green);
+            UpdateAccessSecurityStatus();
+        }
+        catch (Exception ex)
+        {
+            SetStatus($"复制 token 失败：{ex.Message}", Brushes.Red);
+        }
+    }
+
+    private async void OnCopyMcpUrlClick(object? sender, RoutedEventArgs e)
+    {
+        try
+        {
+            if (!TryGetCopyableMcpEndpoint(out var mcpUrl, out _, out var errorMessage))
+            {
+                SetStatus(errorMessage, Brushes.Orange);
+                UpdateMcpEndpointStatus();
+                return;
+            }
+
+            var topLevel = TopLevel.GetTopLevel(this);
+            if (topLevel?.Clipboard == null)
+            {
+                throw new InvalidOperationException("Clipboard is unavailable.");
+            }
+
+            await topLevel.Clipboard.SetTextAsync(mcpUrl);
+            SetStatus("当前 MCP URL 已复制。", Brushes.Green);
+            UpdateMcpEndpointStatus();
+        }
+        catch (Exception ex)
+        {
+            SetStatus($"复制 MCP URL 失败：{ex.Message}", Brushes.Red);
+        }
+    }
+
+    private async void OnCopyMcpClientConfigClick(object? sender, RoutedEventArgs e)
+    {
+        try
+        {
+            if (!TryGetCopyableMcpEndpoint(out var mcpUrl, out var token, out var errorMessage))
+            {
+                SetStatus(errorMessage, Brushes.Orange);
+                UpdateMcpEndpointStatus();
+                return;
+            }
+
+            var clientConfig = new
+            {
+                mcpServers = new Dictionary<string, object?>
+                {
+                    ["duty-agent"] = new
+                    {
+                        type = "streamableHttp",
+                        url = mcpUrl,
+                        headers = new Dictionary<string, string>
+                        {
+                            ["Authorization"] = $"Bearer {token}"
+                        }
+                    }
+                }
+            };
+
+            var topLevel = TopLevel.GetTopLevel(this);
+            if (topLevel?.Clipboard == null)
+            {
+                throw new InvalidOperationException("Clipboard is unavailable.");
+            }
+
+            await topLevel.Clipboard.SetTextAsync(JsonSerializer.Serialize(clientConfig, new JsonSerializerOptions
+            {
+                WriteIndented = true
+            }));
+            SetStatus("MCP 客户端配置已复制。", Brushes.Green);
+            UpdateMcpEndpointStatus();
+        }
+        catch (Exception ex)
+        {
+            SetStatus($"复制 MCP 客户端配置失败：{ex.Message}", Brushes.Red);
+        }
+    }
+
+    private async Task<bool> ApplyAccessSecurityAsync(bool clearStaticToken)
+    {
+        if (_isLoadingConfig || _isApplyingConfig || _isApplyingAccessSecurity)
+        {
+            return false;
+        }
+
+        try
+        {
+            _isApplyingAccessSecurity = true;
+            UpdateAccessSecurityControlsState(_backendConfigState == DutyBackendConfigLoadState.Loaded);
+            await FlushPendingConfigApplyAsync();
+
+            var accessTokenMode = GetSelectedAccessTokenMode();
+            var newStaticAccessToken = (StaticAccessTokenBox.Text ?? string.Empty).Trim();
+            if (!clearStaticToken &&
+                string.Equals(accessTokenMode, DutyAccessTokenModes.Dynamic, StringComparison.Ordinal) &&
+                newStaticAccessToken.Length > 0)
+            {
+                SetStatus("动态模式下不会隐式保存静态 token。请切换到静态模式后再应用。", Brushes.Orange);
+                return false;
+            }
+
+            TraceSettings("access_security_save_started", new
+            {
+                clear_static_token = clearStaticToken,
+                access_token_mode = accessTokenMode,
+                static_access_token_configured = _lastAppliedAccessSecurity.StaticAccessTokenConfigured
+            });
+            var result = SettingsRepository.SaveHostAccessSecurity(new DutyHostAccessSecuritySaveRequest
+            {
+                AccessTokenMode = accessTokenMode,
+                NewStaticAccessTokenPlaintext = clearStaticToken || newStaticAccessToken.Length == 0 ? null : newStaticAccessToken,
+                ClearStaticAccessToken = clearStaticToken,
+                StaticAccessTokenConfigured = _lastAppliedAccessSecurity.StaticAccessTokenConfigured
+            });
+
+            ApplyLoadedSettingsDocument(result.Document, showStatusMessage: false);
+            UpdateConfigTracking(
+                result.NoChanges
+                    ? "访问鉴权未变更"
+                    : result.RestartRequired
+                    ? "本地已保存（需重启）"
+                    : "本地已保存");
+            SetStatus(result.Message, Brushes.Gray);
+            if (result.RestartRequired)
+            {
+                RequestRestart();
+            }
+
+            TraceSettings("access_security_save_completed", new
+            {
+                clear_static_token = clearStaticToken,
+                access_token_mode = accessTokenMode,
+                restart_required = result.RestartRequired,
+                no_changes = result.NoChanges
+            });
+            return true;
+        }
+        catch (InvalidOperationException ex)
+        {
+            TraceSettings("access_security_save_failed", new { error = ex.Message }, "WARN");
+            SetStatus(ex.Message, Brushes.Orange);
+            return false;
+        }
+        catch (ArgumentException ex)
+        {
+            TraceSettings("access_security_save_failed", new { error = ex.Message }, "WARN");
+            SetStatus(ex.Message, Brushes.Orange);
+            return false;
+        }
+        catch (Exception ex)
+        {
+            TraceSettings("access_security_save_failed", new { error = ex.Message }, "ERROR");
+            SetStatus($"访问鉴权保存失败：{ex.Message}", Brushes.Red);
+            return false;
+        }
+        finally
+        {
+            _isApplyingAccessSecurity = false;
+            UpdateAccessSecurityStatus();
+            UpdateAccessSecurityControlsState(_backendConfigState == DutyBackendConfigLoadState.Loaded);
+            UpdateMcpEndpointControlsState(_backendConfigState == DutyBackendConfigLoadState.Loaded);
+            UpdateMcpEndpointStatus();
+        }
     }
 
     private void QueueConfigApply(bool immediate = false)
@@ -1333,15 +1581,18 @@ public partial class DutyMainSettingsPage : SettingsPageBase
     private void ApplyLoadedSettingsDocument(DutySettingsDocument settingsDocument, bool showStatusMessage)
     {
         var hostValues = CreateHostValues(settingsDocument.Host);
+        var accessSecurityValues = CreateAccessSecurityValues(settingsDocument.Host);
         var backendConfig = CreateBackendConfig(settingsDocument);
         ExecuteWithoutConfigEvents(() =>
         {
             ApplyHostFormModel(hostValues);
+            ApplyAccessSecurityFormModel(accessSecurityValues);
             ApplyBackendConfig(backendConfig);
         });
         ClearPendingConfigApply("settings_document_applied");
         _lastLoadedSettingsDocument = settingsDocument;
         _lastAppliedHostSettings = hostValues;
+        _lastAppliedAccessSecurity = accessSecurityValues;
         _lastAppliedBackendConfig = _backendModule.CloneConfig(backendConfig);
         _backendConfigState = DutyBackendConfigLoadState.Loaded;
         _backendConfigErrorMessage = null;
@@ -1382,11 +1633,38 @@ public partial class DutyMainSettingsPage : SettingsPageBase
                 AutoRunTriggerNotificationSwitch.IsChecked = hostSettings.AutoRunTriggerNotificationEnabled;
                 DutyReminderEnabledSwitch.IsChecked = hostSettings.DutyReminderEnabled;
                 SetDutyReminderTimeSelection(hostSettings.DutyReminderTime);
+                SetServerPortModeSelection(hostSettings.ServerPortMode);
+                FixedServerPortBox.Text = hostSettings.FixedServerPortText;
                 EnableMcpSwitch.IsChecked = hostSettings.EnableMcp;
                 EnableWebDebugLayerSwitch.IsChecked = hostSettings.EnableWebViewDebugLayer;
                 SetComponentRefreshTimeSelection(hostSettings.ComponentRefreshTime);
                 NotificationDurationSlider.Value = hostSettings.NotificationDurationSeconds;
                 NotificationDurationLabel.Text = $"{hostSettings.NotificationDurationSeconds} 秒";
+                UpdateMcpEndpointControlsState(_backendConfigState == DutyBackendConfigLoadState.Loaded);
+                UpdateMcpEndpointStatus();
+            }
+            finally
+            {
+                _isLoadingConfig = wasLoadingConfig;
+            }
+        });
+    }
+
+    private void ApplyAccessSecurityFormModel(DutyAccessSecurityValues accessSecurityValues)
+    {
+        var wasLoadingConfig = _isLoadingConfig;
+        _isLoadingConfig = true;
+        ExecuteWithoutConfigEvents(() =>
+        {
+            try
+            {
+                SetAccessTokenModeSelection(accessSecurityValues.AccessTokenMode);
+                StaticAccessTokenBox.Text = string.Empty;
+                _lastAppliedAccessSecurity = accessSecurityValues;
+                UpdateAccessSecurityStatus();
+                UpdateAccessSecurityControlsState(_backendConfigState == DutyBackendConfigLoadState.Loaded);
+                UpdateMcpEndpointControlsState(_backendConfigState == DutyBackendConfigLoadState.Loaded);
+                UpdateMcpEndpointStatus();
             }
             finally
             {
@@ -1430,7 +1708,8 @@ public partial class DutyMainSettingsPage : SettingsPageBase
         DutyReminderEnabledSwitch.IsEnabled = enabled;
         DutyReminderHourComboBox.IsEnabled = enabled;
         DutyReminderMinuteComboBox.IsEnabled = enabled;
-        EnableMcpSwitch.IsEnabled = enabled;
+        UpdateAccessSecurityControlsState(enabled);
+        UpdateMcpEndpointControlsState(enabled);
         EnableWebDebugLayerSwitch.IsEnabled = enabled;
         ComponentRefreshHourComboBox.IsEnabled = enabled;
         ComponentRefreshMinuteComboBox.IsEnabled = enabled;
@@ -1456,6 +1735,177 @@ public partial class DutyMainSettingsPage : SettingsPageBase
         UpdatePlanActionButtons();
     }
 
+    private static DutyAccessSecurityValues CreateAccessSecurityValues(DutyEditableHostSettingsDocument? host)
+    {
+        return new DutyAccessSecurityValues
+        {
+            AccessTokenMode = DutyAccessTokenModes.Normalize(host?.AccessTokenMode),
+            StaticAccessTokenConfigured = host?.StaticAccessTokenConfigured == true
+        };
+    }
+
+    private string GetSelectedAccessTokenMode()
+    {
+        return AccessTokenModeComboBox.SelectedItem is ComboBoxItem item
+            ? DutyAccessTokenModes.Normalize(item.Tag as string)
+            : DutyAccessTokenModes.Dynamic;
+    }
+
+    private void SetAccessTokenModeSelection(string? mode)
+    {
+        var normalized = DutyAccessTokenModes.Normalize(mode);
+        foreach (var item in AccessTokenModeComboBox.Items.OfType<ComboBoxItem>())
+        {
+            if (string.Equals(DutyAccessTokenModes.Normalize(item.Tag as string), normalized, StringComparison.Ordinal))
+            {
+                AccessTokenModeComboBox.SelectedItem = item;
+                return;
+            }
+        }
+
+        AccessTokenModeComboBox.SelectedIndex = 0;
+    }
+
+    private string GetSelectedServerPortMode()
+    {
+        return ServerPortModeComboBox.SelectedItem is ComboBoxItem item
+            ? DutyServerPortModes.Normalize(item.Tag as string)
+            : DutyServerPortModes.Random;
+    }
+
+    private void SetServerPortModeSelection(string? mode)
+    {
+        var normalized = DutyServerPortModes.Normalize(mode);
+        foreach (var item in ServerPortModeComboBox.Items.OfType<ComboBoxItem>())
+        {
+            if (string.Equals(DutyServerPortModes.Normalize(item.Tag as string), normalized, StringComparison.Ordinal))
+            {
+                ServerPortModeComboBox.SelectedItem = item;
+                return;
+            }
+        }
+
+        ServerPortModeComboBox.SelectedIndex = 0;
+    }
+
+    private void UpdateAccessSecurityControlsState(bool enabled)
+    {
+        var staticModeSelected = string.Equals(GetSelectedAccessTokenMode(), DutyAccessTokenModes.Static, StringComparison.Ordinal);
+        AccessTokenModeComboBox.IsEnabled = enabled && !_isApplyingAccessSecurity;
+        StaticAccessTokenBox.IsEnabled = enabled && !_isApplyingAccessSecurity && staticModeSelected;
+        ApplyAccessSecurityBtn.IsEnabled = enabled && !_isApplyingAccessSecurity;
+        CopyAccessTokenBtn.IsEnabled = enabled && !_isApplyingAccessSecurity;
+        ClearStaticAccessTokenBtn.IsEnabled = enabled && !_isApplyingAccessSecurity && _lastAppliedAccessSecurity.StaticAccessTokenConfigured;
+    }
+
+    private void UpdateAccessSecurityStatus()
+    {
+        var runtimeStatus = PythonIpcService.GetAccessTokenStatus();
+        var configuredModeText = runtimeStatus.ConfiguredMode == DutyAccessTokenModes.Static ? "静态" : "动态";
+        var activeModeText = runtimeStatus.ActiveMode == DutyAccessTokenModes.Static ? "静态" : "动态";
+        var configuredText = runtimeStatus.StaticTokenConfigured ? "已配置" : "未配置";
+        var copyText = runtimeStatus.CanCopyCurrentToken ? "可复制" : "不可复制";
+        var pendingSelection = GetSelectedAccessTokenMode();
+        var pendingModeHint = string.Equals(pendingSelection, _lastAppliedAccessSecurity.AccessTokenMode, StringComparison.Ordinal)
+            ? string.Empty
+            : $"；已选择未保存模式：{(pendingSelection == DutyAccessTokenModes.Static ? "静态" : "动态")}";
+        var restartHint = runtimeStatus.BackendReady && !string.Equals(runtimeStatus.ActiveMode, runtimeStatus.ConfiguredMode, StringComparison.Ordinal)
+            ? $"；当前后端仍在使用{activeModeText} token，重启后切换"
+            : string.Empty;
+        AccessTokenStatusText.Text =
+            $"已保存模式：{configuredModeText}；静态 token：{configuredText}；当前 token：{copyText}{pendingModeHint}{restartHint}";
+    }
+
+    private void UpdateMcpEndpointControlsState(bool enabled)
+    {
+        var fixedModeSelected = string.Equals(GetSelectedServerPortMode(), DutyServerPortModes.Fixed, StringComparison.Ordinal);
+        var endpointStatus = PythonIpcService.GetServiceEndpointStatus();
+        var hasCopyableRuntimeConfig = enabled &&
+                                       endpointStatus.EnableMcpActive &&
+                                       !string.IsNullOrWhiteSpace(endpointStatus.McpUrl) &&
+                                       !string.IsNullOrWhiteSpace(PythonIpcService.GetCurrentAccessToken());
+
+        EnableMcpSwitch.IsEnabled = enabled;
+        ServerPortModeComboBox.IsEnabled = enabled;
+        FixedServerPortItem.IsVisible = fixedModeSelected;
+        FixedServerPortBox.IsEnabled = enabled && fixedModeSelected;
+        CopyMcpUrlBtn.IsEnabled = hasCopyableRuntimeConfig;
+        CopyMcpClientConfigBtn.IsEnabled = hasCopyableRuntimeConfig;
+    }
+
+    private void UpdateMcpEndpointStatus()
+    {
+        var endpointStatus = PythonIpcService.GetServiceEndpointStatus();
+        var currentToken = PythonIpcService.GetCurrentAccessToken();
+        var canCopyConfig = endpointStatus.EnableMcpActive &&
+                            !string.IsNullOrWhiteSpace(endpointStatus.McpUrl) &&
+                            !string.IsNullOrWhiteSpace(currentToken);
+        var actualPortText = endpointStatus.ActualPort?.ToString() ?? "未就绪";
+        string statusText;
+
+        if (endpointStatus.PortConflictFallbackActive)
+        {
+            statusText = endpointStatus.StatusMessage;
+        }
+        else if (endpointStatus.EnableMcpActive && !string.IsNullOrWhiteSpace(endpointStatus.McpUrl))
+        {
+            statusText = $"MCP 已启用，当前地址：{endpointStatus.McpUrl}；当前实际端口：{actualPortText}。";
+        }
+        else if (endpointStatus.EnableMcpConfigured)
+        {
+            statusText = endpointStatus.ActualPort.HasValue
+                ? $"MCP 已启用，但当前地址暂不可用；当前实际端口：{actualPortText}。"
+                : "MCP 已启用，但后端尚未就绪。";
+        }
+        else
+        {
+            statusText = endpointStatus.ActualPort.HasValue
+                ? $"MCP 未启用；当前服务端口：{actualPortText}。"
+                : "MCP 未启用。";
+        }
+
+        var pendingMode = GetSelectedServerPortMode();
+        var pendingFixedPortText = NormalizeFixedServerPortText(FixedServerPortBox.Text);
+        var lastAppliedFixedPortText = NormalizeFixedServerPortText(_lastAppliedHostSettings.FixedServerPortText);
+        var hasPendingEndpointChanges =
+            EnableMcpSwitch.IsChecked == true != _lastAppliedHostSettings.EnableMcp ||
+            !string.Equals(DutyServerPortModes.Normalize(_lastAppliedHostSettings.ServerPortMode), pendingMode, StringComparison.Ordinal) ||
+            !string.Equals(lastAppliedFixedPortText, pendingFixedPortText, StringComparison.Ordinal);
+        var pendingHint = hasPendingEndpointChanges ? "；已选择未保存的 MCP 端口设置，保存并重启后生效。" : string.Empty;
+        var copyText = canCopyConfig ? "可复制" : "不可复制";
+
+        McpEndpointStatusText.Text = $"{statusText} 当前客户端配置：{copyText}{pendingHint}";
+    }
+
+    private bool TryGetCopyableMcpEndpoint(out string mcpUrl, out string token, out string errorMessage)
+    {
+        var endpointStatus = PythonIpcService.GetServiceEndpointStatus();
+        token = PythonIpcService.GetCurrentAccessToken() ?? string.Empty;
+        mcpUrl = endpointStatus.McpUrl;
+        if (!endpointStatus.EnableMcpActive || string.IsNullOrWhiteSpace(mcpUrl))
+        {
+            errorMessage = endpointStatus.PortConflictFallbackActive
+                ? endpointStatus.StatusMessage
+                : "当前 MCP 地址不可用，请确认 MCP 已启用且后端已就绪。";
+            return false;
+        }
+
+        if (string.IsNullOrWhiteSpace(token))
+        {
+            errorMessage = "当前访问 token 不可用，请确认访问鉴权已生效且后端已就绪。";
+            return false;
+        }
+
+        errorMessage = string.Empty;
+        return true;
+    }
+
+    private static string NormalizeFixedServerPortText(string? value)
+    {
+        var normalized = (value ?? string.Empty).Trim();
+        return int.TryParse(normalized, out var port) ? port.ToString() : normalized;
+    }
+
     private DutyHostSettingsValues CreateHostValues(DutyEditableHostSettingsDocument host)
     {
         return new DutyHostSettingsValues
@@ -1466,6 +1916,8 @@ public partial class DutyMainSettingsPage : SettingsPageBase
             AutoRunTriggerNotificationEnabled = host.AutoRunTriggerNotificationEnabled,
             DutyReminderEnabled = host.DutyReminderEnabled,
             DutyReminderTime = (host.DutyReminderTimes ?? []).FirstOrDefault(x => !string.IsNullOrWhiteSpace(x)) ?? "07:40",
+            ServerPortMode = DutyServerPortModes.Normalize(host.ServerPortMode),
+            FixedServerPortText = host.FixedServerPort?.ToString() ?? string.Empty,
             EnableMcp = host.EnableMcp,
             EnableWebViewDebugLayer = host.EnableWebViewDebugLayer,
             ComponentRefreshTime = host.ComponentRefreshTime,
@@ -1604,6 +2056,15 @@ public partial class DutyMainSettingsPage : SettingsPageBase
             stopwatch.Stop();
             DutyDiagnosticsLogger.Error("SettingsPage", "Preview data load failed.", ex,
                 new { traceId, reason, revision, durationMs = stopwatch.ElapsedMilliseconds });
+        }
+        finally
+        {
+            if (revision == _dataLoadRevision)
+            {
+                UpdateAccessSecurityStatus();
+                UpdateMcpEndpointControlsState(_backendConfigState == DutyBackendConfigLoadState.Loaded);
+                UpdateMcpEndpointStatus();
+            }
         }
     }
 
@@ -2471,6 +2932,8 @@ public partial class DutyMainSettingsPage : SettingsPageBase
             AutoRunTriggerNotificationEnabled = AutoRunTriggerNotificationSwitch.IsChecked == true,
             DutyReminderEnabled = DutyReminderEnabledSwitch.IsChecked == true,
             DutyReminderTime = GetSelectedDutyReminderTime(),
+            ServerPortMode = GetSelectedServerPortMode(),
+            FixedServerPortText = (FixedServerPortBox.Text ?? string.Empty).Trim(),
             EnableMcp = EnableMcpSwitch.IsChecked == true,
             EnableWebViewDebugLayer = EnableWebDebugLayerSwitch.IsChecked == true,
             NotificationDurationSeconds = (int)NotificationDurationSlider.Value

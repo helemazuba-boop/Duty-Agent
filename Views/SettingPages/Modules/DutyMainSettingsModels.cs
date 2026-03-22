@@ -18,10 +18,18 @@ internal sealed class DutyHostSettingsValues
     public bool AutoRunTriggerNotificationEnabled { get; init; }
     public bool DutyReminderEnabled { get; init; }
     public string DutyReminderTime { get; init; } = "07:40";
+    public string ServerPortMode { get; init; } = DutyServerPortModes.Random;
+    public string FixedServerPortText { get; init; } = string.Empty;
     public bool EnableMcp { get; init; }
     public bool EnableWebViewDebugLayer { get; init; }
     public string ComponentRefreshTime { get; init; } = "08:00";
     public int NotificationDurationSeconds { get; init; } = 8;
+}
+
+internal sealed class DutyAccessSecurityValues
+{
+    public string AccessTokenMode { get; init; } = DutyAccessTokenModes.Dynamic;
+    public bool StaticAccessTokenConfigured { get; init; }
 }
 
 internal sealed class DutyBackendSettingsValues

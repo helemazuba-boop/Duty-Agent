@@ -24,6 +24,18 @@ public sealed class DutyEditableHostSettingsDocument
     [JsonPropertyName("duty_reminder_times")]
     public List<string> DutyReminderTimes { get; set; } = ["07:40"];
 
+    [JsonPropertyName("access_token_mode")]
+    public string AccessTokenMode { get; set; } = DutyAccessTokenModes.Dynamic;
+
+    [JsonPropertyName("static_access_token_configured")]
+    public bool StaticAccessTokenConfigured { get; set; }
+
+    [JsonPropertyName("server_port_mode")]
+    public string ServerPortMode { get; set; } = DutyServerPortModes.Random;
+
+    [JsonPropertyName("fixed_server_port")]
+    public int? FixedServerPort { get; set; }
+
     [JsonPropertyName("enable_mcp")]
     public bool EnableMcp { get; set; }
 
@@ -47,6 +59,21 @@ public sealed class DutyPersistedHostSettings
 
     [JsonPropertyName("auto_run_parameter")]
     public string AutoRunParameter { get; set; } = "Monday";
+
+    [JsonPropertyName("access_token_mode")]
+    public string AccessTokenMode { get; set; } = DutyAccessTokenModes.Dynamic;
+
+    [JsonPropertyName("static_access_token_encrypted")]
+    public string StaticAccessTokenEncrypted { get; set; } = string.Empty;
+
+    [JsonPropertyName("static_access_token_verifier")]
+    public string StaticAccessTokenVerifier { get; set; } = string.Empty;
+
+    [JsonPropertyName("server_port_mode")]
+    public string ServerPortMode { get; set; } = DutyServerPortModes.Random;
+
+    [JsonPropertyName("fixed_server_port")]
+    public int? FixedServerPort { get; set; }
 
     [JsonPropertyName("enable_mcp")]
     public bool EnableMcp { get; set; }
@@ -179,6 +206,14 @@ public sealed class DutyEditableHostSettingsPatch
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public List<string>? DutyReminderTimes { get; set; }
 
+    [JsonPropertyName("server_port_mode")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? ServerPortMode { get; set; }
+
+    [JsonPropertyName("fixed_server_port")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? FixedServerPort { get; set; }
+
     [JsonPropertyName("enable_mcp")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public bool? EnableMcp { get; set; }
@@ -274,6 +309,62 @@ public sealed class DutySettingsMutationResult
 
     [JsonPropertyName("trace_id")]
     public string TraceId { get; set; } = string.Empty;
+}
+
+public sealed class DutyHostAccessSecuritySaveRequest
+{
+    [JsonPropertyName("access_token_mode")]
+    public string AccessTokenMode { get; set; } = DutyAccessTokenModes.Dynamic;
+
+    [JsonPropertyName("new_static_access_token_plaintext")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? NewStaticAccessTokenPlaintext { get; set; }
+
+    [JsonPropertyName("clear_static_access_token")]
+    public bool ClearStaticAccessToken { get; set; }
+
+    [JsonPropertyName("static_access_token_configured")]
+    public bool StaticAccessTokenConfigured { get; set; }
+}
+
+public sealed class DutyHostAccessSecurityMutationResult
+{
+    [JsonPropertyName("success")]
+    public bool Success { get; set; }
+
+    [JsonPropertyName("no_changes")]
+    public bool NoChanges { get; set; }
+
+    [JsonPropertyName("restart_required")]
+    public bool RestartRequired { get; set; }
+
+    [JsonPropertyName("message")]
+    public string Message { get; set; } = string.Empty;
+
+    [JsonPropertyName("document")]
+    public DutySettingsDocument Document { get; set; } = new();
+}
+
+public sealed class DutyAccessTokenRuntimeStatus
+{
+    public string ConfiguredMode { get; init; } = DutyAccessTokenModes.Dynamic;
+    public string ActiveMode { get; init; } = DutyAccessTokenModes.Dynamic;
+    public bool StaticTokenConfigured { get; init; }
+    public bool CanCopyCurrentToken { get; init; }
+    public bool BackendReady { get; init; }
+}
+
+public sealed class DutyServiceEndpointRuntimeStatus
+{
+    public string ConfiguredPortMode { get; init; } = DutyServerPortModes.Random;
+    public int? ConfiguredFixedPort { get; init; }
+    public int? ActualPort { get; init; }
+    public string ServerBaseUrl { get; init; } = string.Empty;
+    public string McpUrl { get; init; } = string.Empty;
+    public bool EnableMcpConfigured { get; init; }
+    public bool EnableMcpActive { get; init; }
+    public bool PortConflictFallbackActive { get; init; }
+    public string StatusMessage { get; init; } = string.Empty;
 }
 
 public enum DutyBackendSyncState

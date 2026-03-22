@@ -7,11 +7,13 @@ namespace DutyAgent.Services;
 public static class SecurityHelper
 {
     private const string AesMacPrefix = "aesmac:v1:";
+    private const string Pbkdf2Sha256Prefix = "pbkdf2_sha256";
     private const int AesKeyBytes = 32;
     private const int HmacKeyBytes = 32;
     private const int SaltBytes = 16;
     private const int IvBytes = 16;
     private const int HmacBytes = 32;
+    private const int VerifierKeyBytes = 32;
     private const int KeyDerivationIterations = 120_000;
 
     private static readonly byte[] AppBindingEntropy =
@@ -79,6 +81,75 @@ public static class SecurityHelper
         }
 
         return DecryptAesMacString(encryptedText);
+    }
+
+    public static string CreatePasswordVerifier(string plainText)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(plainText);
+
+        var salt = RandomNumberGenerator.GetBytes(SaltBytes);
+        var derivedKey = DeriveVerifierKey(plainText, salt);
+        try
+        {
+            return string.Create(
+                Pbkdf2Sha256Prefix.Length + 1 + "120000".Length + 1 + Convert.ToBase64String(salt).Length + 1 + Convert.ToBase64String(derivedKey).Length,
+                (Salt: salt, Hash: derivedKey),
+                static (span, state) =>
+                {
+                    var verifier = $"{Pbkdf2Sha256Prefix}${KeyDerivationIterations}${Convert.ToBase64String(state.Salt)}${Convert.ToBase64String(state.Hash)}";
+                    verifier.AsSpan().CopyTo(span);
+                });
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(derivedKey);
+        }
+    }
+
+    public static bool VerifyPasswordVerifier(string plainText, string verifier)
+    {
+        if (string.IsNullOrWhiteSpace(plainText) || string.IsNullOrWhiteSpace(verifier))
+        {
+            return false;
+        }
+
+        var parts = verifier.Split('$');
+        if (parts.Length != 4 ||
+            !string.Equals(parts[0], Pbkdf2Sha256Prefix, StringComparison.Ordinal) ||
+            !int.TryParse(parts[1], out var iterations) ||
+            iterations != KeyDerivationIterations)
+        {
+            return false;
+        }
+
+        try
+        {
+            var salt = Convert.FromBase64String(parts[2]);
+            var expectedHash = Convert.FromBase64String(parts[3]);
+            if (salt.Length != SaltBytes || expectedHash.Length != VerifierKeyBytes)
+            {
+                return false;
+            }
+
+            var actualHash = Rfc2898DeriveBytes.Pbkdf2(
+                Encoding.UTF8.GetBytes(plainText),
+                salt,
+                iterations,
+                HashAlgorithmName.SHA256,
+                VerifierKeyBytes);
+            try
+            {
+                return CryptographicOperations.FixedTimeEquals(actualHash, expectedHash);
+            }
+            finally
+            {
+                CryptographicOperations.ZeroMemory(actualHash);
+            }
+        }
+        catch (FormatException)
+        {
+            return false;
+        }
     }
 
     private static string DecryptAesMacString(string encryptedText)
@@ -152,6 +223,16 @@ public static class SecurityHelper
         }
 
         throw new CryptographicException("API key decryption failed. No matching network adapter found.", lastEx);
+    }
+
+    private static byte[] DeriveVerifierKey(string plainText, byte[] salt)
+    {
+        return Rfc2898DeriveBytes.Pbkdf2(
+            Encoding.UTF8.GetBytes(plainText),
+            salt,
+            KeyDerivationIterations,
+            HashAlgorithmName.SHA256,
+            VerifierKeyBytes);
     }
 
     private static (byte[] AesKey, byte[] HmacKey) DeriveKeysForCurrentMachine(byte[] salt, string macAddress)

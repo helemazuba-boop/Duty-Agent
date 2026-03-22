@@ -4,7 +4,6 @@ import csv
 import json
 import os
 import re
-import sys
 import time
 from datetime import date, datetime
 from pathlib import Path
@@ -27,6 +26,7 @@ DEFAULT_PYTHON_PATH = r".\Assets_Duty\python-embed\python.exe"
 DEFAULT_AUTO_RUN_MODE = "Off"
 DEFAULT_AUTO_RUN_PARAMETER = "Monday"
 DEFAULT_AUTO_RUN_TIME = "08:00"
+DEFAULT_ACCESS_TOKEN_MODE = "dynamic"
 DEFAULT_COMPONENT_REFRESH_TIME = "08:00"
 DEFAULT_NOTIFICATION_DURATION_SECONDS = 8
 DEFAULT_DUTY_REMINDER_TIME = "07:40"
@@ -663,6 +663,8 @@ def _create_default_persisted_host_config() -> dict:
         "python_path": DEFAULT_PYTHON_PATH,
         "auto_run_mode": DEFAULT_AUTO_RUN_MODE,
         "auto_run_parameter": DEFAULT_AUTO_RUN_PARAMETER,
+        "access_token_mode": DEFAULT_ACCESS_TOKEN_MODE,
+        "static_access_token_verifier": "",
         "enable_mcp": False,
         "enable_webview_debug_layer": False,
         "auto_run_time": DEFAULT_AUTO_RUN_TIME,
@@ -697,6 +699,10 @@ def _normalize_persisted_host_config(config: dict | None) -> dict:
         }.get(str(source.get("auto_run_mode", DEFAULT_AUTO_RUN_MODE) or DEFAULT_AUTO_RUN_MODE).strip().lower(), "Off"),
         "auto_run_parameter": str(source.get("auto_run_parameter", DEFAULT_AUTO_RUN_PARAMETER) or DEFAULT_AUTO_RUN_PARAMETER).strip()
         or DEFAULT_AUTO_RUN_PARAMETER,
+        "access_token_mode": "static"
+        if str(source.get("access_token_mode", DEFAULT_ACCESS_TOKEN_MODE) or DEFAULT_ACCESS_TOKEN_MODE).strip().lower() == "static"
+        else DEFAULT_ACCESS_TOKEN_MODE,
+        "static_access_token_verifier": str(source.get("static_access_token_verifier", "") or "").strip(),
         "enable_mcp": parse_bool(source.get("enable_mcp"), False),
         "enable_webview_debug_layer": parse_bool(source.get("enable_webview_debug_layer"), False),
         "auto_run_time": _normalize_time_string(source.get("auto_run_time"), DEFAULT_AUTO_RUN_TIME),
@@ -733,6 +739,8 @@ def _persisted_host_config_body(config: dict | None) -> dict:
         "python_path": normalized["python_path"],
         "auto_run_mode": normalized["auto_run_mode"],
         "auto_run_parameter": normalized["auto_run_parameter"],
+        "access_token_mode": normalized["access_token_mode"],
+        "static_access_token_verifier": normalized["static_access_token_verifier"],
         "enable_mcp": normalized["enable_mcp"],
         "enable_webview_debug_layer": normalized["enable_webview_debug_layer"],
         "auto_run_time": normalized["auto_run_time"],
@@ -770,8 +778,10 @@ def load_host_config(ctx: Context) -> dict:
         "Loaded host config.",
         config_path=str(config_path),
         auto_run_mode=persisted.get("auto_run_mode", ""),
+        access_token_mode=persisted.get("access_token_mode", DEFAULT_ACCESS_TOKEN_MODE),
         enable_mcp=str(persisted.get("enable_mcp", False)).lower(),
         enable_webview_debug_layer=str(persisted.get("enable_webview_debug_layer", False)).lower(),
+        static_access_token_configured=str(bool(persisted.get("static_access_token_verifier"))).lower(),
         version=str(persisted.get("version", DEFAULT_HOST_CONFIG_VERSION)),
     )
     return persisted
@@ -793,23 +803,23 @@ def save_host_config(ctx: Context, config: dict) -> dict:
         "Saved host config.",
         config_path=str(ctx.paths["host_config"]),
         auto_run_mode=persisted.get("auto_run_mode", ""),
+        access_token_mode=persisted.get("access_token_mode", DEFAULT_ACCESS_TOKEN_MODE),
         enable_mcp=str(persisted.get("enable_mcp", False)).lower(),
         enable_webview_debug_layer=str(persisted.get("enable_webview_debug_layer", False)).lower(),
+        static_access_token_configured=str(bool(persisted.get("static_access_token_verifier"))).lower(),
         version=str(persisted.get("version", DEFAULT_HOST_CONFIG_VERSION)),
     )
     return persisted
 
 
 def load_api_key_from_env() -> str:
-    if not sys.stdin.isatty():
-        try:
-            line = sys.stdin.readline()
-            api_key = line.strip() if line else ""
-            if api_key:
-                return api_key
-        except Exception:
-            pass
-    return os.environ.get("DUTY_AGENT_API_KEY", "").strip()
+    # Never read stdin here: MCP stdio transports also use stdin, and consuming it
+    # would corrupt the protocol stream. Prefer dedicated MCP env first, then the
+    # legacy shared env name for existing host integrations.
+    return (
+        os.environ.get("DUTY_AGENT_MCP_API_KEY", "").strip()
+        or os.environ.get("DUTY_AGENT_API_KEY", "").strip()
+    )
 
 
 def load_roster(csv_path: Path) -> Tuple[Dict[str, int], Dict[int, str], List[int], Dict[int, int]]:

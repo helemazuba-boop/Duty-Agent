@@ -6,7 +6,7 @@ import threading
 
 from fastapi import APIRouter, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import StreamingResponse
-from auth import WEBSOCKET_UNAUTHORIZED_CODE, is_websocket_authorized
+from auth import WEBSOCKET_BUSY_CODE, WEBSOCKET_UNAUTHORIZED_CODE, is_websocket_authorized
 
 try:
     from models.schemas import DutyRequest, DutyScheduleEntrySaveRequest, DutyScheduleEntrySaveResponse
@@ -142,9 +142,30 @@ async def duty_live(websocket: WebSocket):
         await websocket.close(code=WEBSOCKET_UNAUTHORIZED_CODE, reason="Unauthorized")
         return
 
-    await websocket.accept()
-
     trace_id, request_source = _resolve_websocket_meta(websocket, runtime)
+    owner_claimed = runtime.try_claim_duty_live_owner(trace_id)
+    if not owner_claimed:
+        current_owner = runtime.get_duty_live_owner()
+        runtime.logger.warn(
+            "DutyLive",
+            "Rejected extra WebSocket duty control channel because another owner is already connected.",
+            trace_id=trace_id,
+            request_source=request_source,
+            current_owner=current_owner,
+        )
+        await websocket.accept()
+        await websocket.send_json(
+            {
+                "type": "error",
+                "trace_id": trace_id,
+                "request_source": request_source,
+                "message": "Duty live channel is busy. Another owner is already connected.",
+            }
+        )
+        await websocket.close(code=WEBSOCKET_BUSY_CODE, reason="Duty live channel is busy.")
+        return
+
+    await websocket.accept()
     runtime.logger.info(
         "DutyLive",
         "Accepted WebSocket duty control channel.",
@@ -230,6 +251,7 @@ async def duty_live(websocket: WebSocket):
             await sender_task
         except Exception:
             pass
+        runtime.release_duty_live_owner(trace_id)
 
 
 def _start_schedule_run(

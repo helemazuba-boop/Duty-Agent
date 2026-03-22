@@ -22,6 +22,14 @@ public partial class DutyConfig : ObservableObject
     private string _autoRunParameter = "Monday";
 
     [ObservableProperty]
+    [property: JsonPropertyName("access_token_mode")]
+    private string _accessTokenMode = DutyAccessTokenModes.Dynamic;
+
+    [ObservableProperty]
+    [property: JsonPropertyName("static_access_token_verifier")]
+    private string _staticAccessTokenVerifier = string.Empty;
+
+    [ObservableProperty]
     [property: JsonPropertyName("enable_mcp")]
     private bool _enableMcp = false;
 

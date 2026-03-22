@@ -31,6 +31,14 @@ internal sealed class DutyMainSettingsHostModule
                    NormalizeDutyReminderTime(current.DutyReminderTime),
                    NormalizeDutyReminderTime(lastApplied.DutyReminderTime),
                    StringComparison.Ordinal) ||
+               !string.Equals(
+                   DutyServerPortModes.Normalize(current.ServerPortMode),
+                   DutyServerPortModes.Normalize(lastApplied.ServerPortMode),
+                   StringComparison.Ordinal) ||
+               !string.Equals(
+                   NormalizeFixedServerPortText(ResolveEffectiveFixedServerPortText(current, lastApplied)),
+                   NormalizeFixedServerPortText(lastApplied.FixedServerPortText),
+                   StringComparison.Ordinal) ||
                current.EnableMcp != lastApplied.EnableMcp ||
                current.EnableWebViewDebugLayer != lastApplied.EnableWebViewDebugLayer ||
                Math.Clamp(current.NotificationDurationSeconds, 3, 15) !=
@@ -42,5 +50,23 @@ internal sealed class DutyMainSettingsHostModule
         return TimeSpan.TryParse(time, out var parsed)
             ? $"{parsed.Hours:D2}:{parsed.Minutes:D2}"
             : DefaultDutyReminderTime;
+    }
+
+    internal static string ResolveEffectiveFixedServerPortText(DutyHostSettingsValues current, DutyHostSettingsValues lastApplied)
+    {
+        var currentMode = DutyServerPortModes.Normalize(current.ServerPortMode);
+        var currentText = (current.FixedServerPortText ?? string.Empty).Trim();
+        if (currentMode == DutyServerPortModes.Random && currentText.Length == 0)
+        {
+            return lastApplied.FixedServerPortText ?? string.Empty;
+        }
+
+        return currentText;
+    }
+
+    private static string NormalizeFixedServerPortText(string? value)
+    {
+        var normalized = (value ?? string.Empty).Trim();
+        return int.TryParse(normalized, out var port) ? port.ToString() : normalized;
     }
 }

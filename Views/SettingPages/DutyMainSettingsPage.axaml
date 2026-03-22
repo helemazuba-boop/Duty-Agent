@@ -665,6 +665,64 @@
 
             <ci:IconText Glyph="&#xE7BA;" Text="高级设置" Margin="0,0,0,4" />
 
+            <ui:SettingsExpander Header="访问鉴权"
+                                 Description="统一控制 REST、WebSocket、MCP 与页面访问令牌。访问鉴权更改在重启应用后生效。"
+                                 IsExpanded="False"
+                                 Margin="0,0,0,12">
+                <ui:SettingsExpander.IconSource>
+                    <ui:FontIconSource Glyph="&#xE72E;" FontFamily="Segoe MDL2 Assets" />
+                </ui:SettingsExpander.IconSource>
+                <StackPanel Spacing="8" Margin="12,0,12,12">
+                    <ui:SettingsExpanderItem Content="Token 模式"
+                                             Description="动态模式随 Python 后端启动重新生成；静态模式使用本地保存的固定 token。">
+                        <ui:SettingsExpanderItem.Footer>
+                            <ComboBox x:Name="AccessTokenModeComboBox"
+                                      Width="220"
+                                      HorizontalAlignment="Stretch"
+                                      SelectionChanged="OnAccessTokenModeSelectionChanged">
+                                <ComboBoxItem Content="动态 token" Tag="dynamic" />
+                                <ComboBoxItem Content="静态 token" Tag="static" />
+                            </ComboBox>
+                        </ui:SettingsExpanderItem.Footer>
+                    </ui:SettingsExpanderItem>
+                    <ui:SettingsExpanderItem Content="当前状态"
+                                             Description="显示当前已保存的鉴权模式、静态 token 配置状态，以及当前 token 是否可复制。">
+                        <ui:SettingsExpanderItem.Footer>
+                            <TextBlock x:Name="AccessTokenStatusText"
+                                       Width="360"
+                                       Opacity="0.82"
+                                       TextWrapping="Wrap"
+                                       Text="访问鉴权尚未加载。" />
+                        </ui:SettingsExpanderItem.Footer>
+                    </ui:SettingsExpanderItem>
+                    <ui:SettingsExpanderItem Content="静态 Token"
+                                             Description="仅在切换到静态模式时提交；已保存的静态 token 不会回填显示。">
+                        <ui:SettingsExpanderItem.Footer>
+                            <TextBox x:Name="StaticAccessTokenBox"
+                                     Width="320"
+                                     PasswordChar="*"
+                                     Watermark="输入新的静态 token" />
+                        </ui:SettingsExpanderItem.Footer>
+                    </ui:SettingsExpanderItem>
+                </StackPanel>
+                <ui:SettingsExpander.Footer>
+                    <StackPanel Orientation="Horizontal" Spacing="8">
+                        <Button x:Name="ApplyAccessSecurityBtn"
+                                Click="OnApplyAccessSecurityClick"
+                                MinWidth="110"
+                                Content="应用鉴权设置" />
+                        <Button x:Name="CopyAccessTokenBtn"
+                                Click="OnCopyAccessTokenClick"
+                                MinWidth="110"
+                                Content="复制当前 token" />
+                        <Button x:Name="ClearStaticAccessTokenBtn"
+                                Click="OnClearStaticAccessTokenClick"
+                                MinWidth="110"
+                                Content="清除静态 token" />
+                    </StackPanel>
+                </ui:SettingsExpander.Footer>
+            </ui:SettingsExpander>
+
             <ui:InfoBar Margin="0,0,0,12"
                         IsOpen="True"
                         IsClosable="False"
@@ -673,16 +731,66 @@
                         Message="以下选项主要用于扩展接入和问题排查，除非您明确知道用途，否则建议保持默认。" />
 
             <ui:SettingsExpander Header="MCP 导入接口"
-                                 Description="允许外部通过 MCP 导入值日相关数据。修改后建议重启应用。"
+                                 Description="允许外部通过 MCP 导入值日相关数据。服务端口会同时影响 MCP、REST API 与页面访问。修改后建议重启应用。"
                                  IsExpanded="False">
                 <ui:SettingsExpander.IconSource>
                     <ui:FontIconSource Glyph="&#xE943;" FontFamily="Segoe MDL2 Assets" />
                 </ui:SettingsExpander.IconSource>
+                <StackPanel Spacing="8" Margin="12,0,12,12">
+                    <ui:SettingsExpanderItem Content="启用 MCP"
+                                             Description="关闭后将不再暴露 /mcp 接口，但服务端口仍会继续用于 API 与页面。">
+                        <ui:SettingsExpanderItem.Footer>
+                            <ToggleSwitch x:Name="EnableMcpSwitch"
+                                          VerticalAlignment="Center"
+                                          Checked="OnConfigToggleChanged"
+                                          Unchecked="OnConfigToggleChanged" />
+                        </ui:SettingsExpanderItem.Footer>
+                    </ui:SettingsExpanderItem>
+                    <ui:SettingsExpanderItem Content="服务端口模式"
+                                             Description="随机端口适合宿主内部链路；固定端口适合外部 MCP 客户端长期接入。">
+                        <ui:SettingsExpanderItem.Footer>
+                            <ComboBox x:Name="ServerPortModeComboBox"
+                                      Width="220"
+                                      HorizontalAlignment="Stretch"
+                                      SelectionChanged="OnConfigSelectionChanged">
+                                <ComboBoxItem Content="随机端口" Tag="random" />
+                                <ComboBoxItem Content="固定端口" Tag="fixed" />
+                            </ComboBox>
+                        </ui:SettingsExpanderItem.Footer>
+                    </ui:SettingsExpanderItem>
+                    <ui:SettingsExpanderItem x:Name="FixedServerPortItem"
+                                             Content="固定服务端口"
+                                             Description="仅在固定端口模式下生效。若端口冲突，后端会回退到随机端口并在本次运行禁用 MCP。">
+                        <ui:SettingsExpanderItem.Footer>
+                            <TextBox x:Name="FixedServerPortBox"
+                                     Width="220"
+                                     HorizontalAlignment="Stretch"
+                                     Watermark="输入 1024-65535"
+                                     TextChanged="OnConfigInputTextChanged" />
+                        </ui:SettingsExpanderItem.Footer>
+                    </ui:SettingsExpanderItem>
+                    <ui:SettingsExpanderItem Content="当前状态"
+                                             Description="显示当前实际端口、MCP 地址以及当前运行是否可复制客户端配置。">
+                        <ui:SettingsExpanderItem.Footer>
+                            <TextBlock x:Name="McpEndpointStatusText"
+                                       Width="420"
+                                       Opacity="0.82"
+                                       TextWrapping="Wrap"
+                                       Text="MCP 状态尚未加载。" />
+                        </ui:SettingsExpanderItem.Footer>
+                    </ui:SettingsExpanderItem>
+                </StackPanel>
                 <ui:SettingsExpander.Footer>
-                    <ToggleSwitch x:Name="EnableMcpSwitch"
-                                  VerticalAlignment="Center"
-                                  Checked="OnConfigToggleChanged"
-                                  Unchecked="OnConfigToggleChanged" />
+                    <StackPanel Orientation="Horizontal" Spacing="8">
+                        <Button x:Name="CopyMcpUrlBtn"
+                                Click="OnCopyMcpUrlClick"
+                                MinWidth="110"
+                                Content="复制 MCP URL" />
+                        <Button x:Name="CopyMcpClientConfigBtn"
+                                Click="OnCopyMcpClientConfigClick"
+                                MinWidth="140"
+                                Content="复制 MCP 客户端配置" />
+                    </StackPanel>
                 </ui:SettingsExpander.Footer>
             </ui:SettingsExpander>
 

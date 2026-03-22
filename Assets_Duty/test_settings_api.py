@@ -5,13 +5,16 @@ from pathlib import Path
 from unittest import mock
 
 from fastapi.testclient import TestClient
+from starlette.websockets import WebSocketDisconnect
 
+from auth import create_pbkdf2_sha256_verifier
 from core import app
 from runtime import create_runtime
 
 
-def _auth_headers(runtime, extra: dict | None = None) -> dict:
-    headers = {"Authorization": f"Bearer {runtime.access_token}"}
+def _auth_headers(runtime, extra: dict | None = None, token: str | None = None) -> dict:
+    effective_token = runtime.access_token if token is None else token
+    headers = {"Authorization": f"Bearer {effective_token}"}
     if extra:
         headers.update(extra)
     return headers
@@ -106,6 +109,34 @@ class TestDutyLiveApi(unittest.TestCase):
         self.assertEqual(error_message["type"], "error")
         self.assertIn("Unsupported message type", error_message["message"])
 
+    def test_duty_live_only_allows_one_owner_connection(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            original_runtime = getattr(app.state, "runtime", None)
+            runtime = create_runtime(Path(temp_dir))
+            app.state.runtime = runtime
+            try:
+                with TestClient(app) as client:
+                    with client.websocket_connect(
+                        "/api/v1/duty/live",
+                        headers=_auth_headers(runtime, {"X-Duty-Request-Source": "owner-1"}),
+                    ) as owner_socket:
+                        owner_socket.send_json({"type": "hello", "request_source": "owner-1"})
+                        owner_hello = owner_socket.receive_json()
+
+                        with client.websocket_connect(
+                            "/api/v1/duty/live",
+                            headers=_auth_headers(runtime, {"X-Duty-Request-Source": "owner-2"}),
+                        ) as extra_socket:
+                            busy_message = extra_socket.receive_json()
+                            with self.assertRaises(WebSocketDisconnect):
+                                extra_socket.receive_json()
+            finally:
+                app.state.runtime = original_runtime
+
+        self.assertEqual(owner_hello["type"], "hello")
+        self.assertEqual(busy_message["type"], "error")
+        self.assertIn("busy", busy_message["message"].lower())
+
     def test_snapshot_requires_bearer_token(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             original_runtime = getattr(app.state, "runtime", None)
@@ -117,6 +148,25 @@ class TestDutyLiveApi(unittest.TestCase):
                 app.state.runtime = original_runtime
 
         self.assertEqual(response.status_code, 401)
+
+    def test_snapshot_accepts_static_token_and_rejects_wrong_token(self):
+        static_token = "static-token"
+        with tempfile.TemporaryDirectory() as temp_dir:
+            original_runtime = getattr(app.state, "runtime", None)
+            runtime = create_runtime(Path(temp_dir))
+            runtime.access_token_mode = "static"
+            runtime.static_access_token_verifier = create_pbkdf2_sha256_verifier(static_token)
+            runtime.access_token = ""
+            app.state.runtime = runtime
+            try:
+                with TestClient(app) as client:
+                    success = client.get("/api/v1/snapshot", headers=_auth_headers(runtime, token=static_token))
+                    failure = client.get("/api/v1/snapshot", headers=_auth_headers(runtime, token="wrong-token"))
+            finally:
+                app.state.runtime = original_runtime
+
+        self.assertEqual(success.status_code, 200)
+        self.assertEqual(failure.status_code, 401)
 
 
 if __name__ == "__main__":

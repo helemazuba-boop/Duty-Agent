@@ -120,6 +120,8 @@ public sealed class DutyConfigManager : IConfigManager, IDisposable
             PythonPath = source.PythonPath,
             AutoRunMode = source.AutoRunMode,
             AutoRunParameter = source.AutoRunParameter,
+            AccessTokenMode = source.AccessTokenMode,
+            StaticAccessTokenVerifier = source.StaticAccessTokenVerifier,
             EnableMcp = source.EnableMcp,
             EnableWebViewDebugLayer = source.EnableWebViewDebugLayer,
             AutoRunTime = source.AutoRunTime,

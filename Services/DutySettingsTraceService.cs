@@ -3,6 +3,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using System.Text.Json.Nodes;
 
 namespace DutyAgent.Services;
 
@@ -117,9 +118,16 @@ public sealed class DutySettingsTraceService
 
         try
         {
-            CopyIfExists(_pluginPaths.SettingsPath, Path.Combine(tempDirectory, "data", "settings.json"));
+            CopyJsonWithRedaction(
+                _pluginPaths.SettingsPath,
+                Path.Combine(tempDirectory, "data", "settings.json"),
+                ["host", "static_access_token_encrypted"],
+                ["host", "static_access_token_verifier"]);
             CopyIfExists(_pluginPaths.HostStatePath, Path.Combine(tempDirectory, "data", "host-state.json"));
-            CopyIfExists(_pluginPaths.HostConfigPath, Path.Combine(tempDirectory, "data", "host-config.json"));
+            CopyJsonWithRedaction(
+                _pluginPaths.HostConfigPath,
+                Path.Combine(tempDirectory, "data", "host-config.json"),
+                ["static_access_token_verifier"]);
             CopyIfExists(_pluginPaths.ConfigPath, Path.Combine(tempDirectory, "data", "config.json"));
             CopyIfExists(_pluginPaths.StatePath, Path.Combine(tempDirectory, "data", "state.json"));
             CopyIfExists(_pluginPaths.RosterPath, Path.Combine(tempDirectory, "data", "roster.csv"));
@@ -254,6 +262,59 @@ public sealed class DutySettingsTraceService
         }
 
         File.Copy(sourcePath, destinationPath, overwrite: true);
+    }
+
+    private static void CopyJsonWithRedaction(string sourcePath, string destinationPath, params string[][] propertyPaths)
+    {
+        if (!File.Exists(sourcePath))
+        {
+            return;
+        }
+
+        try
+        {
+            var node = JsonNode.Parse(File.ReadAllText(sourcePath));
+            if (node == null)
+            {
+                CopyIfExists(sourcePath, destinationPath);
+                return;
+            }
+
+            foreach (var propertyPath in propertyPaths)
+            {
+                RedactJsonValue(node, propertyPath);
+            }
+
+            WriteJson(destinationPath, node);
+        }
+        catch
+        {
+            CopyIfExists(sourcePath, destinationPath);
+        }
+    }
+
+    private static void RedactJsonValue(JsonNode? node, IReadOnlyList<string> propertyPath)
+    {
+        if (node == null || propertyPath.Count == 0)
+        {
+            return;
+        }
+
+        JsonNode? current = node;
+        for (var i = 0; i < propertyPath.Count - 1; i++)
+        {
+            if (current is not JsonObject currentObject ||
+                !currentObject.TryGetPropertyValue(propertyPath[i], out current))
+            {
+                return;
+            }
+        }
+
+        if (current is JsonObject targetObject &&
+            targetObject.ContainsKey(propertyPath[^1]))
+        {
+            targetObject[propertyPath[^1]] = "<redacted>";
+        }
     }
 
     private static void WriteJson<T>(string path, T value)

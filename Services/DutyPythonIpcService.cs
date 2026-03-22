@@ -1,8 +1,10 @@
 using System;
 using System.Diagnostics;
 using System.IO;
+using System.Net;
 using System.Net.Http;
 using System.Net.Http.Json;
+using System.Net.Sockets;
 using System.Net.WebSockets;
 using System.Text;
 using System.Text.Json;
@@ -23,6 +25,9 @@ public interface IPythonIpcService: IDisposable
     Task EnsureReadyAsync(CancellationToken cancellationToken = default);
     Task RestartEngineAsync();
     Task StopAsync();
+    DutyAccessTokenRuntimeStatus GetAccessTokenStatus();
+    DutyServiceEndpointRuntimeStatus GetServiceEndpointStatus();
+    string? GetCurrentAccessToken();
     bool IsReady { get; }
     EngineState State { get; }
     string? LastErrorMessage { get; }
@@ -41,6 +46,7 @@ public enum EngineState
 public class DutyPythonIpcService : IPythonIpcService
 {
     private readonly IConfigManager _configManager;
+    private readonly IDutySettingsRepository _settingsRepository;
     private readonly DutyPluginPaths _pluginPaths;
     private readonly string _processSnapshotPath;
     private Process? _pythonProcess;
@@ -55,13 +61,17 @@ public class DutyPythonIpcService : IPythonIpcService
     private const string RequestSourceHeaderName = "X-Duty-Request-Source";
     private const string AuthorizationHeaderName = "Authorization";
     private const string PortBootstrapPrefix = "__DUTY_SERVER_PORT__:";
+    private const string TokenModeBootstrapPrefix = "__DUTY_SERVER_TOKEN_MODE__:";
     private const string TokenBootstrapPrefix = "__DUTY_SERVER_TOKEN__:";
+    private const int MinServicePort = 1024;
+    private const int MaxServicePort = 65535;
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         PropertyNameCaseInsensitive = true
     };
 
     private TaskCompletionSource<int> _portTcs = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private TaskCompletionSource<string> _tokenModeTcs = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private TaskCompletionSource<string> _tokenTcs = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private volatile EngineState _state = EngineState.NotStarted;
     private ClientWebSocket? _controlSocket;
@@ -77,13 +87,213 @@ public class DutyPythonIpcService : IPythonIpcService
     private readonly object _stateLock = new();
     private Task? _initializeTask;
     private string? _accessToken;
+    private string _configuredAccessTokenMode = DutyAccessTokenModes.Dynamic;
+    private string _activeAccessTokenMode = DutyAccessTokenModes.Dynamic;
+    private string _configuredServerPortMode = DutyServerPortModes.Random;
+    private int? _configuredFixedServerPort;
+    private bool _staticAccessTokenConfigured;
+    private bool _enableMcpConfigured;
+    private bool _runtimeMcpEnabled;
+    private bool _portConflictFallbackActive;
 
-    public DutyPythonIpcService(IConfigManager configManager, DutyPluginPaths pluginPaths)
+    public DutyPythonIpcService(IConfigManager configManager, IDutySettingsRepository settingsRepository, DutyPluginPaths pluginPaths)
     {
         _configManager = configManager;
+        _settingsRepository = settingsRepository;
         _pluginPaths = pluginPaths;
         _processSnapshotPath = pluginPaths.ProcessSnapshotPath;
         _httpClient = new HttpClient { Timeout = TimeSpan.FromMinutes(5) };
+        RefreshConfiguredAccessTokenState();
+        RefreshConfiguredEndpointState();
+    }
+
+    public DutyAccessTokenRuntimeStatus GetAccessTokenStatus()
+    {
+        lock (_stateLock)
+        {
+            var host = _settingsRepository.LoadLocalSettings().Host;
+            RefreshConfiguredAccessTokenState(host);
+            RefreshConfiguredEndpointState(host);
+            return new DutyAccessTokenRuntimeStatus
+            {
+                ConfiguredMode = _configuredAccessTokenMode,
+                ActiveMode = _activeAccessTokenMode,
+                StaticTokenConfigured = _staticAccessTokenConfigured,
+                CanCopyCurrentToken = !string.IsNullOrWhiteSpace(GetCurrentAccessTokenUnsafe()),
+                BackendReady = _state == EngineState.Ready
+            };
+        }
+    }
+
+    public DutyServiceEndpointRuntimeStatus GetServiceEndpointStatus()
+    {
+        lock (_stateLock)
+        {
+            var host = _settingsRepository.LoadLocalSettings().Host;
+            RefreshConfiguredAccessTokenState(host);
+            RefreshConfiguredEndpointState(host);
+
+            var actualPort = _serverPort > 0 ? _serverPort : (int?)null;
+            var serverBaseUrl = actualPort.HasValue ? $"http://127.0.0.1:{actualPort.Value}" : string.Empty;
+            var enableMcpActive = _state == EngineState.Ready && _runtimeMcpEnabled && actualPort.HasValue;
+            var mcpUrl = enableMcpActive ? $"{serverBaseUrl}/mcp/" : string.Empty;
+
+            return new DutyServiceEndpointRuntimeStatus
+            {
+                ConfiguredPortMode = _configuredServerPortMode,
+                ConfiguredFixedPort = _configuredFixedServerPort,
+                ActualPort = actualPort,
+                ServerBaseUrl = serverBaseUrl,
+                McpUrl = mcpUrl,
+                EnableMcpConfigured = _enableMcpConfigured,
+                EnableMcpActive = enableMcpActive,
+                PortConflictFallbackActive = _portConflictFallbackActive,
+                StatusMessage = BuildEndpointStatusMessage(actualPort, mcpUrl, enableMcpActive)
+            };
+        }
+    }
+
+    public string? GetCurrentAccessToken()
+    {
+        lock (_stateLock)
+        {
+            var host = _settingsRepository.LoadLocalSettings().Host;
+            RefreshConfiguredAccessTokenState(host);
+            RefreshConfiguredEndpointState(host);
+            return GetCurrentAccessTokenUnsafe();
+        }
+    }
+
+    private string? GetCurrentAccessTokenUnsafe()
+    {
+        if (_configuredAccessTokenMode == DutyAccessTokenModes.Static)
+        {
+            return ResolveConfiguredStaticAccessToken();
+        }
+
+        return _state == EngineState.Ready && _activeAccessTokenMode == DutyAccessTokenModes.Dynamic
+            ? _accessToken
+            : null;
+    }
+
+    private void RefreshConfiguredAccessTokenState(DutyPersistedHostSettings? host = null)
+    {
+        host ??= _settingsRepository.LoadLocalSettings().Host;
+        _configuredAccessTokenMode = DutyAccessTokenModes.Normalize(host.AccessTokenMode);
+        _staticAccessTokenConfigured = HasConfiguredStaticAccessToken(host);
+        if (_configuredAccessTokenMode != DutyAccessTokenModes.Static && _state != EngineState.Ready)
+        {
+            _activeAccessTokenMode = _configuredAccessTokenMode;
+        }
+    }
+
+    private void RefreshConfiguredEndpointState(DutyPersistedHostSettings? host = null)
+    {
+        host ??= _settingsRepository.LoadLocalSettings().Host;
+        _configuredServerPortMode = DutyServerPortModes.Normalize(host.ServerPortMode);
+        _configuredFixedServerPort = NormalizeConfiguredServicePort(host.FixedServerPort);
+        _enableMcpConfigured = host.EnableMcp;
+    }
+
+    private string BuildEndpointStatusMessage(int? actualPort, string mcpUrl, bool enableMcpActive)
+    {
+        if (_portConflictFallbackActive)
+        {
+            var fixedPortText = _configuredFixedServerPort?.ToString() ?? "未配置";
+            var actualPortText = actualPort?.ToString() ?? "待分配";
+            return _enableMcpConfigured
+                ? $"固定服务端口 {fixedPortText} 已冲突，后端已回退到随机端口 {actualPortText}，本次运行 MCP 已禁用。请修复端口配置并重启应用。"
+                : $"固定服务端口 {fixedPortText} 已冲突，后端已回退到随机端口 {actualPortText}。";
+        }
+
+        if (_state == EngineState.Faulted)
+        {
+            return _enableMcpConfigured
+                ? "后端启动失败，MCP 地址当前不可用。"
+                : "后端启动失败。";
+        }
+
+        if (_state != EngineState.Ready)
+        {
+            return _enableMcpConfigured
+                ? "后端尚未就绪，MCP 地址暂不可用。"
+                : "MCP 未启用。";
+        }
+
+        if (!_enableMcpConfigured && enableMcpActive)
+        {
+            return $"MCP 已保存为关闭；当前运行仍启用，地址：{mcpUrl}。重启后关闭。";
+        }
+
+        if (_enableMcpConfigured && !enableMcpActive)
+        {
+            return "MCP 已保存为启用；当前运行尚未启用，重启后生效。";
+        }
+
+        if (enableMcpActive)
+        {
+            var restartHint = _configuredServerPortMode == DutyServerPortModes.Fixed &&
+                              _configuredFixedServerPort.HasValue &&
+                              actualPort.HasValue &&
+                              _configuredFixedServerPort.Value != actualPort.Value
+                ? $" 已保存固定端口 {_configuredFixedServerPort.Value}，重启后切换。"
+                : string.Empty;
+            return $"MCP 已启用，当前地址：{mcpUrl}。{restartHint}".Trim();
+        }
+
+        return string.IsNullOrWhiteSpace(ServerBaseUrl)
+            ? "MCP 未启用。"
+            : $"MCP 未启用；当前服务地址：{ServerBaseUrl}";
+    }
+
+    private string? ResolveConfiguredStaticAccessToken(DutyPersistedHostSettings? host = null)
+    {
+        host ??= _settingsRepository.LoadLocalSettings().Host;
+        if (!HasConfiguredStaticAccessToken(host))
+        {
+            return null;
+        }
+
+        try
+        {
+            return SecurityHelper.DecryptString(host.StaticAccessTokenEncrypted);
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private string ResolveRequiredStaticAccessToken(DutyPersistedHostSettings? host = null)
+    {
+        host ??= _settingsRepository.LoadLocalSettings().Host;
+        var verifier = (host.StaticAccessTokenVerifier ?? string.Empty).Trim();
+        var encrypted = (host.StaticAccessTokenEncrypted ?? string.Empty).Trim();
+        if (_configuredAccessTokenMode != DutyAccessTokenModes.Static ||
+            verifier.Length == 0 ||
+            encrypted.Length == 0)
+        {
+            throw new InvalidOperationException("Static token mode is selected, but no valid static token is configured locally.");
+        }
+
+        var plainText = SecurityHelper.DecryptString(encrypted);
+        if (!SecurityHelper.VerifyPasswordVerifier(plainText, verifier))
+        {
+            throw new InvalidOperationException("The configured static token does not match its verifier. Please set it again.");
+        }
+
+        return plainText;
+    }
+
+    private static bool HasConfiguredStaticAccessToken(DutyPersistedHostSettings? host)
+    {
+        return !string.IsNullOrWhiteSpace(host?.StaticAccessTokenEncrypted) &&
+               !string.IsNullOrWhiteSpace(host?.StaticAccessTokenVerifier);
+    }
+
+    private static int? NormalizeConfiguredServicePort(int? port)
+    {
+        return port is >= MinServicePort and <= MaxServicePort ? port : null;
     }
 
     private Task EnsureStartedAsync()
@@ -110,6 +320,10 @@ public class DutyPythonIpcService : IPythonIpcService
             {
                 _portTcs = new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously);
             }
+            if (_tokenModeTcs.Task.IsCompleted)
+            {
+                _tokenModeTcs = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+            }
             if (_tokenTcs.Task.IsCompleted)
             {
                 _tokenTcs = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -120,11 +334,37 @@ public class DutyPythonIpcService : IPythonIpcService
         }
     }
 
+    private sealed record EngineLaunchOptions(int RequestedPort, bool DisableMcpRuntime, bool PortConflictFallbackActive);
+
+    private sealed class PythonStartupException : Exception
+    {
+        public PythonStartupException(string message, bool isPortBindConflict, Exception? innerException = null)
+            : base(message, innerException)
+        {
+            IsPortBindConflict = isPortBindConflict;
+        }
+
+        public bool IsPortBindConflict { get; }
+    }
+
     private async Task InitializeBackgroundAsync()
     {
-
         try
         {
+            DutyPersistedHostSettings hostSettings;
+            lock (_stateLock)
+            {
+                hostSettings = _settingsRepository.LoadLocalSettings().Host;
+                RefreshConfiguredAccessTokenState(hostSettings);
+                RefreshConfiguredEndpointState(hostSettings);
+                _activeAccessTokenMode = _configuredAccessTokenMode;
+                _accessToken = _configuredAccessTokenMode == DutyAccessTokenModes.Static
+                    ? ResolveRequiredStaticAccessToken(hostSettings)
+                    : null;
+                _runtimeMcpEnabled = _enableMcpConfigured;
+                _portConflictFallbackActive = false;
+            }
+
             var pythonPath = DutyScheduleOrchestrator.ValidatePythonPath(
                 _configManager.Config.PythonPath,
                 _pluginPaths.PluginFolderPath,
@@ -136,139 +376,45 @@ public class DutyPythonIpcService : IPythonIpcService
                 throw new FileNotFoundException($"Core script not found at {scriptPath}");
             }
 
-            var startInfo = new ProcessStartInfo
+            var launchOptions = BuildInitialLaunchOptions();
+            try
             {
-                FileName = pythonPath,
-                Arguments = $"\"{scriptPath}\" --data-dir \"{_pluginPaths.DataDirectory}\" --server --port 0",
-                UseShellExecute = false,
-                CreateNoWindow = true,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                StandardOutputEncoding = Encoding.UTF8
-            };
-
-            var process = new Process { StartInfo = startInfo, EnableRaisingEvents = true };
-            _pythonProcess = process;
-            var startupPortTcs = _portTcs;
-            var startupTokenTcs = _tokenTcs;
-
-            process.OutputDataReceived += (s, e) =>
+                await StartPythonProcessAsync(pythonPath, scriptPath, launchOptions).ConfigureAwait(false);
+            }
+            catch (PythonStartupException ex) when (ex.IsPortBindConflict &&
+                                                    launchOptions.RequestedPort > 0 &&
+                                                    !launchOptions.PortConflictFallbackActive)
             {
-                if (string.IsNullOrEmpty(e.Data)) return;
-                Debug.WriteLine($"[Python] {e.Data}");
-                if (e.Data.StartsWith(PortBootstrapPrefix, StringComparison.Ordinal))
-                {
-                    var portText = e.Data[PortBootstrapPrefix.Length..];
-                    if (int.TryParse(portText, out var port))
+                DutyDiagnosticsLogger.Warn("BackendIpc", "Fixed service port failed during Python startup; retrying with random port and runtime MCP disabled.",
+                    new
                     {
-                        lock (_stateLock)
-                        {
-                            if (!ReferenceEquals(_pythonProcess, process))
-                            {
-                                return;
-                            }
-
-                            _serverPort = port;
-                        }
-
-                        startupPortTcs.TrySetResult(port);
-                    }
-                    return;
-                }
-
-                if (e.Data.StartsWith(TokenBootstrapPrefix, StringComparison.Ordinal))
-                {
-                    var token = e.Data[TokenBootstrapPrefix.Length..].Trim();
-                    if (string.IsNullOrWhiteSpace(token))
-                    {
-                        return;
-                    }
-
-                    lock (_stateLock)
-                    {
-                        if (!ReferenceEquals(_pythonProcess, process))
-                        {
-                            return;
-                        }
-
-                        _accessToken = token;
-                    }
-
-                    startupTokenTcs.TrySetResult(token);
-                }
-            };
-
-            process.ErrorDataReceived += (s, e) =>
-            {
-                if (!string.IsNullOrEmpty(e.Data))
-                {
-                    Debug.WriteLine($"[Python ERR] {e.Data}");
-                    lock (_errorBuffer)
-                    {
-                        if (_errorBuffer.Length < 10000)
-                        {
-                            _errorBuffer.AppendLine(e.Data);
-                        }
-                    }
-                }
-            };
-
-            process.Exited += (_, _) =>
-            {
-                var exitCode = -1;
-                try { exitCode = process.ExitCode; } catch { }
-                PythonProcessTracker.Unregister(process, _processSnapshotPath);
-
-                var shouldFaultActiveEngine = false;
-                lock (_stateLock)
-                {
-                    shouldFaultActiveEngine = ReferenceEquals(_pythonProcess, process) &&
-                                              (_state == EngineState.Ready || _state == EngineState.Initializing);
-                    if (shouldFaultActiveEngine)
-                    {
-                        _state = EngineState.Faulted;
-                        LastErrorMessage = $"Engine process exited unexpectedly with code {exitCode}";
-                    }
-                }
-
-                startupPortTcs.TrySetException(new Exception($"Python engine process exited unexpectedly with code {exitCode}"));
-                startupTokenTcs.TrySetException(new Exception($"Python engine process exited unexpectedly with code {exitCode}"));
-
-                if (shouldFaultActiveEngine)
-                {
-                    lock (_stateLock)
-                    {
-                        if (ReferenceEquals(_pythonProcess, process))
-                        {
-                            _serverPort = 0;
-                            _accessToken = null;
-                        }
-                    }
-                }
-            };
-
-            if (!process.Start())
-            {
-                throw new Exception("Failed to start Python process.");
+                        requestedPort = launchOptions.RequestedPort,
+                        error = ex.Message
+                    });
+                ShutdownPythonServer();
+                launchOptions = new EngineLaunchOptions(0, DisableMcpRuntime: true, PortConflictFallbackActive: true);
+                await StartPythonProcessAsync(pythonPath, scriptPath, launchOptions).ConfigureAwait(false);
             }
 
-            EnsureProcessBoundToJob(process);
-            process.BeginOutputReadLine();
-            process.BeginErrorReadLine();
-            PythonProcessTracker.Register(process, _processSnapshotPath);
-
-            // Wait for port mapping with 15s timeout
-            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(EngineStartupTimeoutSeconds));
-            using (cts.Token.Register(() => startupPortTcs.TrySetException(new TimeoutException($"Python engine initialization timed out ({EngineStartupTimeoutSeconds}s)."))))
+            lock (_stateLock)
             {
-                await startupPortTcs.Task.ConfigureAwait(false);
-            }
-            using (cts.Token.Register(() => startupTokenTcs.TrySetException(new TimeoutException($"Python engine token bootstrap timed out ({EngineStartupTimeoutSeconds}s)."))))
-            {
-                await startupTokenTcs.Task.ConfigureAwait(false);
+                _runtimeMcpEnabled = _enableMcpConfigured && !launchOptions.DisableMcpRuntime;
+                _portConflictFallbackActive = launchOptions.PortConflictFallbackActive;
+                _state = EngineState.Ready;
             }
 
-            _state = EngineState.Ready;
+            _portTcs.TrySetResult(_serverPort);
+            _tokenModeTcs.TrySetResult(_activeAccessTokenMode);
+            if (_activeAccessTokenMode == DutyAccessTokenModes.Dynamic)
+            {
+                if (string.IsNullOrWhiteSpace(_accessToken))
+                {
+                    throw new InvalidOperationException("Python engine started in dynamic token mode, but no runtime token was received.");
+                }
+
+                _tokenTcs.TrySetResult(_accessToken);
+            }
+
             Debug.WriteLine($"Python Engine effectively ready on port {_serverPort}");
             lock (_errorBuffer) _errorBuffer.Clear();
         }
@@ -283,6 +429,7 @@ public class DutyPythonIpcService : IPythonIpcService
                 : $"{ex.Message}\n--- Python Error ---\n{forensicLog}";
                 
             _portTcs.TrySetException(new Exception(LastErrorMessage));
+            _tokenModeTcs.TrySetException(new Exception(LastErrorMessage));
             _tokenTcs.TrySetException(new Exception(LastErrorMessage));
             ShutdownPythonServer();
         }
@@ -295,6 +442,296 @@ public class DutyPythonIpcService : IPythonIpcService
         }
     }
 
+    private EngineLaunchOptions BuildInitialLaunchOptions()
+    {
+        if (_configuredServerPortMode == DutyServerPortModes.Fixed && _configuredFixedServerPort.HasValue)
+        {
+            if (!IsLoopbackPortAvailable(_configuredFixedServerPort.Value))
+            {
+                return new EngineLaunchOptions(0, DisableMcpRuntime: true, PortConflictFallbackActive: true);
+            }
+
+            return new EngineLaunchOptions(_configuredFixedServerPort.Value, DisableMcpRuntime: false, PortConflictFallbackActive: false);
+        }
+
+        return new EngineLaunchOptions(0, DisableMcpRuntime: false, PortConflictFallbackActive: false);
+    }
+
+    private async Task StartPythonProcessAsync(string pythonPath, string scriptPath, EngineLaunchOptions launchOptions)
+    {
+        lock (_errorBuffer)
+        {
+            _errorBuffer.Clear();
+        }
+
+        var arguments = new StringBuilder()
+            .Append('"')
+            .Append(scriptPath)
+            .Append("\" --data-dir \"")
+            .Append(_pluginPaths.DataDirectory)
+            .Append("\" --server --port ")
+            .Append(launchOptions.RequestedPort);
+        if (launchOptions.DisableMcpRuntime)
+        {
+            arguments.Append(" --disable-mcp-runtime");
+        }
+
+        var startInfo = new ProcessStartInfo
+        {
+            FileName = pythonPath,
+            Arguments = arguments.ToString(),
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            StandardOutputEncoding = Encoding.UTF8
+        };
+
+        var startupPortTcs = new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var startupTokenModeTcs = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var startupTokenTcs = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var process = new Process { StartInfo = startInfo, EnableRaisingEvents = true };
+        var startupCompleted = false;
+
+        lock (_stateLock)
+        {
+            _pythonProcess = process;
+        }
+
+        process.OutputDataReceived += (_, e) =>
+        {
+            if (string.IsNullOrEmpty(e.Data))
+            {
+                return;
+            }
+
+            Debug.WriteLine($"[Python] {e.Data}");
+            if (e.Data.StartsWith(PortBootstrapPrefix, StringComparison.Ordinal))
+            {
+                var portText = e.Data[PortBootstrapPrefix.Length..];
+                if (int.TryParse(portText, out var port))
+                {
+                    lock (_stateLock)
+                    {
+                        if (!ReferenceEquals(_pythonProcess, process))
+                        {
+                            return;
+                        }
+
+                        _serverPort = port;
+                    }
+
+                    startupPortTcs.TrySetResult(port);
+                }
+
+                return;
+            }
+
+            if (e.Data.StartsWith(TokenModeBootstrapPrefix, StringComparison.Ordinal))
+            {
+                var mode = DutyAccessTokenModes.Normalize(e.Data[TokenModeBootstrapPrefix.Length..]);
+                lock (_stateLock)
+                {
+                    if (!ReferenceEquals(_pythonProcess, process))
+                    {
+                        return;
+                    }
+
+                    _activeAccessTokenMode = mode;
+                }
+
+                startupTokenModeTcs.TrySetResult(mode);
+                return;
+            }
+
+            if (e.Data.StartsWith(TokenBootstrapPrefix, StringComparison.Ordinal))
+            {
+                var token = e.Data[TokenBootstrapPrefix.Length..].Trim();
+                if (string.IsNullOrWhiteSpace(token))
+                {
+                    return;
+                }
+
+                lock (_stateLock)
+                {
+                    if (!ReferenceEquals(_pythonProcess, process))
+                    {
+                        return;
+                    }
+
+                    _accessToken = token;
+                }
+
+                startupTokenTcs.TrySetResult(token);
+            }
+        };
+
+        process.ErrorDataReceived += (_, e) =>
+        {
+            if (string.IsNullOrEmpty(e.Data))
+            {
+                return;
+            }
+
+            Debug.WriteLine($"[Python ERR] {e.Data}");
+            lock (_errorBuffer)
+            {
+                if (_errorBuffer.Length < 10000)
+                {
+                    _errorBuffer.AppendLine(e.Data);
+                }
+            }
+        };
+
+        process.Exited += (_, _) =>
+        {
+            var exitCode = -1;
+            try { exitCode = process.ExitCode; } catch { }
+            PythonProcessTracker.Unregister(process, _processSnapshotPath);
+
+            if (!startupCompleted)
+            {
+                var startupException = new Exception($"Python engine process exited unexpectedly with code {exitCode}");
+                startupPortTcs.TrySetException(startupException);
+                startupTokenModeTcs.TrySetException(startupException);
+                startupTokenTcs.TrySetException(startupException);
+                return;
+            }
+
+            var shouldFaultActiveEngine = false;
+            lock (_stateLock)
+            {
+                shouldFaultActiveEngine = ReferenceEquals(_pythonProcess, process) &&
+                                          (_state == EngineState.Ready || _state == EngineState.Initializing);
+                if (shouldFaultActiveEngine)
+                {
+                    _state = EngineState.Faulted;
+                    LastErrorMessage = $"Engine process exited unexpectedly with code {exitCode}";
+                    _serverPort = 0;
+                    _runtimeMcpEnabled = false;
+                    _activeAccessTokenMode = _configuredAccessTokenMode;
+                    _accessToken = _configuredAccessTokenMode == DutyAccessTokenModes.Static
+                        ? ResolveConfiguredStaticAccessToken()
+                        : null;
+                }
+            }
+
+            var activeException = new Exception($"Python engine process exited unexpectedly with code {exitCode}");
+            _portTcs.TrySetException(activeException);
+            _tokenModeTcs.TrySetException(activeException);
+            _tokenTcs.TrySetException(activeException);
+        };
+
+        try
+        {
+            if (!process.Start())
+            {
+                throw new Exception("Failed to start Python process.");
+            }
+
+            EnsureProcessBoundToJob(process);
+            process.BeginOutputReadLine();
+            process.BeginErrorReadLine();
+            PythonProcessTracker.Register(process, _processSnapshotPath);
+
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(EngineStartupTimeoutSeconds));
+            using (cts.Token.Register(() => startupPortTcs.TrySetException(new TimeoutException($"Python engine initialization timed out ({EngineStartupTimeoutSeconds}s)."))))
+            {
+                await startupPortTcs.Task.ConfigureAwait(false);
+            }
+
+            using (cts.Token.Register(() => startupTokenModeTcs.TrySetException(new TimeoutException($"Python engine token mode bootstrap timed out ({EngineStartupTimeoutSeconds}s)."))))
+            {
+                var activeMode = await startupTokenModeTcs.Task.ConfigureAwait(false);
+                if (activeMode == DutyAccessTokenModes.Dynamic)
+                {
+                    using (cts.Token.Register(() => startupTokenTcs.TrySetException(new TimeoutException($"Python engine token bootstrap timed out ({EngineStartupTimeoutSeconds}s)."))))
+                    {
+                        await startupTokenTcs.Task.ConfigureAwait(false);
+                    }
+                }
+                else if (string.IsNullOrWhiteSpace(_accessToken))
+                {
+                    throw new InvalidOperationException("Python engine started in static token mode, but the local static token is unavailable.");
+                }
+            }
+
+            startupCompleted = true;
+        }
+        catch (Exception ex)
+        {
+            string forensicLog;
+            lock (_errorBuffer)
+            {
+                forensicLog = _errorBuffer.ToString();
+            }
+
+            TryTerminateAttempt(process);
+            lock (_stateLock)
+            {
+                if (ReferenceEquals(_pythonProcess, process))
+                {
+                    _pythonProcess = null;
+                    _serverPort = 0;
+                    _runtimeMcpEnabled = false;
+                    _activeAccessTokenMode = _configuredAccessTokenMode;
+                    _accessToken = _configuredAccessTokenMode == DutyAccessTokenModes.Static
+                        ? ResolveConfiguredStaticAccessToken()
+                        : null;
+                }
+            }
+
+            var combinedMessage = string.IsNullOrWhiteSpace(forensicLog)
+                ? ex.Message
+                : $"{ex.Message}\n--- Python Error ---\n{forensicLog}";
+            throw new PythonStartupException(combinedMessage, IsPortBindConflict(combinedMessage), ex);
+        }
+    }
+
+    private static bool IsLoopbackPortAvailable(int port)
+    {
+        try
+        {
+            using var listener = new TcpListener(IPAddress.Loopback, port);
+            listener.Start();
+            listener.Stop();
+            return true;
+        }
+        catch (SocketException)
+        {
+            return false;
+        }
+    }
+
+    private static bool IsPortBindConflict(string? message)
+    {
+        var normalized = (message ?? string.Empty).ToLowerInvariant();
+        return normalized.Contains("address already in use", StringComparison.Ordinal) ||
+               normalized.Contains("only one usage of each socket address", StringComparison.Ordinal) ||
+               normalized.Contains("errno 10048", StringComparison.Ordinal) ||
+               normalized.Contains("error while attempting to bind", StringComparison.Ordinal);
+    }
+
+    private void TryTerminateAttempt(Process process)
+    {
+        try
+        {
+            if (!process.HasExited)
+            {
+                process.Kill(true);
+                process.WaitForExit(3000);
+            }
+        }
+        catch
+        {
+        }
+        finally
+        {
+            PythonProcessTracker.Unregister(process, _processSnapshotPath);
+            process.Dispose();
+        }
+    }
+
     public async Task EnsureReadyAsync(CancellationToken cancellationToken = default)
     {
         if (_state == EngineState.Ready)
@@ -303,6 +740,7 @@ public class DutyPythonIpcService : IPythonIpcService
         }
         
         Task<int> waitTask;
+        Task<string> tokenModeWaitTask;
         Task<string> tokenWaitTask;
         lock (_stateLock)
         {
@@ -312,13 +750,18 @@ public class DutyPythonIpcService : IPythonIpcService
             }
 
             waitTask = _portTcs.Task;
+            tokenModeWaitTask = _tokenModeTcs.Task;
             tokenWaitTask = _tokenTcs.Task;
         }
 
         await EnsureStartedAsync().ConfigureAwait(false);
 
         await waitTask.WaitAsync(cancellationToken).ConfigureAwait(false);
-        await tokenWaitTask.WaitAsync(cancellationToken).ConfigureAwait(false);
+        var activeMode = await tokenModeWaitTask.WaitAsync(cancellationToken).ConfigureAwait(false);
+        if (activeMode == DutyAccessTokenModes.Dynamic)
+        {
+            await tokenWaitTask.WaitAsync(cancellationToken).ConfigureAwait(false);
+        }
     }
 
     public async Task RestartEngineAsync()
@@ -332,11 +775,22 @@ public class DutyPythonIpcService : IPythonIpcService
             {
                 _portTcs = new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously);
             }
+            if (_tokenModeTcs.Task.IsCompleted)
+            {
+                _tokenModeTcs = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+            }
             if (_tokenTcs.Task.IsCompleted)
             {
                 _tokenTcs = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
             }
-            _accessToken = null;
+            RefreshConfiguredAccessTokenState();
+            RefreshConfiguredEndpointState();
+            _activeAccessTokenMode = _configuredAccessTokenMode;
+            _accessToken = _configuredAccessTokenMode == DutyAccessTokenModes.Static
+                ? ResolveConfiguredStaticAccessToken()
+                : null;
+            _runtimeMcpEnabled = false;
+            _portConflictFallbackActive = false;
         }
         await EnsureReadyAsync().ConfigureAwait(false);
     }
@@ -354,11 +808,22 @@ public class DutyPythonIpcService : IPythonIpcService
             {
                 _portTcs = new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously);
             }
+            if (_tokenModeTcs.Task.IsCompleted)
+            {
+                _tokenModeTcs = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+            }
             if (_tokenTcs.Task.IsCompleted)
             {
                 _tokenTcs = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
             }
-            _accessToken = null;
+            RefreshConfiguredAccessTokenState();
+            RefreshConfiguredEndpointState();
+            _activeAccessTokenMode = _configuredAccessTokenMode;
+            _accessToken = _configuredAccessTokenMode == DutyAccessTokenModes.Static
+                ? ResolveConfiguredStaticAccessToken()
+                : null;
+            _runtimeMcpEnabled = false;
+            _portConflictFallbackActive = false;
         }
 
         return Task.CompletedTask;
@@ -909,7 +1374,14 @@ public class DutyPythonIpcService : IPythonIpcService
             process.Dispose();
             _pythonProcess = null;
             _serverPort = 0;
-            _accessToken = null;
+            RefreshConfiguredAccessTokenState();
+            RefreshConfiguredEndpointState();
+            _activeAccessTokenMode = _configuredAccessTokenMode;
+            _accessToken = _configuredAccessTokenMode == DutyAccessTokenModes.Static
+                ? ResolveConfiguredStaticAccessToken()
+                : null;
+            _runtimeMcpEnabled = false;
+            _portConflictFallbackActive = false;
             DisposeJobObject();
         }
     }

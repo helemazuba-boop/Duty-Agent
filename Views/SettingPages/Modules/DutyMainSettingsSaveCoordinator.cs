@@ -6,6 +6,8 @@ namespace DutyAgent.Views.SettingPages.Modules;
 
 internal sealed class DutyMainSettingsSaveCoordinator
 {
+    private const int MinServicePort = 1024;
+    private const int MaxServicePort = 65535;
     private readonly IDutySettingsRepository _settingsRepository;
     private readonly DutyBackendSettingsSyncService _backendSyncService;
     private readonly DutyMainSettingsHostModule _hostModule;
@@ -73,7 +75,15 @@ internal sealed class DutyMainSettingsSaveCoordinator
 
             var restartRequired = hostChanged &&
                                   (context.LastAppliedHost.EnableMcp != context.Current.Host.EnableMcp ||
-                                   context.LastAppliedHost.EnableWebViewDebugLayer != context.Current.Host.EnableWebViewDebugLayer);
+                                   context.LastAppliedHost.EnableWebViewDebugLayer != context.Current.Host.EnableWebViewDebugLayer ||
+                                   !string.Equals(
+                                       DutyServerPortModes.Normalize(context.LastAppliedHost.ServerPortMode),
+                                       DutyServerPortModes.Normalize(context.Current.Host.ServerPortMode),
+                                       StringComparison.Ordinal) ||
+                                   !string.Equals(
+                                       NormalizeFixedServerPortText(ResolveFixedServerPortTextForSave(context.Current.Host, context.LastAppliedHost)),
+                                       NormalizeFixedServerPortText(context.LastAppliedHost.FixedServerPortText),
+                                       StringComparison.Ordinal));
 
             _settingsTrace.Info("local_settings_saved", new
             {
@@ -144,6 +154,10 @@ internal sealed class DutyMainSettingsSaveCoordinator
                 AutoRunTriggerNotificationEnabled = context.Current.Host.AutoRunTriggerNotificationEnabled,
                 DutyReminderEnabled = context.Current.Host.DutyReminderEnabled,
                 DutyReminderTimes = [NormalizeDutyReminderTime(context.Current.Host.DutyReminderTime)],
+                ServerPortMode = DutyServerPortModes.Normalize(context.Current.Host.ServerPortMode),
+                FixedServerPort = ParseFixedServerPortOrThrow(
+                    ResolveFixedServerPortTextForSave(context.Current.Host, context.LastAppliedHost),
+                    DutyServerPortModes.Normalize(context.Current.Host.ServerPortMode)),
                 EnableMcp = context.Current.Host.EnableMcp,
                 EnableWebViewDebugLayer = context.Current.Host.EnableWebViewDebugLayer,
                 ComponentRefreshTime = DutyScheduleOrchestrator.NormalizeTimeOrThrow(context.Current.Host.ComponentRefreshTime),
@@ -178,6 +192,11 @@ internal sealed class DutyMainSettingsSaveCoordinator
                 AutoRunTriggerNotificationEnabled = localSettings.Host.AutoRunTriggerNotificationEnabled,
                 DutyReminderEnabled = localSettings.Host.DutyReminderEnabled,
                 DutyReminderTimes = [.. (localSettings.Host.DutyReminderTimes ?? [])],
+                AccessTokenMode = localSettings.Host.AccessTokenMode,
+                StaticAccessTokenConfigured = !string.IsNullOrWhiteSpace(localSettings.Host.StaticAccessTokenEncrypted) &&
+                                              !string.IsNullOrWhiteSpace(localSettings.Host.StaticAccessTokenVerifier),
+                ServerPortMode = localSettings.Host.ServerPortMode,
+                FixedServerPort = localSettings.Host.FixedServerPort,
                 EnableMcp = localSettings.Host.EnableMcp,
                 EnableWebViewDebugLayer = localSettings.Host.EnableWebViewDebugLayer,
                 ComponentRefreshTime = localSettings.Host.ComponentRefreshTime,
@@ -202,6 +221,8 @@ internal sealed class DutyMainSettingsSaveCoordinator
             AutoRunTriggerNotificationEnabled = host.AutoRunTriggerNotificationEnabled,
             DutyReminderEnabled = host.DutyReminderEnabled,
             DutyReminderTime = (host.DutyReminderTimes ?? []).FirstOrDefault(x => !string.IsNullOrWhiteSpace(x)) ?? "07:40",
+            ServerPortMode = host.ServerPortMode,
+            FixedServerPortText = host.FixedServerPort?.ToString() ?? string.Empty,
             EnableMcp = host.EnableMcp,
             EnableWebViewDebugLayer = host.EnableWebViewDebugLayer,
             ComponentRefreshTime = host.ComponentRefreshTime,
@@ -245,5 +266,42 @@ internal sealed class DutyMainSettingsSaveCoordinator
         return TimeSpan.TryParse(input, out var parsed)
             ? $"{parsed.Hours:D2}:{parsed.Minutes:D2}"
             : "07:40";
+    }
+
+    private static string ResolveFixedServerPortTextForSave(DutyHostSettingsValues current, DutyHostSettingsValues lastApplied)
+    {
+        return DutyMainSettingsHostModule.ResolveEffectiveFixedServerPortText(current, lastApplied);
+    }
+
+    private static int? ParseFixedServerPortOrThrow(string? text, string normalizedMode)
+    {
+        var trimmed = (text ?? string.Empty).Trim();
+        if (trimmed.Length == 0)
+        {
+            if (normalizedMode == DutyServerPortModes.Fixed)
+            {
+                throw new InvalidOperationException("固定服务端口不能为空。");
+            }
+
+            return null;
+        }
+
+        if (!int.TryParse(trimmed, out var port))
+        {
+            throw new InvalidOperationException("固定服务端口必须是 1024-65535 之间的整数。");
+        }
+
+        if (port < MinServicePort || port > MaxServicePort)
+        {
+            throw new InvalidOperationException("固定服务端口必须在 1024-65535 范围内。");
+        }
+
+        return port;
+    }
+
+    private static string NormalizeFixedServerPortText(string? value)
+    {
+        var normalized = (value ?? string.Empty).Trim();
+        return int.TryParse(normalized, out var port) ? port.ToString() : normalized;
     }
 }

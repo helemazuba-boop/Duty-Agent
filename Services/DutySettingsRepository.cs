@@ -12,6 +12,7 @@ public interface IDutySettingsRepository
     DutySettingsDocument LoadSettingsDocument();
     DutyConfig LoadProjectedHostConfig();
     DutyLocalSettingsDocument SavePatch(DutySettingsPatchRequest patch);
+    DutyHostAccessSecurityMutationResult SaveHostAccessSecurity(DutyHostAccessSecuritySaveRequest request);
     DutyConfig ReplaceFromProjectedConfig(DutyConfig projectedConfig);
 }
 
@@ -46,6 +47,8 @@ public sealed partial class DutySettingsRepository : IDutySettingsRepository
     private const string DefaultDutyReminderTime = "07:40";
     private const string DefaultBaseUrl = "https://integrate.api.nvidia.com/v1";
     private const string DefaultModel = "moonshotai/kimi-k2-thinking";
+    private const int MinServicePort = 1024;
+    private const int MaxServicePort = 65535;
 
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -158,6 +161,94 @@ public sealed partial class DutySettingsRepository : IDutySettingsRepository
 
         RaiseSettingsChanged(changedArgs);
         return savedDocument;
+    }
+
+    public DutyHostAccessSecurityMutationResult SaveHostAccessSecurity(DutyHostAccessSecuritySaveRequest request)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+
+        DutySettingsChangedEventArgs? changedArgs = null;
+        DutyHostAccessSecurityMutationResult result;
+
+        lock (_gate)
+        {
+            var currentSettings = LoadLocalSettingsUnlocked();
+            var runtimeState = LoadHostRuntimeStateUnlocked();
+            var nextSettings = CloneLocalSettings(currentSettings);
+            var nextHost = ClonePersistedHostSettings(nextSettings.Host);
+            var requestedMode = DutyAccessTokenModes.Normalize(request.AccessTokenMode);
+            var newStaticAccessToken = NormalizeOptionalSecret(request.NewStaticAccessTokenPlaintext);
+            var currentStaticConfigured = HasStaticAccessTokenConfigured(currentSettings.Host);
+
+            if (request.ClearStaticAccessToken)
+            {
+                nextHost.StaticAccessTokenEncrypted = string.Empty;
+                nextHost.StaticAccessTokenVerifier = string.Empty;
+                requestedMode = DutyAccessTokenModes.Dynamic;
+            }
+            else
+            {
+                if (requestedMode == DutyAccessTokenModes.Dynamic && newStaticAccessToken != null)
+                {
+                    throw new InvalidOperationException("动态模式下不会隐式保存静态 token。请切换到静态模式后再应用。");
+                }
+
+                if (newStaticAccessToken != null)
+                {
+                    nextHost.StaticAccessTokenEncrypted = SecurityHelper.EncryptString(newStaticAccessToken);
+                    nextHost.StaticAccessTokenVerifier = SecurityHelper.CreatePasswordVerifier(newStaticAccessToken);
+                }
+
+                if (requestedMode == DutyAccessTokenModes.Static && !HasStaticAccessTokenConfigured(nextHost))
+                {
+                    throw new InvalidOperationException("切换到静态模式前，请先输入静态 token，或保留已配置的静态 token。");
+                }
+            }
+
+            nextHost.AccessTokenMode = requestedMode;
+            nextHost = NormalizePersistedHostSettings(nextHost);
+
+            var hostSettingsChanged = !JsonContentEquals(currentSettings.Host, nextHost);
+            if (!hostSettingsChanged)
+            {
+                result = new DutyHostAccessSecurityMutationResult
+                {
+                    Success = true,
+                    NoChanges = true,
+                    RestartRequired = false,
+                    Message = "访问鉴权未变更。",
+                    Document = CreateSettingsDocument(currentSettings)
+                };
+                return result;
+            }
+
+            nextSettings.Host = nextHost;
+            nextSettings.Version = Math.Max(1, currentSettings.Version) + 1;
+            nextSettings.SavedAtUtc = DateTimeOffset.UtcNow;
+
+            WriteJsonAtomicallyTracked(_pluginPaths.SettingsPath, nextSettings, "settings_json_host_security", new
+            {
+                previous_version = currentSettings.Version,
+                next_version = nextSettings.Version,
+                access_token_mode = nextHost.AccessTokenMode,
+                static_access_token_configured = HasStaticAccessTokenConfigured(nextHost)
+            });
+            WriteCompatibilityHostConfig(nextSettings, runtimeState);
+
+            var savedDocument = CloneLocalSettings(nextSettings);
+            changedArgs = CreateChangedEventArgs(savedDocument, runtimeState, hostSettingsChanged: true, backendSettingsChanged: false, runtimeStateChanged: false);
+            result = new DutyHostAccessSecurityMutationResult
+            {
+                Success = true,
+                NoChanges = false,
+                RestartRequired = true,
+                Message = BuildHostAccessSecurityMessage(request, currentStaticConfigured, nextHost, newStaticAccessToken != null),
+                Document = CreateSettingsDocument(savedDocument)
+            };
+        }
+
+        RaiseSettingsChanged(changedArgs);
+        return result;
     }
 
     public DutyConfig ReplaceFromProjectedConfig(DutyConfig projectedConfig)
@@ -331,6 +422,8 @@ public sealed partial class DutySettingsRepository : IDutySettingsRepository
         settings.Host.AutoRunTriggerNotificationEnabled = hostPatch.AutoRunTriggerNotificationEnabled;
         settings.Host.DutyReminderEnabled = hostPatch.DutyReminderEnabled;
         settings.Host.DutyReminderTimes = [NormalizeReminderTime((hostPatch.DutyReminderTimes ?? []).FirstOrDefault())];
+        settings.Host.ServerPortMode = DutyServerPortModes.Normalize(hostPatch.ServerPortMode);
+        settings.Host.FixedServerPort = NormalizeServicePort(hostPatch.FixedServerPort);
         settings.Host.EnableMcp = hostPatch.EnableMcp;
         settings.Host.EnableWebViewDebugLayer = hostPatch.EnableWebViewDebugLayer;
         settings.Host.ComponentRefreshTime = NormalizeTime(hostPatch.ComponentRefreshTime, settings.Host.ComponentRefreshTime);
@@ -377,6 +470,16 @@ public sealed partial class DutySettingsRepository : IDutySettingsRepository
         if (patch.DutyReminderTimes != null)
         {
             host.DutyReminderTimes = [NormalizeReminderTime(patch.DutyReminderTimes.FirstOrDefault())];
+        }
+
+        if (patch.ServerPortMode != null)
+        {
+            host.ServerPortMode = DutyServerPortModes.Normalize(patch.ServerPortMode);
+        }
+
+        if (patch.FixedServerPort.HasValue)
+        {
+            host.FixedServerPort = NormalizeServicePort(patch.FixedServerPort);
         }
 
         if (patch.EnableMcp.HasValue)
@@ -449,6 +552,11 @@ public sealed partial class DutySettingsRepository : IDutySettingsRepository
             PythonPath = string.IsNullOrWhiteSpace(host.PythonPath) ? new DutyPersistedHostSettings().PythonPath : host.PythonPath.Trim(),
             AutoRunMode = NormalizeAutoRunMode(host.AutoRunMode),
             AutoRunParameter = (host.AutoRunParameter ?? string.Empty).Trim() is { Length: > 0 } parameter ? parameter : "Monday",
+            AccessTokenMode = DutyAccessTokenModes.Normalize(host.AccessTokenMode),
+            StaticAccessTokenEncrypted = NormalizePersistedSecret(host.StaticAccessTokenEncrypted),
+            StaticAccessTokenVerifier = NormalizePersistedSecret(host.StaticAccessTokenVerifier),
+            ServerPortMode = DutyServerPortModes.Normalize(host.ServerPortMode),
+            FixedServerPort = NormalizeServicePort(host.FixedServerPort),
             EnableMcp = host.EnableMcp,
             EnableWebViewDebugLayer = host.EnableWebViewDebugLayer,
             AutoRunTime = NormalizeTime(host.AutoRunTime, "08:00"),
@@ -518,6 +626,8 @@ public sealed partial class DutySettingsRepository : IDutySettingsRepository
             PythonPath = host.PythonPath,
             AutoRunMode = host.AutoRunMode,
             AutoRunParameter = host.AutoRunParameter,
+            AccessTokenMode = host.AccessTokenMode,
+            StaticAccessTokenVerifier = host.StaticAccessTokenVerifier,
             EnableMcp = host.EnableMcp,
             EnableWebViewDebugLayer = host.EnableWebViewDebugLayer,
             AutoRunTime = host.AutoRunTime,
@@ -538,6 +648,12 @@ public sealed partial class DutySettingsRepository : IDutySettingsRepository
         next.PythonPath = string.IsNullOrWhiteSpace(config.PythonPath) ? next.PythonPath : config.PythonPath.Trim();
         next.AutoRunMode = NormalizeAutoRunMode(config.AutoRunMode);
         next.AutoRunParameter = (config.AutoRunParameter ?? next.AutoRunParameter).Trim();
+        next.AccessTokenMode = string.IsNullOrWhiteSpace(config.AccessTokenMode)
+            ? next.AccessTokenMode
+            : DutyAccessTokenModes.Normalize(config.AccessTokenMode);
+        next.StaticAccessTokenVerifier = string.IsNullOrWhiteSpace(config.StaticAccessTokenVerifier)
+            ? next.StaticAccessTokenVerifier
+            : NormalizePersistedSecret(config.StaticAccessTokenVerifier);
         next.EnableMcp = config.EnableMcp;
         next.EnableWebViewDebugLayer = config.EnableWebViewDebugLayer;
         next.AutoRunTime = NormalizeTime(config.AutoRunTime, next.AutoRunTime);
@@ -583,6 +699,10 @@ public sealed partial class DutySettingsRepository : IDutySettingsRepository
                 AutoRunTriggerNotificationEnabled = localSettings.Host.AutoRunTriggerNotificationEnabled,
                 DutyReminderEnabled = localSettings.Host.DutyReminderEnabled,
                 DutyReminderTimes = [.. NormalizeReminderTimes(localSettings.Host.DutyReminderTimes)],
+                AccessTokenMode = localSettings.Host.AccessTokenMode,
+                StaticAccessTokenConfigured = HasStaticAccessTokenConfigured(localSettings.Host),
+                ServerPortMode = localSettings.Host.ServerPortMode,
+                FixedServerPort = localSettings.Host.FixedServerPort,
                 EnableMcp = localSettings.Host.EnableMcp,
                 EnableWebViewDebugLayer = localSettings.Host.EnableWebViewDebugLayer,
                 ComponentRefreshTime = localSettings.Host.ComponentRefreshTime,
@@ -600,7 +720,9 @@ public sealed partial class DutySettingsRepository : IDutySettingsRepository
         {
             settings_version = settings.Version,
             auto_run_mode = projected.AutoRunMode,
-            enable_mcp = projected.EnableMcp
+            access_token_mode = projected.AccessTokenMode,
+            enable_mcp = projected.EnableMcp,
+            static_access_token_configured = HasStaticAccessTokenConfigured(settings.Host)
         });
     }
 
@@ -777,6 +899,11 @@ public sealed partial class DutySettingsRepository : IDutySettingsRepository
             PythonPath = host.PythonPath,
             AutoRunMode = host.AutoRunMode,
             AutoRunParameter = host.AutoRunParameter,
+            AccessTokenMode = host.AccessTokenMode,
+            StaticAccessTokenEncrypted = host.StaticAccessTokenEncrypted,
+            StaticAccessTokenVerifier = host.StaticAccessTokenVerifier,
+            ServerPortMode = host.ServerPortMode,
+            FixedServerPort = host.FixedServerPort,
             EnableMcp = host.EnableMcp,
             EnableWebViewDebugLayer = host.EnableWebViewDebugLayer,
             AutoRunTime = host.AutoRunTime,
@@ -897,5 +1024,60 @@ public sealed partial class DutySettingsRepository : IDutySettingsRepository
             .OrderBy(x => x, StringComparer.Ordinal)
             .ToList();
         return normalized.Count == 0 ? [DefaultDutyReminderTime] : normalized;
+    }
+
+    private static bool HasStaticAccessTokenConfigured(DutyPersistedHostSettings? host)
+    {
+        return !string.IsNullOrWhiteSpace(host?.StaticAccessTokenEncrypted) &&
+               !string.IsNullOrWhiteSpace(host?.StaticAccessTokenVerifier);
+    }
+
+    private static string NormalizePersistedSecret(string? value)
+    {
+        return (value ?? string.Empty).Trim();
+    }
+
+    private static int? NormalizeServicePort(int? value)
+    {
+        if (!value.HasValue)
+        {
+            return null;
+        }
+
+        return value.Value is >= MinServicePort and <= MaxServicePort
+            ? value.Value
+            : null;
+    }
+
+    private static string? NormalizeOptionalSecret(string? value)
+    {
+        var normalized = (value ?? string.Empty).Trim();
+        return normalized.Length == 0 ? null : normalized;
+    }
+
+    private static string BuildHostAccessSecurityMessage(
+        DutyHostAccessSecuritySaveRequest request,
+        bool hadStaticTokenConfigured,
+        DutyPersistedHostSettings nextHost,
+        bool replacedStaticToken)
+    {
+        if (request.ClearStaticAccessToken)
+        {
+            return "静态 token 已清除，重启后恢复动态 token。";
+        }
+
+        if (nextHost.AccessTokenMode == DutyAccessTokenModes.Static)
+        {
+            if (replacedStaticToken)
+            {
+                return hadStaticTokenConfigured
+                    ? "静态 token 已更新，重启后生效。"
+                    : "静态 token 已保存，重启后生效。";
+            }
+
+            return "已切换到静态 token 模式，重启后生效。";
+        }
+
+        return "已切换到动态 token 模式，重启后生效。";
     }
 }

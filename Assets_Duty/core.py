@@ -20,7 +20,16 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
-from auth import build_http_unauthorized_response, is_mcp_path, is_protected_http_path, is_public_http_path, is_request_authorized
+from auth import (
+    build_http_unauthorized_response,
+    extract_bearer_token,
+    is_mcp_path,
+    is_protected_http_path,
+    is_public_http_path,
+    is_request_authorized,
+    pop_current_request_bearer_token,
+    push_current_request_bearer_token,
+)
 from mcp_server import build_mcp_http_app
 from runtime import create_runtime
 from routers import config, duty, roster
@@ -73,9 +82,14 @@ async def require_bearer_for_protected_routes(request: Request, call_next):
         runtime = getattr(request.app.state, "runtime", None)
         if runtime is None or not getattr(runtime, "enable_mcp", False):
             return JSONResponse(status_code=404, content={"detail": "Not Found"})
-        if not is_request_authorized(request, runtime):
+        candidate_token = extract_bearer_token(request.headers)
+        if not runtime.is_authorized(candidate_token):
             return build_http_unauthorized_response()
-        return await call_next(request)
+        token_scope = push_current_request_bearer_token(candidate_token)
+        try:
+            return await call_next(request)
+        finally:
+            pop_current_request_bearer_token(token_scope)
 
     if is_protected_http_path(path):
         runtime = getattr(request.app.state, "runtime", None)
@@ -179,13 +193,14 @@ def main():
     parser.add_argument("--data-dir", type=str, default="data")
     parser.add_argument("--server", action="store_true", help="Run in HTTP server mode")
     parser.add_argument("--port", type=int, default=0, help="Port to listen on (0 for random)")
+    parser.add_argument("--disable-mcp-runtime", action="store_true", help="Disable MCP for this process without changing saved config")
     args = parser.parse_args()
 
     data_dir = Path(args.data_dir).resolve()
     data_dir.mkdir(parents=True, exist_ok=True)
     
     if args.server:
-        app.state.runtime = create_runtime(data_dir)
+        app.state.runtime = create_runtime(data_dir, disable_mcp_runtime=args.disable_mcp_runtime)
         
         # Determine actual port
         import socket
@@ -197,7 +212,9 @@ def main():
             temp_sock.close()
         
         print(f"__DUTY_SERVER_PORT__:{actual_port}", flush=True)
-        print(f"__DUTY_SERVER_TOKEN__:{app.state.runtime.access_token}", flush=True)
+        print(f"__DUTY_SERVER_TOKEN_MODE__:{app.state.runtime.access_token_mode}", flush=True)
+        if app.state.runtime.access_token_mode == "dynamic":
+            print(f"__DUTY_SERVER_TOKEN__:{app.state.runtime.access_token}", flush=True)
         
         # Start suicide watch thread
         watch_thread = threading.Thread(
