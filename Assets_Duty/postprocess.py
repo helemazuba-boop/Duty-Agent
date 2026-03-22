@@ -36,7 +36,7 @@ def reconcile_credit_list(
     debt_list: List[int],
     has_llm_field: bool,
 ) -> List[int]:
-    next_credit_set = set(new_credit_ids_from_llm) if has_llm_field else set(original_credit_list)
+    next_credit_set = (set(original_credit_list) | set(new_credit_ids_from_llm)) if has_llm_field else set(original_credit_list)
     next_credit_set = {credit_id for credit_id in next_credit_set if credit_id in valid_ids}
     next_credit_set -= set(debt_list)
     return sorted(next_credit_set)

@@ -430,12 +430,50 @@ def fallback_fill_schedule(barrier2: Dict[str, Any]) -> List[Dict[str, Any]]:
             return True
         return False
 
+    def _unplace(person_id: int, slot: Dict[str, Any]) -> None:
+        schedule_map[slot["date"]][slot["area"]].remove(person_id)
+        remaining_slots.append(slot)
+        placed.discard(person_id)
+
+    def _place_with_slot(person_id: int, required_date: str | None = None) -> Dict[str, Any] | None:
+        """Like _place but returns the slot used, or None on failure."""
+        required_area = fixed_area_map.get(person_id)
+        for slot in list(remaining_slots):
+            if required_date and slot["date"] != required_date:
+                continue
+            if required_area and slot["area"] != required_area:
+                continue
+            day_ids = {
+                assigned
+                for ids in schedule_map[slot["date"]].values()
+                for assigned in ids
+            }
+            blocked = False
+            for pa, pb in avoid_pairs:
+                if person_id == pa and pb in day_ids:
+                    blocked = True
+                if person_id == pb and pa in day_ids:
+                    blocked = True
+            if blocked:
+                continue
+            schedule_map[slot["date"]][slot["area"]].append(person_id)
+            remaining_slots.remove(slot)
+            placed.add(person_id)
+            return slot
+        return None
+
     for person_a, person_b in bind_pairs:
         if person_a in placed or person_b in placed:
             continue
         for date_text in barrier2["dates"]:
-            if _place(person_a, required_date=date_text) and _place(person_b, required_date=date_text):
+            slot_a = _place_with_slot(person_a, required_date=date_text)
+            if slot_a is None:
+                continue
+            slot_b = _place_with_slot(person_b, required_date=date_text)
+            if slot_b is not None:
                 break
+            # person_b failed on this date — roll back person_a
+            _unplace(person_a, slot_a)
         else:
             raise ValueError("fallback could not satisfy bind_same_day rule")
 
