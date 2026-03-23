@@ -16,7 +16,6 @@ from postprocess import (
 )
 from prompt_gateway import build_single_pass_prompt_messages
 from state_ops import (
-    DEFAULT_ASSIGNMENTS_PER_AREA,
     Context,
     anonymize_instruction,
     extract_ids_from_value,
@@ -25,8 +24,6 @@ from state_ops import (
     load_config,
     load_roster,
     load_state,
-    normalize_area_names,
-    normalize_area_per_day_counts,
     update_state,
 )
 
@@ -61,12 +58,8 @@ def run_single_pass_schedule(
     ctx.config["api_key"] = api_key
     ctx.config["llm_stream"] = True
 
-    area_names = normalize_area_names(["default_area"])
-    area_per_day_counts = normalize_area_per_day_counts(
-        area_names,
-        {"default_area": DEFAULT_ASSIGNMENTS_PER_AREA},
-        DEFAULT_ASSIGNMENTS_PER_AREA,
-    )
+    area_names = []
+    area_per_day_counts = {}
     apply_mode = str(input_data.get("apply_mode", "append")).lower()
 
     if emit_progress_fn:

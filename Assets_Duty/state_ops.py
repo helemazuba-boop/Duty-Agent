@@ -12,6 +12,7 @@ from typing import Callable, Dict, List, Optional, Tuple
 from diagnostics import truncate_for_log
 
 DEFAULT_ASSIGNMENTS_PER_AREA = 2
+DEFAULT_SINGLE_AREA_NAME = "值日"
 DEFAULT_BASE_URL = "https://integrate.api.nvidia.com/v1"
 DEFAULT_MODEL = "moonshotai/kimi-k2-thinking"
 DEFAULT_MODEL_PROFILE = "auto"
@@ -121,10 +122,8 @@ def normalize_plan_mode_id(value) -> str:
     return {
         "standard": "standard",
         "default": "standard",
-        "campus_6agent": "campus_6agent",
-        "campus6agent": "campus_6agent",
-        "6agent": "campus_6agent",
-        "multi_agent": "campus_6agent",
+        "agents": "agents",
+        "multi_agent": "agents",
         "incremental_small": "incremental_small",
         "incremental": "incremental_small",
         "small_incremental": "incremental_small",
@@ -163,7 +162,7 @@ def _normalize_plan_name(name: object, mode_id: str, index: int, model: str = ""
     if index <= 3:
         return {
             "standard": "标准",
-            "campus_6agent": "6Agent",
+            "agents": "Agents",
             "incremental_small": "增量小模型",
         }.get(mode_id, "标准")
     return model or f"方案预设 {index}"
@@ -183,9 +182,9 @@ def _create_default_plan_presets() -> List[dict]:
             "multi_agent_execution_mode": "auto",
         },
         {
-            "id": "campus-6agent",
-            "name": "6Agent",
-            "mode_id": "campus_6agent",
+            "id": "agents",
+            "name": "Agents",
+            "mode_id": "agents",
             "api_key": "",
             "base_url": DEFAULT_BASE_URL,
             "model": DEFAULT_MODEL,
@@ -236,7 +235,7 @@ def _normalize_plan_presets(raw_plan_presets) -> List[dict]:
                 "multi_agent_execution_mode": normalize_multi_agent_execution_mode(
                     candidate.get("multi_agent_execution_mode", DEFAULT_MULTI_AGENT_EXECUTION_MODE)
                 )
-                if mode_id == "campus_6agent"
+                if mode_id == "agents"
                 else "auto",
             }
         )
@@ -311,11 +310,11 @@ def _hydrate_runtime_config(persisted: dict) -> dict:
         "base_url": selected_plan["base_url"],
         "model": selected_plan["model"],
         "model_profile": selected_plan["model_profile"],
-        "orchestration_mode": "multi_agent" if selected_mode_id == "campus_6agent" else "single_pass",
+        "orchestration_mode": "multi_agent" if selected_mode_id == "agents" else "single_pass",
         "multi_agent_execution_mode": normalize_multi_agent_execution_mode(
             selected_plan.get("multi_agent_execution_mode", DEFAULT_MULTI_AGENT_EXECUTION_MODE)
         )
-        if selected_mode_id == "campus_6agent"
+        if selected_mode_id == "agents"
         else "auto",
         "single_pass_strategy": INCREMENTAL_SINGLE_PASS_STRATEGY if selected_mode_id == "incremental_small" else "auto",
         "provider_hint": selected_plan["provider_hint"],

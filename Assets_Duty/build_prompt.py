@@ -2,6 +2,7 @@
 from typing import Dict, List
 
 from prompt_config import KEYWORD_REGISTRY, PROMPTS
+from state_ops import DEFAULT_SINGLE_AREA_NAME
 
 def is_module_active(module_name: str, instruction: str, data_present: bool) -> bool:
     """Determine if a functional module should be injected into the prompt."""
@@ -37,60 +38,32 @@ def build_prompt_messages(
         and (model_profile == "campus_small" or orchestration_mode == "multi_agent")
     )
 
-    if compact_mode:
-        area_text = ",".join(area_names) if area_names else "default_area"
-        area_count_text = ",".join(
-            f"{area}={area_per_day_counts.get(area, 0)}"
-            for area in (area_names or ["default_area"])
-        )
-        params = [
-            f"<all_roster_ids>{','.join(map(str, all_ids))}</all_roster_ids>",
-            f"<inactive_ids>{','.join(map(str, inactive_ids))}</inactive_ids>",
-            f"<current_time>{current_time}</current_time>",
-            f"<user_instruction>{instruction}</user_instruction>",
-            f"<area_names>{area_text}</area_names>",
-            f"<area_slot_counts>{area_count_text}</area_slot_counts>",
-            f"<single_pass_strategy>{single_pass_strategy}</single_pass_strategy>",
-        ]
-        if previous_context:
-            params.append(f"<previous_run_memory>{previous_context}</previous_run_memory>")
-        dynamic_parameters = "\n".join(params)
-        system_content = PROMPTS["compact_base"].format(dynamic_parameters=dynamic_parameters)
-        return [{"role": "user", "content": system_content}]
-
     params_list = [
         f"<all_roster_ids>{','.join(map(str, all_ids))}</all_roster_ids>",
         f"<current_time>{current_time}</current_time>",
         f"<user_instruction>{instruction}</user_instruction>",
-        f"<area_names>{','.join(area_names) if area_names else 'default_area'}</area_names>",
-        "<area_slot_counts>{}</area_slot_counts>".format(
-            ",".join(
-                f"{area}={area_per_day_counts.get(area, 0)}"
-                for area in (area_names or ["default_area"])
-            )
-        ),
         f"<single_pass_strategy>{single_pass_strategy}</single_pass_strategy>",
     ]
     if previous_context:
         params_list.append(f"<previous_run_memory>{previous_context}</previous_run_memory>")
 
     methods_list = []
-    
+
     # Debt Logic
     if is_module_active("debt", instruction, bool(debt_list)):
         params_list.append(PROMPTS["param_debt"].format(debt_list=','.join(map(str, debt_list))))
         methods_list.append(PROMPTS["rule_debt"])
-        
+
     # Credit Logic
     if is_module_active("credit", instruction, bool(credit_list)):
         params_list.append(PROMPTS["param_credit"].format(credit_list=','.join(map(str, credit_list))))
         methods_list.append(PROMPTS["rule_credit"])
-        
+
     # Inactive Logic
     if is_module_active("inactive", instruction, bool(inactive_ids)):
         params_list.append(PROMPTS["param_inactive"].format(inactive_ids=','.join(map(str, inactive_ids))))
         methods_list.append(PROMPTS["rule_inactive"])
-        
+
     if is_module_active("multi_day", instruction, False):
         methods_list.append(PROMPTS["rule_multi_day"])
 
@@ -100,10 +73,15 @@ def build_prompt_messages(
 
     methods_list.append(
         "<output_guard>\n"
-        "Assigned_IDs must contain ONLY the scheduled IDs for that date, not the whole roster.\n"
-        "If area_slot_counts says default_area=2, then each date must contain exactly 2 unique IDs.\n"
-        "When Assigned_IDs contains multiple IDs in one CSV cell, quote that cell and separate IDs with commas, "
-        "for example \"1,2\".\n"
+        "Return CSV only.\n"
+        "The header must be Date first and Note last. Every column between them is an area name.\n"
+        f"If the user did not explicitly define areas, use a single area column named {DEFAULT_SINGLE_AREA_NAME}.\n"
+        "Use the same area columns for every data row.\n"
+        "Each area cell must contain only the scheduled IDs for that date and area.\n"
+        "When an area cell contains multiple IDs, quote that cell and separate IDs with commas, for example \"1,2\".\n"
+        "Leave an area cell empty only when that area truly has no assignment for that date.\n"
+        "The same ID may appear in different area columns on the same date, and may also appear on different dates.\n"
+        "Within one area cell, do not repeat the same ID.\n"
         "</output_guard>"
     )
 
@@ -116,9 +94,15 @@ def build_prompt_messages(
     dynamic_parameters = "\n".join(params_list)
     dynamic_methods = "\n".join(methods_list) if methods_list else "<!-- No specific processing rules triggered. Follow basic sequence. -->"
 
-    system_content = PROMPTS["regular_system_base"].format(
-        dynamic_parameters=dynamic_parameters,
-        dynamic_methods=dynamic_methods
-    )
+    if compact_mode:
+        system_content = PROMPTS["compact_base"].format(
+            dynamic_parameters=dynamic_parameters,
+            dynamic_methods=dynamic_methods,
+        )
+    else:
+        system_content = PROMPTS["regular_system_base"].format(
+            dynamic_parameters=dynamic_parameters,
+            dynamic_methods=dynamic_methods,
+        )
 
     return [{"role": "user", "content": system_content}]

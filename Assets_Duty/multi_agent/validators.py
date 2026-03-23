@@ -3,7 +3,10 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Sequence
 
+from state_ops import DEFAULT_SINGLE_AREA_NAME
+
 from .contracts import FrozenSnapshot
+
 
 SUPPORTED_RULE_TYPES = {
     "fixed_area",
@@ -73,7 +76,7 @@ def validate_agent1_output(raw: Dict[str, Any], snapshot: FrozenSnapshot) -> Dic
             raise ValueError(f"template for {date_text} is empty")
         normalized_areas: Dict[str, int] = {}
         for raw_area, raw_count in areas.items():
-            area = str(raw_area).strip() or "default_area"
+            area = str(raw_area).strip() or DEFAULT_SINGLE_AREA_NAME
             try:
                 count = int(raw_count)
             except Exception as ex:
@@ -255,6 +258,7 @@ def build_slots(template: Dict[str, Dict[str, int]]) -> List[Dict[str, Any]]:
 
 
 def merge_barrier2(snapshot: FrozenSnapshot, barrier1: Dict[str, Any], priority_result: Dict[str, Any], pointer_result: Dict[str, Any]) -> Dict[str, Any]:
+    del snapshot
     filtered_pointer_pool = [
         person_id
         for person_id in pointer_result["pointer_pool"]
@@ -262,8 +266,8 @@ def merge_barrier2(snapshot: FrozenSnapshot, barrier1: Dict[str, Any], priority_
     ]
     remaining_slots = barrier1["total_slots"] - len(priority_result["priority_pool"])
     final_pool = priority_result["priority_pool"] + filtered_pointer_pool[:max(0, remaining_slots)]
-    if len(final_pool) != barrier1["total_slots"]:
-        raise ValueError("final pool size does not match total slots")
+    if not final_pool:
+        raise ValueError("final pool is empty")
     if len(set(final_pool)) != len(final_pool):
         raise ValueError("final pool contains duplicate IDs")
 
@@ -320,8 +324,7 @@ def validate_final_schedule(schedule: List[Dict[str, Any]], barrier2: Dict[str, 
         raise ValueError("schedule date count mismatch")
 
     seen_dates = set()
-    assigned_ids_all: List[int] = []
-    schedule_by_person: Dict[int, List[datetime.date]] = {}
+    schedule_by_person: Dict[int, set[datetime.date]] = {}
     for entry in schedule:
         date_text = entry["date"]
         if date_text in seen_dates:
@@ -331,21 +334,19 @@ def validate_final_schedule(schedule: List[Dict[str, Any]], barrier2: Dict[str, 
         area_ids = entry["area_ids"]
         if set(area_ids.keys()) != set(expected_areas.keys()):
             raise ValueError(f"area set mismatch on {date_text}")
-        per_day_ids: List[int] = []
         for area_name, expected_count in expected_areas.items():
             assigned_ids = area_ids.get(area_name, [])
             if len(assigned_ids) != expected_count:
                 raise ValueError(f"slot count mismatch on {date_text}/{area_name}")
-            per_day_ids.extend(assigned_ids)
-            assigned_ids_all.extend(assigned_ids)
-        if len(per_day_ids) != len(set(per_day_ids)):
-            raise ValueError(f"same person assigned twice on {date_text}")
+            if len(assigned_ids) != len(set(assigned_ids)):
+                raise ValueError(f"same person assigned twice in {date_text}/{area_name}")
+            for person_id in assigned_ids:
+                if person_id not in final_pool:
+                    raise ValueError(f"unknown final_pool ID {person_id} on {date_text}/{area_name}")
         parsed_date = datetime.strptime(date_text, "%Y-%m-%d").date()
-        for person_id in per_day_ids:
-            schedule_by_person.setdefault(person_id, []).append(parsed_date)
-
-    if set(assigned_ids_all) != final_pool or len(assigned_ids_all) != len(final_pool):
-        raise ValueError("final assigned set does not match final_pool")
+        day_ids = {item for ids in area_ids.values() for item in ids}
+        for person_id in day_ids:
+            schedule_by_person.setdefault(person_id, set()).add(parsed_date)
 
     for rule in barrier2["supported_rules"]:
         rule_type = rule["type"]
@@ -366,19 +367,13 @@ def validate_final_schedule(schedule: List[Dict[str, Any]], barrier2: Dict[str, 
         elif rule_type == "bind_same_day":
             person_a = rule["person_a"]
             person_b = rule["person_b"]
-            day_a = None
-            day_b = None
-            for entry in schedule:
-                day_ids = {item for ids in entry["area_ids"].values() for item in ids}
-                if person_a in day_ids:
-                    day_a = entry["date"]
-                if person_b in day_ids:
-                    day_b = entry["date"]
+            day_a = schedule_by_person.get(person_a, set())
+            day_b = schedule_by_person.get(person_b, set())
             if day_a != day_b:
                 raise ValueError(f"bind_same_day violated for {person_a}/{person_b}")
         elif rule_type == "avoid_consecutive_days":
             person_id = rule["person_id"]
-            assigned_days = sorted(schedule_by_person.get(person_id, []))
+            assigned_days = sorted(schedule_by_person.get(person_id, set()))
             for idx in range(1, len(assigned_days)):
                 if assigned_days[idx] - assigned_days[idx - 1] == timedelta(days=1):
                     raise ValueError(f"avoid_consecutive_days violated for {person_id}")
@@ -389,9 +384,10 @@ def fallback_fill_schedule(barrier2: Dict[str, Any]) -> List[Dict[str, Any]]:
     if any(rule["type"] not in {"fixed_area", "avoid_same_day_pair", "bind_same_day"} for rule in rules):
         raise ValueError("safe fallback does not support the current rule set")
 
-    slots = list(barrier2["slots"])
     final_pool = list(barrier2["final_pool"])
     template = barrier2["template"]
+    if not final_pool:
+        raise ValueError("safe fallback requires a non-empty final_pool")
     schedule_map: Dict[str, Dict[str, List[int]]] = {
         date_text: {area_name: [] for area_name in areas.keys()}
         for date_text, areas in template.items()
@@ -401,87 +397,71 @@ def fallback_fill_schedule(barrier2: Dict[str, Any]) -> List[Dict[str, Any]]:
     bind_pairs = [(rule["person_a"], rule["person_b"]) for rule in rules if rule["type"] == "bind_same_day"]
     avoid_pairs = [(rule["person_a"], rule["person_b"]) for rule in rules if rule["type"] == "avoid_same_day_pair"]
 
-    placed: set[int] = set()
-    remaining_slots = list(slots)
+    bind_partner_map: Dict[int, int] = {}
+    for person_a, person_b in bind_pairs:
+        if person_a in bind_partner_map or person_b in bind_partner_map:
+            raise ValueError("safe fallback does not support overlapping bind_same_day rules")
+        bind_partner_map[person_a] = person_b
+        bind_partner_map[person_b] = person_a
 
-    def _place(person_id: int, required_date: str | None = None) -> bool:
+    cursor = 0
+
+    def _day_ids(date_text: str) -> set[int]:
+        return {
+            assigned
+            for ids in schedule_map[date_text].values()
+            for assigned in ids
+        }
+
+    def _can_place(person_id: int, date_text: str, area_name: str) -> bool:
         required_area = fixed_area_map.get(person_id)
-        for slot in list(remaining_slots):
-            if required_date and slot["date"] != required_date:
-                continue
-            if required_area and slot["area"] != required_area:
-                continue
-            day_ids = {
-                assigned
-                for ids in schedule_map[slot["date"]].values()
-                for assigned in ids
-            }
-            blocked = False
-            for person_a, person_b in avoid_pairs:
-                if person_id == person_a and person_b in day_ids:
-                    blocked = True
-                if person_id == person_b and person_a in day_ids:
-                    blocked = True
-            if blocked:
-                continue
-            schedule_map[slot["date"]][slot["area"]].append(person_id)
-            remaining_slots.remove(slot)
-            placed.add(person_id)
-            return True
-        return False
+        if required_area and required_area != area_name:
+            return False
+        area_ids = schedule_map[date_text][area_name]
+        if person_id in area_ids:
+            return False
+        day_ids = _day_ids(date_text)
+        for person_a, person_b in avoid_pairs:
+            if person_id == person_a and person_b in day_ids:
+                return False
+            if person_id == person_b and person_a in day_ids:
+                return False
+        return True
 
-    def _unplace(person_id: int, slot: Dict[str, Any]) -> None:
-        schedule_map[slot["date"]][slot["area"]].remove(person_id)
-        remaining_slots.append(slot)
-        placed.discard(person_id)
+    def _place(person_id: int, date_text: str, area_name: str) -> None:
+        schedule_map[date_text][area_name].append(person_id)
 
-    def _place_with_slot(person_id: int, required_date: str | None = None) -> Dict[str, Any] | None:
-        """Like _place but returns the slot used, or None on failure."""
-        required_area = fixed_area_map.get(person_id)
-        for slot in list(remaining_slots):
-            if required_date and slot["date"] != required_date:
+    def _find_open_slot_for_person(person_id: int, date_text: str, reserved_area: str | None = None) -> str | None:
+        for area_name, area_ids in schedule_map[date_text].items():
+            used_slots = len(area_ids) + (1 if reserved_area == area_name else 0)
+            if used_slots >= template[date_text][area_name]:
                 continue
-            if required_area and slot["area"] != required_area:
-                continue
-            day_ids = {
-                assigned
-                for ids in schedule_map[slot["date"]].values()
-                for assigned in ids
-            }
-            blocked = False
-            for pa, pb in avoid_pairs:
-                if person_id == pa and pb in day_ids:
-                    blocked = True
-                if person_id == pb and pa in day_ids:
-                    blocked = True
-            if blocked:
-                continue
-            schedule_map[slot["date"]][slot["area"]].append(person_id)
-            remaining_slots.remove(slot)
-            placed.add(person_id)
-            return slot
+            if _can_place(person_id, date_text, area_name):
+                return area_name
         return None
 
-    for person_a, person_b in bind_pairs:
-        if person_a in placed or person_b in placed:
-            continue
-        for date_text in barrier2["dates"]:
-            slot_a = _place_with_slot(person_a, required_date=date_text)
-            if slot_a is None:
-                continue
-            slot_b = _place_with_slot(person_b, required_date=date_text)
-            if slot_b is not None:
-                break
-            # person_b failed on this date — roll back person_a
-            _unplace(person_a, slot_a)
-        else:
-            raise ValueError("fallback could not satisfy bind_same_day rule")
-
-    for person_id in final_pool:
-        if person_id in placed:
-            continue
-        if not _place(person_id):
-            raise ValueError(f"fallback could not place person {person_id}")
+    for date_text in barrier2["dates"]:
+        for area_name, expected_count in template[date_text].items():
+            while len(schedule_map[date_text][area_name]) < expected_count:
+                candidate_order = final_pool[cursor:] + final_pool[:cursor]
+                filled = False
+                for person_id in candidate_order:
+                    if not _can_place(person_id, date_text, area_name):
+                        continue
+                    bind_partner = bind_partner_map.get(person_id)
+                    if bind_partner is not None and bind_partner not in _day_ids(date_text):
+                        partner_area = _find_open_slot_for_person(bind_partner, date_text, reserved_area=area_name)
+                        if partner_area is None:
+                            continue
+                        _place(person_id, date_text, area_name)
+                        _place(bind_partner, date_text, partner_area)
+                    else:
+                        _place(person_id, date_text, area_name)
+                    cursor = (final_pool.index(person_id) + 1) % len(final_pool)
+                    filled = True
+                    break
+                if not filled:
+                    raise ValueError(f"fallback could not fill {date_text}/{area_name}")
 
     schedule: List[Dict[str, Any]] = []
     for date_text in barrier2["dates"]:

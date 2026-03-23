@@ -3,8 +3,6 @@ from __future__ import annotations
 from datetime import date, datetime
 from typing import Dict, List, Optional
 
-from state_ops import DEFAULT_ASSIGNMENTS_PER_AREA, extract_ids_from_value
-
 DAY_NAMES = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 
 
@@ -42,24 +40,46 @@ def reconcile_credit_list(
     return sorted(next_credit_set)
 
 
-def extract_area_ids(entry, area_name, area_index, active_set, per_area_count):
-    result = []
-
-    def append_ids(value):
-        nonlocal result
-        if len(result) >= per_area_count:
-            return
-        for person_id in extract_ids_from_value(value, active_set, per_area_count):
-            if person_id not in result:
-                result.append(person_id)
-                if len(result) >= per_area_count:
-                    break
-
+def _resolve_area_mapping(entry: dict) -> Dict[str, object]:
     for key in ("area_ids", "areas", "area_assignments"):
         mapping = entry.get(key)
         if isinstance(mapping, dict):
-            append_ids(mapping.get(area_name))
-            append_ids(mapping.get(str(area_index)))
+            return mapping
+    return {}
+
+
+def _coerce_area_value_items(value: object) -> List[object]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        stripped = value.strip()
+        if not stripped:
+            return []
+        return [part.strip() for part in stripped.strip(" []").split(",")]
+    if isinstance(value, list):
+        return list(value)
+    if isinstance(value, (int, float)):
+        return [value]
+    raise ValueError(f"unsupported area value type: {type(value).__name__}")
+
+
+def _parse_area_ids(value: object, active_set: set[int], *, date_str: str, area_name: str) -> List[int]:
+    result: List[int] = []
+    seen: set[int] = set()
+    for raw in _coerce_area_value_items(value):
+        text = str(raw).strip()
+        if not text:
+            continue
+        try:
+            person_id = int(text)
+        except Exception as ex:
+            raise ValueError(f"invalid ID '{text}' on {date_str}/{area_name}") from ex
+        if person_id not in active_set:
+            raise ValueError(f"unknown or inactive ID {person_id} on {date_str}/{area_name}")
+        if person_id in seen:
+            raise ValueError(f"duplicate ID {person_id} on {date_str}/{area_name}")
+        seen.add(person_id)
+        result.append(person_id)
     return result
 
 
@@ -80,26 +100,29 @@ def normalize_multi_area_schedule_ids(
         if len(raw_date) < 8:
             continue
 
+        area_mapping = _resolve_area_mapping(entry)
         day_assignments: Dict[str, List[int]] = {}
-        used_ids: set = set()
         for area_index, area_name in enumerate(area_names):
-            per_area_count = area_per_day_counts.get(area_name, DEFAULT_ASSIGNMENTS_PER_AREA)
-            extracted_ids = extract_area_ids(entry, area_name, area_index, active_set, per_area_count)
-            final_ids = [person_id for person_id in extracted_ids if person_id not in used_ids]
-            day_assignments[area_name] = final_ids
-            used_ids.update(final_ids)
+            raw_value = area_mapping.get(area_name)
+            if raw_value is None:
+                raw_value = area_mapping.get(str(area_index))
+            day_assignments[area_name] = _parse_area_ids(
+                raw_value,
+                active_set,
+                date_str=raw_date,
+                area_name=area_name,
+            )
 
-        raw_area_ids = entry.get("area_ids") or entry.get("areas") or entry.get("area_assignments") or {}
-        if isinstance(raw_area_ids, dict):
-            for dynamic_area_name, raw_value in raw_area_ids.items():
-                name = str(dynamic_area_name).strip()
-                if not name or name in day_assignments:
-                    continue
-                extracted = extract_ids_from_value(raw_value, active_set, None)
-                final = [person_id for person_id in extracted if person_id not in used_ids]
-                if final:
-                    day_assignments[name] = final
-                    used_ids.update(final)
+        for dynamic_area_name, raw_value in area_mapping.items():
+            name = str(dynamic_area_name).strip()
+            if not name or name in day_assignments or name.isdigit():
+                continue
+            day_assignments[name] = _parse_area_ids(
+                raw_value,
+                active_set,
+                date_str=raw_date,
+                area_name=name,
+            )
 
         normalized.append(
             {

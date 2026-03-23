@@ -119,7 +119,7 @@
                                   HorizontalAlignment="Stretch"
                                   SelectionChanged="OnConfigSelectionChanged">
                             <ComboBoxItem Content="标准" Tag="standard" />
-                            <ComboBoxItem Content="6Agent" Tag="campus_6agent" />
+                            <ComboBoxItem Content="Agents" Tag="agents" />
                             <ComboBoxItem Content="增量小模型" Tag="incremental_small" />
                         </ComboBox>
                     </ui:SettingsExpanderItem.Footer>
@@ -135,8 +135,8 @@
                     </ui:SettingsExpanderItem.Footer>
                 </ui:SettingsExpanderItem>
                 <ui:SettingsExpanderItem x:Name="MultiAgentExecutionModeItem"
-                                         Content="6Agent 执行顺序"
-                                         Description="仅对 6Agent 方案生效。">
+                                         Content="Agents 执行顺序"
+                                         Description="仅对 Agents 方案生效。">
                     <ui:SettingsExpanderItem.Footer>
                         <ComboBox x:Name="MultiAgentExecutionModeComboBox"
                                   Width="220"
@@ -837,3 +837,4 @@
         </StackPanel>
     </ScrollViewer>
 </ci:SettingsPageBase>
+

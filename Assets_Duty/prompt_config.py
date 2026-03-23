@@ -26,7 +26,7 @@ PROMPTS = {
 
 <output_schema>
 <directive>Output ONLY the final schedule inside <csv> tags. Do not output any thinking process outside the tags.</directive>
-<columns>Date,Assigned_IDs,Note</columns>
+<columns>Date,&lt;Area1&gt;,&lt;Area2&gt;,...,Note</columns>
 </output_schema>
 
 <recovery_mechanism>
@@ -45,9 +45,13 @@ Simply type the word "RESET" on a new line, and restart the entire CSV output fr
 {dynamic_parameters}
 </context_parameters>
 
+<processing_steps>
+{dynamic_methods}
+</processing_steps>
+
 <output_schema>
 <directive>Output ONLY the final schedule inside <csv> tags.</directive>
-<columns>Date,Assigned_IDs,Note</columns>
+<columns>Date,&lt;Area1&gt;,&lt;Area2&gt;,...,Note</columns>
 </output_schema>
 </system_directive>
 """,
@@ -59,9 +63,13 @@ Simply type the word "RESET" on a new line, and restart the entire CSV output fr
 {dynamic_parameters}
 </context_parameters>
 
+<processing_steps>
+{dynamic_methods}
+</processing_steps>
+
 <output_schema>
 <directive>Output ONLY the final schedule inside <csv> tags.</directive>
-<columns>Date,Assigned_IDs,Note</columns>
+<columns>Date,&lt;Area1&gt;,&lt;Area2&gt;,...,Note</columns>
 </output_schema>
 </system_directive>
 """,

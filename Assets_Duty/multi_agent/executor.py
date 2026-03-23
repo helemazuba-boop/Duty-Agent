@@ -10,7 +10,6 @@ from execution_profiles import ExecutionPlan
 from llm_transport import call_llm_json
 from prompt_gateway import build_agent_prompt
 from state_ops import (
-    DEFAULT_ASSIGNMENTS_PER_AREA,
     Context,
     anonymize_instruction,
     extract_ids_from_value,
@@ -226,7 +225,6 @@ def run_multi_agent_schedule(
             {
                 "request_time": snapshot.request_time.strftime("%Y-%m-%d %H:%M"),
                 "instruction": snapshot.instruction,
-                "default_slot_count": DEFAULT_ASSIGNMENTS_PER_AREA,
                 "previous_note": snapshot.previous_note,
                 "duty_rule": snapshot.duty_rule,
             },

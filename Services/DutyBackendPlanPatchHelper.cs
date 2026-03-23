@@ -43,7 +43,7 @@ internal static class DutyBackendPlanPatchHelper
             selectedPlan.ProviderHint = providerHint.Trim();
         }
 
-        selectedPlan.MultiAgentExecutionMode = string.Equals(selectedPlan.ModeId, DutyBackendModeIds.Campus6Agent, StringComparison.Ordinal)
+        selectedPlan.MultiAgentExecutionMode = string.Equals(selectedPlan.ModeId, DutyBackendModeIds.Agents, StringComparison.Ordinal)
             ? (multiAgentExecutionMode is null
                 ? DutyScheduleOrchestrator.NormalizeMultiAgentExecutionMode(selectedPlan.MultiAgentExecutionMode)
                 : DutyScheduleOrchestrator.NormalizeMultiAgentExecutionMode(multiAgentExecutionMode))
@@ -80,7 +80,7 @@ internal static class DutyBackendPlanPatchHelper
         return
         [
             CreateDefaultPlanPreset(DutyBackendModeIds.Standard, "\u6807\u51c6"),
-            CreateDefaultPlanPreset(DutyBackendModeIds.Campus6Agent, "6Agent"),
+            CreateDefaultPlanPreset(DutyBackendModeIds.Agents, "Agents"),
             CreateDefaultPlanPreset(DutyBackendModeIds.IncrementalSmall, "\u589e\u91cf\u5c0f\u6a21\u578b")
         ];
     }
@@ -91,7 +91,7 @@ internal static class DutyBackendPlanPatchHelper
         {
             Id = modeId switch
             {
-                DutyBackendModeIds.Campus6Agent => "campus-6agent",
+                DutyBackendModeIds.Agents => DutyBackendModeIds.Agents,
                 DutyBackendModeIds.IncrementalSmall => "incremental-small",
                 _ => "standard"
             },
@@ -125,8 +125,8 @@ internal static class DutyBackendPlanPatchHelper
 
         return DutyScheduleOrchestrator.NormalizeOrchestrationMode(orchestrationMode) switch
         {
-            "multi_agent" => DutyBackendModeIds.Campus6Agent,
-            "single_pass" when string.Equals(NormalizePlanModeId(currentModeId), DutyBackendModeIds.Campus6Agent, StringComparison.Ordinal)
+            "multi_agent" => DutyBackendModeIds.Agents,
+            "single_pass" when string.Equals(NormalizePlanModeId(currentModeId), DutyBackendModeIds.Agents, StringComparison.Ordinal)
                 => DutyBackendModeIds.Standard,
             _ => NormalizePlanModeId(currentModeId)
         };
@@ -136,10 +136,8 @@ internal static class DutyBackendPlanPatchHelper
     {
         return (modeId ?? DutyBackendModeIds.Standard).Trim().ToLowerInvariant() switch
         {
-            DutyBackendModeIds.Campus6Agent => DutyBackendModeIds.Campus6Agent,
-            "campus6agent" => DutyBackendModeIds.Campus6Agent,
-            "6agent" => DutyBackendModeIds.Campus6Agent,
-            "multi_agent" => DutyBackendModeIds.Campus6Agent,
+            DutyBackendModeIds.Agents => DutyBackendModeIds.Agents,
+            "multi_agent" => DutyBackendModeIds.Agents,
             DutyBackendModeIds.IncrementalSmall => DutyBackendModeIds.IncrementalSmall,
             "incremental" => DutyBackendModeIds.IncrementalSmall,
             "small_incremental" => DutyBackendModeIds.IncrementalSmall,

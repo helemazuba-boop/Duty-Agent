@@ -7,7 +7,7 @@ namespace DutyAgent.Models;
 public static class DutyBackendModeIds
 {
     public const string Standard = "standard";
-    public const string Campus6Agent = "campus_6agent";
+    public const string Agents = "agents";
     public const string IncrementalSmall = "incremental_small";
 }
 

@@ -12,20 +12,20 @@ if str(ROOT) not in sys.path:
 from execution_profiles import build_execution_plan, resolve_execution_profile
 from models.schemas import DutyRequest
 from multi_agent.contracts import FrozenSnapshot
-from multi_agent.validators import merge_barrier2
-from state_ops import normalize_config
+from multi_agent.validators import fallback_fill_schedule, merge_barrier2, validate_final_schedule
+from state_ops import DEFAULT_SINGLE_AREA_NAME, normalize_config
 
 
 class TestExecutionPlanSelection(unittest.TestCase):
-    def test_campus_6agent_defaults_to_parallel_multi_agent(self):
+    def test_agents_defaults_to_parallel_multi_agent(self):
         config = normalize_config(
             {
-                "selected_plan_id": "campus-6agent",
+                "selected_plan_id": "agents",
                 "plan_presets": [
                     {
-                        "id": "campus-6agent",
-                        "name": "6Agent",
-                        "mode_id": "campus_6agent",
+                        "id": "agents",
+                        "name": "Agents",
+                        "mode_id": "agents",
                         "model": "campus-model",
                         "model_profile": "campus_small",
                         "multi_agent_execution_mode": "auto",
@@ -59,12 +59,12 @@ class TestExecutionPlanSelection(unittest.TestCase):
     def test_multi_agent_serial_mode_is_respected(self):
         config = normalize_config(
             {
-                "selected_plan_id": "campus-6agent",
+                "selected_plan_id": "agents",
                 "plan_presets": [
                     {
-                        "id": "campus-6agent",
-                        "name": "6Agent",
-                        "mode_id": "campus_6agent",
+                        "id": "agents",
+                        "name": "Agents",
+                        "mode_id": "agents",
                         "model": "campus-model",
                         "model_profile": "campus_small",
                         "multi_agent_execution_mode": "serial",
@@ -108,9 +108,9 @@ class TestExecutionPlanSelection(unittest.TestCase):
                         "model_profile": "campus_small",
                     },
                     {
-                        "id": "campus-6agent",
-                        "name": "6Agent",
-                        "mode_id": "campus_6agent",
+                        "id": "agents",
+                        "name": "Agents",
+                        "mode_id": "agents",
                         "model": "campus-model",
                         "model_profile": "campus_small",
                         "multi_agent_execution_mode": "serial",
@@ -214,8 +214,8 @@ class TestBarrier2(unittest.TestCase):
         )
         barrier1 = {
             "dates": ["2026-03-17"],
-            "template": {"2026-03-17": {"default_area": 2}},
-            "area_names": ["default_area"],
+            "template": {"2026-03-17": {DEFAULT_SINGLE_AREA_NAME: 2}},
+            "area_names": [DEFAULT_SINGLE_AREA_NAME],
             "total_slots": 2,
             "absent_ids": [],
             "new_debt_ids": [],
@@ -232,6 +232,110 @@ class TestBarrier2(unittest.TestCase):
         merged = merge_barrier2(snapshot, barrier1, priority, pointer)
         self.assertEqual(merged["final_pool"], [1, 2])
         self.assertEqual(merged["pointer_pool"], [2])
+
+    def test_barrier2_allows_reusable_pool_smaller_than_total_slots(self):
+        snapshot = FrozenSnapshot(
+            trace_id="trace",
+            request_source="api",
+            instruction="123 and 456",
+            apply_mode="append",
+            request_time=datetime(2026, 3, 14, 8, 0, 0),
+            start_date=date(2026, 3, 17),
+            config={},
+            state={},
+            name_to_id={},
+            id_to_name={1: "A", 2: "B"},
+            all_ids=[1, 2],
+            active_ids=[1, 2],
+            inactive_ids=[],
+            id_to_active={1: 1, 2: 1},
+            debt_list=[],
+            credit_list=[],
+            last_pointer=0,
+            previous_note="",
+            duty_rule="",
+        )
+        barrier1 = {
+            "dates": ["2026-03-17", "2026-03-18"],
+            "template": {
+                "2026-03-17": {"教室": 1, "清洁区": 1},
+                "2026-03-18": {"教室": 1},
+            },
+            "area_names": ["教室", "清洁区"],
+            "total_slots": 3,
+            "absent_ids": [],
+            "new_debt_ids": [],
+            "new_credit_ids": [],
+            "must_run_ids": [],
+            "volunteer_ids": [],
+            "supported_rules": [],
+            "unsupported_rules": [],
+            "warnings": [],
+        }
+        merged = merge_barrier2(
+            snapshot,
+            barrier1,
+            {"priority_pool": [1], "notes": []},
+            {"pointer_pool": [1, 2], "pointer_after": 0, "consumed_credit_ids": [], "notes": []},
+        )
+
+        self.assertEqual(merged["final_pool"], [1, 2])
+
+        validate_final_schedule(
+            [
+                {"date": "2026-03-17", "area_ids": {"教室": [1], "清洁区": [1]}, "note": ""},
+                {"date": "2026-03-18", "area_ids": {"教室": [2]}, "note": ""},
+            ],
+            merged,
+        )
+
+    def test_validate_final_schedule_rejects_same_area_duplicates_only(self):
+        barrier2 = {
+            "dates": ["2026-03-17"],
+            "template": {"2026-03-17": {"教室": 2, "清洁区": 1}},
+            "area_names": ["教室", "清洁区"],
+            "total_slots": 3,
+            "supported_rules": [],
+            "unsupported_rules": [],
+            "warnings": [],
+            "priority_pool": [],
+            "pointer_pool": [],
+            "final_pool": [1, 2],
+            "pointer_after": 0,
+            "consumed_credit_ids": [],
+            "slots": [],
+        }
+
+        validate_final_schedule(
+            [{"date": "2026-03-17", "area_ids": {"教室": [1, 2], "清洁区": [1]}, "note": ""}],
+            barrier2,
+        )
+
+        with self.assertRaisesRegex(ValueError, "same person assigned twice in 2026-03-17/教室"):
+            validate_final_schedule(
+                [{"date": "2026-03-17", "area_ids": {"教室": [1, 1], "清洁区": [2]}, "note": ""}],
+                barrier2,
+            )
+
+    def test_fallback_fill_schedule_fails_when_same_area_duplicate_would_be_required(self):
+        barrier2 = {
+            "dates": ["2026-03-17"],
+            "template": {"2026-03-17": {"教室": 2}},
+            "area_names": ["教室"],
+            "total_slots": 2,
+            "supported_rules": [],
+            "unsupported_rules": [],
+            "warnings": [],
+            "priority_pool": [1],
+            "pointer_pool": [],
+            "final_pool": [1],
+            "pointer_after": 0,
+            "consumed_credit_ids": [],
+            "slots": [],
+        }
+
+        with self.assertRaisesRegex(ValueError, "fallback could not fill 2026-03-17/教室"):
+            fallback_fill_schedule(barrier2)
 
 
 if __name__ == "__main__":

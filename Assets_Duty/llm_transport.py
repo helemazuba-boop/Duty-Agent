@@ -13,6 +13,8 @@ import urllib.request
 from urllib.parse import urlparse
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
+from state_ops import DEFAULT_SINGLE_AREA_NAME
+
 LLM_TIMEOUT_SECONDS = 120
 LLM_MAX_RETRIES = 2
 LLM_RETRY_BACKOFF_SECONDS = 2
@@ -387,6 +389,60 @@ def _extract_json_candidate(content: str) -> dict:
     raise ValueError("unable to locate valid JSON object")
 
 
+def _parse_schedule_csv(csv_text: str) -> List[dict]:
+    reader = csv.DictReader(io.StringIO(csv_text.strip()))
+    raw_fieldnames = reader.fieldnames or []
+    fieldnames = [str(name or "").strip() for name in raw_fieldnames]
+    if not fieldnames:
+        raise ValueError("CSV header is missing.")
+    if len(fieldnames) != len(set(fieldnames)):
+        raise ValueError("CSV header contains duplicate columns.")
+
+    legacy_columns = fieldnames == ["Date", "Assigned_IDs", "Note"]
+    if legacy_columns:
+        area_columns = [DEFAULT_SINGLE_AREA_NAME]
+    else:
+        if fieldnames[0] != "Date":
+            raise ValueError("CSV must start with Date column.")
+        if fieldnames[-1] != "Note":
+            raise ValueError("CSV must end with Note column.")
+        area_columns = fieldnames[1:-1]
+        if not area_columns:
+            raise ValueError("CSV must include at least one area column.")
+        if any(not column for column in area_columns):
+            raise ValueError("CSV area columns cannot be empty.")
+        if any(column in {"Date", "Note"} for column in area_columns):
+            raise ValueError("CSV area columns cannot reuse reserved names.")
+
+    schedule_raw: List[dict] = []
+    for row in reader:
+        date_str = str(row.get("Date", "")).strip()
+        if not date_str:
+            continue
+
+        area_ids: Dict[str, str] = {}
+        if legacy_columns:
+            assigned_ids = str(row.get("Assigned_IDs", "")).strip()
+            if assigned_ids:
+                area_ids[DEFAULT_SINGLE_AREA_NAME] = assigned_ids
+        else:
+            for area_name in area_columns:
+                raw_value = row.get(area_name, "")
+                value = str(raw_value if raw_value is not None else "").strip()
+                if value:
+                    area_ids[area_name] = value
+
+        schedule_raw.append(
+            {
+                "date": date_str,
+                "area_ids": area_ids,
+                "note": str(row.get("Note", "")).strip(),
+            }
+        )
+
+    return schedule_raw
+
+
 def call_llm_json(
     messages: List[dict],
     config: dict,
@@ -452,22 +508,8 @@ def call_llm(
             if not csv_text:
                 raise ValueError("missing <csv> tags.")
 
-            schedule_raw = []
-            reader = csv.DictReader(io.StringIO(csv_text.strip()))
-            for row in reader:
-                date_str = str(row.get("Date", "")).strip()
-                assigned_ids = str(row.get("Assigned_IDs", "")).strip()
-                if date_str and assigned_ids:
-                    schedule_raw.append(
-                        {
-                            "date": date_str,
-                            "area_ids": {"default_area": assigned_ids},
-                            "note": str(row.get("Note", "")).strip(),
-                        }
-                    )
-
             return {
-                "schedule": schedule_raw,
+                "schedule": _parse_schedule_csv(csv_text),
                 "next_run_note": _extract_tag_content(normalized_content, "next_run_note"),
                 "new_debt_ids": _extract_tag_content(normalized_content, "new_debt_ids"),
                 "new_credit_ids": _extract_tag_content(normalized_content, "new_credit_ids"),

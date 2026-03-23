@@ -9,7 +9,7 @@ from execution_profiles import ExecutionPlan, ExecutionProfile
 from llm_transport import _build_llm_target, create_llm_request, execute_with_retries
 from multi_agent.executor import _freeze_snapshot
 from single_pass_executor import run_single_pass_schedule
-from state_ops import Context
+from state_ops import Context, DEFAULT_SINGLE_AREA_NAME
 
 
 class TestLlmTransportAllowsBlankApiKey(unittest.TestCase):
@@ -113,7 +113,7 @@ class TestExecutorsAllowBlankApiKey(unittest.TestCase):
                 "single_pass_executor.call_llm",
                 return_value=(
                     {
-                        "schedule": [{"date": "2026-03-16", "area_ids": {"default_area": [1]}, "note": ""}],
+                        "schedule": [{"date": "2026-03-16", "area_ids": {DEFAULT_SINGLE_AREA_NAME: [1]}, "note": ""}],
                         "next_run_note": "",
                         "new_debt_ids": [],
                         "new_credit_ids": [],
@@ -124,7 +124,7 @@ class TestExecutorsAllowBlankApiKey(unittest.TestCase):
                 "single_pass_executor.validate_llm_schedule_entries",
             ), patch(
                 "single_pass_executor.normalize_multi_area_schedule_ids",
-                return_value=[{"date": "2026-03-16", "area_ids": {"default_area": [1]}, "note": ""}],
+                return_value=[{"date": "2026-03-16", "area_ids": {DEFAULT_SINGLE_AREA_NAME: [1]}, "note": ""}],
             ), patch(
                 "single_pass_executor.recover_missing_debts",
                 return_value=[],
@@ -133,10 +133,10 @@ class TestExecutorsAllowBlankApiKey(unittest.TestCase):
                 return_value=[],
             ), patch(
                 "single_pass_executor.restore_schedule",
-                return_value=[{"date": "2026-03-16", "area_assignments": {"default_area": ["Alice"]}, "note": ""}],
+                return_value=[{"date": "2026-03-16", "area_assignments": {DEFAULT_SINGLE_AREA_NAME: ["Alice"]}, "note": ""}],
             ), patch(
                 "single_pass_executor.merge_schedule_pool",
-                return_value=[{"date": "2026-03-16", "area_assignments": {"default_area": ["Alice"]}, "note": ""}],
+                return_value=[{"date": "2026-03-16", "area_assignments": {DEFAULT_SINGLE_AREA_NAME: ["Alice"]}, "note": ""}],
             ), patch(
                 "single_pass_executor.update_state",
             ):

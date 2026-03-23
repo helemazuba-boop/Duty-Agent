@@ -26,6 +26,7 @@ from engine import (
     restore_schedule,
     validate_llm_schedule_entries,
 )
+from state_ops import DEFAULT_SINGLE_AREA_NAME
 
 
 class TestAreaNameNormalization(unittest.TestCase):
@@ -72,15 +73,14 @@ class TestNormalizeScheduleNoValidation(unittest.TestCase):
         # Result should still have only 1 ID
         self.assertEqual(normalized[0]["area_ids"]["A"], [1])
 
-    def test_filters_inactive_ids(self):
-        """Should still filter out inactive IDs."""
+    def test_unknown_or_inactive_ids_raise(self):
+        """Unknown IDs should fail instead of being silently filtered."""
         raw = [{"date": "2023-10-23", "area_ids": {"A": [1, 999]}}]
         active = [1]
         areas = ["A"]
         counts = {"A": 2}
-        
-        normalized = normalize_multi_area_schedule_ids(raw, active, areas, counts)
-        self.assertEqual(normalized[0]["area_ids"]["A"], [1])
+        with self.assertRaisesRegex(ValueError, "unknown or inactive ID 999 on 2023-10-23/A"):
+            normalize_multi_area_schedule_ids(raw, active, areas, counts)
 
     def test_dynamic_areas_without_predefined(self):
         """When configured area_names is empty, only AI dynamic areas should remain."""
@@ -92,6 +92,20 @@ class TestNormalizeScheduleNoValidation(unittest.TestCase):
         normalized = normalize_multi_area_schedule_ids(raw, active, areas, counts)
         self.assertEqual(len(normalized), 1)
         self.assertEqual(set(normalized[0]["area_ids"].keys()), {"后花园", "天台"})
+
+
+    def test_same_day_cross_area_duplicates_are_allowed(self):
+        raw = [{"date": "2023-10-23", "area_ids": {"教室": [1], "清洁区": [1]}}]
+
+        normalized = normalize_multi_area_schedule_ids(raw, [1], [], {})
+        self.assertEqual(normalized[0]["area_ids"]["教室"], [1])
+        self.assertEqual(normalized[0]["area_ids"]["清洁区"], [1])
+
+    def test_same_area_duplicates_raise(self):
+        raw = [{"date": "2023-10-23", "area_ids": {"教室": [1, 1]}}]
+
+        with self.assertRaisesRegex(ValueError, "duplicate ID 1 on 2023-10-23/教室"):
+            normalize_multi_area_schedule_ids(raw, [1], [], {})
 
 
 class TestScheduleValidation(unittest.TestCase):
@@ -298,6 +312,7 @@ class TestCallLlmPayloadIsolation(unittest.TestCase):
         ):
             parsed, _ = call_llm(messages, config)
         self.assertEqual(parsed["schedule"][0]["date"], "2023-10-10")
+        self.assertEqual(parsed["schedule"][0]["area_ids"][DEFAULT_SINGLE_AREA_NAME], "4")
         self.assertEqual(messages, [{"role": "user", "content": "hello"}])
 
 

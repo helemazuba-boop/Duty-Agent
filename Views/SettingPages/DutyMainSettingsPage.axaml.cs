@@ -101,6 +101,8 @@ public partial class DutyMainSettingsPage : SettingsPageBase
         Loaded += OnPageLoaded;
         Unloaded += OnPageUnloaded;
         PluginDataPathText.Text = PluginPaths.DataDirectory;
+        MultiAgentExecutionModeItem.Content = "Agents 执行顺序";
+        MultiAgentExecutionModeItem.Description = "仅对 Agents 方案生效。";
         _backendSyncStatus = BackendSettingsSyncService.GetStatusSnapshot();
         ExecuteWithoutConfigEvents(() =>
         {
@@ -363,7 +365,7 @@ public partial class DutyMainSettingsPage : SettingsPageBase
 
     private void UpdateExecutionModeVisibility()
     {
-        var isMultiAgent = string.Equals(GetSelectedPlanModeId(), DutyBackendModeIds.Campus6Agent, StringComparison.Ordinal);
+        var isMultiAgent = string.Equals(GetSelectedPlanModeId(), DutyBackendModeIds.Agents, StringComparison.Ordinal);
         MultiAgentExecutionModeItem.IsVisible = isMultiAgent;
     }
 
@@ -1991,10 +1993,10 @@ public partial class DutyMainSettingsPage : SettingsPageBase
             BaseUrl = selectedPlan.BaseUrl,
             Model = selectedPlan.Model,
             ModelProfile = selectedPlan.ModelProfile,
-            OrchestrationMode = string.Equals(selectedModeId, DutyBackendModeIds.Campus6Agent, StringComparison.Ordinal)
+            OrchestrationMode = string.Equals(selectedModeId, DutyBackendModeIds.Agents, StringComparison.Ordinal)
                 ? "multi_agent"
                 : "single_pass",
-            MultiAgentExecutionMode = string.Equals(selectedModeId, DutyBackendModeIds.Campus6Agent, StringComparison.Ordinal)
+            MultiAgentExecutionMode = string.Equals(selectedModeId, DutyBackendModeIds.Agents, StringComparison.Ordinal)
                 ? selectedPlan.MultiAgentExecutionMode
                 : "auto",
             SinglePassStrategy = string.Equals(selectedModeId, DutyBackendModeIds.IncrementalSmall, StringComparison.Ordinal)
@@ -2693,7 +2695,7 @@ public partial class DutyMainSettingsPage : SettingsPageBase
         plan.Model = (ModelBox.Text ?? string.Empty).Trim();
         plan.BaseUrl = (BaseUrlBox.Text ?? string.Empty).Trim();
         plan.ModelProfile = GetSelectedModelProfile();
-        plan.MultiAgentExecutionMode = string.Equals(plan.ModeId, DutyBackendModeIds.Campus6Agent, StringComparison.Ordinal)
+        plan.MultiAgentExecutionMode = string.Equals(plan.ModeId, DutyBackendModeIds.Agents, StringComparison.Ordinal)
             ? GetSelectedMultiAgentExecutionMode()
             : "auto";
     }
@@ -2768,7 +2770,7 @@ public partial class DutyMainSettingsPage : SettingsPageBase
             Model = source?.Model ?? "moonshotai/kimi-k2-thinking",
             ModelProfile = source?.ModelProfile ?? "auto",
             ProviderHint = source?.ProviderHint ?? string.Empty,
-            MultiAgentExecutionMode = string.Equals(modeId, DutyBackendModeIds.Campus6Agent, StringComparison.Ordinal)
+            MultiAgentExecutionMode = string.Equals(modeId, DutyBackendModeIds.Agents, StringComparison.Ordinal)
                 ? source?.MultiAgentExecutionMode ?? "auto"
                 : "auto"
         };
@@ -2778,7 +2780,7 @@ public partial class DutyMainSettingsPage : SettingsPageBase
     {
         return modeId switch
         {
-            DutyBackendModeIds.Campus6Agent => "6Agent",
+            DutyBackendModeIds.Agents => "Agents",
             DutyBackendModeIds.IncrementalSmall => "增量小模型",
             _ => "标准"
         };
@@ -2788,7 +2790,7 @@ public partial class DutyMainSettingsPage : SettingsPageBase
     {
         return modeId switch
         {
-            DutyBackendModeIds.Campus6Agent => "使用 6Agent 执行链路，适合校园计算中心模型与更稳定的结构化排班。",
+            DutyBackendModeIds.Agents => "使用 Agents 执行链路，适合更稳定的结构化排班。",
             DutyBackendModeIds.IncrementalSmall => "使用详细提示词的单次执行方案，适合推理稳定的小模型。",
             _ => "默认的单次执行方案，优先控制 token 消耗并保持响应速度。"
         };

@@ -195,7 +195,7 @@ def build_execution_plan(profile: ExecutionProfile) -> ExecutionPlan:
             notes.append("Auto orchestration kept single-pass executor.")
 
     if runtime_mode.startswith("multi_agent"):
-        notes.append("Six-agent DAG execution enabled.")
+        notes.append("Agents DAG execution enabled.")
     else:
         notes.append(f"Single-pass strategy resolved to {profile.single_pass_strategy}.")
 

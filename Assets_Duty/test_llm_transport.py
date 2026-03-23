@@ -9,6 +9,7 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from llm_transport import _extract_json_candidate, call_llm, call_llm_json
+from state_ops import DEFAULT_SINGLE_AREA_NAME
 
 
 TEST_CONFIG = {
@@ -58,8 +59,8 @@ Need to think first. {"noise": 1}
 I might mention RESET here, but this is still just reasoning.
 </think>
 <csv>
-Date,Assigned_IDs,Note
-2026-03-19,"1001,1002",Ready
+Date,教室,清洁区,Note
+2026-03-19,"1001,1002",1001,Ready
 </csv>
 <next_run_note>Next time keep balance.</next_run_note>
 """
@@ -71,7 +72,8 @@ Date,Assigned_IDs,Note
 
         self.assertEqual(len(parsed["schedule"]), 1)
         self.assertEqual(parsed["schedule"][0]["date"], "2026-03-19")
-        self.assertEqual(parsed["schedule"][0]["area_ids"]["default_area"], "1001,1002")
+        self.assertEqual(parsed["schedule"][0]["area_ids"]["教室"], "1001,1002")
+        self.assertEqual(parsed["schedule"][0]["area_ids"]["清洁区"], "1001")
         self.assertEqual(parsed["next_run_note"], "Next time keep balance.")
         self.assertIn("<think>", raw_text)
 
@@ -79,12 +81,12 @@ Date,Assigned_IDs,Note
     def test_call_llm_uses_content_after_reset_control_line(self, mock_call_llm_raw):
         mock_call_llm_raw.return_value = """
 <csv>
-Date,Assigned_IDs,Note
+Date,值日,Note
 2026-03-19,9999,Bad draft
 </csv>
 RESET
 <csv>
-Date,Assigned_IDs,Note
+Date,值日,Note
 2026-03-20,1003,Final draft
 </csv>
 """
@@ -96,7 +98,39 @@ Date,Assigned_IDs,Note
 
         self.assertEqual(len(parsed["schedule"]), 1)
         self.assertEqual(parsed["schedule"][0]["date"], "2026-03-20")
-        self.assertEqual(parsed["schedule"][0]["area_ids"]["default_area"], "1003")
+        self.assertEqual(parsed["schedule"][0]["area_ids"][DEFAULT_SINGLE_AREA_NAME], "1003")
+
+    @patch("llm_transport.call_llm_raw")
+    def test_call_llm_parses_single_area_dynamic_header(self, mock_call_llm_raw):
+        mock_call_llm_raw.return_value = """
+<csv>
+Date,值日,Note
+2026-03-21,"1002,1003",Compact
+</csv>
+"""
+
+        parsed, _ = call_llm(
+            [{"role": "user", "content": "Return CSV"}],
+            TEST_CONFIG,
+        )
+
+        self.assertEqual(parsed["schedule"][0]["area_ids"][DEFAULT_SINGLE_AREA_NAME], "1002,1003")
+
+    @patch("llm_transport.call_llm_raw")
+    def test_call_llm_keeps_legacy_assigned_ids_as_single_area_fallback(self, mock_call_llm_raw):
+        mock_call_llm_raw.return_value = """
+<csv>
+Date,Assigned_IDs,Note
+2026-03-22,1004,Legacy
+</csv>
+"""
+
+        parsed, _ = call_llm(
+            [{"role": "user", "content": "Return CSV"}],
+            TEST_CONFIG,
+        )
+
+        self.assertEqual(parsed["schedule"][0]["area_ids"][DEFAULT_SINGLE_AREA_NAME], "1004")
 
 
 if __name__ == "__main__":

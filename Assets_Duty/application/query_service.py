@@ -25,7 +25,7 @@ class QueryService:
             "supported_orchestration_modes": ["auto", "single_pass", "multi_agent"],
             "supported_multi_agent_execution_modes": ["auto", "parallel", "serial"],
             "supported_single_pass_strategies": ["auto", "cloud_standard", "edge_tuned", "edge_generic", "incremental_thinking"],
-            "supported_plan_profiles": ["standard", "campus_6agent", "incremental_small"],
+            "supported_plan_profiles": ["standard", "agents", "incremental_small"],
             "current_runtime_mode": "dynamic_dispatch",
         }
 

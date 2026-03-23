@@ -659,7 +659,7 @@ public sealed partial class DutySettingsRepository : IDutySettingsRepository
             preset.Model = string.IsNullOrWhiteSpace(preset.Model) ? DefaultModel : preset.Model.Trim();
             preset.ModelProfile = NormalizeModelProfile(preset.ModelProfile);
             preset.ProviderHint = (preset.ProviderHint ?? string.Empty).Trim();
-            preset.MultiAgentExecutionMode = string.Equals(preset.ModeId, DutyBackendModeIds.Campus6Agent, StringComparison.Ordinal)
+            preset.MultiAgentExecutionMode = string.Equals(preset.ModeId, DutyBackendModeIds.Agents, StringComparison.Ordinal)
                 ? NormalizeMultiAgentExecutionMode(preset.MultiAgentExecutionMode)
                 : "auto";
         }
@@ -913,9 +913,9 @@ public sealed partial class DutySettingsRepository : IDutySettingsRepository
             },
             new DutyPlanPreset
             {
-                Id = DutyBackendModeIds.Campus6Agent,
-                Name = "6Agent",
-                ModeId = DutyBackendModeIds.Campus6Agent,
+                Id = DutyBackendModeIds.Agents,
+                Name = "Agents",
+                ModeId = DutyBackendModeIds.Agents,
                 BaseUrl = DefaultBaseUrl,
                 Model = DefaultModel,
                 ModelProfile = "auto",
@@ -1029,10 +1029,8 @@ public sealed partial class DutySettingsRepository : IDutySettingsRepository
     {
         return (modeId ?? DutyBackendModeIds.Standard).Trim().ToLowerInvariant() switch
         {
-            DutyBackendModeIds.Campus6Agent => DutyBackendModeIds.Campus6Agent,
-            "campus6agent" => DutyBackendModeIds.Campus6Agent,
-            "6agent" => DutyBackendModeIds.Campus6Agent,
-            "multi_agent" => DutyBackendModeIds.Campus6Agent,
+            DutyBackendModeIds.Agents => DutyBackendModeIds.Agents,
+            "multi_agent" => DutyBackendModeIds.Agents,
             DutyBackendModeIds.IncrementalSmall => DutyBackendModeIds.IncrementalSmall,
             "incremental" => DutyBackendModeIds.IncrementalSmall,
             "small_incremental" => DutyBackendModeIds.IncrementalSmall,

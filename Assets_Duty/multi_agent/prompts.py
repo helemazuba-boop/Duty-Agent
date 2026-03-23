@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from typing import Any, Dict, List
 
+from state_ops import DEFAULT_SINGLE_AREA_NAME
+
 
 def _render_input(payload: Dict[str, Any]) -> str:
     return json.dumps(payload, ensure_ascii=False, indent=2)
@@ -40,25 +42,25 @@ def _build_agent1_prompt(agent_context: Dict[str, Any]) -> List[Dict[str, str]]:
     payload = {
         "request_time": agent_context["request_time"],
         "instruction": agent_context["instruction"],
-        "default_slot_count": agent_context["default_slot_count"],
         "previous_note": agent_context["previous_note"],
         "duty_rule": agent_context["duty_rule"],
     }
     output_contract = {
         "dates": ["2026-03-16", "2026-03-17"],
         "template": {
-            "2026-03-16": {"default_area": 2},
-            "2026-03-17": {"default_area": 2},
+            "2026-03-16": {"教室": 2, "清洁区": 2},
+            "2026-03-17": {"教室": 2, "清洁区": 2},
         },
-        "total_slots": 4,
+        "total_slots": 8,
     }
     rules = [
         "Dates must be YYYY-MM-DD and sorted ascending.",
         "Do not create dates before request_time.",
         "Template keys must exactly match dates.",
         "Counts must be positive integers.",
+        f"If the user does not explicitly define areas, use one area named {DEFAULT_SINGLE_AREA_NAME}.",
     ]
-    return _json_only_prompt("Agent1 Anchor Planner", "Extract dates and default area slot counts.", payload, output_contract, rules)
+    return _json_only_prompt("Agent1 Anchor Planner", "Extract dates and the full area template for each date.", payload, output_contract, rules)
 
 
 def _build_agent2_prompt(agent_context: Dict[str, Any]) -> List[Dict[str, str]]:
@@ -94,7 +96,7 @@ def _build_agent3_prompt(agent_context: Dict[str, Any]) -> List[Dict[str, str]]:
     }
     output_contract = {
         "supported_rules": [
-            {"type": "fixed_area", "person_id": 3, "area": "default_area"},
+            {"type": "fixed_area", "person_id": 3, "area": DEFAULT_SINGLE_AREA_NAME},
             {"type": "avoid_same_day_pair", "person_a": 5, "person_b": 8},
         ],
         "unsupported_rules": [],
@@ -169,7 +171,7 @@ def _build_agent6_prompt(agent_context: Dict[str, Any]) -> List[Dict[str, str]]:
         "schedule": [
             {
                 "date": "2026-03-16",
-                "area_ids": {"default_area": [8, 12]},
+                "area_ids": {"教室": [8, 12], "清洁区": [8, 15]},
                 "note": "",
             }
         ]
@@ -178,6 +180,7 @@ def _build_agent6_prompt(agent_context: Dict[str, Any]) -> List[Dict[str, str]]:
         "Use only IDs from final_pool.",
         "Fill every required slot from template.",
         "Do not invent extra dates or areas.",
-        "One person can appear at most once in the whole schedule output.",
+        "The same person may appear on different dates, and may also appear in different areas on the same date.",
+        "Do not repeat the same person twice inside one area list for the same date.",
     ]
     return _json_only_prompt("Agent6 Schedule Assembler", "Assign final_pool IDs into template slots.", payload, output_contract, rules)

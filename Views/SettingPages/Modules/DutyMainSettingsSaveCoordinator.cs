@@ -245,10 +245,10 @@ internal sealed class DutyMainSettingsSaveCoordinator
             BaseUrl = selectedPlan.BaseUrl,
             Model = selectedPlan.Model,
             ModelProfile = selectedPlan.ModelProfile,
-            OrchestrationMode = string.Equals(selectedModeId, DutyBackendModeIds.Campus6Agent, StringComparison.Ordinal)
+            OrchestrationMode = string.Equals(selectedModeId, DutyBackendModeIds.Agents, StringComparison.Ordinal)
                 ? "multi_agent"
                 : "single_pass",
-            MultiAgentExecutionMode = string.Equals(selectedModeId, DutyBackendModeIds.Campus6Agent, StringComparison.Ordinal)
+            MultiAgentExecutionMode = string.Equals(selectedModeId, DutyBackendModeIds.Agents, StringComparison.Ordinal)
                 ? selectedPlan.MultiAgentExecutionMode
                 : "auto",
             SinglePassStrategy = string.Equals(selectedModeId, DutyBackendModeIds.IncrementalSmall, StringComparison.Ordinal)
