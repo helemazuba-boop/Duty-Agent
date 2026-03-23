@@ -808,6 +808,32 @@
                                   Unchecked="OnConfigToggleChanged" />
                 </ui:SettingsExpander.Footer>
             </ui:SettingsExpander>
+
+            <ui:SettingsExpander Header="插件数据"
+                                 Description="ClassIsland 卸载插件时不会自动删除该插件的配置目录；如果需要真正清空 Duty-Agent 的配置、名单和排班状态，请使用这里的重置操作。"
+                                 IsExpanded="False"
+                                 Margin="0,4,0,0">
+                <ui:SettingsExpander.IconSource>
+                    <ui:FontIconSource Glyph="&#xE74D;" FontFamily="Segoe MDL2 Assets" />
+                </ui:SettingsExpander.IconSource>
+                <StackPanel Spacing="8" Margin="12,0,12,12">
+                    <ui:SettingsExpanderItem Content="当前数据目录"
+                                             Description="这里保存插件设置、后端配置、名单和排班状态；重装插件不会自动清空它。">
+                        <ui:SettingsExpanderItem.Footer>
+                            <TextBlock x:Name="PluginDataPathText"
+                                       Width="420"
+                                       Opacity="0.82"
+                                       TextWrapping="Wrap" />
+                        </ui:SettingsExpanderItem.Footer>
+                    </ui:SettingsExpanderItem>
+                </StackPanel>
+                <ui:SettingsExpander.Footer>
+                    <Button x:Name="ResetPluginDataBtn"
+                            Click="OnResetPluginDataClick"
+                            MinWidth="140"
+                            Content="重置插件数据" />
+                </ui:SettingsExpander.Footer>
+            </ui:SettingsExpander>
         </StackPanel>
     </ScrollViewer>
 </ci:SettingsPageBase>

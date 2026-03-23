@@ -68,5 +68,24 @@ public sealed class DutyPluginPaths
         }
 
         File.Copy(sourcePath, destinationPath, overwrite: false);
+        TryDeleteLegacySource(sourcePath);
+    }
+
+    private static void TryDeleteLegacySource(string sourcePath)
+    {
+        try
+        {
+            File.Delete(sourcePath);
+            var directory = Path.GetDirectoryName(sourcePath);
+            if (!string.IsNullOrWhiteSpace(directory) &&
+                Directory.Exists(directory) &&
+                !Directory.EnumerateFileSystemEntries(directory).Any())
+            {
+                Directory.Delete(directory);
+            }
+        }
+        catch
+        {
+        }
     }
 }

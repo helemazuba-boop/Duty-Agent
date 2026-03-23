@@ -11,6 +11,7 @@ using Avalonia.Platform.Storage;
 using Avalonia.Threading;
 using ClassIsland.Core.Abstractions.Controls;
 using ClassIsland.Core.Attributes;
+using ClassIsland.Core.Helpers.UI;
 using ClassIsland.Shared;
 using DutyAgent.Models;
 using DutyAgent.Services;
@@ -99,6 +100,7 @@ public partial class DutyMainSettingsPage : SettingsPageBase
         _reasoningStreamFlushTimer.Tick += OnReasoningStreamFlushTick;
         Loaded += OnPageLoaded;
         Unloaded += OnPageUnloaded;
+        PluginDataPathText.Text = PluginPaths.DataDirectory;
         _backendSyncStatus = BackendSettingsSyncService.GetStatusSnapshot();
         ExecuteWithoutConfigEvents(() =>
         {
@@ -3149,6 +3151,63 @@ public partial class DutyMainSettingsPage : SettingsPageBase
                 automatic = true,
                 error = ex.Message
             }, "ERROR");
+        }
+    }
+
+    private async void OnResetPluginDataClick(object? sender, RoutedEventArgs e)
+    {
+        var topLevel = TopLevel.GetTopLevel(this);
+        var confirmed = await ContentDialogHelper.ShowConfirmationDialog(
+            "重置 Duty-Agent 插件数据",
+            "此操作会清空 Duty-Agent 的插件设置、后端配置、名单、排班状态和兼容旧版遗留数据。仅删除插件或重新安装插件并不会自动执行这个重置操作。\n\n如果你确认要继续，请输入：我确认重置 Duty-Agent 数据",
+            "我确认重置 Duty-Agent 数据",
+            topLevel,
+            positiveText: "重置",
+            negativeText: "取消");
+        if (!confirmed)
+        {
+            return;
+        }
+
+        try
+        {
+            ResetPluginDataBtn.IsEnabled = false;
+            RunAgentBtn.IsEnabled = false;
+            TraceSettings("plugin_data_reset_requested");
+            SetStatus("正在重置插件数据...", Brushes.Orange);
+
+            await PythonIpcService.StopAsync();
+            var document = SettingsRepository.ResetPersistedData();
+            BackendSettingsSyncService.RequestSync("plugin_data_reset");
+            await PythonIpcService.RestartEngineAsync();
+
+            ExecuteWithoutConfigEvents(() =>
+            {
+                InstructionBox.Text = string.Empty;
+                ReasoningBoardText.Text = string.Empty;
+                ReasoningBoardContainer.IsVisible = false;
+            });
+
+            ApplyLoadedSettingsDocument(document, showStatusMessage: false);
+            await LoadDataAsync("插件数据重置");
+
+            TraceSettings("plugin_data_reset_completed", new
+            {
+                data_directory = PluginPaths.DataDirectory
+            });
+            UpdateConfigTracking("插件数据已重置");
+            UpdateDataTracking("插件数据已重置");
+            SetStatus("插件数据已重置，当前已恢复到默认状态。", Brushes.Green);
+        }
+        catch (Exception ex)
+        {
+            TraceSettings("plugin_data_reset_failed", new { error = ex.Message }, "ERROR");
+            SetStatus($"重置插件数据失败：{ex.Message}", Brushes.Red);
+        }
+        finally
+        {
+            ResetPluginDataBtn.IsEnabled = true;
+            RunAgentBtn.IsEnabled = true;
         }
     }
 

@@ -14,6 +14,7 @@ public interface IDutySettingsRepository
     DutyLocalSettingsDocument SavePatch(DutySettingsPatchRequest patch);
     DutyHostAccessSecurityMutationResult SaveHostAccessSecurity(DutyHostAccessSecuritySaveRequest request);
     DutyConfig ReplaceFromProjectedConfig(DutyConfig projectedConfig);
+    DutySettingsDocument ResetPersistedData();
 }
 
 public sealed class DutySettingsChangedEventArgs : EventArgs
@@ -304,6 +305,65 @@ public sealed partial class DutySettingsRepository : IDutySettingsRepository
 
         RaiseSettingsChanged(changedArgs);
         return projectedResult;
+    }
+
+    public DutySettingsDocument ResetPersistedData()
+    {
+        DutySettingsChangedEventArgs? changedArgs;
+        DutySettingsDocument document;
+
+        lock (_gate)
+        {
+            var nextSettings = CreateDefaultLocalSettings();
+            var nextRuntimeState = new DutyHostRuntimeState();
+
+            _settingsTrace.Warn("settings_reset_started", new
+            {
+                settings_path = _pluginPaths.SettingsPath,
+                host_state_path = _pluginPaths.HostStatePath,
+                backend_config_path = _pluginPaths.ConfigPath,
+                state_path = _pluginPaths.StatePath,
+                roster_path = _pluginPaths.RosterPath
+            });
+
+            WriteJsonAtomicallyTracked(_pluginPaths.SettingsPath, nextSettings, "settings_json_reset", new
+            {
+                version = nextSettings.Version
+            });
+            WriteJsonAtomicallyTracked(_pluginPaths.HostStatePath, nextRuntimeState, "host_state_json_reset", null);
+            WriteCompatibilityHostConfig(nextSettings, nextRuntimeState);
+
+            TryDeleteFile(_pluginPaths.ConfigPath);
+            TryDeleteFile(_pluginPaths.StatePath);
+            TryDeleteFile(_pluginPaths.RosterPath);
+            TryDeleteFile(_pluginPaths.SettingsDraftPath);
+            TryDeleteFile(_pluginPaths.ProcessSnapshotPath);
+            TryDeleteFile(_pluginPaths.LegacyConfigPath);
+            TryDeleteFile(_pluginPaths.LegacyStatePath);
+            TryDeleteFile(_pluginPaths.LegacyRosterPath);
+            TryDeleteFile(_pluginPaths.LegacyProcessSnapshotPath);
+
+            document = CreateSettingsDocument(nextSettings);
+            changedArgs = CreateChangedEventArgs(
+                nextSettings,
+                nextRuntimeState,
+                hostSettingsChanged: true,
+                backendSettingsChanged: true,
+                runtimeStateChanged: true);
+
+            _settingsTrace.Warn("settings_reset_completed", new
+            {
+                settings_file = _settingsTrace.CaptureFileSnapshot(_pluginPaths.SettingsPath),
+                host_state_file = _settingsTrace.CaptureFileSnapshot(_pluginPaths.HostStatePath),
+                host_config_file = _settingsTrace.CaptureFileSnapshot(_pluginPaths.HostConfigPath),
+                backend_config_exists = File.Exists(_pluginPaths.ConfigPath),
+                state_exists = File.Exists(_pluginPaths.StatePath),
+                roster_exists = File.Exists(_pluginPaths.RosterPath)
+            });
+        }
+
+        RaiseSettingsChanged(changedArgs);
+        return document;
     }
 
     private void EnsureInitialized()
