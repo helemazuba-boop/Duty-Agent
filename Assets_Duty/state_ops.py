@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import csv
+import ctypes
 import json
 import os
 import re
 import time
 from datetime import date, datetime
+from ctypes import wintypes
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple
 
@@ -35,6 +37,22 @@ STATE_LOCK_TIMEOUT_SECONDS = 20
 STATE_LOCK_RETRY_INTERVAL_SECONDS = 0.2
 STATE_LOCK_STALE_SECONDS = 120
 CONFIG_LOCK_TIMEOUT_SECONDS = 30
+
+_WINDOWS_STILL_ACTIVE = 259
+_WINDOWS_ERROR_ACCESS_DENIED = 5
+_WINDOWS_ERROR_INVALID_PARAMETER = 87
+_WINDOWS_ERROR_NOT_FOUND = 1168
+_WINDOWS_PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+
+_KERNEL32 = None
+if os.name == "nt":
+    _KERNEL32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    _KERNEL32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    _KERNEL32.OpenProcess.restype = wintypes.HANDLE
+    _KERNEL32.GetExitCodeProcess.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
+    _KERNEL32.GetExitCodeProcess.restype = wintypes.BOOL
+    _KERNEL32.CloseHandle.argtypes = [wintypes.HANDLE]
+    _KERNEL32.CloseHandle.restype = wintypes.BOOL
 
 
 class Context:
@@ -373,13 +391,32 @@ def _read_lock_metadata(lock_path: Path) -> tuple[Optional[int], Optional[dateti
 def _is_process_alive(pid: int) -> bool:
     if pid <= 0:
         return False
+    if os.name == "nt" and _KERNEL32 is not None:
+        handle = _KERNEL32.OpenProcess(_WINDOWS_PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+        if not handle:
+            error = ctypes.get_last_error()
+            if error == _WINDOWS_ERROR_ACCESS_DENIED:
+                return True
+            if error in {_WINDOWS_ERROR_INVALID_PARAMETER, _WINDOWS_ERROR_NOT_FOUND}:
+                return False
+            return False
+        try:
+            exit_code = wintypes.DWORD()
+            if not _KERNEL32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
+                error = ctypes.get_last_error()
+                if error == _WINDOWS_ERROR_ACCESS_DENIED:
+                    return True
+                return False
+            return exit_code.value == _WINDOWS_STILL_ACTIVE
+        finally:
+            _KERNEL32.CloseHandle(handle)
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
         return False
     except PermissionError:
         return True
-    except OSError:
+    except (OSError, SystemError, ValueError):
         return False
     return True
 

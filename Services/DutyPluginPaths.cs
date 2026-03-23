@@ -17,6 +17,14 @@ public sealed class DutyPluginPaths
     public string StatePath => Path.Combine(DataDirectory, "state.json");
     public string RosterPath => Path.Combine(DataDirectory, "roster.csv");
     public string ProcessSnapshotPath => Path.Combine(DataDirectory, ".engine-process.json");
+    public string ConfigLockPath => GetLockPath(ConfigPath);
+    public string HostConfigLockPath => GetLockPath(HostConfigPath);
+    public string SettingsLockPath => GetLockPath(SettingsPath);
+    public string HostStateLockPath => GetLockPath(HostStatePath);
+    public string SettingsDraftLockPath => GetLockPath(SettingsDraftPath);
+    public string StateLockPath => GetLockPath(StatePath);
+    public string RosterLockPath => GetLockPath(RosterPath);
+    public string ProcessSnapshotLockPath => GetLockPath(ProcessSnapshotPath);
 
     public string CoreScriptPath => Path.Combine(AssetsDirectory, "core.py");
     public string EmbeddedPythonPath => Path.Combine(AssetsDirectory, "python-embed", "python.exe");
@@ -29,6 +37,10 @@ public sealed class DutyPluginPaths
     public string LegacyStatePath => Path.Combine(LegacyDataDirectory, "state.json");
     public string LegacyRosterPath => Path.Combine(LegacyDataDirectory, "roster.csv");
     public string LegacyProcessSnapshotPath => Path.Combine(LegacyDataDirectory, ".engine-process.json");
+    public string LegacyConfigLockPath => GetLockPath(LegacyConfigPath);
+    public string LegacyStateLockPath => GetLockPath(LegacyStatePath);
+    public string LegacyRosterLockPath => GetLockPath(LegacyRosterPath);
+    public string LegacyProcessSnapshotLockPath => GetLockPath(LegacyProcessSnapshotPath);
 
     private DutyPluginPaths(string pluginConfigFolder, string pluginFolderPath)
     {
@@ -70,6 +82,8 @@ public sealed class DutyPluginPaths
         File.Copy(sourcePath, destinationPath, overwrite: false);
         TryDeleteLegacySource(sourcePath);
     }
+
+    private static string GetLockPath(string sourcePath) => sourcePath + ".lock";
 
     private static void TryDeleteLegacySource(string sourcePath)
     {

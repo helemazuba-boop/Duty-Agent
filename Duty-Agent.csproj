@@ -15,8 +15,43 @@
 		<PackageReference Include="ClassIsland.PluginSdk" Version="2.0.0.2">
 			<ExcludeAssets>runtime; native</ExcludeAssets>
 		</PackageReference>
-		<PackageReference Include="Microsoft.Web.WebView2" Version="1.0.2903.40" />
+		<PackageReference Include="Microsoft.Web.WebView2" Version="1.0.2903.40" GeneratePathProperty="true" ExcludeAssets="build;buildTransitive" />
 	</ItemGroup>
+
+	<ItemGroup>
+		<Reference Include="$(PkgMicrosoft_Web_WebView2)\lib_manual\netcoreapp3.0\Microsoft.Web.WebView2.Core.dll" />
+		<Content Include="$(PkgMicrosoft_Web_WebView2)\runtimes\win-x86\native\WebView2Loader.dll">
+			<Link>runtimes\win-x86\native\WebView2Loader.dll</Link>
+			<PublishState>Included</PublishState>
+			<Visible>False</Visible>
+			<CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+			<Pack>false</Pack>
+		</Content>
+		<Content Include="$(PkgMicrosoft_Web_WebView2)\runtimes\win-x64\native\WebView2Loader.dll">
+			<Link>runtimes\win-x64\native\WebView2Loader.dll</Link>
+			<PublishState>Included</PublishState>
+			<Visible>False</Visible>
+			<CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+			<Pack>false</Pack>
+		</Content>
+		<Content Include="$(PkgMicrosoft_Web_WebView2)\runtimes\win-arm64\native\WebView2Loader.dll">
+			<Link>runtimes\win-arm64\native\WebView2Loader.dll</Link>
+			<PublishState>Included</PublishState>
+			<Visible>False</Visible>
+			<CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+			<Pack>false</Pack>
+		</Content>
+	</ItemGroup>
+
+	<Target Name="DutyDeleteUnusedWebView2WrapperOutputs" AfterTargets="Build">
+		<ItemGroup>
+			<_DutyUnusedWebView2Outputs Include="$(OutDir)Microsoft.Web.WebView2.WinForms.dll" />
+			<_DutyUnusedWebView2Outputs Include="$(OutDir)Microsoft.Web.WebView2.WinForms.xml" />
+			<_DutyUnusedWebView2Outputs Include="$(OutDir)Microsoft.Web.WebView2.Wpf.dll" />
+			<_DutyUnusedWebView2Outputs Include="$(OutDir)Microsoft.Web.WebView2.Wpf.xml" />
+		</ItemGroup>
+		<Delete Files="@(_DutyUnusedWebView2Outputs)" />
+	</Target>
 
 	<ItemGroup>
 		<None Update="manifest.yml">

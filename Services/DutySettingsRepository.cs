@@ -334,14 +334,26 @@ public sealed partial class DutySettingsRepository : IDutySettingsRepository
             WriteCompatibilityHostConfig(nextSettings, nextRuntimeState);
 
             TryDeleteFile(_pluginPaths.ConfigPath);
+            TryDeleteFile(_pluginPaths.ConfigLockPath);
+            TryDeleteFile(_pluginPaths.HostConfigLockPath);
+            TryDeleteFile(_pluginPaths.SettingsLockPath);
+            TryDeleteFile(_pluginPaths.HostStateLockPath);
             TryDeleteFile(_pluginPaths.StatePath);
+            TryDeleteFile(_pluginPaths.StateLockPath);
             TryDeleteFile(_pluginPaths.RosterPath);
+            TryDeleteFile(_pluginPaths.RosterLockPath);
             TryDeleteFile(_pluginPaths.SettingsDraftPath);
+            TryDeleteFile(_pluginPaths.SettingsDraftLockPath);
             TryDeleteFile(_pluginPaths.ProcessSnapshotPath);
+            TryDeleteFile(_pluginPaths.ProcessSnapshotLockPath);
             TryDeleteFile(_pluginPaths.LegacyConfigPath);
+            TryDeleteFile(_pluginPaths.LegacyConfigLockPath);
             TryDeleteFile(_pluginPaths.LegacyStatePath);
+            TryDeleteFile(_pluginPaths.LegacyStateLockPath);
             TryDeleteFile(_pluginPaths.LegacyRosterPath);
+            TryDeleteFile(_pluginPaths.LegacyRosterLockPath);
             TryDeleteFile(_pluginPaths.LegacyProcessSnapshotPath);
+            TryDeleteFile(_pluginPaths.LegacyProcessSnapshotLockPath);
 
             document = CreateSettingsDocument(nextSettings);
             changedArgs = CreateChangedEventArgs(

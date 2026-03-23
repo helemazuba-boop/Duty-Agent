@@ -20,11 +20,12 @@ public sealed class DutyPluginLifecycle
         _paths = paths;
     }
 
-    public async Task StartAsync(CancellationToken cancellationToken = default)
+    public Task StartAsync(CancellationToken cancellationToken = default)
     {
+        _ = cancellationToken;
         if (Interlocked.Exchange(ref _started, 1) == 1)
         {
-            return;
+            return Task.CompletedTask;
         }
 
         PythonProcessTracker.CleanupPersistedProcess(_paths.LegacyProcessSnapshotPath);
@@ -32,6 +33,7 @@ public sealed class DutyPluginLifecycle
 
         _orchestrator.StartRuntime();
         _backendSettingsSyncService.RequestSync("plugin_startup");
+        return Task.CompletedTask;
     }
 
     public async Task StopAsync(CancellationToken cancellationToken = default)

@@ -81,7 +81,7 @@ public partial class DutyWebSettingsPage : SettingsPageBase
             });
     }
 
-    private async void OnWebContentReady(object? sender, EventArgs e)
+    private void OnWebContentReady(object? sender, EventArgs e)
     {
         _webViewHost.RequestResizeSync();
         WebViewHostContainer.Opacity = 1;
