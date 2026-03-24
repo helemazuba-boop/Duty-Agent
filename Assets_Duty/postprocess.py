@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 from datetime import date, datetime
-from typing import Dict, List, Optional
+from typing import Dict, Iterable, List, Optional, Sequence
+
+from state_ops import clone_count_map, decrement_count_map_entry, increment_count_map_entry, normalize_count_map, resolve_debt_credit_conflicts
 
 DAY_NAMES = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 
 
-def recover_missing_debts(original_debt_list: List[int], new_debt_ids_from_llm: List[int], normalized_schedule: List[dict]) -> List[int]:
-    scheduled_set: set = set()
+def collect_scheduled_unique_ids(normalized_schedule: List[dict]) -> List[int]:
+    scheduled: List[int] = []
+    seen: set[int] = set()
     for entry in normalized_schedule:
         if not isinstance(entry, dict):
             continue
@@ -15,29 +18,100 @@ def recover_missing_debts(original_debt_list: List[int], new_debt_ids_from_llm: 
         if not isinstance(area_map, dict):
             continue
         for ids in area_map.values():
-            if isinstance(ids, list):
-                scheduled_set.update(ids)
+            if not isinstance(ids, list):
+                continue
+            for person_id in ids:
+                try:
+                    normalized_id = int(person_id)
+                except (TypeError, ValueError):
+                    continue
+                if normalized_id in seen:
+                    continue
+                seen.add(normalized_id)
+                scheduled.append(normalized_id)
+    return scheduled
 
-    final_debt_set = set(new_debt_ids_from_llm)
-    for person_id in original_debt_list:
-        if person_id not in scheduled_set:
-            final_debt_set.add(person_id)
-    final_debt_set -= scheduled_set
-    return sorted(final_debt_set)
+
+def recover_missing_debts(original_debt_list, new_debt_ids_from_llm, normalized_schedule: List[dict]) -> Dict[int, int]:
+    next_debt_counts = clone_count_map(original_debt_list)
+    for person_id in collect_scheduled_unique_ids(normalized_schedule):
+        decrement_count_map_entry(next_debt_counts, person_id)
+    for person_id, count in normalize_count_map(new_debt_ids_from_llm).items():
+        increment_count_map_entry(next_debt_counts, person_id, count)
+    return next_debt_counts
 
 
 def reconcile_credit_list(
-    original_credit_list: List[int],
-    new_credit_ids_from_llm: List[int],
+    original_credit_list,
+    new_credit_ids_from_llm,
     normalized_schedule: List[dict],
     valid_ids: set,
-    debt_list: List[int],
+    debt_list,
     has_llm_field: bool,
-) -> List[int]:
-    next_credit_set = set(new_credit_ids_from_llm) if has_llm_field else set(original_credit_list)
-    next_credit_set = {credit_id for credit_id in next_credit_set if credit_id in valid_ids}
-    next_credit_set -= set(debt_list)
-    return sorted(next_credit_set)
+    consumed_credit_ids: Optional[Iterable[int]] = None,
+) -> Dict[int, int]:
+    del normalized_schedule
+    del has_llm_field
+
+    next_credit_counts = clone_count_map(original_credit_list, valid_ids)
+    for person_id in normalize_count_map(list(consumed_credit_ids or []), valid_ids).keys():
+        decrement_count_map_entry(next_credit_counts, person_id)
+
+    for person_id, count in normalize_count_map(new_credit_ids_from_llm, valid_ids).items():
+        increment_count_map_entry(next_credit_counts, person_id, count)
+
+    _, next_credit_counts = resolve_debt_credit_conflicts(
+        normalize_count_map(debt_list, valid_ids),
+        next_credit_counts,
+    )
+    return next_credit_counts
+
+
+def estimate_pointer_progress(
+    all_ids: Sequence[int],
+    active_ids: Sequence[int],
+    last_pointer: int,
+    debt_counts,
+    credit_counts,
+    normalized_schedule: List[dict],
+) -> Dict[str, object]:
+    if not all_ids:
+        return {"consumed_credit_ids": [], "pointer_after": 0}
+
+    active_set = set(int(person_id) for person_id in active_ids)
+    debt_seed = set(normalize_count_map(debt_counts, active_set).keys())
+    credit_seed = set(normalize_count_map(credit_counts, active_set).keys())
+    target_ids = {
+        person_id
+        for person_id in collect_scheduled_unique_ids(normalized_schedule)
+        if person_id in active_set and person_id not in debt_seed
+    }
+    if not target_ids:
+        return {"consumed_credit_ids": [], "pointer_after": max(0, min(int(last_pointer or 0), len(all_ids) - 1))}
+
+    cursor = max(0, min(int(last_pointer or 0), len(all_ids) - 1))
+    matched_ids: set[int] = set()
+    consumed_credit_ids: List[int] = []
+    max_steps = max(len(all_ids) * 3, len(target_ids) * 4)
+
+    for _ in range(max_steps):
+        person_id = int(all_ids[cursor])
+        cursor = (cursor + 1) % len(all_ids)
+
+        if person_id not in active_set:
+            continue
+        if person_id in target_ids and person_id not in matched_ids:
+            matched_ids.add(person_id)
+            if matched_ids == target_ids:
+                break
+            continue
+        if person_id in credit_seed and person_id not in consumed_credit_ids:
+            consumed_credit_ids.append(person_id)
+
+    return {
+        "consumed_credit_ids": consumed_credit_ids,
+        "pointer_after": cursor,
+    }
 
 
 def _resolve_area_mapping(entry: dict) -> Dict[str, object]:
@@ -55,7 +129,7 @@ def _coerce_area_value_items(value: object) -> List[object]:
         stripped = value.strip()
         if not stripped:
             return []
-        return [part.strip() for part in stripped.strip(" []").split(",")]
+        return stripped.split()
     if isinstance(value, list):
         return list(value)
     if isinstance(value, (int, float)):
@@ -89,6 +163,7 @@ def normalize_multi_area_schedule_ids(
     area_names: List[str],
     area_per_day_counts: Dict[str, int],
 ) -> List[dict]:
+    del area_per_day_counts
     active_set = set(active_ids)
     normalized: List[dict] = []
     if not isinstance(schedule_raw, list):
@@ -102,10 +177,8 @@ def normalize_multi_area_schedule_ids(
 
         area_mapping = _resolve_area_mapping(entry)
         day_assignments: Dict[str, List[int]] = {}
-        for area_index, area_name in enumerate(area_names):
+        for area_name in area_names:
             raw_value = area_mapping.get(area_name)
-            if raw_value is None:
-                raw_value = area_mapping.get(str(area_index))
             day_assignments[area_name] = _parse_area_ids(
                 raw_value,
                 active_set,

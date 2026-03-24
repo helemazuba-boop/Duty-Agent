@@ -1,19 +1,67 @@
-# build_prompt.py
+from __future__ import annotations
+
+from datetime import date, datetime
 from typing import Dict, List
 
 from prompt_config import KEYWORD_REGISTRY, PROMPTS
-from state_ops import DEFAULT_SINGLE_AREA_NAME
+
 
 def is_module_active(module_name: str, instruction: str, data_present: bool) -> bool:
-    """Determine if a functional module should be injected into the prompt."""
     instruction_lower = instruction.lower()
-    
-    # Check if keyword registry contains the module
     keywords = KEYWORD_REGISTRY.get(module_name, [])
-    keyword_match = any(kw in instruction_lower for kw in keywords)
-    
-    # Rule: Active if data is present OR user mentioned it via keyword
-    return data_present or keyword_match
+    return data_present or any(keyword in instruction_lower for keyword in keywords)
+
+
+def _format_ids(values: List[int]) -> str:
+    return " ".join(str(person_id) for person_id in values)
+
+
+def _format_count_map(counts: Dict[int, int]) -> str:
+    if not counts:
+        return ""
+    parts: List[str] = []
+    for person_id in sorted(counts.keys()):
+        count = int(counts.get(person_id, 0) or 0)
+        if count <= 0:
+            continue
+        parts.append(f"{person_id}*{count}" if count > 1 else str(person_id))
+    return " ".join(parts)
+
+
+def _parse_iso_date(value: str) -> date | None:
+    try:
+        return datetime.strptime(str(value or "").strip(), "%Y-%m-%d").date()
+    except ValueError:
+        return None
+
+
+def _build_boundary_hints(start_date_text: str) -> str:
+    start = _parse_iso_date(start_date_text)
+    if start is None:
+        return "boundary_dates=12-31->01-01"
+
+    hints: List[str] = []
+    next_month = date(start.year, start.month, 1)
+    for _ in range(16):
+        if next_month.month == 12:
+            month_end = date(next_month.year, 12, 31)
+            following = date(next_month.year + 1, 1, 1)
+        else:
+            following = date(next_month.year, next_month.month + 1, 1)
+            month_end = following.fromordinal(following.toordinal() - 1)
+        if month_end >= start:
+            hints.append(f"{month_end:%m-%d}->{following:%m-%d}")
+        if len(hints) >= 3:
+            break
+        if next_month.month == 12:
+            next_month = date(next_month.year + 1, 1, 1)
+        else:
+            next_month = date(next_month.year, next_month.month + 1, 1)
+
+    if "12-31->01-01" not in hints:
+        hints.append("12-31->01-01")
+    return "boundary_dates=" + ", ".join(dict.fromkeys(hints))
+
 
 def build_prompt_messages(
     all_ids: List[int],
@@ -23,86 +71,73 @@ def build_prompt_messages(
     duty_rule: str,
     area_names: List[str],
     area_per_day_counts: Dict[str, int],
-    debt_list: List[int],
-    credit_list: List[int],
+    debt_counts: Dict[int, int],
+    credit_counts: Dict[int, int],
+    start_date: str,
     previous_context: str = "",
     model_profile: str = "auto",
     orchestration_mode: str = "auto",
     single_pass_strategy: str = "cloud_standard",
+    last_pointer: int = 0,
 ) -> List[Dict[str, str]]:
-    """Build prompt messages for the unified scheduling engine."""
+    del area_names
+    del area_per_day_counts
+    del previous_context
 
-    inactive_ids = [pid for pid, active in id_to_active.items() if active == 0]
+    inactive_ids = [person_id for person_id, active in id_to_active.items() if active == 0]
     compact_mode = (
         single_pass_strategy != "incremental_thinking"
         and (model_profile == "campus_small" or orchestration_mode == "multi_agent")
     )
 
     params_list = [
-        f"<all_roster_ids>{','.join(map(str, all_ids))}</all_roster_ids>",
-        f"<current_time>{current_time}</current_time>",
-        f"<user_instruction>{instruction}</user_instruction>",
-        f"<single_pass_strategy>{single_pass_strategy}</single_pass_strategy>",
+        f"all_roster_ids={_format_ids(all_ids)}",
+        f"current_time={current_time}",
+        f"start_date={start_date}",
+        _build_boundary_hints(start_date),
+        f"last_pointer={max(0, int(last_pointer or 0))}",
+        f"user_instruction={instruction}",
     ]
-    if previous_context:
-        params_list.append(f"<previous_run_memory>{previous_context}</previous_run_memory>")
 
-    methods_list = []
+    methods_list: List[str] = []
 
-    # Debt Logic
-    if is_module_active("debt", instruction, bool(debt_list)):
-        params_list.append(PROMPTS["param_debt"].format(debt_list=','.join(map(str, debt_list))))
+    if is_module_active("debt", instruction, bool(debt_counts)):
+        params_list.append(PROMPTS["param_debt"].format(debt_counts=_format_count_map(debt_counts)))
         methods_list.append(PROMPTS["rule_debt"])
 
-    # Credit Logic
-    if is_module_active("credit", instruction, bool(credit_list)):
-        params_list.append(PROMPTS["param_credit"].format(credit_list=','.join(map(str, credit_list))))
+    if is_module_active("credit", instruction, bool(credit_counts)):
+        params_list.append(PROMPTS["param_credit"].format(credit_counts=_format_count_map(credit_counts)))
         methods_list.append(PROMPTS["rule_credit"])
 
-    # Inactive Logic
     if is_module_active("inactive", instruction, bool(inactive_ids)):
-        params_list.append(PROMPTS["param_inactive"].format(inactive_ids=','.join(map(str, inactive_ids))))
+        params_list.append(PROMPTS["param_inactive"].format(inactive_ids=_format_ids(inactive_ids)))
         methods_list.append(PROMPTS["rule_inactive"])
 
     if is_module_active("multi_day", instruction, False):
         methods_list.append(PROMPTS["rule_multi_day"])
 
-    duty_rule = (duty_rule or "").strip()
+    duty_rule = str(duty_rule or "").strip()
     if duty_rule:
-        methods_list.append(f"<user_defined_rule>\n{duty_rule}\n</user_defined_rule>")
+        methods_list.append(f"user_defined_rule={duty_rule}")
 
     methods_list.append(
-        "<output_guard>\n"
-        "Return CSV only.\n"
-        "The header must be Date first and Note last. Every column between them is an area name.\n"
-        f"If the user did not explicitly define areas, use a single area column named {DEFAULT_SINGLE_AREA_NAME}.\n"
-        "Use the same area columns for every data row.\n"
-        "Each area cell must contain only the scheduled IDs for that date and area.\n"
-        "When an area cell contains multiple IDs, quote that cell and separate IDs with commas, for example \"1,2\".\n"
-        "Leave an area cell empty only when that area truly has no assignment for that date.\n"
-        "The same ID may appear in different area columns on the same date, and may also appear on different dates.\n"
-        "Within one area cell, do not repeat the same ID.\n"
-        "</output_guard>"
+        "Formatting constraints: declare every alias in @areas before using it in @schedule. "
+        "Use MM-DD dates only. Keep aliases short uppercase tokens such as A, B, S. "
+        "Use spaces between IDs, never commas or pipes. "
+        "Same-day cross-area reuse is allowed. Same-area duplicate IDs are forbidden."
     )
 
     if single_pass_strategy == "incremental_thinking":
         methods_list.append(
-            "<execution_hint>\nThink through the constraints carefully before finalizing the schedule, "
-            "but only return the final result.\n</execution_hint>"
+            "Work through the dates in order internally, then output only the final V2 result."
         )
 
     dynamic_parameters = "\n".join(params_list)
-    dynamic_methods = "\n".join(methods_list) if methods_list else "<!-- No specific processing rules triggered. Follow basic sequence. -->"
+    dynamic_methods = "\n".join(f"- {item}" for item in methods_list)
 
-    if compact_mode:
-        system_content = PROMPTS["compact_base"].format(
-            dynamic_parameters=dynamic_parameters,
-            dynamic_methods=dynamic_methods,
-        )
-    else:
-        system_content = PROMPTS["regular_system_base"].format(
-            dynamic_parameters=dynamic_parameters,
-            dynamic_methods=dynamic_methods,
-        )
-
+    template_key = "compact_base" if compact_mode else "regular_system_base"
+    system_content = PROMPTS[template_key].format(
+        dynamic_parameters=dynamic_parameters,
+        dynamic_methods=dynamic_methods,
+    )
     return [{"role": "user", "content": system_content}]

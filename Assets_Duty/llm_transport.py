@@ -10,6 +10,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
+from datetime import date, timedelta
 from urllib.parse import urlparse
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
@@ -19,12 +20,15 @@ LLM_TIMEOUT_SECONDS = 120
 LLM_MAX_RETRIES = 2
 LLM_RETRY_BACKOFF_SECONDS = 2
 LLM_STREAM_ENABLED_DEFAULT = True
-LLM_PARSE_MAX_RETRIES = 1
 LLM_STREAM_PROGRESS_MIN_INTERVAL_SECONDS = 0.2
 _REASONING_BLOCK_PATTERN = re.compile(
     r"<(?P<tag>think|thinking|reasoning|analysis)\b[^>]*>.*?</(?P=tag)>",
     re.DOTALL | re.IGNORECASE,
 )
+_SECTION_HEADER_PATTERN = re.compile(r"^@(?P<name>areas|schedule|state)$", re.IGNORECASE)
+_AREA_ALIAS_PATTERN = re.compile(r"(?P<alias>[A-Z][A-Z0-9]*)=(?P<name>.*?)(?=(?:\s+[A-Z][A-Z0-9]*=)|$)")
+_SCHEDULE_DATE_PATTERN = re.compile(r"^(?P<month>\d{2})-(?P<day>\d{2})$")
+_COUNT_TOKEN_PATTERN = re.compile(r"^(?P<id>\d+)(?:\*(?P<count>\d+))?$")
 
 
 class StreamUnsupportedError(RuntimeError):
@@ -341,10 +345,7 @@ def _normalize_structured_output(content: str) -> str:
         if updated == stripped:
             break
         stripped = updated
-
-    fragments = re.split(r"(?im)^\s*RESET\s*$", stripped)
-    normalized = fragments[-1] if fragments else stripped
-    return normalized.strip()
+    return stripped.strip()
 
 
 def _extract_json_candidate(content: str) -> dict:
@@ -393,26 +394,8 @@ def _parse_schedule_csv(csv_text: str) -> List[dict]:
     reader = csv.DictReader(io.StringIO(csv_text.strip()))
     raw_fieldnames = reader.fieldnames or []
     fieldnames = [str(name or "").strip() for name in raw_fieldnames]
-    if not fieldnames:
-        raise ValueError("CSV header is missing.")
-    if len(fieldnames) != len(set(fieldnames)):
-        raise ValueError("CSV header contains duplicate columns.")
-
-    legacy_columns = fieldnames == ["Date", "Assigned_IDs", "Note"]
-    if legacy_columns:
-        area_columns = [DEFAULT_SINGLE_AREA_NAME]
-    else:
-        if fieldnames[0] != "Date":
-            raise ValueError("CSV must start with Date column.")
-        if fieldnames[-1] != "Note":
-            raise ValueError("CSV must end with Note column.")
-        area_columns = fieldnames[1:-1]
-        if not area_columns:
-            raise ValueError("CSV must include at least one area column.")
-        if any(not column for column in area_columns):
-            raise ValueError("CSV area columns cannot be empty.")
-        if any(column in {"Date", "Note"} for column in area_columns):
-            raise ValueError("CSV area columns cannot reuse reserved names.")
+    if fieldnames != ["Date", "Assigned_IDs", "Note"]:
+        raise ValueError("legacy CSV fallback must use Date,Assigned_IDs,Note header")
 
     schedule_raw: List[dict] = []
     for row in reader:
@@ -420,17 +403,10 @@ def _parse_schedule_csv(csv_text: str) -> List[dict]:
         if not date_str:
             continue
 
+        assigned_ids = str(row.get("Assigned_IDs", "")).strip()
         area_ids: Dict[str, str] = {}
-        if legacy_columns:
-            assigned_ids = str(row.get("Assigned_IDs", "")).strip()
-            if assigned_ids:
-                area_ids[DEFAULT_SINGLE_AREA_NAME] = assigned_ids
-        else:
-            for area_name in area_columns:
-                raw_value = row.get(area_name, "")
-                value = str(raw_value if raw_value is not None else "").strip()
-                if value:
-                    area_ids[area_name] = value
+        if assigned_ids:
+            area_ids[DEFAULT_SINGLE_AREA_NAME] = assigned_ids.replace(",", " ")
 
         schedule_raw.append(
             {
@@ -441,6 +417,197 @@ def _parse_schedule_csv(csv_text: str) -> List[dict]:
         )
 
     return schedule_raw
+
+
+def _split_sections(content: str) -> Dict[str, List[str]]:
+    text = _normalize_structured_output(content)
+    if not text:
+        raise ValueError("empty structured output")
+
+    sections: Dict[str, List[str]] = {}
+    current_section: Optional[str] = None
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        header = _SECTION_HEADER_PATTERN.fullmatch(line)
+        if header:
+            current_section = header.group("name").lower()
+            if current_section in sections:
+                raise ValueError(f"duplicate section @{current_section}")
+            sections[current_section] = []
+            continue
+        if current_section is None:
+            raise ValueError("content before first section header")
+        sections[current_section].append(raw_line.rstrip())
+
+    if "areas" not in sections or "schedule" not in sections:
+        raise ValueError("missing required @areas or @schedule section")
+    return sections
+
+
+def _parse_areas_section(lines: List[str]) -> Dict[str, str]:
+    alias_map: Dict[str, str] = {}
+    for raw_line in lines:
+        line = str(raw_line or "").strip()
+        if not line:
+            continue
+        normalized_line = re.sub(r"\s*;\s*", " ", line)
+        matches = list(_AREA_ALIAS_PATTERN.finditer(normalized_line))
+        if not matches:
+            raise ValueError(f"invalid @areas line: {line}")
+        consumed = "".join(match.group(0) for match in matches)
+        if re.sub(r"[\s;]+", "", consumed) != re.sub(r"[\s;]+", "", normalized_line):
+            raise ValueError(f"invalid @areas tokens: {line}")
+        for match in matches:
+            alias = match.group("alias").strip()
+            area_name = match.group("name").strip()
+            if not area_name:
+                raise ValueError(f"empty area name for alias {alias}")
+            if alias.startswith("_"):
+                raise ValueError(f"alias {alias} cannot start with underscore")
+            alias_map[alias] = area_name
+    if not alias_map:
+        raise ValueError("@areas is empty")
+    return alias_map
+
+
+def _resolve_mmdd(mmdd: str, start_date: date, previous_date: Optional[date]) -> date:
+    match = _SCHEDULE_DATE_PATTERN.fullmatch(mmdd)
+    if not match:
+        raise ValueError(f"invalid MM-DD date: {mmdd}")
+
+    month = int(match.group("month"))
+    day = int(match.group("day"))
+    candidate_year = previous_date.year if previous_date is not None else start_date.year
+
+    while True:
+        try:
+            candidate = date(candidate_year, month, day)
+        except ValueError as ex:
+            raise ValueError(f"invalid MM-DD date: {mmdd}") from ex
+        if previous_date is None:
+            if candidate < start_date:
+                candidate_year += 1
+                continue
+        elif candidate < previous_date:
+            candidate_year += 1
+            continue
+        if candidate > start_date + timedelta(days=370):
+            raise ValueError(f"date {mmdd} exceeds supported window")
+        return candidate
+
+
+def _parse_ids_space_separated(raw_value: str, *, date_text: str, alias: str) -> List[int]:
+    result: List[int] = []
+    seen: set[int] = set()
+    for raw_token in str(raw_value or "").strip().split():
+        try:
+            person_id = int(raw_token)
+        except ValueError as ex:
+            raise ValueError(f"invalid ID '{raw_token}' on {date_text}/{alias}") from ex
+        if person_id in seen:
+            raise ValueError(f"duplicate ID {person_id} on {date_text}/{alias}")
+        seen.add(person_id)
+        result.append(person_id)
+    return result
+
+
+def _parse_schedule_section(lines: List[str], alias_map: Dict[str, str], start_date: date) -> List[dict]:
+    schedule: List[dict] = []
+    previous_date: Optional[date] = None
+    seen_dates: set[date] = set()
+
+    for raw_line in lines:
+        line = str(raw_line or "").strip()
+        if not line:
+            continue
+        if ":" not in line:
+            raise ValueError(f"invalid @schedule line: {line}")
+        raw_mmdd, raw_body = line.split(":", 1)
+        resolved_date = _resolve_mmdd(raw_mmdd.strip(), start_date, previous_date)
+        if resolved_date in seen_dates:
+            raise ValueError(f"duplicate date {resolved_date.isoformat()}")
+        previous_date = resolved_date
+        seen_dates.add(resolved_date)
+
+        area_ids: Dict[str, List[int]] = {}
+        note = ""
+        segments = [segment.strip() for segment in raw_body.split(";") if segment.strip()]
+        if not segments:
+            raise ValueError(f"schedule line {raw_mmdd.strip()} has no assignments")
+
+        saw_note = False
+        for index, segment in enumerate(segments):
+            if "=" not in segment:
+                raise ValueError(f"invalid assignment segment on {raw_mmdd.strip()}: {segment}")
+            key, value = segment.split("=", 1)
+            key = key.strip()
+            value = value.strip()
+            if key == "_note":
+                if index != len(segments) - 1:
+                    raise ValueError(f"_note must be last on {raw_mmdd.strip()}")
+                note = value
+                saw_note = True
+                continue
+            if saw_note:
+                raise ValueError(f"no fields allowed after _note on {raw_mmdd.strip()}")
+            if key not in alias_map:
+                raise ValueError(f"unknown area alias {key} on {raw_mmdd.strip()}")
+            area_name = alias_map[key]
+            area_ids[area_name] = _parse_ids_space_separated(
+                value,
+                date_text=resolved_date.isoformat(),
+                alias=key,
+            )
+
+        schedule.append(
+            {
+                "date": resolved_date.isoformat(),
+                "area_ids": area_ids,
+                "note": note,
+            }
+        )
+
+    if not schedule:
+        raise ValueError("@schedule is empty")
+    return schedule
+
+
+def _parse_count_tokens(raw_value: str, *, field_name: str) -> Dict[int, int]:
+    counts: Dict[int, int] = {}
+    if not raw_value.strip():
+        return counts
+    for token in raw_value.split():
+        match = _COUNT_TOKEN_PATTERN.fullmatch(token)
+        if not match:
+            raise ValueError(f"invalid {field_name} token: {token}")
+        person_id = int(match.group("id"))
+        count = int(match.group("count") or "1")
+        if person_id <= 0 or count <= 0:
+            raise ValueError(f"invalid {field_name} token: {token}")
+        counts[person_id] = counts.get(person_id, 0) + count
+    return counts
+
+
+def _parse_state_section(lines: List[str]) -> Dict[str, Dict[int, int]]:
+    state_delta = {
+        "debt_counts": {},
+        "credit_counts": {},
+    }
+    for raw_line in lines:
+        line = str(raw_line or "").strip()
+        if not line:
+            continue
+        if "=" not in line:
+            raise ValueError(f"invalid @state line: {line}")
+        key, value = line.split("=", 1)
+        normalized_key = key.strip().lower()
+        if normalized_key not in {"debt", "credit"}:
+            raise ValueError(f"unsupported @state field: {normalized_key}")
+        target_key = f"{normalized_key}_counts"
+        state_delta[target_key] = _parse_count_tokens(value.strip(), field_name=normalized_key)
+    return state_delta
 
 
 def call_llm_json(
@@ -493,44 +660,39 @@ def call_llm(
     progress_callback=None,
     stop_event=None,
     transport_overrides: Optional[dict] = None,
+    *,
+    start_date_value: date | str | None = None,
 ) -> Tuple[dict, str]:
-    url, payload, api_key = _build_llm_target(config, messages, transport_overrides)
     content = call_llm_raw(messages, config, progress_callback, stop_event, transport_overrides)
+    normalized_content = _normalize_structured_output(content)
 
-    last_parse_error = None
-    original_message_count = len(payload["messages"])
-    for attempt in range(LLM_PARSE_MAX_RETRIES + 1):
-        try:
-            normalized_content = _normalize_structured_output(content)
-            csv_text = _extract_tag_content(normalized_content, "csv")
-            if not csv_text:
-                csv_text = _extract_fenced_block(normalized_content, "csv")
-            if not csv_text:
-                raise ValueError("missing <csv> tags.")
+    try:
+        if start_date_value is None:
+            parsed_start = date.today()
+        elif isinstance(start_date_value, date):
+            parsed_start = start_date_value
+        else:
+            parsed_start = date.fromisoformat(str(start_date_value))
 
+        sections = _split_sections(normalized_content)
+        alias_map = _parse_areas_section(sections.get("areas", []))
+        schedule = _parse_schedule_section(sections.get("schedule", []), alias_map, parsed_start)
+        state_delta = _parse_state_section(sections.get("state", []))
+        return {
+            "schedule": schedule,
+            "state_delta": state_delta,
+        }, content
+    except Exception as kv_error:
+        csv_text = _extract_fenced_block(normalized_content, "csv")
+        if not csv_text:
+            legacy_csv = _extract_tag_content(normalized_content, "csv")
+            csv_text = legacy_csv
+        if csv_text:
             return {
                 "schedule": _parse_schedule_csv(csv_text),
-                "next_run_note": _extract_tag_content(normalized_content, "next_run_note"),
-                "new_debt_ids": _extract_tag_content(normalized_content, "new_debt_ids"),
-                "new_credit_ids": _extract_tag_content(normalized_content, "new_credit_ids"),
+                "state_delta": {"debt_counts": {}, "credit_counts": {}},
             }, content
-        except Exception as ex:
-            last_parse_error = ex
-            if attempt < LLM_PARSE_MAX_RETRIES:
-                if progress_callback:
-                    progress_callback("parse_retry", f"Retry {attempt + 1}...", "")
-                del payload["messages"][original_message_count:]
-                payload["messages"].extend(
-                    [
-                        {"role": "assistant", "content": content},
-                        {"role": "user", "content": f"Fix error: {ex}"},
-                    ]
-                )
-                content = execute_with_retries(
-                    lambda: request_llm_non_stream(url, payload, api_key),
-                    mode="non_stream",
-                )
-    raise RuntimeError(f"Parse failed: {last_parse_error}")
+        raise RuntimeError(f"Parse failed: {kv_error}") from kv_error
 
 
 def _parse_bool(value, default: bool) -> bool:

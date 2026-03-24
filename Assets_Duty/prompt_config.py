@@ -1,110 +1,69 @@
 # prompt_config.py
 
-# --- 关键字雷达 (Keyword Radar) ---
-# 定义嗅探逻辑：当指令或上下文中出现这些词时，激活对应的 XML 模块
 KEYWORD_REGISTRY = {
-    "debt": ["欠", "补", "优先", "之前", "debt", "惩罚"],
-    "credit": ["积", "连", "表扬", "休息", "抵扣", "credit", "奖励"],
-    "inactive": ["假", "除开", "不要", "生病", "屏蔽", "inactive", "请假"],
-    "multi_day": ["到", "几天", "至", "连排", "整周"],
+    "debt": ["欠", "补", "优先", "debt", "罚"],
+    "credit": ["奖", "休息", "抵扣", "credit", "奖励"],
+    "inactive": ["停", "除开", "不要", "生病", "屏蔽", "inactive", "请假"],
+    "multi_day": ["到", "几天", "连续", "整周", "多天"],
 }
 
-# --- 模块化 Prompt (纯 XML 模板) ---
+
 PROMPTS = {
-    "regular_system_base": """<system_directive>
-<role>Duty-Agent</role>
-<task>Schedule balancing Hard(Sick/Inactive) & Soft Constraints + Fairness(Debt)</task>
-<process_guideline>Process the information below in turns.</process_guideline>
+    "regular_system_base": """You are Duty-Agent.
+Generate the final duty schedule only. Do not output reasoning, markdown fences, XML tags, CSV, JSON, YAML, or restart markers.
 
-<context_parameters>
+Context:
 {dynamic_parameters}
-</context_parameters>
 
-<processing_steps>
+Scheduling rules:
 {dynamic_methods}
-</processing_steps>
 
-<output_schema>
-<directive>Output ONLY the final schedule inside <csv> tags. Do not output any thinking process outside the tags.</directive>
-<columns>Date,&lt;Area1&gt;,&lt;Area2&gt;,...,Note</columns>
-</output_schema>
-
-<recovery_mechanism>
-If you realize you made a logical error mid-generation, DO NOT apologize or explain in natural language. 
-Simply type the word "RESET" on a new line, and restart the entire CSV output from the beginning.
-</recovery_mechanism>
-</system_directive>
+Output protocol:
+- Output plain text only.
+- Always output `@areas` first, then `@schedule`, then optional `@state`.
+- `@areas` declares alias mappings such as `A=教室 B=清洁区`.
+- `@schedule` uses one line per date: `MM-DD: A=1001 1002; B=1003 1004; _note=备注`.
+- `_note` is optional and must be the final key on that line.
+- A person may appear in different areas on the same date and may appear again on later dates.
+- Within one alias assignment list, never repeat the same ID.
+- `@state` is optional and only reports incremental changes for this round.
+- In `@state`, use `debt=1004*2 1005` and `credit=1002*2`; omit `*1`.
+- If there is no new debt or credit delta, omit `@state` entirely.
 """,
-    
-    # 增量模式（小模型专用）- 也更新为 XML 风格以保持一致性
-    "compact_base": """<system_directive>
-<role>Duty-Agent (Lite)</role>
-<task>Generate a basic duty schedule purely based on roster sequence.</task>
+    "compact_base": """You are Duty-Agent Lite.
+Return only the final result in the same V2 plain-text protocol.
 
-<context_parameters>
+Context:
 {dynamic_parameters}
-</context_parameters>
 
-<processing_steps>
+Rules:
 {dynamic_methods}
-</processing_steps>
 
-<output_schema>
-<directive>Output ONLY the final schedule inside <csv> tags.</directive>
-<columns>Date,&lt;Area1&gt;,&lt;Area2&gt;,...,Note</columns>
-</output_schema>
-</system_directive>
+Required output:
+- `@areas`
+- `@schedule`
+- optional `@state`
+- no reasoning
+- no markdown
+- no XML
+- no CSV
+- no restart markers
 """,
-    "incremental_base": """<system_directive>
-<role>Duty-Agent (Lite)</role>
-<task>Generate a basic duty schedule purely based on roster sequence.</task>
-
-<context_parameters>
-{dynamic_parameters}
-</context_parameters>
-
-<processing_steps>
-{dynamic_methods}
-</processing_steps>
-
-<output_schema>
-<directive>Output ONLY the final schedule inside <csv> tags.</directive>
-<columns>Date,&lt;Area1&gt;,&lt;Area2&gt;,...,Note</columns>
-</output_schema>
-</system_directive>
-""",
-    
-# ---------------- 动态规则块 (Methods / Rules) ----------------
-
-    "rule_debt": """<rule_debt>
-[PRIORITY HIGH - BACKFILL] 
-Check the <current_debt_list>. If anyone in this list is available, you MUST schedule them FIRST to clear their debt before continuing the normal sequence.
-</rule_debt>""",
-
-    "param_debt": "<current_debt_list>{debt_list}</current_debt_list>",
-    
-    # --------------------------------------------------------------
-
-    "rule_credit": """<rule_credit>
-[IMMUNITY - REWARD] 
-Check the <current_credit_list>. When your normal scheduling sequence naturally reaches these IDs, you MUST SKIP them once (giving them a free pass) as a reward for past extra work.
-</rule_credit>""",
-
-    "param_credit": "<current_credit_list>{credit_list}</current_credit_list>",
-
-    # --------------------------------------------------------------
-
-    "rule_inactive": """<rule_inactive>
-[HARD CONSTRAINT - UNAVAILABLE] 
-IDs listed in <inactive_ids> are currently unavailable (e.g., sick leave, suspended). You MUST completely SKIP them and assign the duty to the next available person in the sequence. Do NOT schedule them under any circumstances.
-</rule_inactive>""",
-
-    "param_inactive": "<inactive_ids>{inactive_ids}</inactive_ids>",
-    
-    # --------------------------------------------------------------
-
-    "rule_multi_day": """<rule_multi_day>
-[PATCH PRINCIPLE] 
-The user is requesting a schedule spanning multiple days. Count exactly how many days are requested. ONLY generate schedule entries for these specific dates. OVER-GENERATION IS FATAL.
-</rule_multi_day>"""
+    "rule_debt": (
+        "Debt priority: if an available ID has unresolved debt, prefer assigning that ID early. "
+        "One scheduled appearance clears only one debt count."
+    ),
+    "param_debt": "current_debt_counts={debt_counts}",
+    "rule_credit": (
+        "Credit rule: when the normal roster progression reaches a credited ID, skip that ID once if possible. "
+        "Credit is consumed only when that skip actually happens."
+    ),
+    "param_credit": "current_credit_counts={credit_counts}",
+    "rule_inactive": (
+        "Inactive IDs are unavailable and must never be assigned."
+    ),
+    "param_inactive": "inactive_ids={inactive_ids}",
+    "rule_multi_day": (
+        "Only generate the exact requested dates. Over-generation is fatal."
+    ),
 }

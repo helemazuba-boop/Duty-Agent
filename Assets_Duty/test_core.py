@@ -295,7 +295,7 @@ class TestSaveJsonAtomic(unittest.TestCase):
 
 
 class TestCallLlmPayloadIsolation(unittest.TestCase):
-    def test_parse_retry_does_not_mutate_input_messages(self):
+    def test_parse_failure_does_not_mutate_input_messages(self):
         messages = [{"role": "user", "content": "hello"}]
         config = {
             "base_url": "https://example.com",
@@ -303,16 +303,9 @@ class TestCallLlmPayloadIsolation(unittest.TestCase):
             "api_key": "k",
             "llm_stream": False,
         }
-        with patch(
-            "llm_transport.call_llm_raw",
-            return_value="no csv here",
-        ), patch(
-            "llm_transport.request_llm_non_stream",
-            return_value="<csv>\nDate,Assigned_IDs,Note\n2023-10-10,4,ok\n</csv>",
-        ):
-            parsed, _ = call_llm(messages, config)
-        self.assertEqual(parsed["schedule"][0]["date"], "2023-10-10")
-        self.assertEqual(parsed["schedule"][0]["area_ids"][DEFAULT_SINGLE_AREA_NAME], "4")
+        with patch("llm_transport.call_llm_raw", return_value="no v2 sections here"):
+            with self.assertRaisesRegex(RuntimeError, "Parse failed"):
+                call_llm(messages, config)
         self.assertEqual(messages, [{"role": "user", "content": "hello"}])
 
 
@@ -354,7 +347,7 @@ class TestMergeSchedulePoolRobustness(unittest.TestCase):
 
 
 class TestCreditReconciliation(unittest.TestCase):
-    def test_uses_original_credit_when_llm_field_missing(self):
+    def test_keeps_original_credit_when_no_delta_and_no_consumption(self):
         result = reconcile_credit_list(
             original_credit_list=[7],
             new_credit_ids_from_llm=[],
@@ -363,9 +356,9 @@ class TestCreditReconciliation(unittest.TestCase):
             debt_list=[],
             has_llm_field=False,
         )
-        self.assertEqual(result, [7])
+        self.assertEqual(result, {7: 1})
 
-    def test_uses_llm_credit_when_field_present(self):
+    def test_merges_credit_delta_into_existing_counts(self):
         result = reconcile_credit_list(
             original_credit_list=[7, 8],
             new_credit_ids_from_llm=[8],
@@ -374,7 +367,7 @@ class TestCreditReconciliation(unittest.TestCase):
             debt_list=[],
             has_llm_field=True,
         )
-        self.assertEqual(result, [8])
+        self.assertEqual(result, {7: 1, 8: 2})
 
     def test_filters_debt_and_invalid_ids(self):
         result = reconcile_credit_list(
@@ -385,7 +378,7 @@ class TestCreditReconciliation(unittest.TestCase):
             debt_list=[9],
             has_llm_field=True,
         )
-        self.assertEqual(result, [7])
+        self.assertEqual(result, {7: 2})
 
 
 if __name__ == "__main__":

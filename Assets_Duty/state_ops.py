@@ -9,7 +9,7 @@ import time
 from datetime import date, datetime
 from ctypes import wintypes
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Tuple
+from typing import Callable, Dict, Iterable, List, Optional, Tuple
 
 from diagnostics import truncate_for_log
 
@@ -1020,13 +1020,105 @@ def save_roster_entries(ctx: Context, roster_entries: object) -> List[dict]:
     return normalized
 
 
+def normalize_count_map(value: object, valid_ids: Optional[set[int]] = None) -> Dict[int, int]:
+    counts: Dict[int, int] = {}
+
+    if isinstance(value, dict):
+        items = value.items()
+    elif isinstance(value, list):
+        items = ((item, 1) for item in value)
+    elif isinstance(value, str):
+        stripped = value.strip()
+        items = ((part.strip(), 1) for part in stripped.split(",") if part.strip()) if stripped else []
+    elif isinstance(value, (int, float)):
+        items = ((value, 1),)
+    else:
+        items = ()
+
+    for raw_key, raw_count in items:
+        try:
+            person_id = int(raw_key)
+        except (TypeError, ValueError):
+            continue
+        if person_id <= 0:
+            continue
+        if valid_ids is not None and person_id not in valid_ids:
+            continue
+
+        try:
+            count = int(raw_count)
+        except (TypeError, ValueError):
+            count = 1
+        if count <= 0:
+            continue
+
+        counts[person_id] = counts.get(person_id, 0) + count
+
+    return counts
+
+
+def count_map_to_id_list(value: object, valid_ids: Optional[set[int]] = None) -> List[int]:
+    return sorted(normalize_count_map(value, valid_ids).keys())
+
+
+def format_count_map_for_prompt(value: object, valid_ids: Optional[set[int]] = None) -> str:
+    counts = normalize_count_map(value, valid_ids)
+    if not counts:
+        return ""
+    parts: List[str] = []
+    for person_id in sorted(counts.keys()):
+        count = counts[person_id]
+        parts.append(f"{person_id}*{count}" if count > 1 else str(person_id))
+    return " ".join(parts)
+
+
+def clone_count_map(value: object, valid_ids: Optional[set[int]] = None) -> Dict[int, int]:
+    return dict(normalize_count_map(value, valid_ids))
+
+
+def increment_count_map_entry(counts: Dict[int, int], person_id: int, amount: int = 1) -> None:
+    if person_id <= 0 or amount <= 0:
+        return
+    counts[person_id] = counts.get(person_id, 0) + amount
+
+
+def decrement_count_map_entry(counts: Dict[int, int], person_id: int, amount: int = 1) -> bool:
+    if person_id <= 0 or amount <= 0:
+        return False
+    current = counts.get(person_id, 0)
+    if current <= 0:
+        return False
+    next_value = current - amount
+    if next_value > 0:
+        counts[person_id] = next_value
+    else:
+        counts.pop(person_id, None)
+    return True
+
+
+def apply_count_map_delta(base_counts: object, delta_counts: object, valid_ids: Optional[set[int]] = None) -> Dict[int, int]:
+    merged = clone_count_map(base_counts, valid_ids)
+    for person_id, count in normalize_count_map(delta_counts, valid_ids).items():
+        increment_count_map_entry(merged, person_id, count)
+    return merged
+
+
+def resolve_debt_credit_conflicts(debt_counts: object, credit_counts: object) -> Tuple[Dict[int, int], Dict[int, int]]:
+    debt = clone_count_map(debt_counts)
+    credit = clone_count_map(credit_counts)
+    for person_id in list(credit.keys()):
+        if debt.get(person_id, 0) > 0:
+            credit.pop(person_id, None)
+    return debt, credit
+
+
 def load_state(path: Path) -> dict:
     if not path.exists():
         return {
             "schedule_pool": [],
             "next_run_note": "",
-            "debt_list": [],
-            "credit_list": [],
+            "debt_counts": {},
+            "credit_counts": {},
             "last_pointer": 0,
         }
     with open(path, "r", encoding="utf-8-sig") as file:
@@ -1035,10 +1127,14 @@ def load_state(path: Path) -> dict:
         data["schedule_pool"] = []
     if "next_run_note" not in data or not isinstance(data["next_run_note"], str):
         data["next_run_note"] = ""
-    if "debt_list" not in data or not isinstance(data["debt_list"], list):
-        data["debt_list"] = []
-    if "credit_list" not in data or not isinstance(data["credit_list"], list):
-        data["credit_list"] = []
+    data["debt_counts"] = normalize_count_map(data.get("debt_counts", data.get("debt_list", [])))
+    data["credit_counts"] = normalize_count_map(data.get("credit_counts", data.get("credit_list", [])))
+    data["debt_counts"], data["credit_counts"] = resolve_debt_credit_conflicts(
+        data["debt_counts"],
+        data["credit_counts"],
+    )
+    data.pop("debt_list", None)
+    data.pop("credit_list", None)
     data["last_pointer"] = parse_int(data.get("last_pointer"), 0, 0, 1_000_000_000)
     return data
 
@@ -1109,18 +1205,6 @@ def _load_active_name_to_id(roster_path: Path) -> Dict[str, int]:
     }
 
 
-def _normalize_existing_id_list(raw_values: object) -> set[int]:
-    normalized: set[int] = set()
-    for raw_value in raw_values if isinstance(raw_values, list) else []:
-        try:
-            person_id = int(raw_value)
-        except (TypeError, ValueError):
-            continue
-        if person_id > 0:
-            normalized.add(person_id)
-    return normalized
-
-
 def save_schedule_entry_edit(ctx: Context, payload: dict) -> dict:
     request = dict(payload or {})
     ledger_mode = str(request.get("ledger_mode", "record") or "record").strip().lower()
@@ -1178,32 +1262,29 @@ def save_schedule_entry_edit(ctx: Context, payload: dict) -> dict:
             removed_names = old_names - new_names
             added_names = new_names - old_names
 
-            debt_set = _normalize_existing_id_list(next_state.get("debt_list", []))
-            credit_set = _normalize_existing_id_list(next_state.get("credit_list", []))
-            original_debt = set(debt_set)
-            original_credit = set(credit_set)
+            debt_counts = clone_count_map(next_state.get("debt_counts", {}))
+            credit_counts = clone_count_map(next_state.get("credit_counts", {}))
+            original_debt = dict(debt_counts)
+            original_credit = dict(credit_counts)
 
             for name in removed_names:
                 person_id = active_name_to_id.get(name)
                 if person_id is None:
                     continue
-                if person_id in credit_set:
-                    credit_set.remove(person_id)
-                else:
-                    debt_set.add(person_id)
+                if not decrement_count_map_entry(credit_counts, person_id):
+                    increment_count_map_entry(debt_counts, person_id)
 
             for name in added_names:
                 person_id = active_name_to_id.get(name)
                 if person_id is None:
                     continue
-                if person_id in debt_set:
-                    debt_set.remove(person_id)
-                else:
-                    credit_set.add(person_id)
+                if not decrement_count_map_entry(debt_counts, person_id):
+                    increment_count_map_entry(credit_counts, person_id)
 
-            ledger_applied = debt_set != original_debt or credit_set != original_credit
-            next_state["debt_list"] = sorted(debt_set)
-            next_state["credit_list"] = sorted(credit_set)
+            debt_counts, credit_counts = resolve_debt_credit_conflicts(debt_counts, credit_counts)
+            ledger_applied = debt_counts != original_debt or credit_counts != original_credit
+            next_state["debt_counts"] = debt_counts
+            next_state["credit_counts"] = credit_counts
 
         next_state["schedule_pool"] = sorted(
             schedule_pool,
@@ -1305,7 +1386,16 @@ def anonymize_instruction(text: str, name_to_id: Dict[str, int]) -> str:
 
 
 def extract_ids_from_value(value, active_set: set, limit: Optional[int] = None) -> List[int]:
-    if isinstance(value, str):
+    if isinstance(value, dict):
+        items = []
+        for key, count in value.items():
+            try:
+                parsed_count = int(count or 0)
+            except (TypeError, ValueError):
+                continue
+            if parsed_count > 0:
+                items.append(key)
+    elif isinstance(value, str):
         value = value.strip(" []")
         items = [part.strip() for part in value.split(",")] if value else []
     elif isinstance(value, list):

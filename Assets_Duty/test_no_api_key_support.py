@@ -102,7 +102,7 @@ class TestExecutorsAllowBlankApiKey(unittest.TestCase):
                 return_value=({"Alice": 1}, {1: "Alice"}, [1], {1: 1}),
             ), patch(
                 "single_pass_executor.load_state",
-                return_value={"schedule_pool": [], "debt_list": [], "credit_list": [], "next_run_note": ""},
+                return_value={"schedule_pool": [], "debt_counts": {}, "credit_counts": {}, "next_run_note": "", "last_pointer": 0},
             ), patch(
                 "single_pass_executor.load_api_key_from_env",
                 return_value="",
@@ -114,9 +114,7 @@ class TestExecutorsAllowBlankApiKey(unittest.TestCase):
                 return_value=(
                     {
                         "schedule": [{"date": "2026-03-16", "area_ids": {DEFAULT_SINGLE_AREA_NAME: [1]}, "note": ""}],
-                        "next_run_note": "",
-                        "new_debt_ids": [],
-                        "new_credit_ids": [],
+                        "state_delta": {"debt_counts": {}, "credit_counts": {}},
                     },
                     "ok",
                 ),
@@ -127,10 +125,10 @@ class TestExecutorsAllowBlankApiKey(unittest.TestCase):
                 return_value=[{"date": "2026-03-16", "area_ids": {DEFAULT_SINGLE_AREA_NAME: [1]}, "note": ""}],
             ), patch(
                 "single_pass_executor.recover_missing_debts",
-                return_value=[],
+                return_value={},
             ), patch(
                 "single_pass_executor.reconcile_credit_list",
-                return_value=[],
+                return_value={},
             ), patch(
                 "single_pass_executor.restore_schedule",
                 return_value=[{"date": "2026-03-16", "area_assignments": {DEFAULT_SINGLE_AREA_NAME: ["Alice"]}, "note": ""}],
@@ -164,7 +162,7 @@ class TestExecutorsAllowBlankApiKey(unittest.TestCase):
                 return_value=({"Alice": 1}, {1: "Alice"}, [1], {1: 1}),
             ), patch(
                 "multi_agent.executor.load_state",
-                return_value={"schedule_pool": [], "debt_list": [], "credit_list": [], "next_run_note": "", "last_pointer": 0},
+                return_value={"schedule_pool": [], "debt_counts": {}, "credit_counts": {}, "next_run_note": "", "last_pointer": 0},
             ), patch(
                 "multi_agent.executor.load_api_key_from_env",
                 return_value="",

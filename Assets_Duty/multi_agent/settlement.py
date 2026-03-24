@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any, Dict, List
 
 from postprocess import merge_schedule_pool, reconcile_credit_list, recover_missing_debts, restore_schedule
-from state_ops import extract_ids_from_value, update_state
+from state_ops import clone_count_map, resolve_debt_credit_conflicts, update_state
 
 from .contracts import FrozenSnapshot
 from .validators import validate_final_schedule
@@ -35,27 +35,23 @@ def finalize_multi_agent_run(
     def _apply_state_update(current_state: Dict[str, Any]) -> Dict[str, Any]:
         state_data = dict(current_state)
         state_data["next_run_note"] = build_next_run_note(snapshot, barrier2)
-        state_data["debt_list"] = recover_missing_debts(
-            extract_ids_from_value(state_data.get("debt_list", []), set(snapshot.all_ids)),
-            extract_ids_from_value(barrier1["new_debt_ids"], set(snapshot.all_ids)),
+        state_data["debt_counts"] = recover_missing_debts(
+            clone_count_map(state_data.get("debt_counts", {}), set(snapshot.all_ids)),
+            {person_id: 1 for person_id in barrier1["new_debt_ids"]},
             assembled_schedule,
         )
-
-        credit_seed = [
-            person_id
-            for person_id in extract_ids_from_value(state_data.get("credit_list", []), set(snapshot.all_ids))
-            if person_id not in set(barrier2["consumed_credit_ids"])
-        ]
-        merged_credit_ids = list(dict.fromkeys(
-            credit_seed + extract_ids_from_value(barrier1["new_credit_ids"], set(snapshot.all_ids))
-        ))
-        state_data["credit_list"] = reconcile_credit_list(
-            credit_seed,
-            merged_credit_ids,
+        state_data["credit_counts"] = reconcile_credit_list(
+            clone_count_map(state_data.get("credit_counts", {}), set(snapshot.all_ids)),
+            {person_id: 1 for person_id in barrier1["new_credit_ids"]},
             assembled_schedule,
             set(snapshot.all_ids),
-            state_data["debt_list"],
+            state_data["debt_counts"],
             True,
+            consumed_credit_ids=barrier2["consumed_credit_ids"],
+        )
+        state_data["debt_counts"], state_data["credit_counts"] = resolve_debt_credit_conflicts(
+            state_data["debt_counts"],
+            state_data["credit_counts"],
         )
         state_data["last_pointer"] = barrier2["pointer_after"]
         state_data["schedule_pool"] = merge_schedule_pool(

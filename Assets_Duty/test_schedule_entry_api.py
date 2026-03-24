@@ -51,8 +51,8 @@ class TestScheduleEntryEditStore(unittest.TestCase):
                         }
                     ],
                     "next_run_note": "keep-note",
-                    "debt_list": [3],
-                    "credit_list": [1],
+                    "debt_counts": {3: 1},
+                    "credit_counts": {1: 1},
                     "last_pointer": 9,
                 },
             )
@@ -74,8 +74,8 @@ class TestScheduleEntryEditStore(unittest.TestCase):
         self.assertEqual(result["status"], "success")
         self.assertTrue(result["ledger_applied"])
         self.assertEqual(state["schedule_pool"][0]["area_assignments"], {"教室": ["Bob", "Carol"]})
-        self.assertEqual(state["debt_list"], [])
-        self.assertEqual(state["credit_list"], [])
+        self.assertEqual(state["debt_counts"], {})
+        self.assertEqual(state["credit_counts"], {})
         self.assertEqual(state["next_run_note"], "keep-note")
         self.assertEqual(state["last_pointer"], 9)
 
@@ -102,8 +102,8 @@ class TestScheduleEntryEditStore(unittest.TestCase):
                         }
                     ],
                     "next_run_note": "keep-note",
-                    "debt_list": [3],
-                    "credit_list": [1],
+                    "debt_counts": {3: 1},
+                    "credit_counts": {1: 1},
                     "last_pointer": 9,
                 },
             )
@@ -125,8 +125,8 @@ class TestScheduleEntryEditStore(unittest.TestCase):
         self.assertEqual(result["status"], "success")
         self.assertFalse(result["ledger_applied"])
         self.assertEqual(state["schedule_pool"][0]["area_assignments"], {"教室": ["Bob", "Carol"]})
-        self.assertEqual(state["debt_list"], [3])
-        self.assertEqual(state["credit_list"], [1])
+        self.assertEqual(state["debt_counts"], {3: 1})
+        self.assertEqual(state["credit_counts"], {1: 1})
         self.assertEqual(state["next_run_note"], "keep-note")
         self.assertEqual(state["last_pointer"], 9)
 
@@ -141,8 +141,8 @@ class TestScheduleEntryEditStore(unittest.TestCase):
                         {"date": "2026-03-22", "day": "周日", "area_assignments": {}, "note": ""},
                     ],
                     "next_run_note": "",
-                    "debt_list": [],
-                    "credit_list": [],
+                    "debt_counts": {},
+                    "credit_counts": {},
                     "last_pointer": 0,
                 },
             )
@@ -167,8 +167,8 @@ class TestScheduleEntryEditStore(unittest.TestCase):
                 {
                     "schedule_pool": [],
                     "next_run_note": "",
-                    "debt_list": [],
-                    "credit_list": [],
+                    "debt_counts": {},
+                    "credit_counts": {},
                     "last_pointer": 0,
                 },
             )
@@ -200,8 +200,8 @@ class TestScheduleEntryEditStore(unittest.TestCase):
                 {
                     "schedule_pool": [],
                     "next_run_note": "",
-                    "debt_list": [2],
-                    "credit_list": [],
+                    "debt_counts": {2: 1},
+                    "credit_counts": {},
                     "last_pointer": 0,
                 },
             )
@@ -220,8 +220,8 @@ class TestScheduleEntryEditStore(unittest.TestCase):
             )
             state = load_state(context.paths["state"])
 
-        self.assertEqual(state["debt_list"], [2])
-        self.assertEqual(state["credit_list"], [])
+        self.assertEqual(state["debt_counts"], {2: 1})
+        self.assertEqual(state["credit_counts"], {})
 
 
 class TestScheduleEntryEditApi(unittest.TestCase):
@@ -244,8 +244,8 @@ class TestScheduleEntryEditApi(unittest.TestCase):
                         {"date": "2026-03-21", "day": "周六", "area_assignments": {"教室": ["Alice"]}, "note": ""}
                     ],
                     "next_run_note": "",
-                    "debt_list": [],
-                    "credit_list": [],
+                    "debt_counts": {},
+                    "credit_counts": {},
                     "last_pointer": 0,
                 },
             )
@@ -294,8 +294,8 @@ class TestScheduleEntryEditApi(unittest.TestCase):
                         {"date": "2026-03-21", "day": "周六", "area_assignments": {"教室": ["Alice"]}, "note": ""}
                     ],
                     "next_run_note": "",
-                    "debt_list": [],
-                    "credit_list": [],
+                    "debt_counts": {},
+                    "credit_counts": {},
                     "last_pointer": 0,
                 },
             )

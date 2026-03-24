@@ -3,6 +3,7 @@
 
 import sys
 import unittest
+from datetime import date
 from pathlib import Path
 from unittest.mock import patch
 
@@ -53,68 +54,52 @@ Need to think first. {"noise": 1}
         self.assertIn("<thinking>", raw_text)
 
     @patch("llm_transport.call_llm_raw")
-    def test_call_llm_parses_csv_after_reasoning_blocks(self, mock_call_llm_raw):
+    def test_call_llm_parses_v2_sections_after_reasoning_blocks(self, mock_call_llm_raw):
         mock_call_llm_raw.return_value = """
 <think>
-I might mention RESET here, but this is still just reasoning.
+draft only
 </think>
-<csv>
-Date,教室,清洁区,Note
-2026-03-19,"1001,1002",1001,Ready
-</csv>
-<next_run_note>Next time keep balance.</next_run_note>
+@areas
+A=教室 B=清洁区 S=大扫除
+
+@schedule
+03-24: A=1001 1002; B=1003 1004
+03-28: A=1009 1010; B=1011 1012; S=1013 1014; _note=周五大扫除
+
+@state
+debt=1004*2 1005
+credit=1002
 """
 
         parsed, raw_text = call_llm(
-            [{"role": "user", "content": "Return CSV"}],
+            [{"role": "user", "content": "Return V2"}],
             TEST_CONFIG,
+            start_date_value=date(2026, 3, 24),
         )
 
-        self.assertEqual(len(parsed["schedule"]), 1)
-        self.assertEqual(parsed["schedule"][0]["date"], "2026-03-19")
-        self.assertEqual(parsed["schedule"][0]["area_ids"]["教室"], "1001,1002")
-        self.assertEqual(parsed["schedule"][0]["area_ids"]["清洁区"], "1001")
-        self.assertEqual(parsed["next_run_note"], "Next time keep balance.")
+        self.assertEqual(len(parsed["schedule"]), 2)
+        self.assertEqual(parsed["schedule"][0]["date"], "2026-03-24")
+        self.assertEqual(parsed["schedule"][1]["area_ids"]["大扫除"], [1013, 1014])
+        self.assertEqual(parsed["schedule"][1]["note"], "周五大扫除")
+        self.assertEqual(parsed["state_delta"]["debt_counts"], {1004: 2, 1005: 1})
+        self.assertEqual(parsed["state_delta"]["credit_counts"], {1002: 1})
         self.assertIn("<think>", raw_text)
 
     @patch("llm_transport.call_llm_raw")
-    def test_call_llm_uses_content_after_reset_control_line(self, mock_call_llm_raw):
+    def test_call_llm_rejects_note_not_last(self, mock_call_llm_raw):
         mock_call_llm_raw.return_value = """
-<csv>
-Date,值日,Note
-2026-03-19,9999,Bad draft
-</csv>
-RESET
-<csv>
-Date,值日,Note
-2026-03-20,1003,Final draft
-</csv>
+@areas
+A=教室
+
+@schedule
+03-24: _note=bad; A=1001
 """
-
-        parsed, _ = call_llm(
-            [{"role": "user", "content": "Return CSV"}],
-            TEST_CONFIG,
-        )
-
-        self.assertEqual(len(parsed["schedule"]), 1)
-        self.assertEqual(parsed["schedule"][0]["date"], "2026-03-20")
-        self.assertEqual(parsed["schedule"][0]["area_ids"][DEFAULT_SINGLE_AREA_NAME], "1003")
-
-    @patch("llm_transport.call_llm_raw")
-    def test_call_llm_parses_single_area_dynamic_header(self, mock_call_llm_raw):
-        mock_call_llm_raw.return_value = """
-<csv>
-Date,值日,Note
-2026-03-21,"1002,1003",Compact
-</csv>
-"""
-
-        parsed, _ = call_llm(
-            [{"role": "user", "content": "Return CSV"}],
-            TEST_CONFIG,
-        )
-
-        self.assertEqual(parsed["schedule"][0]["area_ids"][DEFAULT_SINGLE_AREA_NAME], "1002,1003")
+        with self.assertRaisesRegex(RuntimeError, "_note must be last"):
+            call_llm(
+                [{"role": "user", "content": "Return V2"}],
+                TEST_CONFIG,
+                start_date_value=date(2026, 3, 24),
+            )
 
     @patch("llm_transport.call_llm_raw")
     def test_call_llm_keeps_legacy_assigned_ids_as_single_area_fallback(self, mock_call_llm_raw):
@@ -128,9 +113,32 @@ Date,Assigned_IDs,Note
         parsed, _ = call_llm(
             [{"role": "user", "content": "Return CSV"}],
             TEST_CONFIG,
+            start_date_value=date(2026, 3, 22),
         )
 
         self.assertEqual(parsed["schedule"][0]["area_ids"][DEFAULT_SINGLE_AREA_NAME], "1004")
+        self.assertEqual(parsed["state_delta"]["debt_counts"], {})
+        self.assertEqual(parsed["state_delta"]["credit_counts"], {})
+
+    @patch("llm_transport.call_llm_raw")
+    def test_call_llm_handles_cross_year_mmdd(self, mock_call_llm_raw):
+        mock_call_llm_raw.return_value = """
+@areas
+A=值日
+
+@schedule
+12-31: A=1001
+01-02: A=1002
+"""
+
+        parsed, _ = call_llm(
+            [{"role": "user", "content": "Return V2"}],
+            TEST_CONFIG,
+            start_date_value=date(2026, 12, 31),
+        )
+
+        self.assertEqual(parsed["schedule"][0]["date"], "2026-12-31")
+        self.assertEqual(parsed["schedule"][1]["date"], "2027-01-02")
 
 
 if __name__ == "__main__":
