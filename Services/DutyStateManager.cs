@@ -18,10 +18,16 @@ public interface IStateAndRosterManager
 
 public class DutyStateManager : IStateAndRosterManager, IDisposable
 {
+    private const int StateChangeDebounceMilliseconds = 150;
+    private const int StateReadRetryCount = 5;
+    private const int StateReadRetryDelayMilliseconds = 50;
+
     private readonly string _statePath;
     private FileSystemWatcher? _stateWatcher;
     private bool _disposed;
     private readonly SemaphoreSlim _stateLock = new(1, 1);
+    private readonly object _stateChangeGate = new();
+    private CancellationTokenSource? _pendingStateChangeCts;
 
     public event EventHandler<DutyState>? StateChanged;
 
@@ -49,8 +55,7 @@ public class DutyStateManager : IStateAndRosterManager, IDisposable
 
             try
             {
-                var json = File.ReadAllText(_statePath);
-                return JsonSerializer.Deserialize<DutyState>(json) ?? new DutyState();
+                return ReadStateFileUnsafe(createIfMissing: false);
             }
             catch (Exception ex)
             {
@@ -66,15 +71,9 @@ public class DutyStateManager : IStateAndRosterManager, IDisposable
 
     private DutyState LoadStateInternalUnsafe()
     {
-        if (!File.Exists(_statePath))
-        {
-            return new DutyState();
-        }
-
         try
         {
-            var json = File.ReadAllText(_statePath);
-            return JsonSerializer.Deserialize<DutyState>(json) ?? new DutyState();
+            return ReadStateFileUnsafe(createIfMissing: false);
         }
         catch (Exception ex)
         {
@@ -87,11 +86,14 @@ public class DutyStateManager : IStateAndRosterManager, IDisposable
     {
         try
         {
-            _stateWatcher = new FileSystemWatcher(dataDir, "state.json")
+            _stateWatcher = new FileSystemWatcher(dataDir, Path.GetFileName(_statePath))
             {
                 NotifyFilter = NotifyFilters.LastWrite | NotifyFilters.FileName | NotifyFilters.Size
             };
             _stateWatcher.Changed += OnStateFileChanged;
+            _stateWatcher.Created += OnStateFileChanged;
+            _stateWatcher.Deleted += OnStateFileChanged;
+            _stateWatcher.Renamed += OnStateFileRenamed;
             _stateWatcher.EnableRaisingEvents = true;
         }
         catch (Exception ex)
@@ -102,10 +104,116 @@ public class DutyStateManager : IStateAndRosterManager, IDisposable
 
     private void OnStateFileChanged(object sender, FileSystemEventArgs e)
     {
-        Avalonia.Threading.Dispatcher.UIThread.InvokeAsync(() =>
+        if (IsStatePath(e.FullPath))
         {
-            StateChanged?.Invoke(this, LoadState());
+            QueueStateChangedNotification();
+        }
+    }
+
+    private void OnStateFileRenamed(object sender, RenamedEventArgs e)
+    {
+        if (IsStatePath(e.FullPath) || IsStatePath(e.OldFullPath))
+        {
+            QueueStateChangedNotification();
+        }
+    }
+
+    private void QueueStateChangedNotification()
+    {
+        CancellationTokenSource nextCts;
+        lock (_stateChangeGate)
+        {
+            _pendingStateChangeCts?.Cancel();
+            _pendingStateChangeCts?.Dispose();
+            _pendingStateChangeCts = new CancellationTokenSource();
+            nextCts = _pendingStateChangeCts;
+        }
+
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await Task.Delay(StateChangeDebounceMilliseconds, nextCts.Token).ConfigureAwait(false);
+                var state = LoadStateSnapshotWithoutCreating();
+                await Dispatcher.UIThread.InvokeAsync(() =>
+                {
+                    if (!_disposed)
+                    {
+                        StateChanged?.Invoke(this, state);
+                    }
+                });
+            }
+            catch (OperationCanceledException)
+            {
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine($"State watcher dispatch error: {ex.Message}");
+            }
         });
+    }
+
+    private DutyState LoadStateSnapshotWithoutCreating()
+    {
+        _stateLock.Wait();
+        try
+        {
+            return ReadStateFileUnsafe(createIfMissing: false);
+        }
+        finally
+        {
+            _stateLock.Release();
+        }
+    }
+
+    private DutyState ReadStateFileUnsafe(bool createIfMissing)
+    {
+        for (var attempt = 0; attempt < StateReadRetryCount; attempt++)
+        {
+            if (!File.Exists(_statePath))
+            {
+                if (!createIfMissing)
+                {
+                    Thread.Sleep(StateReadRetryDelayMilliseconds);
+                    continue;
+                }
+
+                var state = new DutyState();
+                var json = JsonSerializer.Serialize(state, new JsonSerializerOptions { WriteIndented = true });
+                File.WriteAllText(_statePath, json);
+                return state;
+            }
+
+            try
+            {
+                var json = File.ReadAllText(_statePath);
+                return JsonSerializer.Deserialize<DutyState>(json) ?? new DutyState();
+            }
+            catch (IOException) when (attempt < StateReadRetryCount - 1)
+            {
+                Thread.Sleep(StateReadRetryDelayMilliseconds);
+            }
+            catch (UnauthorizedAccessException) when (attempt < StateReadRetryCount - 1)
+            {
+                Thread.Sleep(StateReadRetryDelayMilliseconds);
+            }
+            catch (JsonException) when (attempt < StateReadRetryCount - 1)
+            {
+                Thread.Sleep(StateReadRetryDelayMilliseconds);
+            }
+        }
+
+        return new DutyState();
+    }
+
+    private bool IsStatePath(string? path)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            return false;
+        }
+
+        return string.Equals(Path.GetFullPath(path), Path.GetFullPath(_statePath), StringComparison.OrdinalIgnoreCase);
     }
 
     public void Dispose()
@@ -117,9 +225,19 @@ public class DutyStateManager : IStateAndRosterManager, IDisposable
         {
             _stateWatcher.EnableRaisingEvents = false;
             _stateWatcher.Changed -= OnStateFileChanged;
+            _stateWatcher.Created -= OnStateFileChanged;
+            _stateWatcher.Deleted -= OnStateFileChanged;
+            _stateWatcher.Renamed -= OnStateFileRenamed;
             _stateWatcher.Dispose();
         }
-        
+
+        lock (_stateChangeGate)
+        {
+            _pendingStateChangeCts?.Cancel();
+            _pendingStateChangeCts?.Dispose();
+            _pendingStateChangeCts = null;
+        }
+
         _stateLock.Dispose();
     }
 }

@@ -493,7 +493,7 @@ public sealed partial class DutySettingsRepository : IDutySettingsRepository
         settings.Host.AutoRunTime = NormalizeTime(hostPatch.AutoRunTime, settings.Host.AutoRunTime);
         settings.Host.AutoRunTriggerNotificationEnabled = hostPatch.AutoRunTriggerNotificationEnabled;
         settings.Host.DutyReminderEnabled = hostPatch.DutyReminderEnabled;
-        settings.Host.DutyReminderTimes = [NormalizeReminderTime((hostPatch.DutyReminderTimes ?? []).FirstOrDefault())];
+        settings.Host.DutyReminderTimes = NormalizeReminderTimes(hostPatch.DutyReminderTimes);
         settings.Host.ServerPortMode = DutyServerPortModes.Normalize(hostPatch.ServerPortMode);
         settings.Host.FixedServerPort = NormalizeServicePort(hostPatch.FixedServerPort);
         settings.Host.EnableMcp = hostPatch.EnableMcp;
@@ -541,7 +541,7 @@ public sealed partial class DutySettingsRepository : IDutySettingsRepository
 
         if (patch.DutyReminderTimes != null)
         {
-            host.DutyReminderTimes = [NormalizeReminderTime(patch.DutyReminderTimes.FirstOrDefault())];
+            host.DutyReminderTimes = NormalizeReminderTimes(patch.DutyReminderTimes);
         }
 
         if (patch.ServerPortMode != null)
@@ -1088,11 +1088,35 @@ public sealed partial class DutySettingsRepository : IDutySettingsRepository
 
     private static List<string> NormalizeReminderTimes(IEnumerable<string>? values)
     {
-        var normalized = (values ?? [])
-            .Select(NormalizeReminderTime)
-            .Distinct(StringComparer.Ordinal)
-            .OrderBy(x => x, StringComparer.Ordinal)
-            .ToList();
+        var normalized = new List<string>();
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        if (values != null)
+        {
+            foreach (var raw in values)
+            {
+                var text = raw ?? string.Empty;
+                foreach (var token in text.Split([',', ';', '\r', '\n'], StringSplitOptions.RemoveEmptyEntries))
+                {
+                    if (!TimeSpan.TryParse(token.Trim(), out var parsed))
+                    {
+                        continue;
+                    }
+
+                    if (parsed < TimeSpan.Zero || parsed >= TimeSpan.FromDays(1))
+                    {
+                        continue;
+                    }
+
+                    var time = $"{parsed.Hours:D2}:{parsed.Minutes:D2}";
+                    if (seen.Add(time))
+                    {
+                        normalized.Add(time);
+                    }
+                }
+            }
+        }
+
+        normalized.Sort(StringComparer.Ordinal);
         return normalized.Count == 0 ? [DefaultDutyReminderTime] : normalized;
     }
 

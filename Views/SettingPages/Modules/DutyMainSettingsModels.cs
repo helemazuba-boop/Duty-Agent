@@ -17,7 +17,7 @@ internal sealed class DutyHostSettingsValues
     public string AutoRunTime { get; init; } = "08:00";
     public bool AutoRunTriggerNotificationEnabled { get; init; }
     public bool DutyReminderEnabled { get; init; }
-    public string DutyReminderTime { get; init; } = "07:40";
+    public List<string> DutyReminderTimes { get; init; } = ["07:40"];
     public string ServerPortMode { get; init; } = DutyServerPortModes.Random;
     public string FixedServerPortText { get; init; } = string.Empty;
     public bool EnableMcp { get; init; }

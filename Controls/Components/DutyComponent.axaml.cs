@@ -65,14 +65,13 @@ public partial class DutyComponent : ComponentBase<DutyComponentSettings>
                 return;
             }
 
-            var areaOrder = _service.GetAreaNames();
             var assignments = _service.GetAreaAssignments(item);
-            foreach (var area in assignments.Keys)
+            var areaOrder = assignments.Keys.ToList();
+
+            if (areaOrder.Count == 0)
             {
-                if (!areaOrder.Contains(area, StringComparer.Ordinal))
-                {
-                    areaOrder.Add(area);
-                }
+                ShowSingleRow("\u8BE5\u65E5\u6682\u65E0\u503C\u65E5\u5B89\u6392");
+                return;
             }
 
             if (Settings?.UseDualRowDisplay == true)

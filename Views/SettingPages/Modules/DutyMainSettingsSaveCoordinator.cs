@@ -153,7 +153,7 @@ internal sealed class DutyMainSettingsSaveCoordinator
                 AutoRunTime = DutyScheduleOrchestrator.NormalizeTimeOrThrow(context.Current.Host.AutoRunTime),
                 AutoRunTriggerNotificationEnabled = context.Current.Host.AutoRunTriggerNotificationEnabled,
                 DutyReminderEnabled = context.Current.Host.DutyReminderEnabled,
-                DutyReminderTimes = [NormalizeDutyReminderTime(context.Current.Host.DutyReminderTime)],
+                DutyReminderTimes = DutyMainSettingsHostModule.NormalizeDutyReminderTimes(context.Current.Host.DutyReminderTimes),
                 ServerPortMode = DutyServerPortModes.Normalize(context.Current.Host.ServerPortMode),
                 FixedServerPort = ParseFixedServerPortOrThrow(
                     ResolveFixedServerPortTextForSave(context.Current.Host, context.LastAppliedHost),
@@ -220,7 +220,7 @@ internal sealed class DutyMainSettingsSaveCoordinator
             AutoRunTime = host.AutoRunTime,
             AutoRunTriggerNotificationEnabled = host.AutoRunTriggerNotificationEnabled,
             DutyReminderEnabled = host.DutyReminderEnabled,
-            DutyReminderTime = (host.DutyReminderTimes ?? []).FirstOrDefault(x => !string.IsNullOrWhiteSpace(x)) ?? "07:40",
+            DutyReminderTimes = DutyMainSettingsHostModule.NormalizeDutyReminderTimes(host.DutyReminderTimes),
             ServerPortMode = host.ServerPortMode,
             FixedServerPortText = host.FixedServerPort?.ToString() ?? string.Empty,
             EnableMcp = host.EnableMcp,
@@ -259,13 +259,6 @@ internal sealed class DutyMainSettingsSaveCoordinator
             PlanPresets = _backendModule.ClonePlanPresets(plans),
             DutyRule = backend.DutyRule ?? string.Empty
         };
-    }
-
-    private static string NormalizeDutyReminderTime(string? input)
-    {
-        return TimeSpan.TryParse(input, out var parsed)
-            ? $"{parsed.Hours:D2}:{parsed.Minutes:D2}"
-            : "07:40";
     }
 
     private static string ResolveFixedServerPortTextForSave(DutyHostSettingsValues current, DutyHostSettingsValues lastApplied)

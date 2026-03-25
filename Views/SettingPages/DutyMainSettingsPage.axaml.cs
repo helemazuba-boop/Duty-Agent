@@ -83,6 +83,7 @@ public partial class DutyMainSettingsPage : SettingsPageBase
     public DutyMainSettingsPage()
     {
         InitializeComponent();
+        ConfigureTimingEditors();
         _hostModule = new DutyMainSettingsHostModule();
         _backendModule = new DutyMainSettingsBackendModule();
         _saveCoordinator = new DutyMainSettingsSaveCoordinator(SettingsRepository, BackendSettingsSyncService, _hostModule, _backendModule, SettingsTrace);
@@ -111,7 +112,6 @@ public partial class DutyMainSettingsPage : SettingsPageBase
             InitializeAccessTokenModeOptions();
             InitializeServerPortModeOptions();
             InitializeComponentRefreshTimeOptions();
-            InitializeDutyReminderTimeOptions();
             InitializeScheduleDayOptions();
             InitializeScheduleRecordModeOptions();
             UpdateExecutionModeVisibility();
@@ -127,8 +127,62 @@ public partial class DutyMainSettingsPage : SettingsPageBase
         _ = LoadDataAsync("页面初始化");
     }
 
+    private void ConfigureTimingEditors()
+    {
+        ConfigureRotationTimeEditor();
+        ConfigureDutyReminderEditor();
+    }
+
+    private void ConfigureRotationTimeEditor()
+    {
+        if (FindSettingsExpanderItem(ComponentRefreshHourComboBox) is { } item)
+        {
+            item.Content = "值日轮换时间";
+            item.Description = "到达该时间后，首页组件切换显示下一天的值日安排。";
+        }
+    }
+
+    private void ConfigureDutyReminderEditor()
+    {
+        DutyReminderTimesBox.IsVisible = true;
+        DutyReminderHourComboBox.IsVisible = false;
+        DutyReminderMinuteComboBox.IsVisible = false;
+        if (DutyReminderHourComboBox.Parent is Control hourField)
+        {
+            hourField.IsVisible = false;
+        }
+
+        if (DutyReminderMinuteComboBox.Parent is Control minuteField)
+        {
+            minuteField.IsVisible = false;
+        }
+
+        if (FindSettingsExpanderItem(DutyReminderTimesBox) is { } item)
+        {
+            item.Content = "提醒时间";
+            item.Description = "支持输入多个提醒时间，使用逗号、分号或换行分隔。";
+        }
+    }
+
+    private static SettingsExpanderItem? FindSettingsExpanderItem(Control control)
+    {
+        Control? current = control;
+        while (current != null)
+        {
+            if (current is SettingsExpanderItem item)
+            {
+                return item;
+            }
+
+            current = current.Parent as Control;
+        }
+
+        return null;
+    }
+
     private void OnPageLoaded(object? sender, RoutedEventArgs e)
     {
+        ConfigureTimingEditors();
         EnsureBackendSyncSubscription();
         DutyDiagnosticsLogger.Info("SettingsPage", "Settings page loaded; beginning unified settings load.");
         TraceSettings("page_loaded");
@@ -375,14 +429,6 @@ public partial class DutyMainSettingsPage : SettingsPageBase
         ComponentRefreshMinuteComboBox.ItemsSource = Enumerable.Range(0, 60).Select(x => x.ToString("D2")).ToList();
         ComponentRefreshHourComboBox.SelectedItem = "08";
         ComponentRefreshMinuteComboBox.SelectedItem = "00";
-    }
-
-    private void InitializeDutyReminderTimeOptions()
-    {
-        DutyReminderHourComboBox.ItemsSource = Enumerable.Range(0, 24).Select(x => x.ToString("D2")).ToList();
-        DutyReminderMinuteComboBox.ItemsSource = Enumerable.Range(0, 60).Select(x => x.ToString("D2")).ToList();
-        DutyReminderHourComboBox.SelectedItem = "07";
-        DutyReminderMinuteComboBox.SelectedItem = "40";
     }
 
     private void InitializeScheduleDayOptions()
@@ -1633,7 +1679,7 @@ public partial class DutyMainSettingsPage : SettingsPageBase
                 SetAutoRunTimeSelection(hostSettings.AutoRunTime);
                 AutoRunTriggerNotificationSwitch.IsChecked = hostSettings.AutoRunTriggerNotificationEnabled;
                 DutyReminderEnabledSwitch.IsChecked = hostSettings.DutyReminderEnabled;
-                SetDutyReminderTimeSelection(hostSettings.DutyReminderTime);
+                DutyReminderTimesBox.Text = DutyMainSettingsHostModule.FormatDutyReminderTimes(hostSettings.DutyReminderTimes);
                 SetServerPortModeSelection(hostSettings.ServerPortMode);
                 FixedServerPortBox.Text = hostSettings.FixedServerPortText;
                 EnableMcpSwitch.IsChecked = hostSettings.EnableMcp;
@@ -1707,8 +1753,7 @@ public partial class DutyMainSettingsPage : SettingsPageBase
         AutoRunMinuteComboBox.IsEnabled = enabled;
         AutoRunTriggerNotificationSwitch.IsEnabled = enabled;
         DutyReminderEnabledSwitch.IsEnabled = enabled;
-        DutyReminderHourComboBox.IsEnabled = enabled;
-        DutyReminderMinuteComboBox.IsEnabled = enabled;
+        DutyReminderTimesBox.IsEnabled = enabled;
         UpdateAccessSecurityControlsState(enabled);
         UpdateMcpEndpointControlsState(enabled);
         EnableWebDebugLayerSwitch.IsEnabled = enabled;
@@ -1916,7 +1961,7 @@ public partial class DutyMainSettingsPage : SettingsPageBase
             AutoRunTime = host.AutoRunTime,
             AutoRunTriggerNotificationEnabled = host.AutoRunTriggerNotificationEnabled,
             DutyReminderEnabled = host.DutyReminderEnabled,
-            DutyReminderTime = (host.DutyReminderTimes ?? []).FirstOrDefault(x => !string.IsNullOrWhiteSpace(x)) ?? "07:40",
+            DutyReminderTimes = DutyMainSettingsHostModule.NormalizeDutyReminderTimes(host.DutyReminderTimes),
             ServerPortMode = DutyServerPortModes.Normalize(host.ServerPortMode),
             FixedServerPortText = host.FixedServerPort?.ToString() ?? string.Empty,
             EnableMcp = host.EnableMcp,
@@ -2394,24 +2439,6 @@ public partial class DutyMainSettingsPage : SettingsPageBase
             "\u6D4B\u8BD5\u901A\u77E5",
             "\u6559\u5BA4\uFF1A\u5F20\u4E09\u3001\u674E\u56DB\uFF1B\u6E05\u6D01\u533A\uFF1A\u738B\u4E94\u3001\u8D75\u516D",
             duration);
-    }
-
-    private string GetSelectedDutyReminderTime()
-    {
-        var hour = DutyReminderHourComboBox.SelectedItem as string ?? "07";
-        var minute = DutyReminderMinuteComboBox.SelectedItem as string ?? "40";
-        return $"{hour}:{minute}";
-    }
-
-    private void SetDutyReminderTimeSelection(string? dutyReminderTime)
-    {
-        if (!TimeSpan.TryParse(dutyReminderTime, out var parsed))
-        {
-            parsed = new TimeSpan(7, 40, 0);
-        }
-
-        DutyReminderHourComboBox.SelectedItem = parsed.Hours.ToString("D2");
-        DutyReminderMinuteComboBox.SelectedItem = parsed.Minutes.ToString("D2");
     }
 
     private static bool TryNormalizeScheduleDate(string? rawDate, out string normalizedDate, out DateTime parsedDate)
@@ -2932,7 +2959,7 @@ public partial class DutyMainSettingsPage : SettingsPageBase
             ComponentRefreshTime = GetSelectedComponentRefreshTime(),
             AutoRunTriggerNotificationEnabled = AutoRunTriggerNotificationSwitch.IsChecked == true,
             DutyReminderEnabled = DutyReminderEnabledSwitch.IsChecked == true,
-            DutyReminderTime = GetSelectedDutyReminderTime(),
+            DutyReminderTimes = DutyMainSettingsHostModule.NormalizeDutyReminderTimes([DutyReminderTimesBox.Text ?? string.Empty]),
             ServerPortMode = GetSelectedServerPortMode(),
             FixedServerPortText = (FixedServerPortBox.Text ?? string.Empty).Trim(),
             EnableMcp = EnableMcpSwitch.IsChecked == true,

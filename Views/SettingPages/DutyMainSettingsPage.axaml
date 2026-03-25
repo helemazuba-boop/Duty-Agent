@@ -82,6 +82,28 @@
                                          Description="选择本次排班使用的方案，也可以在这里新建、复制和删除方案。">
                     <ui:SettingsExpanderItem.Footer>
                         <StackPanel Orientation="Horizontal" Spacing="8">
+                            <TextBox x:Name="LegacyDutyReminderTimesBoxA"
+                                     IsVisible="False"
+                                     Width="320"
+                                     MinHeight="56"
+                                     AcceptsReturn="True"
+                                     TextWrapping="Wrap"
+                                     Watermark="例如：07:40, 12:10; 16:30"
+                                     TextChanged="OnConfigInputTextChanged"
+                                     LostFocus="OnConfigInputLostFocus"
+                                     KeyDown="OnConfigInputKeyDown" />
+                            <StackPanel Orientation="Horizontal" Spacing="8" IsVisible="False">
+                            <TextBox x:Name="LegacyDutyReminderTimesBox"
+                                     IsVisible="False"
+                                     Width="320"
+                                     MinHeight="56"
+                                     AcceptsReturn="True"
+                                     TextWrapping="Wrap"
+                                     Watermark="例如：07:40, 12:10; 16:30"
+                                     TextChanged="OnConfigInputTextChanged"
+                                     LostFocus="OnConfigInputLostFocus"
+                                     KeyDown="OnConfigInputKeyDown" />
+                        <StackPanel Orientation="Horizontal" Spacing="8">
                             <ComboBox x:Name="CurrentPlanComboBox"
                                       Width="176"
                                       HorizontalAlignment="Stretch"
@@ -98,6 +120,8 @@
                                     Click="OnDeletePlanClick"
                                     MinWidth="68"
                                     Content="删除" />
+                        </StackPanel>
+                            </StackPanel>
                         </StackPanel>
                     </ui:SettingsExpanderItem.Footer>
                 </ui:SettingsExpanderItem>
@@ -621,16 +645,27 @@
                         <StackPanel Orientation="Horizontal" Spacing="8">
                             <ci:Field Suffix="时">
                                 <ComboBox x:Name="DutyReminderHourComboBox"
+                                          IsVisible="False"
                                           Width="88"
                                           HorizontalAlignment="Left"
                                           SelectionChanged="OnConfigSelectionChanged" />
                             </ci:Field>
                             <ci:Field Suffix="分">
                                 <ComboBox x:Name="DutyReminderMinuteComboBox"
+                                          IsVisible="False"
                                           Width="88"
                                           HorizontalAlignment="Left"
                                           SelectionChanged="OnConfigSelectionChanged" />
                             </ci:Field>
+                            <TextBox x:Name="DutyReminderTimesBox"
+                                     Width="320"
+                                     MinHeight="56"
+                                     AcceptsReturn="True"
+                                     TextWrapping="Wrap"
+                                     Watermark="例如：07:40, 12:10; 16:30"
+                                     TextChanged="OnConfigInputTextChanged"
+                                     LostFocus="OnConfigInputLostFocus"
+                                     KeyDown="OnConfigInputKeyDown" />
                         </StackPanel>
                     </ui:SettingsExpanderItem.Footer>
                 </ui:SettingsExpanderItem>
