@@ -1205,6 +1205,38 @@ def _load_active_name_to_id(roster_path: Path) -> Dict[str, int]:
     }
 
 
+def _clone_schedule_entry_payload(entry: object) -> dict:
+    if not isinstance(entry, dict):
+        return {
+            "date": "",
+            "day": "",
+            "area_assignments": {},
+            "note": "",
+        }
+
+    return {
+        "date": str(entry.get("date", "") or "").strip(),
+        "day": str(entry.get("day", "") or "").strip(),
+        "area_assignments": _normalize_schedule_entry_area_assignments(entry.get("area_assignments")),
+        "note": str(entry.get("note", "") or "").strip(),
+    }
+
+
+def _schedule_entries_equal(left: object, right: object) -> bool:
+    return _clone_schedule_entry_payload(left) == _clone_schedule_entry_payload(right)
+
+
+def _find_schedule_entry(schedule_pool: List[dict], target_date: str) -> dict | None:
+    return next(
+        (
+            entry
+            for entry in schedule_pool
+            if str(entry.get("date", "") or "").strip() == target_date
+        ),
+        None,
+    )
+
+
 def save_schedule_entry_edit(ctx: Context, payload: dict) -> dict:
     request = dict(payload or {})
     ledger_mode = str(request.get("ledger_mode", "record") or "record").strip().lower()
@@ -1225,8 +1257,78 @@ def save_schedule_entry_edit(ctx: Context, payload: dict) -> dict:
     normalized_day = _normalize_schedule_entry_day(request.get("day"), parsed_target_date)
     normalized_assignments = _normalize_schedule_entry_area_assignments(request.get("area_assignments"))
     normalized_note = str(request.get("note", "") or "").strip()
-    create_if_missing = bool(request.get("create_if_missing", False))
+    confirm_overwrite = bool(request.get("confirm_overwrite", False))
     active_name_to_id = _load_active_name_to_id(ctx.paths["roster"])
+    proposed_entry = {
+        "date": normalized_target_date,
+        "day": normalized_day,
+        "area_assignments": normalized_assignments,
+        "note": normalized_note,
+    }
+
+    current_state = load_state(ctx.paths["state"])
+    current_pool = [dict(entry) for entry in current_state.get("schedule_pool", []) if isinstance(entry, dict)]
+    item = _find_schedule_entry(current_pool, source_date) if source_date else None
+    if source_date and item is None:
+        raise ValueError("Schedule entry not found.")
+    duplicate = _find_schedule_entry(current_pool, normalized_target_date)
+
+    if item is None:
+        if duplicate is None:
+            action = "create"
+        elif _schedule_entries_equal(duplicate, proposed_entry):
+            return {
+                "status": "success",
+                "message": "Schedule unchanged. Ledger unchanged.",
+                "ledger_mode": ledger_mode,
+                "ledger_applied": False,
+                "state": current_state,
+            }
+        elif not confirm_overwrite:
+            return {
+                "status": "confirmation_required",
+                "message": "Target date already has a schedule entry. Confirmation required before overwrite.",
+                "ledger_mode": ledger_mode,
+                "ledger_applied": False,
+                "overwrite_target_date": normalized_target_date,
+                "existing_entry": _clone_schedule_entry_payload(duplicate),
+                "proposed_entry": proposed_entry,
+            }
+        else:
+            action = "overwrite_existing"
+    else:
+        if duplicate is item or duplicate is None:
+            if _schedule_entries_equal(item, proposed_entry):
+                return {
+                    "status": "success",
+                    "message": "Schedule unchanged. Ledger unchanged.",
+                    "ledger_mode": ledger_mode,
+                    "ledger_applied": False,
+                    "state": current_state,
+                }
+            if duplicate is item and not confirm_overwrite:
+                return {
+                    "status": "confirmation_required",
+                    "message": "Target date already has a schedule entry. Confirmation required before overwrite.",
+                    "ledger_mode": ledger_mode,
+                    "ledger_applied": False,
+                    "overwrite_target_date": normalized_target_date,
+                    "existing_entry": _clone_schedule_entry_payload(item),
+                    "proposed_entry": proposed_entry,
+                }
+            action = "update_existing"
+        else:
+            if not confirm_overwrite:
+                return {
+                    "status": "confirmation_required",
+                    "message": "Target date already has a schedule entry. Confirmation required before overwrite.",
+                    "ledger_mode": ledger_mode,
+                    "ledger_applied": False,
+                    "overwrite_target_date": normalized_target_date,
+                    "existing_entry": _clone_schedule_entry_payload(duplicate),
+                    "proposed_entry": proposed_entry,
+                }
+            action = "move_and_overwrite"
 
     ledger_applied = False
 
@@ -1235,27 +1337,38 @@ def save_schedule_entry_edit(ctx: Context, payload: dict) -> dict:
         next_state = dict(current_state)
         schedule_pool = [dict(entry) for entry in next_state.get("schedule_pool", []) if isinstance(entry, dict)]
 
-        item = None
-        if source_date:
-            item = next((entry for entry in schedule_pool if str(entry.get("date", "")).strip() == source_date), None)
+        current_item = _find_schedule_entry(schedule_pool, source_date) if source_date else None
+        current_duplicate = _find_schedule_entry(schedule_pool, normalized_target_date)
+        if source_date and current_item is None:
+            raise ValueError("Schedule entry not found.")
 
-        duplicate = next((entry for entry in schedule_pool if str(entry.get("date", "")).strip() == normalized_target_date), None)
-        if item is None:
-            if not create_if_missing:
+        if action == "create":
+            target_item = {}
+            schedule_pool.append(target_item)
+            ledger_reference = target_item
+        elif action == "overwrite_existing":
+            if current_duplicate is None:
+                raise ValueError("Schedule entry not found for target date.")
+            target_item = current_duplicate
+            ledger_reference = current_duplicate
+        elif action == "move_and_overwrite":
+            if current_item is None or current_duplicate is None or current_item is current_duplicate:
+                raise ValueError("Schedule entry overwrite target is invalid.")
+            schedule_pool = [entry for entry in schedule_pool if entry is not current_item]
+            target_item = current_duplicate
+            ledger_reference = current_item
+        else:
+            if current_item is None:
                 raise ValueError("Schedule entry not found.")
-            if duplicate is not None:
-                raise ValueError("Schedule entry already exists for target date.")
-            item = {}
-            schedule_pool.append(item)
-        elif item is not duplicate and duplicate is not None:
-            raise ValueError("Schedule entry already exists for target date.")
+            target_item = current_item
+            ledger_reference = current_item
 
-        old_names = _collect_assignment_names(item.get("area_assignments"))
+        old_names = _collect_assignment_names(ledger_reference.get("area_assignments"))
 
-        item["date"] = normalized_target_date
-        item["day"] = normalized_day
-        item["area_assignments"] = normalized_assignments
-        item["note"] = normalized_note
+        target_item["date"] = normalized_target_date
+        target_item["day"] = normalized_day
+        target_item["area_assignments"] = normalized_assignments
+        target_item["note"] = normalized_note
 
         if ledger_mode == "record":
             new_names = _collect_assignment_names(normalized_assignments)
@@ -1294,7 +1407,7 @@ def save_schedule_entry_edit(ctx: Context, payload: dict) -> dict:
 
     updated_state = update_state(ctx.paths["state"], _apply_state_update)
 
-    if create_if_missing and not source_date:
+    if action == "create":
         message = "Schedule created."
     else:
         message = "Schedule updated."

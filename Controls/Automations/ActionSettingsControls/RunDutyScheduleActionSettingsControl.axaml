@@ -16,12 +16,7 @@
                      Watermark="留空则使用插件默认排班指令" />
         </ci:Field>
 
-        <ci:Field Label="写入模式">
-            <ComboBox ItemsSource="{Binding ApplyModeOptions}"
-                      SelectedItem="{Binding Settings.ApplyMode}" />
-        </ci:Field>
-
         <ToggleSwitch IsChecked="{Binding Settings.PublishCompletionNotification}"
-                      Content="执行后发送 Duty-Agent 通知" />
+                      Content="执行后发布 Duty-Agent 通知" />
     </StackPanel>
 </UserControl>

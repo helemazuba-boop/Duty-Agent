@@ -138,7 +138,7 @@ def build_mcp_http_app(parent_app: FastAPI):
         source_date: str | None = None,
         day: str | None = None,
         note: str | None = None,
-        create_if_missing: bool = False,
+        confirm_overwrite: bool = False,
         ledger_mode: Literal["record", "skip"] = "record",
     ) -> dict[str, Any]:
         client = create_loopback_client()
@@ -148,7 +148,7 @@ def build_mcp_http_app(parent_app: FastAPI):
             "day": day,
             "area_assignments": area_assignments,
             "note": note,
-            "create_if_missing": create_if_missing,
+            "confirm_overwrite": confirm_overwrite,
             "ledger_mode": ledger_mode,
         }
         return await client.edit_schedule_entry(payload)
@@ -162,7 +162,6 @@ def build_mcp_http_app(parent_app: FastAPI):
     )
     async def run_schedule(
         instruction: str = "",
-        apply_mode: str = "append",
         ctx: McpContext | None = None,
     ) -> dict[str, Any]:
         client = create_loopback_client()
@@ -170,7 +169,6 @@ def build_mcp_http_app(parent_app: FastAPI):
         try:
             return await client.run_schedule(
                 instruction=instruction,
-                apply_mode=apply_mode,
                 progress_callback=lambda item: report_mcp_progress(ctx, progress_state, item),
             )
         except DutyLoopbackBusyError as ex:

@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Any, Callable, Dict, List, Tuple
 
 from execution_profiles import ExecutionPlan
@@ -13,7 +13,6 @@ from state_ops import (
     Context,
     anonymize_instruction,
     count_map_to_id_list,
-    get_pool_entries_with_date,
     load_api_key_from_env,
     load_config,
     load_roster,
@@ -63,9 +62,7 @@ def _freeze_snapshot(ctx: Context, input_data: dict) -> FrozenSnapshot:
     config["api_key"] = api_key
     config["llm_stream"] = False
 
-    apply_mode = str(input_data.get("apply_mode", "append")).lower()
-    entries = get_pool_entries_with_date(state_data)
-    start_date = (entries[-1][1] + timedelta(days=1)) if apply_mode == "append" and entries else run_now.date()
+    start_date = run_now.date()
 
     active_ids = [person_id for person_id in all_ids if id_to_active.get(person_id, 1) != 0]
     inactive_ids = [person_id for person_id in all_ids if id_to_active.get(person_id, 1) == 0]
@@ -77,7 +74,6 @@ def _freeze_snapshot(ctx: Context, input_data: dict) -> FrozenSnapshot:
         trace_id=trace_id,
         request_source=request_source,
         instruction=anonymize_instruction(instruction, name_to_id),
-        apply_mode=apply_mode,
         request_time=run_now,
         start_date=start_date,
         config=config,

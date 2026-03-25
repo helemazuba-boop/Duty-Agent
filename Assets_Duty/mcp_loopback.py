@@ -134,7 +134,6 @@ class DutyLoopbackClient:
     async def run_schedule(
         self,
         instruction: str,
-        apply_mode: str,
         progress_callback=None,
     ) -> dict[str, Any]:
         loop = asyncio.get_running_loop()
@@ -147,7 +146,6 @@ class DutyLoopbackClient:
             try:
                 result = self._run_schedule_via_websocket_sync(
                     instruction=instruction,
-                    apply_mode=apply_mode,
                     progress_callback=emit,
                 )
                 emit({"type": "done", "data": result})
@@ -170,7 +168,7 @@ class DutyLoopbackClient:
             if item_type == "done":
                 return dict(item.get("data") or {})
             if item_type == "fallback":
-                return await self._run_schedule_via_sse(instruction, apply_mode, progress_callback)
+                return await self._run_schedule_via_sse(instruction, progress_callback)
             if item_type == "busy":
                 raise DutyLoopbackBusyError(str(item.get("message") or "Duty live channel is busy."))
             if item_type == "error":
@@ -179,7 +177,6 @@ class DutyLoopbackClient:
     def _run_schedule_via_websocket_sync(
         self,
         instruction: str,
-        apply_mode: str,
         progress_callback,
     ) -> dict[str, Any]:
         client_change_id = uuid.uuid4().hex
@@ -213,7 +210,6 @@ class DutyLoopbackClient:
                         "trace_id": self._trace_id,
                         "request_source": self._request_source,
                         "instruction": str(instruction or ""),
-                        "apply_mode": str(apply_mode or "append"),
                     }
                 )
 
@@ -257,12 +253,10 @@ class DutyLoopbackClient:
     async def _run_schedule_via_sse(
         self,
         instruction: str,
-        apply_mode: str,
         progress_callback=None,
     ) -> dict[str, Any]:
         payload = {
             "instruction": str(instruction or ""),
-            "apply_mode": str(apply_mode or "append"),
             "trace_id": self._trace_id,
             "request_source": self._request_source,
         }

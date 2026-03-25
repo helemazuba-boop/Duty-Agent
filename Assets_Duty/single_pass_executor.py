@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Any, Dict
 
 from execution_profiles import ExecutionPlan
@@ -20,7 +20,6 @@ from state_ops import (
     Context,
     anonymize_instruction,
     clone_count_map,
-    get_pool_entries_with_date,
     load_api_key_from_env,
     load_config,
     load_roster,
@@ -62,8 +61,6 @@ def run_single_pass_schedule(
 
     area_names: list[str] = []
     area_per_day_counts: dict[str, int] = {}
-    apply_mode = str(input_data.get("apply_mode", "append")).lower()
-
     if emit_progress_fn:
         emit_progress_fn(
             "planning",
@@ -75,8 +72,7 @@ def run_single_pass_schedule(
     credit_counts = clone_count_map(state_data.get("credit_counts", {}), set(all_ids))
     debt_counts, credit_counts = resolve_debt_credit_conflicts(debt_counts, credit_counts)
 
-    entries = get_pool_entries_with_date(state_data)
-    start_date = (entries[-1][1] + timedelta(days=1)) if apply_mode == "append" and entries else run_now.date()
+    start_date = run_now.date()
 
     messages, prompt_metadata = build_single_pass_prompt_messages(
         execution_plan,
@@ -157,7 +153,7 @@ def run_single_pass_schedule(
             next_state["credit_counts"],
         )
         next_state["last_pointer"] = int(pointer_progress.get("pointer_after", next_state.get("last_pointer", 0)) or 0)
-        next_state["schedule_pool"] = merge_schedule_pool(next_state, restored, apply_mode, start_date)
+        next_state["schedule_pool"] = merge_schedule_pool(restored)
         return next_state
 
     update_state(ctx.paths["state"], _apply_state_update, stop_event=stop_event)

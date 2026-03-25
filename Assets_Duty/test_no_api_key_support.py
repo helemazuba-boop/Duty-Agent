@@ -140,7 +140,7 @@ class TestExecutorsAllowBlankApiKey(unittest.TestCase):
             ):
                 result = run_single_pass_schedule(
                     context,
-                    {"instruction": "test", "apply_mode": "replace_all"},
+                    {"instruction": "test"},
                     plan,
                 )
 
@@ -167,7 +167,7 @@ class TestExecutorsAllowBlankApiKey(unittest.TestCase):
                 "multi_agent.executor.load_api_key_from_env",
                 return_value="",
             ):
-                snapshot = _freeze_snapshot(context, {"instruction": "test", "apply_mode": "replace_all"})
+                snapshot = _freeze_snapshot(context, {"instruction": "test"})
 
         self.assertEqual(snapshot.config["api_key"], "")
 

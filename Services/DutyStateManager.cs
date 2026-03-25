@@ -13,11 +13,7 @@ namespace DutyAgent.Services;
 public interface IStateAndRosterManager
 {
     DutyState LoadState();
-    void SaveState(DutyState state);
     event EventHandler<DutyState> StateChanged;
-    
-    SchedulePoolItem? TryUpdateScheduleEntry(DutyState state, SchedulePoolItem updatedEntry);
-    bool TrySaveScheduleEntry(string date, SchedulePoolItem updatedEntry);
 }
 
 public class DutyStateManager : IStateAndRosterManager, IDisposable
@@ -61,78 +57,6 @@ public class DutyStateManager : IStateAndRosterManager, IDisposable
                 Debug.WriteLine($"Error loading state file: {ex.Message}");
                 return new DutyState();
             }
-        }
-        finally
-        {
-            _stateLock.Release();
-        }
-    }
-
-    public void SaveState(DutyState state)
-    {
-        _stateLock.Wait();
-        try
-        {
-            var json = JsonSerializer.Serialize(state, new JsonSerializerOptions { WriteIndented = true });
-            File.WriteAllText(_statePath, json);
-        }
-        catch (Exception ex)
-        {
-            Debug.WriteLine($"Error saving state file: {ex.Message}");
-        }
-        finally
-        {
-            _stateLock.Release();
-        }
-    }
-
-    public SchedulePoolItem? TryUpdateScheduleEntry(DutyState state, SchedulePoolItem updatedEntry)
-    {
-        for (var i = 0; i < state.SchedulePool.Count; i++)
-        {
-            if (state.SchedulePool[i].Date == updatedEntry.Date)
-            {
-                state.SchedulePool[i] = updatedEntry;
-                return state.SchedulePool[i];
-            }
-        }
-        return null;
-    }
-
-    public bool TrySaveScheduleEntry(string date, SchedulePoolItem updatedEntry)
-    {
-        if (date != updatedEntry.Date)
-        {
-            return false;
-        }
-
-        _stateLock.Wait();
-        try
-        {
-            var state = LoadStateInternalUnsafe();
-            var success = false;
-            for (var i = 0; i < state.SchedulePool.Count; i++)
-            {
-                if (state.SchedulePool[i].Date == date)
-                {
-                    state.SchedulePool[i] = updatedEntry;
-                    success = true;
-                    break;
-                }
-            }
-
-            if (success)
-            {
-                var json = JsonSerializer.Serialize(state, new JsonSerializerOptions { WriteIndented = true });
-                File.WriteAllText(_statePath, json);
-                return true;
-            }
-            return false;
-        }
-        catch (Exception ex)
-        {
-            Debug.WriteLine($"Error TrySaveScheduleEntry: {ex.Message}");
-            return false;
         }
         finally
         {

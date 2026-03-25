@@ -131,8 +131,8 @@ public sealed class DutyScheduleEntrySaveRequest
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? Note { get; set; }
 
-    [JsonPropertyName("create_if_missing")]
-    public bool CreateIfMissing { get; set; }
+    [JsonPropertyName("confirm_overwrite")]
+    public bool ConfirmOverwrite { get; set; }
 
     [JsonPropertyName("ledger_mode")]
     public string LedgerMode { get; set; } = "record";
@@ -154,4 +154,13 @@ public sealed class DutyScheduleEntrySaveResponse
 
     [JsonPropertyName("snapshot")]
     public DutyBackendSnapshot Snapshot { get; set; } = new();
+
+    [JsonPropertyName("overwrite_target_date")]
+    public string? OverwriteTargetDate { get; set; }
+
+    [JsonPropertyName("existing_entry")]
+    public SchedulePoolItem? ExistingEntry { get; set; }
+
+    [JsonPropertyName("proposed_entry")]
+    public SchedulePoolItem? ProposedEntry { get; set; }
 }

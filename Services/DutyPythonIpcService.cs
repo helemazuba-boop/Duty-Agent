@@ -860,11 +860,10 @@ public class DutyPythonIpcService : IPythonIpcService
         var traceId = DutyDiagnosticsLogger.CreateTraceId("schedule");
         var socket = await EnsureControlSocketConnectedAsync("host", traceId, cancellationToken).ConfigureAwait(false);
 
-        // Parse instruction and apply_mode from requestPayload
+        // Parse instruction from requestPayload
         var payloadJson = JsonSerializer.Serialize(requestPayload, JsonOptions);
         var payloadElement = JsonSerializer.Deserialize<JsonElement>(payloadJson);
         var instruction = payloadElement.TryGetProperty("instruction", out var instrProp) ? instrProp.GetString() ?? "" : "";
-        var applyMode = payloadElement.TryGetProperty("apply_mode", out var modeProp) ? modeProp.GetString() ?? "append" : "append";
         var requestSource = payloadElement.TryGetProperty("request_source", out var srcProp) ? srcProp.GetString() ?? "host" : "host";
 
         await SendControlSocketMessageAsync(socket, new
@@ -873,8 +872,7 @@ public class DutyPythonIpcService : IPythonIpcService
             client_change_id = clientChangeId,
             trace_id = traceId,
             request_source = requestSource,
-            instruction,
-            apply_mode = applyMode
+            instruction
         }, cancellationToken).ConfigureAwait(false);
 
         while (true)
@@ -1296,7 +1294,7 @@ public class DutyPythonIpcService : IPythonIpcService
             {
                 sourceDate = request.SourceDate ?? "<new>",
                 targetDate = request.TargetDate,
-                createIfMissing = request.CreateIfMissing,
+                confirmOverwrite = request.ConfirmOverwrite,
                 ledgerMode = request.LedgerMode,
                 areaCount = request.AreaAssignments?.Count ?? 0
             },

@@ -439,8 +439,6 @@ public partial class DutyMainSettingsPage : SettingsPageBase
         _configApplyDebounceTimer.Stop();
         await FlushPendingConfigApplyAsync();
 
-        const string applyMode = "replace_all";
-
         try
         {
             RunAgentBtn.IsEnabled = false;
@@ -456,7 +454,6 @@ public partial class DutyMainSettingsPage : SettingsPageBase
 
             var result = await Service.RunCoreAgentAsync(
                 instruction,
-                applyMode,
                 progress: progress =>
                 {
                     var phase = (progress.Phase ?? string.Empty).Trim().ToLowerInvariant();
@@ -2199,7 +2196,7 @@ public partial class DutyMainSettingsPage : SettingsPageBase
                 day: targetDay,
                 areaAssignments: areaAssignments,
                 note: note,
-                createIfMissing: false,
+                confirmOverwrite: true,
                 recordDebtCreditChanges: recordDebtCreditChanges);
 
             _pendingScheduleSelectionDate = targetDate;
@@ -2245,7 +2242,7 @@ public partial class DutyMainSettingsPage : SettingsPageBase
                 day: targetDay,
                 areaAssignments: areaAssignments,
                 note: note,
-                createIfMissing: true,
+                confirmOverwrite: true,
                 recordDebtCreditChanges: recordDebtCreditChanges);
 
             _pendingScheduleSelectionDate = targetDate;

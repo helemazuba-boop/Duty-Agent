@@ -174,7 +174,6 @@ class TestScheduleRequestContract(unittest.TestCase):
             DutyRequest.model_validate(
                 {
                     "instruction": "Generate duty schedule",
-                    "apply_mode": "replace_all",
                     "config": {"model_profile": "edge"},
                 }
             )
@@ -195,7 +194,6 @@ class TestBarrier2(unittest.TestCase):
             trace_id="trace",
             request_source="api",
             instruction="123 and 456",
-            apply_mode="append",
             request_time=datetime(2026, 3, 14, 8, 0, 0),
             start_date=date(2026, 3, 17),
             config={},
@@ -238,7 +236,6 @@ class TestBarrier2(unittest.TestCase):
             trace_id="trace",
             request_source="api",
             instruction="123 and 456",
-            apply_mode="append",
             request_time=datetime(2026, 3, 14, 8, 0, 0),
             start_date=date(2026, 3, 17),
             config={},

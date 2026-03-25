@@ -9,7 +9,6 @@ class DutyRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     instruction: str
-    apply_mode: Optional[str] = None
     trace_id: Optional[str] = None
     request_source: Optional[str] = None
 
@@ -22,8 +21,17 @@ class DutyScheduleEntrySaveRequest(BaseModel):
     day: Optional[str] = None
     area_assignments: Dict[str, List[str]] = {}
     note: Optional[str] = None
-    create_if_missing: bool = False
+    confirm_overwrite: bool = False
     ledger_mode: Literal["record", "skip"] = "record"
+
+
+class DutyScheduleEntryModel(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    date: str
+    day: str = ""
+    area_assignments: Dict[str, List[str]] = {}
+    note: str = ""
 
 
 class DutyPlanPresetModel(BaseModel):
@@ -110,3 +118,6 @@ class DutyScheduleEntrySaveResponse(BaseModel):
     ledger_mode: Literal["record", "skip"]
     ledger_applied: bool = False
     snapshot: DutySnapshotResponse
+    overwrite_target_date: Optional[str] = None
+    existing_entry: Optional[DutyScheduleEntryModel] = None
+    proposed_entry: Optional[DutyScheduleEntryModel] = None

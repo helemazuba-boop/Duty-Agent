@@ -54,12 +54,7 @@ def finalize_multi_agent_run(
             state_data["credit_counts"],
         )
         state_data["last_pointer"] = barrier2["pointer_after"]
-        state_data["schedule_pool"] = merge_schedule_pool(
-            state_data,
-            restored,
-            snapshot.apply_mode,
-            snapshot.start_date,
-        )
+        state_data["schedule_pool"] = merge_schedule_pool(restored)
         return state_data
 
     state_data = update_state(ctx.paths["state"], _apply_state_update, stop_event=stop_event)

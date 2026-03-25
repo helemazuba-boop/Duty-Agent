@@ -13,7 +13,7 @@
 ### 1.1 排班执行
 - 执行排班（本地模拟或宿主桥接）  
   代码：`Assets_Duty/web/test.html:1573`
-- 应用模式（`append` / `replace_all` / `replace_future` / `replace_overlap`）  
+- 写入模式（固定 `replace_all`）  
   代码：`Assets_Duty/web/test.html:164`
 - 宿主执行进度与结果回传（`run_status` / `run_result`）  
   代码：`Assets_Duty/web/test.html:1529`, `Views/SettingPages/DutyWebSettingsPage.axaml.cs:241`
@@ -115,5 +115,5 @@
 
 - “导入配置 / 导入名单”通过 MCP 传参后立即应用，不弹确认框。  
   代码：`Services/DutyLocalPreviewHostedService.cs:919`, `Services/DutyLocalPreviewHostedService.cs:1134`
-- 普通用户层不暴露开发术语（如 JSON-RPC、SSE、payload、apply_mode 内部枚举）。
+- 普通用户层不暴露开发术语（如 JSON-RPC、SSE、payload、内部写入枚举）。  
 - 调试层必须明显标注“仅用于诊断，误操作可能覆盖数据”。

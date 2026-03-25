@@ -156,28 +156,25 @@ public class DutyScheduleOrchestrator : IDisposable
     }
 
     public DutyState LoadState() => _stateManager.LoadState();
-    public void SaveState(DutyState state) => _stateManager.SaveState(state);
 
-    public bool RunCoreAgent(string instruction, string applyMode = "append")
+    public bool RunCoreAgent(string instruction)
     {
-        var result = RunCoreAgentWithMessage(instruction, applyMode);
+        var result = RunCoreAgentWithMessage(instruction);
         return result.Success;
     }
 
     public CoreRunResult RunCoreAgentWithMessage(
         string instruction,
-        string applyMode = "append",
         Action<CoreRunProgress>? progress = null,
         bool isAutoRun = false)
     {
-        var t = RunCoreAgentAsync(instruction, applyMode, progress, isAutoRun);
+        var t = RunCoreAgentAsync(instruction, progress, isAutoRun);
         t.Wait();
         return t.Result;
     }
 
     public async Task<CoreRunResult> RunCoreAgentAsync(
         string instruction,
-        string applyMode = "append",
         Action<CoreRunProgress>? progress = null,
         bool isAutoRun = false)
     {
@@ -193,18 +190,17 @@ public class DutyScheduleOrchestrator : IDisposable
             var inputData = new
             {
                 instruction = effectiveInstruction,
-                apply_mode = applyMode,
                 request_source = isAutoRun ? "automation" : "host"
             };
 
             var result = await _ipcService.RunScheduleAsync(inputData, progress, CancellationToken.None).ConfigureAwait(false);
-            PublishAutomationRunResult(effectiveInstruction, applyMode, result, isAutoRun);
+            PublishAutomationRunResult(effectiveInstruction, result, isAutoRun);
             return result;
         }
         catch (Exception ex)
         {
             var result = CoreRunResult.Fail($"Execution error: {ex.Message}");
-            PublishAutomationRunResult(effectiveInstruction, applyMode, result, isAutoRun);
+            PublishAutomationRunResult(effectiveInstruction, result, isAutoRun);
             return result;
         }
         finally
@@ -390,7 +386,7 @@ public class DutyScheduleOrchestrator : IDisposable
             }
 
             PublishAutoRunTriggeredNotification(now);
-            var result = RunCoreAgentWithMessage(AutoRunInstruction, applyMode: "replace_all", isAutoRun: true);
+            var result = RunCoreAgentWithMessage(AutoRunInstruction, isAutoRun: true);
             if (string.Equals(result.Code, "busy", StringComparison.Ordinal))
             {
                 return;
@@ -398,7 +394,6 @@ public class DutyScheduleOrchestrator : IDisposable
 
             PublishRunCompletionNotification(
                 instruction: AutoRunInstruction,
-                applyMode: "replace_all",
                 resultMessage: result.Message,
                 success: result.Success,
                 isAutoRun: true);
@@ -578,7 +573,7 @@ public class DutyScheduleOrchestrator : IDisposable
         string? day,
         IDictionary<string, List<string>>? areaAssignments,
         string? note,
-        bool createIfMissing,
+        bool confirmOverwrite,
         bool recordDebtCreditChanges,
         CancellationToken cancellationToken = default)
     {
@@ -595,7 +590,7 @@ public class DutyScheduleOrchestrator : IDisposable
             Day = normalizedDay,
             AreaAssignments = NormalizeAreaAssignmentsForState(areaAssignments),
             Note = (note ?? string.Empty).Trim(),
-            CreateIfMissing = createIfMissing,
+            ConfirmOverwrite = confirmOverwrite,
             LedgerMode = recordDebtCreditChanges ? "record" : "skip"
         };
 
@@ -791,7 +786,6 @@ public class DutyScheduleOrchestrator : IDisposable
 
     private void PublishAutomationRunResult(
         string instruction,
-        string applyMode,
         CoreRunResult result,
         bool isAutoRun)
     {
@@ -804,7 +798,6 @@ public class DutyScheduleOrchestrator : IDisposable
             DateTimeOffset.Now,
             result.Success,
             instruction,
-            applyMode,
             result.Message,
             result.Code,
             isAutoRun));
@@ -812,7 +805,6 @@ public class DutyScheduleOrchestrator : IDisposable
 
     public void PublishRunCompletionNotification(
         string? instruction,
-        string? applyMode,
         string? resultMessage,
         bool success = true,
         bool isAutoRun = false)

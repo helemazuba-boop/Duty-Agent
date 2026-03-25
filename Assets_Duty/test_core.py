@@ -156,10 +156,9 @@ class TestRestoreScheduleDirectDate(unittest.TestCase):
         self.assertEqual(restored[0]["note"], "Old Note")
 
 
-class TestMergeSchedulePoolReplaceFuture(unittest.TestCase):
-    """Bug #2: replace_future should use start_date, not datetime.now()."""
+class TestMergeSchedulePool(unittest.TestCase):
 
-    def test_replace_future_uses_start_date(self):
+    def test_returns_sorted_entries(self):
         """Only entries before start_date are kept."""
         pool = [
             {"date": "2026-02-10"},
@@ -171,63 +170,47 @@ class TestMergeSchedulePoolReplaceFuture(unittest.TestCase):
         new_entries = [{"date": "2026-02-12"}, {"date": "2026-02-13"}]
         start = date(2026, 2, 12)
 
-        result = merge_schedule_pool(state, new_entries, "replace_future", start)
+        result = merge_schedule_pool([{"date": "2026-02-12"}, {"date": "2026-02-10"}, {"date": "2026-02-11"}])
         dates = [e["date"] for e in result]
         # 2026-02-10 and 2026-02-11 are before start_date → kept
         # 2026-02-12 and 2026-02-13 come from new_entries
-        self.assertIn("2026-02-10", dates)
-        self.assertIn("2026-02-11", dates)
-        self.assertIn("2026-02-12", dates)
-        self.assertIn("2026-02-13", dates)
-        self.assertEqual(len(result), 4)
+        self.assertEqual(dates, ["2026-02-10", "2026-02-11", "2026-02-12"])
 
-    def test_replace_future_does_not_keep_start_date_old(self):
-        """Old entry on start_date itself should be replaced by new entry."""
+    def test_duplicate_date_keeps_last_entry(self):
         pool = [{"date": "2026-02-12", "old": True}]
         state = {"schedule_pool": pool}
         new_entries = [{"date": "2026-02-12", "old": False}]
         start = date(2026, 2, 12)
 
-        result = merge_schedule_pool(state, new_entries, "replace_future", start)
+        result = merge_schedule_pool([{"date": "2026-02-12", "old": True}, {"date": "2026-02-12", "old": False}])
         self.assertEqual(len(result), 1)
-        # new entry wins via dedupe (later in merged list)
         self.assertFalse(result[0].get("old", True))
 
-    def test_replace_all(self):
-        """replace_all discards all old entries."""
+    def test_ignores_entries_without_date(self):
         pool = [{"date": "2026-02-10"}, {"date": "2026-02-11"}]
         state = {"schedule_pool": pool}
         new_entries = [{"date": "2026-02-12"}]
 
-        result = merge_schedule_pool(state, new_entries, "replace_all", date(2026, 2, 12))
+        result = merge_schedule_pool([{"date": ""}, {"note": "missing"}, {"date": "2026-02-12"}])
         self.assertEqual(len(result), 1)
         self.assertEqual(result[0]["date"], "2026-02-12")
 
     def test_append(self):
-        """append merges old + new, deduped."""
-        pool = [{"date": "2026-02-10"}]
-        state = {"schedule_pool": pool}
-        new_entries = [{"date": "2026-02-11"}]
-
-        result = merge_schedule_pool(state, new_entries, "append", date(2026, 2, 11))
+        result = merge_schedule_pool(
+            [
+                {"date": "2026-02-10"},
+                {"date": "2026-02-11"},
+            ]
+        )
         self.assertEqual(len(result), 2)
 
-    def test_append_overwrites_existing_date(self):
-        pool = [{"date": "2026-02-10", "note": "old"}]
-        state = {"schedule_pool": pool}
-        new_entries = [{"date": "2026-02-10", "note": "new"}]
-
-        result = merge_schedule_pool(state, new_entries, "append", date(2026, 2, 11))
+    def test_duplicate_date_keeps_last_entry_with_append_name(self):
+        result = merge_schedule_pool([{"date": "2026-02-10", "note": "old"}, {"date": "2026-02-10", "note": "new"}])
         self.assertEqual(len(result), 1)
         self.assertEqual(result[0]["note"], "new")
 
-    def test_replace_overlap_empty_restored_keeps_existing(self):
-        """replace_overlap with empty restored should keep existing pool without crashing."""
-        pool = [{"date": "2026-02-10"}, {"date": "2026-02-11"}]
-        state = {"schedule_pool": pool}
-
-        result = merge_schedule_pool(state, [], "replace_overlap", date(2026, 2, 11))
-        self.assertEqual([x["date"] for x in result], ["2026-02-10", "2026-02-11"])
+    def test_empty_list_returns_empty(self):
+        self.assertEqual(merge_schedule_pool([]), [])
 
 
 class TestAnonymizeInstruction(unittest.TestCase):
@@ -322,24 +305,19 @@ class TestDynamicAreaExtractionLimit(unittest.TestCase):
 
 
 class TestMergeSchedulePoolRobustness(unittest.TestCase):
-    def test_replace_future_skips_non_dict_pool_items(self):
-        state = {"schedule_pool": ["bad", 123, {"date": "2026-02-10"}, {"date": "2026-02-12"}]}
-        new_entries = [{"date": "2026-02-12", "note": "new"}]
-
-        result = merge_schedule_pool(state, new_entries, "replace_future", date(2026, 2, 12))
+    def test_skips_non_dict_pool_items(self):
+        result = merge_schedule_pool(["bad", 123, {"date": "2026-02-10"}, {"date": "2026-02-12", "note": "new"}])
         self.assertEqual(result, [{"date": "2026-02-10"}, {"date": "2026-02-12", "note": "new"}])
 
-    def test_replace_overlap_preserves_invalid_date_entries(self):
-        state = {
-            "schedule_pool": [
+    def test_preserves_invalid_date_entries(self):
+        result = merge_schedule_pool(
+            [
                 {"date": "2026-02-09", "note": "before"},
                 {"date": "not-a-date", "note": "legacy"},
                 {"date": "2026-02-10", "note": "old"},
+                {"date": "2026-02-10", "note": "new"},
             ]
-        }
-        new_entries = [{"date": "2026-02-10", "note": "new"}]
-
-        result = merge_schedule_pool(state, new_entries, "replace_overlap", date(2026, 2, 10))
+        )
         notes_by_date = {entry["date"]: entry.get("note", "") for entry in result}
         self.assertEqual(notes_by_date["2026-02-09"], "before")
         self.assertEqual(notes_by_date["2026-02-10"], "new")

@@ -181,7 +181,7 @@ class TestMcpApi(unittest.TestCase):
                             runtime,
                             protocol_version,
                             "run_schedule",
-                            {"instruction": "run", "apply_mode": "append"},
+                            {"instruction": "run"},
                         )
             finally:
                 app.state.runtime = original_runtime
@@ -232,7 +232,7 @@ class TestMcpApi(unittest.TestCase):
                             runtime,
                             protocol_version,
                             "run_schedule",
-                            {"instruction": "run", "apply_mode": "append"},
+                            {"instruction": "run"},
                         )
             finally:
                 app.state.runtime = original_runtime

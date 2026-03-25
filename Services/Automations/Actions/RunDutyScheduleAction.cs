@@ -12,14 +12,12 @@ public sealed class RunDutyScheduleAction(DutyScheduleOrchestrator orchestrator)
     {
         await base.OnInvoke();
 
-        var applyMode = NormalizeApplyMode(Settings.ApplyMode);
-        var result = await orchestrator.RunCoreAgentAsync(Settings.Instruction, applyMode);
+        var result = await orchestrator.RunCoreAgentAsync(Settings.Instruction);
 
         if (Settings.PublishCompletionNotification)
         {
             orchestrator.PublishRunCompletionNotification(
                 Settings.Instruction,
-                applyMode,
                 result.Message,
                 result.Success);
         }
@@ -31,17 +29,5 @@ public sealed class RunDutyScheduleAction(DutyScheduleOrchestrator orchestrator)
                     ? "Duty-Agent schedule run failed."
                     : result.Message);
         }
-    }
-
-    private static string NormalizeApplyMode(string? applyMode)
-    {
-        return (applyMode ?? string.Empty).Trim().ToLowerInvariant() switch
-        {
-            "append" => "append",
-            "replace_future" => "replace_future",
-            "replace_overlap" => "replace_overlap",
-            "replace_all" => "replace_all",
-            _ => "replace_all"
-        };
     }
 }

@@ -281,7 +281,6 @@ def _start_schedule_run(
             try:
                 payload = {
                     "instruction": str((message or {}).get("instruction") or "").strip(),
-                    "apply_mode": str((message or {}).get("apply_mode") or "append").strip(),
                     "request_source": request_source,
                     "trace_id": trace_id,
                 }
@@ -372,7 +371,7 @@ async def _handle_schedule_entry_save(
         "day": (message or {}).get("day"),
         "area_assignments": (message or {}).get("area_assignments"),
         "note": (message or {}).get("note"),
-        "create_if_missing": bool((message or {}).get("create_if_missing", False)),
+        "confirm_overwrite": bool((message or {}).get("confirm_overwrite", False)),
         "ledger_mode": str((message or {}).get("ledger_mode") or "record").strip().lower() or "record",
         "trace_id": trace_id,
         "request_source": request_source,

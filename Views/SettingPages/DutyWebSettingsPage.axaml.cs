@@ -221,18 +221,16 @@ public partial class DutyWebSettingsPage : SettingsPageBase
             instruction = "Manual trigger from test page.";
         }
 
-        var applyMode = NormalizeApplyMode(request.ApplyMode);
         var message = (request.Message ?? string.Empty).Trim();
         if (message.Length == 0)
         {
             message = "Notification triggered from test page.";
         }
 
-        TryPublishRunCompletionNotification(instruction, applyMode, message);
+        TryPublishRunCompletionNotification(instruction, message);
         DutyDiagnosticsLogger.Info("Notification", "Triggered run completion notification from web page.",
             new
             {
-                applyMode,
                 instructionPreview = TruncateForLog(instruction, 120),
                 messagePreview = TruncateForLog(message, 120)
             });
@@ -302,11 +300,10 @@ public partial class DutyWebSettingsPage : SettingsPageBase
         });
     }
 
-    private void TryPublishRunCompletionNotification(string instruction, string applyMode, string resultMessage)
+    private void TryPublishRunCompletionNotification(string instruction, string resultMessage)
     {
         _backendService.PublishRunCompletionNotification(
             instruction: instruction,
-            applyMode: applyMode,
             resultMessage: resultMessage,
             success: true,
             isAutoRun: false);
@@ -321,18 +318,6 @@ public partial class DutyWebSettingsPage : SettingsPageBase
             Message = message,
             Action = action
         });
-    }
-
-    private static string NormalizeApplyMode(string? applyMode)
-    {
-        return (applyMode ?? string.Empty).Trim().ToLowerInvariant() switch
-        {
-            "append" => "append",
-            "replace_future" => "replace_future",
-            "replace_overlap" => "replace_overlap",
-            "replace_all" => "replace_all",
-            _ => "append"
-        };
     }
 
     private static string TruncateForLog(string value, int maxLength)
@@ -363,9 +348,6 @@ public partial class DutyWebSettingsPage : SettingsPageBase
     {
         [JsonPropertyName("instruction")]
         public string? Instruction { get; set; }
-
-        [JsonPropertyName("apply_mode")]
-        public string? ApplyMode { get; set; }
 
         [JsonPropertyName("message")]
         public string? Message { get; set; }

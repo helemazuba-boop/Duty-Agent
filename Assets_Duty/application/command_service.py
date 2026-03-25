@@ -20,7 +20,6 @@ class CommandService:
             "Starting run_schedule.",
             trace_id=request_payload["trace_id"],
             request_source=request_payload["request_source"],
-            apply_mode=request_payload.get("apply_mode", ""),
             instruction_length=len(str(request_payload.get("instruction", "") or "")),
         )
 
@@ -148,7 +147,7 @@ class CommandService:
             ledger_mode=str((schedule_payload or {}).get("ledger_mode", "") or ""),
             target_date=str((schedule_payload or {}).get("target_date", "") or ""),
             source_date=str((schedule_payload or {}).get("source_date", "") or ""),
-            create_if_missing=bool((schedule_payload or {}).get("create_if_missing", False)),
+            confirm_overwrite=bool((schedule_payload or {}).get("confirm_overwrite", False)),
         )
         context = Context(
             self._runtime.data_dir,
@@ -171,6 +170,9 @@ class CommandService:
                 "roster": roster,
                 "state": result.get("state") or load_state(context.paths["state"]),
             },
+            "overwrite_target_date": result.get("overwrite_target_date"),
+            "existing_entry": result.get("existing_entry"),
+            "proposed_entry": result.get("proposed_entry"),
         }
         self._runtime.logger.info(
             "CommandService",

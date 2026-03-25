@@ -246,28 +246,9 @@ def restore_schedule(
     return restored
 
 
-def merge_schedule_pool(state_data: dict, restored: List[dict], apply_mode: str, start_date: date) -> List[dict]:
-    pool = [entry for entry in state_data.get("schedule_pool", []) if isinstance(entry, dict)]
+def merge_schedule_pool(restored: List[dict]) -> List[dict]:
     restored = [entry for entry in restored if isinstance(entry, dict)]
-    if apply_mode == "append":
-        return dedupe_pool_by_date(pool + restored)
-    if apply_mode == "replace_all":
-        return dedupe_pool_by_date(restored)
-    if apply_mode == "replace_future":
-        kept = [entry for entry in pool if (parsed := try_parse_iso_date(entry.get("date"))) is None or parsed < start_date]
-        return dedupe_pool_by_date(kept + restored)
-    if apply_mode == "replace_overlap":
-        dates = [parsed for entry in restored if (parsed := try_parse_iso_date(entry.get("date"))) is not None]
-        if not dates:
-            return dedupe_pool_by_date(pool + restored)
-        end_date = max(dates)
-        kept = [
-            entry
-            for entry in pool
-            if (parsed := try_parse_iso_date(entry.get("date"))) is None or parsed < start_date or parsed > end_date
-        ]
-        return dedupe_pool_by_date(kept + restored)
-    return dedupe_pool_by_date(pool + restored)
+    return dedupe_pool_by_date(restored)
 
 
 def dedupe_pool_by_date(entries):
