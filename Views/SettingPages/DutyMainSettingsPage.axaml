@@ -627,7 +627,7 @@
             </ui:SettingsExpander>
 
             <ui:SettingsExpander Header="值日提醒"
-                                 Description="在设定时间提醒当天值日安排。"
+                                 Description="在设定时间提醒当前值日安排。"
                                  IsExpanded="False"
                                  Margin="0,4,0,0">
                 <ui:SettingsExpander.IconSource>
@@ -640,7 +640,7 @@
                                   Unchecked="OnConfigToggleChanged" />
                 </ui:SettingsExpander.Footer>
                 <ui:SettingsExpanderItem Content="提醒时间"
-                                         Description="控制当天值日通知的提醒时刻。">
+                                         Description="控制当前值日安排通知的提醒时刻。">
                     <ui:SettingsExpanderItem.Footer>
                         <StackPanel Orientation="Horizontal" Spacing="8">
                             <ci:Field Suffix="时">
@@ -687,7 +687,7 @@
                     </ui:SettingsExpanderItem.Footer>
                 </ui:SettingsExpanderItem>
                 <ui:SettingsExpanderItem Content="测试通知"
-                                         Description="立刻预览当前提醒样式。">
+                                         Description="立刻预览当前值日提醒样式。">
                     <ui:SettingsExpanderItem.Footer>
                         <Button x:Name="TestNotificationButton" Click="OnTestNotificationClicked">
                             <ci:IconText Glyph="&#xE7F4;" Text="测试通知" />

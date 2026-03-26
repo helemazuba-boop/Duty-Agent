@@ -27,7 +27,6 @@ public partial class DutyMainSettingsPage : SettingsPageBase
 {
     private DutyScheduleOrchestrator Service { get; } = IAppHost.GetService<DutyScheduleOrchestrator>();
     private IPythonIpcService PythonIpcService { get; } = IAppHost.GetService<IPythonIpcService>();
-    private DutyNotificationService NotificationService { get; } = IAppHost.GetService<DutyNotificationService>();
     private IDutySettingsRepository SettingsRepository { get; } = IAppHost.GetService<IDutySettingsRepository>();
     private DutyBackendSettingsSyncService BackendSettingsSyncService { get; } = IAppHost.GetService<DutyBackendSettingsSyncService>();
     private DutyPluginPaths PluginPaths { get; } = IAppHost.GetService<DutyPluginPaths>();
@@ -2434,11 +2433,7 @@ public partial class DutyMainSettingsPage : SettingsPageBase
 
     private void OnTestNotificationClicked(object? sender, RoutedEventArgs e)
     {
-        var duration = (int)NotificationDurationSlider.Value;
-        NotificationService.Publish(
-            "\u6D4B\u8BD5\u901A\u77E5",
-            "\u6559\u5BA4\uFF1A\u5F20\u4E09\u3001\u674E\u56DB\uFF1B\u6E05\u6D01\u533A\uFF1A\u738B\u4E94\u3001\u8D75\u516D",
-            duration);
+        Service.PublishDutyReminderNotificationNow();
     }
 
     private static bool TryNormalizeScheduleDate(string? rawDate, out string normalizedDate, out DateTime parsedDate)

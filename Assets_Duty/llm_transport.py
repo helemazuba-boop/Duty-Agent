@@ -25,8 +25,8 @@ _REASONING_BLOCK_PATTERN = re.compile(
     r"<(?P<tag>think|thinking|reasoning|analysis)\b[^>]*>.*?</(?P=tag)>",
     re.DOTALL | re.IGNORECASE,
 )
-_SECTION_HEADER_PATTERN = re.compile(r"^@(?P<name>areas|schedule|state)$", re.IGNORECASE)
-_AREA_ALIAS_PATTERN = re.compile(r"(?P<alias>[A-Z][A-Z0-9]*)=(?P<name>.*?)(?=(?:\s+[A-Z][A-Z0-9]*=)|$)")
+_SECTION_HEADER_PATTERN = re.compile(r"^\[(?P<name>areas|schedule|state)\]$", re.IGNORECASE)
+_AREA_ALIAS_PATTERN = re.compile(r"^(?P<alias>[A-Z][A-Z0-9]*)\s*=\s*(?P<name>.+?)\s*$")
 _SCHEDULE_DATE_PATTERN = re.compile(r"^(?P<month>\d{2})-(?P<day>\d{2})$")
 _COUNT_TOKEN_PATTERN = re.compile(r"^(?P<id>\d+)(?:\*(?P<count>\d+))?$")
 
@@ -424,51 +424,55 @@ def _split_sections(content: str) -> Dict[str, List[str]]:
     if not text:
         raise ValueError("empty structured output")
 
-    sections: Dict[str, List[str]] = {}
+    blocks: List[Dict[str, List[str]]] = []
+    sections: Optional[Dict[str, List[str]]] = None
     current_section: Optional[str] = None
     for raw_line in text.splitlines():
         line = raw_line.strip()
         if not line:
             continue
+        if line.startswith("#") or line.startswith(";"):
+            continue
         header = _SECTION_HEADER_PATTERN.fullmatch(line)
         if header:
-            current_section = header.group("name").lower()
-            if current_section in sections:
-                raise ValueError(f"duplicate section @{current_section}")
-            sections[current_section] = []
+            next_section = header.group("name").lower()
+            if next_section == "areas" or sections is None:
+                sections = {}
+                blocks.append(sections)
+            current_section = next_section
+            sections.setdefault(current_section, [])
             continue
         if current_section is None:
-            raise ValueError("content before first section header")
+            continue
         sections[current_section].append(raw_line.rstrip())
 
-    if "areas" not in sections or "schedule" not in sections:
-        raise ValueError("missing required @areas or @schedule section")
-    return sections
+    selected = next(
+        (block for block in reversed(blocks) if "areas" in block and "schedule" in block),
+        None,
+    )
+    if selected is None:
+        raise ValueError("missing required [areas] or [schedule] section")
+    return selected
 
 
 def _parse_areas_section(lines: List[str]) -> Dict[str, str]:
     alias_map: Dict[str, str] = {}
     for raw_line in lines:
         line = str(raw_line or "").strip()
-        if not line:
+        if not line or line.startswith("#") or line.startswith(";"):
             continue
-        normalized_line = re.sub(r"\s*;\s*", " ", line)
-        matches = list(_AREA_ALIAS_PATTERN.finditer(normalized_line))
-        if not matches:
-            raise ValueError(f"invalid @areas line: {line}")
-        consumed = "".join(match.group(0) for match in matches)
-        if re.sub(r"[\s;]+", "", consumed) != re.sub(r"[\s;]+", "", normalized_line):
-            raise ValueError(f"invalid @areas tokens: {line}")
-        for match in matches:
-            alias = match.group("alias").strip()
-            area_name = match.group("name").strip()
-            if not area_name:
-                raise ValueError(f"empty area name for alias {alias}")
-            if alias.startswith("_"):
-                raise ValueError(f"alias {alias} cannot start with underscore")
-            alias_map[alias] = area_name
+        match = _AREA_ALIAS_PATTERN.fullmatch(line)
+        if not match:
+            raise ValueError(f"invalid [areas] line: {line}")
+        alias = match.group("alias").strip()
+        area_name = match.group("name").strip()
+        if not area_name:
+            raise ValueError(f"empty area name for alias {alias}")
+        if alias.startswith("_"):
+            raise ValueError(f"alias {alias} cannot start with underscore")
+        alias_map[alias] = area_name
     if not alias_map:
-        raise ValueError("@areas is empty")
+        raise ValueError("[areas] is empty")
     return alias_map
 
 
@@ -520,38 +524,34 @@ def _parse_schedule_section(lines: List[str], alias_map: Dict[str, str], start_d
 
     for raw_line in lines:
         line = str(raw_line or "").strip()
-        if not line:
+        if not line or line.startswith("#") or line.startswith(";"):
             continue
-        if ":" not in line:
-            raise ValueError(f"invalid @schedule line: {line}")
-        raw_mmdd, raw_body = line.split(":", 1)
+        if "=" not in line:
+            raise ValueError(f"invalid [schedule] line: {line}")
+        raw_mmdd, raw_body = line.split("=", 1)
         resolved_date = _resolve_mmdd(raw_mmdd.strip(), start_date, previous_date)
         if resolved_date in seen_dates:
             raise ValueError(f"duplicate date {resolved_date.isoformat()}")
         previous_date = resolved_date
         seen_dates.add(resolved_date)
 
-        area_ids: Dict[str, List[int]] = {}
         note = ""
-        segments = [segment.strip() for segment in raw_body.split(";") if segment.strip()]
+        assignment_body = raw_body
+        if "#" in raw_body:
+            assignment_body, raw_note = raw_body.split("#", 1)
+            note = raw_note.strip()
+
+        area_ids: Dict[str, List[int]] = {}
+        segments = [segment.strip() for segment in assignment_body.split("|") if segment.strip()]
         if not segments:
             raise ValueError(f"schedule line {raw_mmdd.strip()} has no assignments")
 
-        saw_note = False
-        for index, segment in enumerate(segments):
-            if "=" not in segment:
+        for segment in segments:
+            if ":" not in segment:
                 raise ValueError(f"invalid assignment segment on {raw_mmdd.strip()}: {segment}")
-            key, value = segment.split("=", 1)
+            key, value = segment.split(":", 1)
             key = key.strip()
             value = value.strip()
-            if key == "_note":
-                if index != len(segments) - 1:
-                    raise ValueError(f"_note must be last on {raw_mmdd.strip()}")
-                note = value
-                saw_note = True
-                continue
-            if saw_note:
-                raise ValueError(f"no fields allowed after _note on {raw_mmdd.strip()}")
             if key not in alias_map:
                 raise ValueError(f"unknown area alias {key} on {raw_mmdd.strip()}")
             area_name = alias_map[key]
@@ -570,7 +570,7 @@ def _parse_schedule_section(lines: List[str], alias_map: Dict[str, str], start_d
         )
 
     if not schedule:
-        raise ValueError("@schedule is empty")
+        raise ValueError("[schedule] is empty")
     return schedule
 
 
@@ -597,14 +597,14 @@ def _parse_state_section(lines: List[str]) -> Dict[str, Dict[int, int]]:
     }
     for raw_line in lines:
         line = str(raw_line or "").strip()
-        if not line:
+        if not line or line.startswith("#") or line.startswith(";"):
             continue
         if "=" not in line:
-            raise ValueError(f"invalid @state line: {line}")
+            raise ValueError(f"invalid [state] line: {line}")
         key, value = line.split("=", 1)
         normalized_key = key.strip().lower()
         if normalized_key not in {"debt", "credit"}:
-            raise ValueError(f"unsupported @state field: {normalized_key}")
+            raise ValueError(f"unsupported [state] field: {normalized_key}")
         target_key = f"{normalized_key}_counts"
         state_delta[target_key] = _parse_count_tokens(value.strip(), field_name=normalized_key)
     return state_delta

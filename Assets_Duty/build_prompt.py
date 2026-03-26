@@ -121,9 +121,13 @@ def build_prompt_messages(
         methods_list.append(f"user_defined_rule={duty_rule}")
 
     methods_list.append(
-        "Formatting constraints: declare every alias in @areas before using it in @schedule. "
+        "Formatting constraints: declare every alias in [areas] before using it in [schedule]. "
         "Use MM-DD dates only. Keep aliases short uppercase tokens such as A, B, S. "
-        "Use spaces between IDs, never commas or pipes. "
+        "Use `Alias = AreaName` in [areas]. "
+        "Use `MM-DD = A:1001 1002 | B:1003 1004` in [schedule]. "
+        "Use spaces between IDs and `|` only between area assignments. "
+        "If a date needs a note, append it as a trailing `# ...` comment on that schedule line. "
+        "Use `debt = ...` and `credit = ...` lines in [state]. "
         "Same-day cross-area reuse is allowed. Same-area duplicate IDs are forbidden."
     )
 

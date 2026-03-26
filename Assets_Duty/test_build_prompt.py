@@ -13,8 +13,8 @@ class TestBuildPromptMessages(unittest.TestCase):
             all_ids=[1, 2, 3],
             current_time="2026-03-24 08:00",
             id_to_active={1: 1, 2: 1, 3: 1},
-            instruction="周一到周四安排教室和清洁区值日",
-            duty_rule="周五增加大扫除区域",
+            instruction="Arrange classroom and cleaning duty for several days.",
+            duty_rule="Add a special cleanup area on Friday.",
             area_names=[],
             area_per_day_counts={},
             debt_counts={2: 2},
@@ -29,25 +29,28 @@ class TestBuildPromptMessages(unittest.TestCase):
         self.assertEqual(len(messages), 1)
         return messages[0]["content"]
 
-    def test_cloud_prompt_uses_v2_kv_lite_contract(self):
+    def test_cloud_prompt_uses_ini_contract(self):
         content = self._build("cloud_standard")
-        self.assertIn("@areas", content)
-        self.assertIn("@schedule", content)
-        self.assertIn("@state", content)
-        self.assertIn("MM-DD: A=1001 1002; B=1003 1004; _note=", content)
+        self.assertIn("[areas]", content)
+        self.assertIn("[schedule]", content)
+        self.assertIn("[state]", content)
+        self.assertIn("MM-DD = A:1001 1002 | B:1003 1004 #", content)
         self.assertIn("current_debt_counts=2*2", content)
         self.assertIn("current_credit_counts=3", content)
         self.assertIn("boundary_dates=", content)
+        self.assertNotIn("_note=", content)
+        self.assertNotIn("@areas", content)
         self.assertNotIn("RESET", content)
         self.assertNotIn("<csv>", content)
         self.assertNotIn("Assigned_IDs", content)
 
     def test_incremental_prompt_uses_same_wire_contract_without_reset(self):
         content = self._build("incremental_thinking")
-        self.assertIn("@areas", content)
-        self.assertIn("@schedule", content)
-        self.assertIn("@state", content)
+        self.assertIn("[areas]", content)
+        self.assertIn("[schedule]", content)
+        self.assertIn("[state]", content)
         self.assertIn("Work through the dates in order internally", content)
+        self.assertNotIn("_note=", content)
         self.assertNotIn("RESET", content)
         self.assertNotIn("<next_run_note>", content)
 

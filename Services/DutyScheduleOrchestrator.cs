@@ -29,7 +29,7 @@ public class DutyScheduleOrchestrator : IDisposable
     private readonly SemaphoreSlim _runCoreGate = new(1, 1);
     private readonly object _dutyReminderLock = new();
     private readonly object _currentDutyBoundaryLock = new();
-    private readonly HashSet<string> _sentDutyReminderSlots = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, string> _publishedDutyReminderSignatures = new(StringComparer.Ordinal);
     private readonly DutyPluginPaths _pluginPaths;
     private bool _runtimeStarted;
     private bool _pendingAutomationStateChange;
@@ -74,7 +74,11 @@ public class DutyScheduleOrchestrator : IDisposable
         _automationBridge = automationBridge;
         _pluginPaths = pluginPaths;
 
-        _stateManager.StateChanged += (_, _) => DebounceUpdateNotification(notifyAutomationBridge: true);
+        _stateManager.StateChanged += (_, _) =>
+        {
+            DebounceUpdateNotification(notifyAutomationBridge: true);
+            TryPublishDutyReminderNotifications(DateTime.Now, allowRepublishIfChanged: true);
+        };
         _configManager.ConfigChanged += (_, _) =>
         {
             DebounceUpdateNotification();
@@ -371,53 +375,37 @@ public class DutyScheduleOrchestrator : IDisposable
         {
             LoadConfig();
             var now = DateTime.Now;
-            TryPublishDutyReminderNotifications(now);
 
             var mode = (Config.AutoRunMode ?? "Off").Trim();
-            if (string.Equals(mode, "Off", StringComparison.OrdinalIgnoreCase))
+            if (!string.Equals(mode, "Off", StringComparison.OrdinalIgnoreCase))
             {
-                return;
+                var today = now.ToString("yyyy-MM-dd");
+                if (!string.Equals(Config.LastAutoRunDate, today, StringComparison.Ordinal) &&
+                    IsAutoRunTriggered(mode, Config.AutoRunParameter, Config.LastAutoRunDate, now) &&
+                    TimeSpan.TryParse(Config.AutoRunTime, out var targetTime) &&
+                    now.TimeOfDay >= targetTime &&
+                    _runCoreGate.CurrentCount != 0)
+                {
+                    PublishAutoRunTriggeredNotification(now);
+                    var result = RunCoreAgentWithMessage(AutoRunInstruction, isAutoRun: true);
+                    if (!string.Equals(result.Code, "busy", StringComparison.Ordinal))
+                    {
+                        PublishRunCompletionNotification(
+                            instruction: AutoRunInstruction,
+                            resultMessage: result.Message,
+                            success: result.Success,
+                            isAutoRun: true);
+
+                        UpdateHostConfig(config =>
+                        {
+                            config.LastAutoRunDate = today;
+                            config.AiConsecutiveFailures = 0;
+                        });
+                    }
+                }
             }
 
-            var today = now.ToString("yyyy-MM-dd");
-            if (string.Equals(Config.LastAutoRunDate, today, StringComparison.Ordinal))
-            {
-                return;
-            }
-
-            if (!IsAutoRunTriggered(mode, Config.AutoRunParameter, Config.LastAutoRunDate, now))
-            {
-                return;
-            }
-
-            if (!TimeSpan.TryParse(Config.AutoRunTime, out var targetTime) || now.TimeOfDay < targetTime)
-            {
-                return;
-            }
-
-            if (_runCoreGate.CurrentCount == 0)
-            {
-                return;
-            }
-
-            PublishAutoRunTriggeredNotification(now);
-            var result = RunCoreAgentWithMessage(AutoRunInstruction, isAutoRun: true);
-            if (string.Equals(result.Code, "busy", StringComparison.Ordinal))
-            {
-                return;
-            }
-
-            PublishRunCompletionNotification(
-                instruction: AutoRunInstruction,
-                resultMessage: result.Message,
-                success: result.Success,
-                isAutoRun: true);
-
-            UpdateHostConfig(config =>
-            {
-                config.LastAutoRunDate = today;
-                config.AiConsecutiveFailures = 0;
-            });
+            TryPublishDutyReminderNotifications(now);
         }
         catch
         {
@@ -870,7 +858,7 @@ public class DutyScheduleOrchestrator : IDisposable
         var dateValue = (dateText ?? string.Empty).Trim();
         if (dateValue.Length == 0)
         {
-            dateValue = DateTime.Now.ToString("yyyy-MM-dd");
+            dateValue = GetCurrentScheduleDate().ToString("yyyy-MM-dd");
         }
 
         var timeValue = (timeText ?? string.Empty).Trim();
@@ -882,7 +870,7 @@ public class DutyScheduleOrchestrator : IDisposable
         PublishDutyReminderNotification(dateValue, timeValue);
     }
 
-    private void TryPublishDutyReminderNotifications(DateTime now)
+    private void TryPublishDutyReminderNotifications(DateTime now, bool allowRepublishIfChanged = false)
     {
         if (!Config.DutyReminderEnabled)
         {
@@ -895,37 +883,18 @@ public class DutyScheduleOrchestrator : IDisposable
             return;
         }
 
-        var today = now.ToString("yyyy-MM-dd");
-        var dueTimes = new List<string>();
+        var targetDate = GetCurrentScheduleDate(now).ToString("yyyy-MM-dd");
+        List<string> dueTimes;
 
         lock (_dutyReminderLock)
         {
-            _sentDutyReminderSlots.RemoveWhere(x => !x.StartsWith($"{today}|", StringComparison.Ordinal));
-
-            foreach (var reminderTime in reminderTimes)
-            {
-                if (!TimeSpan.TryParse(reminderTime, out var triggerTime))
-                {
-                    continue;
-                }
-
-                var triggerAt = now.Date.Add(triggerTime);
-                if (now < triggerAt || now >= triggerAt.AddMinutes(1))
-                {
-                    continue;
-                }
-
-                var slotKey = $"{today}|{reminderTime}";
-                if (_sentDutyReminderSlots.Add(slotKey))
-                {
-                    dueTimes.Add(reminderTime);
-                }
-            }
+            CleanupPublishedDutyReminderSlots(targetDate);
+            dueTimes = GetDueDutyReminderTimes(now, reminderTimes);
         }
 
         foreach (var reminderTime in dueTimes)
         {
-            PublishDutyReminderNotification(today, reminderTime);
+            PublishDutyReminderNotificationIfNeeded(targetDate, reminderTime, allowRepublishIfChanged);
         }
     }
 
@@ -939,14 +908,89 @@ public class DutyScheduleOrchestrator : IDisposable
 
         var assignmentSegments = FormatAreaAssignments(assignments, emptyStudentLabel: "\u65E0");
 
-        var primaryText = item is null
-            ? $"\u503C\u65E5\u63D0\u9192 {dateText} {timeText}"
-            : $"\u4ECA\u65E5\u503C\u65E5\u63D0\u9192 {timeText}";
+        var primaryText = $"\u5F53\u524D\u503C\u65E5\u63D0\u9192 {timeText}";
         var scrollingText = item is null
-            ? "\u4ECA\u65E5\u6682\u65E0\u503C\u65E5\u5B89\u6392"
-            : assignmentSegments.Count > 0 ? string.Join("\uFF1B", assignmentSegments) : "\u4ECA\u65E5\u6682\u65E0\u503C\u65E5\u5B89\u6392";
+            ? $"{dateText} \u6682\u65E0\u503C\u65E5\u5B89\u6392"
+            : assignmentSegments.Count > 0 ? string.Join("\uFF1B", assignmentSegments) : $"{dateText} \u6682\u65E0\u503C\u65E5\u5B89\u6392";
 
         _notificationService.Publish(primaryText, scrollingText, duration);
+    }
+
+    private void PublishDutyReminderNotificationIfNeeded(string dateText, string timeText, bool allowRepublishIfChanged)
+    {
+        var slotKey = $"{dateText}|{timeText}";
+        var signature = BuildDutyReminderSignature(dateText);
+
+        lock (_dutyReminderLock)
+        {
+            if (_publishedDutyReminderSignatures.TryGetValue(slotKey, out var existingSignature))
+            {
+                if (!allowRepublishIfChanged || string.Equals(existingSignature, signature, StringComparison.Ordinal))
+                {
+                    return;
+                }
+            }
+
+            _publishedDutyReminderSignatures[slotKey] = signature;
+        }
+
+        PublishDutyReminderNotification(dateText, timeText);
+    }
+
+    private List<string> GetDueDutyReminderTimes(DateTime now, IEnumerable<string> reminderTimes)
+    {
+        var dueTimes = new List<string>();
+        foreach (var reminderTime in reminderTimes)
+        {
+            if (!TimeSpan.TryParse(reminderTime, out var triggerTime))
+            {
+                continue;
+            }
+
+            var triggerAt = now.Date.Add(triggerTime);
+            if (now >= triggerAt && now < triggerAt.AddMinutes(1))
+            {
+                dueTimes.Add(reminderTime);
+            }
+        }
+
+        return dueTimes;
+    }
+
+    private void CleanupPublishedDutyReminderSlots(string targetDate)
+    {
+        var staleKeys = _publishedDutyReminderSignatures.Keys
+            .Where(key => !key.StartsWith($"{targetDate}|", StringComparison.Ordinal))
+            .ToList();
+        foreach (var staleKey in staleKeys)
+        {
+            _publishedDutyReminderSignatures.Remove(staleKey);
+        }
+    }
+
+    private string BuildDutyReminderSignature(string dateText)
+    {
+        var item = GetScheduleItem(dateText);
+        if (item is null)
+        {
+            return $"{dateText}|empty";
+        }
+
+        var assignments = GetAreaAssignments(item);
+        var builder = new StringBuilder(dateText);
+        foreach (var area in assignments.Keys.OrderBy(name => name, StringComparer.Ordinal))
+        {
+            builder.Append('|').Append(area).Append('=');
+            builder.Append(string.Join(",", assignments[area]));
+        }
+
+        var note = (item.Note ?? string.Empty).Trim();
+        if (note.Length > 0)
+        {
+            builder.Append("|note=").Append(note);
+        }
+
+        return builder.ToString();
     }
 
     private static List<string> FormatAreaAssignments(
