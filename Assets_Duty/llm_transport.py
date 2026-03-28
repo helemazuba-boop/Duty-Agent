@@ -590,8 +590,8 @@ def _parse_count_tokens(raw_value: str, *, field_name: str) -> Dict[int, int]:
     return counts
 
 
-def _parse_state_section(lines: List[str]) -> Dict[str, Dict[int, int]]:
-    state_delta = {
+def _parse_state_section(lines: List[str]) -> Dict[str, Any]:
+    state_delta: Dict[str, Any] = {
         "debt_counts": {},
         "credit_counts": {},
     }
@@ -602,11 +602,25 @@ def _parse_state_section(lines: List[str]) -> Dict[str, Dict[int, int]]:
         if "=" not in line:
             raise ValueError(f"invalid [state] line: {line}")
         key, value = line.split("=", 1)
-        normalized_key = key.strip().lower()
-        if normalized_key not in {"debt", "credit"}:
+        normalized_key = key.strip().lower().replace(" ", "_")
+        if normalized_key in {"debt", "credit"}:
+            target_key = f"{normalized_key}_counts"
+            state_delta[target_key] = _parse_count_tokens(value.strip(), field_name=normalized_key)
+        elif normalized_key == "pointer":
+            try:
+                state_delta["pointer_after"] = int(value.strip())
+            except (TypeError, ValueError) as ex:
+                raise ValueError(f"invalid pointer value: {value.strip()}") from ex
+        elif normalized_key == "consumed_credit":
+            ids: List[int] = []
+            for token in value.strip().split():
+                try:
+                    ids.append(int(token))
+                except (TypeError, ValueError) as ex:
+                    raise ValueError(f"invalid consumed_credit ID: {token}") from ex
+            state_delta["consumed_credit_ids"] = ids
+        else:
             raise ValueError(f"unsupported [state] field: {normalized_key}")
-        target_key = f"{normalized_key}_counts"
-        state_delta[target_key] = _parse_count_tokens(value.strip(), field_name=normalized_key)
     return state_delta
 
 

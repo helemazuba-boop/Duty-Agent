@@ -1,4 +1,4 @@
-﻿using System.Diagnostics;
+using System.Diagnostics;
 using System.Globalization;
 using System.Text;
 using System.Text.Json;
@@ -183,6 +183,7 @@ public partial class DutyMainSettingsPage : SettingsPageBase
     {
         ConfigureTimingEditors();
         EnsureBackendSyncSubscription();
+        Service.ScheduleUpdated += OnScheduleUpdated;
         DutyDiagnosticsLogger.Info("SettingsPage", "Settings page loaded; beginning unified settings load.");
         TraceSettings("page_loaded");
         _ = WarnIfInitialSettingsStillUnavailableAsync();
@@ -322,6 +323,7 @@ public partial class DutyMainSettingsPage : SettingsPageBase
 
     private void OnPageUnloaded(object? sender, RoutedEventArgs e)
     {
+        Service.ScheduleUpdated -= OnScheduleUpdated;
         ReleaseBackendSyncSubscription();
         Interlocked.Increment(ref _configLoadRevision);
         _configApplyDebounceTimer.Stop();
@@ -335,6 +337,14 @@ public partial class DutyMainSettingsPage : SettingsPageBase
 
         CaptureCurrentPlanDraft();
         QueueConfigApply(immediate: true);
+    }
+
+    private void OnScheduleUpdated(object? sender, EventArgs e)
+    {
+        Dispatcher.UIThread.Post(() =>
+        {
+            _ = LoadDataAsync("后台自动排班更新");
+        }, DispatcherPriority.Background);
     }
 
     private void EnsureBackendSyncSubscription()

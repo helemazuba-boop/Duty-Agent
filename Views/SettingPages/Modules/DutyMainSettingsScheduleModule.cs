@@ -1,4 +1,4 @@
-﻿using DutyAgent.Models;
+using DutyAgent.Models;
 using DutyAgent.Services;
 
 namespace DutyAgent.Views.SettingPages.Modules;
@@ -16,7 +16,8 @@ internal sealed class DutyMainSettingsScheduleModule
     {
 
         var rows = state.SchedulePool
-            .OrderBy(x => x.Date, StringComparer.Ordinal)
+            .OrderBy(x => DateTime.TryParse(x.Date, out var dt) ? dt : DateTime.MaxValue)
+            .ThenBy(x => x.Date, StringComparer.OrdinalIgnoreCase)
             .Select(item =>
             {
                 var assignments = _service.GetAreaAssignments(item);
@@ -60,7 +61,12 @@ internal sealed class DutyMainSettingsScheduleModule
 
         var state = _service.LoadState();
         var item = state.SchedulePool.LastOrDefault(x =>
-            string.Equals(x.Date, normalizedDate, StringComparison.Ordinal));
+        {
+            var itemDateStr = (x.Date ?? string.Empty).Trim();
+            if (string.Equals(itemDateStr, normalizedDate, StringComparison.OrdinalIgnoreCase)) return true;
+            if (DateTime.TryParse(itemDateStr, out var itemDate) && DateTime.TryParse(normalizedDate, out var targetDate)) return itemDate.Date == targetDate.Date;
+            return false;
+        });
         if (item == null)
         {
             return new DutyScheduleEditorData { Exists = false };

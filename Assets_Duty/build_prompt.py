@@ -128,6 +128,8 @@ def build_prompt_messages(
         "Use spaces between IDs and `|` only between area assignments. "
         "If a date needs a note, append it as a trailing `# ...` comment on that schedule line. "
         "Use `debt = ...` and `credit = ...` lines in [state]. "
+        "Use `pointer = <int>` in [state] to declare the next roster index after the last inspected candidate. "
+        "Use `consumed_credit = 1001 1002` in [state] to list IDs whose credit was consumed this round. "
         "Same-day cross-area reuse is allowed. Same-area duplicate IDs are forbidden."
     )
 

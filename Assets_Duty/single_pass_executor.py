@@ -119,20 +119,30 @@ def run_single_pass_schedule(
     if not restored:
         raise ValueError("No valid schedule entries.")
 
-    pointer_progress = estimate_pointer_progress(
-        all_ids,
-        [person_id for person_id in all_ids if id_to_active.get(person_id, 1) != 0],
-        int(state_data.get("last_pointer", 0) or 0),
-        debt_counts,
-        credit_counts,
-        normalized_ids,
-    )
+    state_delta = dict(llm_result.get("state_delta") or {})
+    llm_pointer_after = state_delta.get("pointer_after")
+    llm_consumed_credit_ids = state_delta.get("consumed_credit_ids")
+
+    if llm_pointer_after is not None:
+        safe_pointer = max(0, min(int(llm_pointer_after), len(all_ids) - 1)) if all_ids else 0
+        pointer_progress = {
+            "pointer_after": safe_pointer,
+            "consumed_credit_ids": list(llm_consumed_credit_ids or []),
+        }
+    else:
+        pointer_progress = estimate_pointer_progress(
+            all_ids,
+            [person_id for person_id in all_ids if id_to_active.get(person_id, 1) != 0],
+            int(state_data.get("last_pointer", 0) or 0),
+            debt_counts,
+            credit_counts,
+            normalized_ids,
+        )
 
     def _apply_state_update(current_state: dict) -> dict:
         next_state = dict(current_state)
         current_debt_counts = clone_count_map(next_state.get("debt_counts", {}), set(all_ids))
         current_credit_counts = clone_count_map(next_state.get("credit_counts", {}), set(all_ids))
-        state_delta = dict(llm_result.get("state_delta") or {})
 
         next_state["debt_counts"] = recover_missing_debts(
             current_debt_counts,

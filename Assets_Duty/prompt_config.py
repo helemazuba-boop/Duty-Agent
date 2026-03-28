@@ -26,9 +26,11 @@ Output protocol:
 - The trailing `# 备注` comment is optional.
 - A person may appear in different areas on the same date and may appear again on later dates.
 - Within one alias assignment list, never repeat the same ID.
-- `[state]` is optional and only reports incremental changes for this round.
+- `[state]` reports incremental changes for this round.
 - In `[state]`, use `debt = 1004*2 1005` and `credit = 1002*2`; omit `*1`.
-- If there is no new debt or credit delta, omit `[state]` entirely.
+- In `[state]`, use `pointer = <int>` to declare the next roster index after the last inspected candidate.
+- In `[state]`, use `consumed_credit = 1001 1002` to list IDs whose credit was consumed by pointer advancement this round.
+- `[state]` is required when the schedule changes roster progression; omit only if nothing changed.
 """,
     "compact_base": """You are Duty-Agent Lite.
 Return only the final result in the same V2 plain-text protocol.

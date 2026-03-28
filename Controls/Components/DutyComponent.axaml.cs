@@ -1,4 +1,4 @@
-﻿using Avalonia.Controls;
+using Avalonia.Controls;
 using Avalonia.Interactivity;
 using Avalonia.Media;
 using Avalonia.Threading;
@@ -24,7 +24,7 @@ public partial class DutyComponent : ComponentBase<DutyComponentSettings>
         {
             Interval = TimeSpan.FromSeconds(60)
         };
-        _timer.Tick += (_, _) => UpdateState();
+        _timer.Tick += (_, _) => _ = UpdateStateAsync();
     }
 
     protected override void OnLoaded(RoutedEventArgs e)
@@ -32,7 +32,7 @@ public partial class DutyComponent : ComponentBase<DutyComponentSettings>
         base.OnLoaded(e);
         _service.ScheduleUpdated += OnScheduleUpdated;
         _timer.Start();
-        UpdateState();
+        _ = UpdateStateAsync();
     }
 
     protected override void OnUnloaded(RoutedEventArgs e)
@@ -44,30 +44,30 @@ public partial class DutyComponent : ComponentBase<DutyComponentSettings>
 
     private void OnScheduleUpdated(object? sender, EventArgs e)
     {
-        UpdateState();
+        Dispatcher.UIThread.Post(() => _ = UpdateStateAsync());
     }
 
-    private void UpdateState()
+    private async Task UpdateStateAsync()
     {
         try
         {
-            var state = _service.LoadState();
-            if (state.SchedulePool.Count == 0)
+            var data = await Task.Run(() =>
             {
-                ShowSingleRow("\u6682\u65E0\u6392\u73ED\u6570\u636E", isError: true);
+                var state = _service.LoadState();
+                if (state.SchedulePool.Count == 0) return (HasData: false, Item: (object?)null, Assignments: (Dictionary<string, List<string>>?)null, Error: "\u6682\u65E0\u6392\u73ED\u6570\u636E");
+                var item = _service.GetCurrentScheduleItem();
+                if (item == null) return (HasData: false, Item: (object?)null, Assignments: (Dictionary<string, List<string>>?)null, Error: "\u8BE5\u65E5\u6682\u65E0\u503C\u65E5\u5B89\u6392");
+                var assignments = _service.GetAreaAssignments(item);
+                return (HasData: true, Item: (object?)item, Assignments: (Dictionary<string, List<string>>?)assignments, Error: (string?)null);
+            });
+
+            if (!data.HasData)
+            {
+                ShowSingleRow(data.Error!, isError: true);
                 return;
             }
 
-            var item = _service.GetCurrentScheduleItem();
-            if (item == null)
-            {
-                ShowSingleRow("\u8BE5\u65E5\u6682\u65E0\u503C\u65E5\u5B89\u6392", isError: true);
-                return;
-            }
-
-            var assignments = _service.GetAreaAssignments(item);
-            var areaOrder = assignments.Keys.ToList();
-
+            var areaOrder = data.Assignments!.Keys.ToList();
             if (areaOrder.Count == 0)
             {
                 ShowSingleRow("\u8BE5\u65E5\u6682\u65E0\u503C\u65E5\u5B89\u6392");
@@ -76,11 +76,11 @@ public partial class DutyComponent : ComponentBase<DutyComponentSettings>
 
             if (Settings?.UseDualRowDisplay == true)
             {
-                RenderDualRow(areaOrder, assignments);
+                RenderDualRow(areaOrder, data.Assignments!);
             }
             else
             {
-                RenderSingleRow(areaOrder, assignments);
+                RenderSingleRow(areaOrder, data.Assignments!);
             }
         }
         catch
