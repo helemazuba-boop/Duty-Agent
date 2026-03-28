@@ -161,8 +161,20 @@ def request_llm_non_stream(url: str, payload: dict, api_key: str, stop_event: Op
     if stop_event and stop_event.is_set():
         raise InterruptedError("Cancelled.")
     request = create_llm_request(url, payload, api_key)
-    with urllib.request.urlopen(request, timeout=LLM_TIMEOUT_SECONDS) as response:
-        raw = response.read().decode("utf-8")
+    response = urllib.request.urlopen(request, timeout=LLM_TIMEOUT_SECONDS)
+    try:
+        parts: List[bytes] = []
+        while True:
+            if stop_event and stop_event.is_set():
+                response.close()
+                raise InterruptedError("Cancelled during LLM request.")
+            chunk = response.read(4096)
+            if not chunk:
+                break
+            parts.append(chunk)
+        raw = b"".join(parts).decode("utf-8")
+    finally:
+        response.close()
     parsed = json.loads(raw)
     content = extract_text_from_non_stream_response(parsed)
     if not content.strip():

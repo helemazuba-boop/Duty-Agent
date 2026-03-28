@@ -18,6 +18,8 @@ namespace DutyAgent.Services;
 public interface IPythonIpcService: IDisposable
 {
     Task<CoreRunResult> RunScheduleAsync(object requestPayload, Action<CoreRunProgress>? progressCallback, CancellationToken cancellationToken = default);
+    Task SendCancelScheduleAsync(CancellationToken cancellationToken = default);
+    Task<CoreRunResult> SendRollbackScheduleAsync(CancellationToken cancellationToken = default);
     Task<DutyBackendConfig> GetBackendConfigAsync(string requestSource = "host_settings", string? traceId = null, CancellationToken cancellationToken = default);
     Task<DutyBackendConfig> UpdateBackendConfigAsync(DutyBackendConfigPatch patch, string requestSource = "host_settings", string? traceId = null, CancellationToken cancellationToken = default);
     Task<DutyScheduleEntrySaveResponse> SaveScheduleEntryAsync(DutyScheduleEntrySaveRequest request, string requestSource = "host_settings", string? traceId = null, CancellationToken cancellationToken = default);
@@ -54,6 +56,8 @@ public class DutyPythonIpcService : IPythonIpcService
     private int _serverPort = 0;
     private readonly HttpClient _httpClient;
     private readonly SemaphoreSlim _controlSocketGate = new(1, 1);
+    private volatile ClientWebSocket? _activeRunSocket;
+    private volatile string? _activeRunClientChangeId;
     private bool _disposed;
     private readonly StringBuilder _errorBuffer = new();
     private const int EngineStartupTimeoutSeconds = 15;
@@ -875,54 +879,66 @@ public class DutyPythonIpcService : IPythonIpcService
             instruction
         }, cancellationToken).ConfigureAwait(false);
 
-        while (true)
+        _activeRunSocket = socket;
+        _activeRunClientChangeId = clientChangeId;
+        try
         {
-            using var message = await ReceiveControlSocketMessageAsync(socket, cancellationToken).ConfigureAwait(false);
-            var root = message.RootElement;
-            var messageType = root.TryGetProperty("type", out var typeElement)
-                ? (typeElement.GetString() ?? string.Empty).Trim().ToLowerInvariant()
-                : string.Empty;
-            var messageClientChangeId = root.TryGetProperty("client_change_id", out var changeElement)
-                ? (changeElement.GetString() ?? string.Empty).Trim()
-                : string.Empty;
-
-            if (messageClientChangeId.Length > 0 && !string.Equals(messageClientChangeId, clientChangeId, StringComparison.Ordinal))
+            while (true)
             {
-                continue;
-            }
+                using var message = await ReceiveControlSocketMessageAsync(socket, cancellationToken).ConfigureAwait(false);
+                var root = message.RootElement;
+                var messageType = root.TryGetProperty("type", out var typeElement)
+                    ? (typeElement.GetString() ?? string.Empty).Trim().ToLowerInvariant()
+                    : string.Empty;
+                var messageClientChangeId = root.TryGetProperty("client_change_id", out var changeElement)
+                    ? (changeElement.GetString() ?? string.Empty).Trim()
+                    : string.Empty;
 
-            switch (messageType)
-            {
-                case "accepted":
-                case "hello":
-                    continue;
-                case "schedule_progress":
+                if (messageClientChangeId.Length > 0 && !string.Equals(messageClientChangeId, clientChangeId, StringComparison.Ordinal))
                 {
-                    var phase = root.TryGetProperty("phase", out var phaseProp) ? phaseProp.GetString() ?? "" : "";
-                    var msg = root.TryGetProperty("message", out var msgProp) ? msgProp.GetString() ?? "" : "";
-                    var chunk = root.TryGetProperty("stream_chunk", out var chunkProp) ? chunkProp.GetString() : null;
-                    progressCallback?.Invoke(new CoreRunProgress(phase, msg, chunk));
                     continue;
                 }
-                case "schedule_complete":
+
+                switch (messageType)
                 {
-                    var status = root.TryGetProperty("status", out var statusProp) ? statusProp.GetString() ?? "" : "";
-                    if (string.Equals(status, "success", StringComparison.OrdinalIgnoreCase))
+                    case "accepted":
+                    case "hello":
+                        continue;
+                    case "schedule_progress":
                     {
-                        var aiResponse = root.TryGetProperty("ai_response", out var aiProp) ? aiProp.GetString() : null;
-                        return CoreRunResult.Ok("Success", aiResponse);
+                        var phase = root.TryGetProperty("phase", out var phaseProp) ? phaseProp.GetString() ?? "" : "";
+                        var msg = root.TryGetProperty("message", out var msgProp) ? msgProp.GetString() ?? "" : "";
+                        var chunk = root.TryGetProperty("stream_chunk", out var chunkProp) ? chunkProp.GetString() : null;
+                        progressCallback?.Invoke(new CoreRunProgress(phase, msg, chunk));
+                        continue;
                     }
-                    var errMsg = root.TryGetProperty("message", out var errProp) ? errProp.GetString() ?? "Unknown error" : "Unknown error";
-                    return CoreRunResult.Fail(errMsg);
+                    case "schedule_complete":
+                    {
+                        var status = root.TryGetProperty("status", out var statusProp) ? statusProp.GetString() ?? "" : "";
+                        if (string.Equals(status, "success", StringComparison.OrdinalIgnoreCase))
+                        {
+                            var aiResponse = root.TryGetProperty("ai_response", out var aiProp) ? aiProp.GetString() : null;
+                            return CoreRunResult.Ok("Success", aiResponse);
+                        }
+                        var errMsg = root.TryGetProperty("message", out var errProp) ? errProp.GetString() ?? "Unknown error" : "Unknown error";
+                        return CoreRunResult.Fail(errMsg);
+                    }
+                    case "schedule_cancelled":
+                        return CoreRunResult.Fail("已取消排班执行。", code: "cancelled");
+                    case "error":
+                    {
+                        var errMsg = root.TryGetProperty("message", out var errProp) ? errProp.GetString() ?? "Unknown error" : "Unknown error";
+                        return CoreRunResult.Fail(errMsg);
+                    }
+                    default:
+                        continue;
                 }
-                case "error":
-                {
-                    var errMsg = root.TryGetProperty("message", out var errProp) ? errProp.GetString() ?? "Unknown error" : "Unknown error";
-                    return CoreRunResult.Fail(errMsg);
-                }
-                default:
-                    continue;
             }
+        }
+        finally
+        {
+            _activeRunSocket = null;
+            _activeRunClientChangeId = null;
         }
     }
 
@@ -1180,6 +1196,35 @@ public class DutyPythonIpcService : IPythonIpcService
         CancellationToken cancellationToken = default)
     {
         return await SendJsonAsync<DutyBackendSnapshot>(HttpMethod.Get, "/api/v1/snapshot", null, requestSource, traceId, cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task SendCancelScheduleAsync(CancellationToken cancellationToken = default)
+    {
+        var socket = _activeRunSocket;
+        var changeId = _activeRunClientChangeId;
+        if (socket is not { State: WebSocketState.Open } || string.IsNullOrEmpty(changeId))
+        {
+            return;
+        }
+
+        await SendControlSocketMessageAsync(socket, new
+        {
+            type = "schedule_cancel",
+            client_change_id = changeId,
+            trace_id = DutyDiagnosticsLogger.CreateTraceId("cancel"),
+            request_source = "host"
+        }, cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<CoreRunResult> SendRollbackScheduleAsync(CancellationToken cancellationToken = default)
+    {
+        return await SendJsonAsync<CoreRunResult>(
+            HttpMethod.Post,
+            "/api/v1/duty/schedule-rollback",
+            null,
+            "host",
+            null,
+            cancellationToken).ConfigureAwait(false);
     }
 
     private async Task<T> SendJsonAsync<T>(

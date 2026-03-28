@@ -130,6 +130,21 @@ async def save_schedule_entry(request_data: DutyScheduleEntrySaveRequest, reques
     )
 
 
+@router.post("/schedule-rollback")
+async def schedule_rollback(request: Request):
+    runtime = getattr(request.app.state, "runtime", None)
+    if runtime is None:
+        raise HTTPException(status_code=503, detail="Runtime is not initialized.")
+
+    trace_id = (request.headers.get("X-Duty-Trace-Id") or "").strip() or runtime.new_trace_id()
+    request_source = (request.headers.get("X-Duty-Request-Source") or "").strip() or "api"
+    return await asyncio.to_thread(
+        runtime.command_service.rollback_schedule,
+        trace_id=trace_id,
+        request_source=request_source,
+    )
+
+
 @router.websocket("/live")
 async def duty_live(websocket: WebSocket):
     runtime = getattr(websocket.app.state, "runtime", None)
@@ -212,6 +227,17 @@ async def duty_live(websocket: WebSocket):
                 )
             elif message_type == "schedule_cancel":
                 _cancel_schedule_run(active_schedule_stops, client_change_id, runtime, msg_trace_id)
+            elif message_type == "schedule_rollback":
+                result = runtime.command_service.rollback_schedule(
+                    trace_id=msg_trace_id, request_source=msg_request_source,
+                )
+                await _enqueue_send(send_queue, {
+                    "type": "rollback_complete",
+                    "client_change_id": client_change_id,
+                    "trace_id": msg_trace_id,
+                    "request_source": msg_request_source,
+                    **result,
+                })
             else:
                 await _enqueue_send(send_queue, {
                     "type": "error",
@@ -287,7 +313,7 @@ def _start_schedule_run(
                 result = runtime.command_service.run_schedule(payload, put_progress, stop_event)
                 loop.call_soon_threadsafe(queue.put_nowait, {"type": "done", "data": result})
             except InterruptedError:
-                loop.call_soon_threadsafe(queue.put_nowait, {"type": "error", "message": "Cancelled by user."})
+                loop.call_soon_threadsafe(queue.put_nowait, {"type": "cancelled"})
             except Exception as e:
                 loop.call_soon_threadsafe(queue.put_nowait, {"type": "error", "message": str(e)})
 
@@ -314,6 +340,14 @@ def _start_schedule_run(
                         "trace_id": trace_id,
                         "request_source": request_source,
                         **result_data,
+                    })
+                    break
+                elif msg_item["type"] == "cancelled":
+                    await _enqueue_send(send_queue, {
+                        "type": "schedule_cancelled",
+                        "client_change_id": client_change_id,
+                        "trace_id": trace_id,
+                        "request_source": request_source,
                     })
                     break
                 elif msg_item["type"] == "error":

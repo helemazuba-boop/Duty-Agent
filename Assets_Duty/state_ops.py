@@ -4,6 +4,7 @@ import csv
 import ctypes
 import json
 import os
+import shutil
 import re
 import time
 from datetime import date, datetime
@@ -506,8 +507,37 @@ def update_state(
         current = load_state(path)
         updated = updater(current)
         next_state = updated if isinstance(updated, dict) else current
+        if path.exists():
+            prev_path = path.with_suffix(".prev" + path.suffix)
+            shutil.copy2(str(path), str(prev_path))
         save_json_atomic(path, next_state)
         return next_state
+    finally:
+        release_state_file_lock(lock_path)
+
+
+
+def has_previous_state(path: "Path") -> bool:
+    prev_path = path.with_suffix(".prev" + path.suffix)
+    return prev_path.exists()
+
+
+def rollback_state(
+    path: "Path",
+    *,
+    timeout_seconds: int = STATE_LOCK_TIMEOUT_SECONDS,
+    stop_event=None,
+) -> dict:
+    lock_path = path.with_suffix(path.suffix + ".lock")
+    prev_path = path.with_suffix(".prev" + path.suffix)
+    acquire_state_file_lock(lock_path, timeout_seconds=timeout_seconds, stop_event=stop_event)
+    try:
+        if not prev_path.exists():
+            raise FileNotFoundError("No previous state to rollback to.")
+        prev_state = load_state(prev_path)
+        save_json_atomic(path, prev_state)
+        prev_path.unlink(missing_ok=True)
+        return prev_state
     finally:
         release_state_file_lock(lock_path)
 

@@ -166,6 +166,9 @@ def run_single_pass_schedule(
         next_state["schedule_pool"] = merge_schedule_pool(restored)
         return next_state
 
+    if stop_event and stop_event.is_set():
+        raise InterruptedError("Cancelled before state update.")
+
     update_state(ctx.paths["state"], _apply_state_update, stop_event=stop_event)
 
     return {

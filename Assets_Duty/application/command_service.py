@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any, Callable, Dict, Optional
 
 from engine import run_schedule
-from state_ops import Context, load_config, load_roster_entries, load_state, patch_config, save_roster_entries, save_schedule_entry_edit
+from state_ops import Context, has_previous_state, load_config, load_roster_entries, load_state, patch_config, rollback_state, save_roster_entries, save_schedule_entry_edit
 
 
 class CommandService:
@@ -185,3 +185,39 @@ class CommandService:
             schedule_count=len(response["snapshot"]["state"].get("schedule_pool", [])),
         )
         return response
+
+    def rollback_schedule(
+        self,
+        trace_id: str | None = None,
+        request_source: str = "api",
+    ) -> Dict[str, Any]:
+        effective_trace_id = trace_id or self._runtime.new_trace_id()
+        context = Context(
+            self._runtime.data_dir,
+            logger=self._runtime.logger,
+            trace_id=effective_trace_id,
+            request_source=request_source,
+        )
+        if not has_previous_state(context.paths["state"]):
+            return {
+                "status": "error",
+                "message": "No previous state available to rollback.",
+            }
+        self._runtime.logger.info(
+            "CommandService",
+            "Starting rollback_schedule.",
+            trace_id=effective_trace_id,
+            request_source=request_source,
+        )
+        rolled_back = rollback_state(context.paths["state"])
+        self._runtime.logger.info(
+            "CommandService",
+            "Finished rollback_schedule.",
+            trace_id=effective_trace_id,
+            request_source=request_source,
+            schedule_count=len(rolled_back.get("schedule_pool", [])),
+        )
+        return {
+            "status": "success",
+            "state": rolled_back,
+        }

@@ -62,6 +62,7 @@ public partial class DutyMainSettingsPage : SettingsPageBase
     private int _dataLoadRevision;
     private int _runSessionRevision;
     private int _activeRunSessionRevision;
+    private bool _isScheduleRunning;
     private int _configEditRevision;
     private DutyBackendSyncStatusSnapshot _backendSyncStatus = new();
     private DutySettingsDocument? _lastLoadedSettingsDocument;
@@ -485,6 +486,25 @@ public partial class DutyMainSettingsPage : SettingsPageBase
 
     private async void OnRunAgentClick(object? sender, RoutedEventArgs e)
     {
+        if (_isScheduleRunning)
+        {
+            RunAgentBtn.IsEnabled = false;
+            SetStatus("正在发送取消请求...", Brushes.Orange);
+            try
+            {
+                await Service.CancelActiveScheduleAsync();
+            }
+            catch (Exception ex)
+            {
+                SetStatus($"取消请求失败：{ex.Message}", Brushes.Red);
+            }
+            finally
+            {
+                RunAgentBtn.IsEnabled = true;
+            }
+            return;
+        }
+
         var runSessionRevision = Interlocked.Increment(ref _runSessionRevision);
         _activeRunSessionRevision = runSessionRevision;
         ResetReasoningStreamBuffer(runSessionRevision);
@@ -496,10 +516,13 @@ public partial class DutyMainSettingsPage : SettingsPageBase
 
         try
         {
-            RunAgentBtn.IsEnabled = false;
+            _isScheduleRunning = true;
+            RunAgentBtnContent.Text = "取消执行";
+            RunAgentBtnContent.Glyph = "\uE711";
+            RunAgentBtn.Classes.Remove("accent");
             ReasoningBoardContainer.IsVisible = true;
             ReasoningBoardText.Text = string.Empty;
-            ReasoningBoardContainer.BorderBrush = new Avalonia.Media.SolidColorBrush(Avalonia.Media.Color.Parse("#20000000")); // Subtle default border
+            ReasoningBoardContainer.BorderBrush = new Avalonia.Media.SolidColorBrush(Avalonia.Media.Color.Parse("#20000000"));
             UpdateRunTracking("执行中");
             SetStatus(
                 useDefaultInstruction
@@ -583,6 +606,12 @@ public partial class DutyMainSettingsPage : SettingsPageBase
                       () => { _ = LoadDataAsync("排班完成"); },
                       DispatcherPriority.Background);
             }
+            else if (string.Equals(result.Code, "cancelled", StringComparison.OrdinalIgnoreCase))
+            {
+                ReasoningBoardContainer.BorderBrush = Brushes.Orange;
+                UpdateRunTracking("已取消");
+                SetStatus("排班执行已取消。", Brushes.Orange);
+            }
             else
             {
                 ReasoningBoardContainer.BorderBrush = Brushes.Red;
@@ -603,9 +632,44 @@ public partial class DutyMainSettingsPage : SettingsPageBase
           {
               StopReasoningStreamFlush();
               _activeRunSessionRevision = 0;
+              _isScheduleRunning = false;
+              RunAgentBtnContent.Text = "开始排班（覆盖）";
+              RunAgentBtnContent.Glyph = "\uE768";
+              if (!RunAgentBtn.Classes.Contains("accent"))
+              {
+                  RunAgentBtn.Classes.Add("accent");
+              }
               RunAgentBtn.IsEnabled = true;
           }
       }
+
+    private async void OnRollbackClick(object? sender, RoutedEventArgs e)
+    {
+        RollbackBtn.IsEnabled = false;
+        SetStatus("正在滚回上一次排班...", Brushes.Gray);
+        try
+        {
+            var result = await Service.RollbackScheduleAsync();
+            if (result.Success)
+            {
+                SetStatus("已成功滚回排班。", Brushes.Green);
+                _ = LoadDataAsync("滚回完成");
+            }
+            else
+            {
+                var message = string.IsNullOrWhiteSpace(result.Message) ? "滚回失败。" : $"滚回失败：{result.Message}";
+                SetStatus(message, Brushes.Red);
+            }
+        }
+        catch (Exception ex)
+        {
+            SetStatus($"滚回异常：{ex.Message}", Brushes.Red);
+        }
+        finally
+        {
+            RollbackBtn.IsEnabled = true;
+        }
+    }
 
     private void OnConfigInputLostFocus(object? sender, RoutedEventArgs e)
     {
@@ -2167,6 +2231,7 @@ public partial class DutyMainSettingsPage : SettingsPageBase
 
         PopulateScheduleEditorFromSelection();
         ScheduleSummaryText.Text = preview.Summary;
+        RollbackBtn.IsVisible = preview.Rows.Count > 0;
         ScheduleEmptyStatePanel.IsVisible = preview.Rows.Count == 0;
     }
 
@@ -2810,7 +2875,7 @@ public partial class DutyMainSettingsPage : SettingsPageBase
         return modeId switch
         {
             DutyBackendModeIds.Agents => "Agents",
-            DutyBackendModeIds.IncrementalSmall => "增量小模型",
+            DutyBackendModeIds.IncrementalSmall => "增量",
             _ => "标准"
         };
     }

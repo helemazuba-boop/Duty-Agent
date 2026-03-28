@@ -41,7 +41,7 @@
                     <Button x:Name="RunAgentBtn"
                             Classes="accent"
                             Click="OnRunAgentClick">
-                        <ci:IconText Glyph="&#xE768;" Text="开始排班（覆盖）" />
+                        <ci:IconText x:Name="RunAgentBtnContent" Glyph="&#xE768;" Text="开始排班（覆盖）" />
                     </Button>
                 </ui:SettingsExpander.Footer>
                 <StackPanel Spacing="12" Margin="12,0,12,12">
@@ -380,7 +380,18 @@
                             </StackPanel>
                         </Border>
 
-                        <TextBlock x:Name="ScheduleSummaryText" Text="暂无排班数据。" Opacity="0.75" />
+                        <Grid ColumnDefinitions="*,Auto">
+                            <TextBlock x:Name="ScheduleSummaryText" Grid.Column="0"
+                                       Text="暂无排班数据。" Opacity="0.75"
+                                       VerticalAlignment="Center" />
+                            <Button x:Name="RollbackBtn" Grid.Column="1"
+                                    Click="OnRollbackClick"
+                                    IsVisible="False"
+                                    Margin="8,0,0,0"
+                                    ToolTip.Tip="将排班还原到上一次执行前的状态">
+                                <ci:IconText Glyph="&#xE7A7;" Text="滚回更改" />
+                            </Button>
+                        </Grid>
                     </StackPanel>
                 </TabItem>
 

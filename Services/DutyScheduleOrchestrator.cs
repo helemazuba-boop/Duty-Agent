@@ -249,6 +249,12 @@ public class DutyScheduleOrchestrator : IDisposable
         await _ipcService.RestartEngineAsync().ConfigureAwait(false);
     }
 
+    public Task CancelActiveScheduleAsync(CancellationToken cancellationToken = default)
+        => _ipcService.SendCancelScheduleAsync(cancellationToken);
+
+    public Task<CoreRunResult> RollbackScheduleAsync(CancellationToken cancellationToken = default)
+        => _ipcService.SendRollbackScheduleAsync(cancellationToken);
+
     public void StartRuntime()
     {
         if (_runtimeStarted)
