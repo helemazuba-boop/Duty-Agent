@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any, Callable, Dict, Optional
 
 from engine import run_schedule
-from state_ops import Context, has_previous_state, load_config, load_roster_entries, load_state, patch_config, rollback_state, save_roster_entries, save_schedule_entry_edit
+from state_ops import Context, has_previous_state, load_config, load_roster_entries, load_state, patch_config, remap_state_ids, rollback_state, save_roster_entries, save_schedule_entry_edit, save_state, _is_roster_order_changed
 
 
 class CommandService:
@@ -121,7 +121,25 @@ class CommandService:
             trace_id=effective_trace_id,
             request_source=request_source,
         )
+
+        try:
+            old_roster = load_roster_entries(context.paths["roster"])
+        except (FileNotFoundError, ValueError):
+            old_roster = []
+
         result = save_roster_entries(context, roster_payload)
+
+        if old_roster and _is_roster_order_changed(old_roster, result):
+            old_state = load_state(context.paths["state"])
+            new_state = remap_state_ids(old_state, old_roster, result)
+            if new_state != old_state:
+                save_state(context, new_state)
+            self._runtime.logger.info(
+                "CommandService",
+                "Roster order changed, state IDs remapped.",
+                trace_id=effective_trace_id,
+            )
+
         self._runtime.logger.info(
             "CommandService",
             "Finished update_roster.",

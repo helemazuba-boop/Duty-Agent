@@ -16,6 +16,7 @@
 			<ExcludeAssets>runtime; native</ExcludeAssets>
 		</PackageReference>
 		<PackageReference Include="Microsoft.Web.WebView2" Version="1.0.2903.40" GeneratePathProperty="true" ExcludeAssets="build;buildTransitive" />
+		<PackageReference Include="Xaml.Behaviors.Interactions.DragAndDrop" Version="11.3.9.5" />
 	</ItemGroup>
 
 	<ItemGroup>

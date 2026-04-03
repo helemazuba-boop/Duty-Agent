@@ -517,6 +517,23 @@ def update_state(
 
 
 
+def save_state(ctx: Context, state: dict) -> dict:
+    """
+    将 state 保存到 ctx.paths["state"]，保留 .prev 备份。
+    """
+    path = ctx.paths["state"]
+    lock_path = path.with_suffix(path.suffix + ".lock")
+    acquire_state_file_lock(lock_path, timeout_seconds=STATE_LOCK_TIMEOUT_SECONDS)
+    try:
+        if path.exists():
+            prev_path = path.with_suffix(".prev" + path.suffix)
+            shutil.copy2(str(path), str(prev_path))
+        save_json_atomic(path, state)
+        return state
+    finally:
+        release_state_file_lock(lock_path)
+
+
 def has_previous_state(path: "Path") -> bool:
     prev_path = path.with_suffix(".prev" + path.suffix)
     return prev_path.exists()
@@ -922,7 +939,7 @@ def load_roster(csv_path: Path) -> Tuple[Dict[str, int], Dict[int, str], List[in
             all_ids.append(person_id)
             id_to_active[person_id] = active
 
-    all_ids = sorted(set(all_ids))
+    all_ids = list(dict.fromkeys(all_ids))
     if not all_ids:
         raise ValueError("No people in roster.csv.")
     return name_to_id, id_to_name, all_ids, id_to_active
@@ -998,8 +1015,61 @@ def normalize_roster_entries(entries: object) -> List[dict]:
             }
         )
 
-    normalized.sort(key=lambda item: item["id"])
     return normalized
+
+
+def remap_state_ids(
+    state_data: dict,
+    old_roster: List[dict],
+    new_roster: List[dict],
+) -> dict:
+    """
+    当 roster 顺序变化导致 ID 重编号时，同步迁移 state.json。
+    以姓名为准，debt/credit 跟随人走。
+    """
+    name_to_old_id: Dict[str, int] = {e["name"]: e["id"] for e in old_roster}
+    name_to_new_id: Dict[str, int] = {e["name"]: e["id"] for e in new_roster}
+
+    new_debt: Dict[int, int] = {}
+    for old_id_str, count in (state_data.get("debt_counts") or {}).items():
+        old_id = int(old_id_str)
+        name = next((e["name"] for e in old_roster if e["id"] == old_id), None)
+        if name and name in name_to_new_id:
+            new_id = name_to_new_id[name]
+            new_debt[new_id if new_id != old_id else old_id] = count
+
+    new_credit: Dict[int, int] = {}
+    for old_id_str, count in (state_data.get("credit_counts") or {}).items():
+        old_id = int(old_id_str)
+        name = next((e["name"] for e in old_roster if e["id"] == old_id), None)
+        if name and name in name_to_new_id:
+            new_id = name_to_new_id[name]
+            new_credit[new_id if new_id != old_id else old_id] = count
+
+    new_last_pointer = int(state_data.get("last_pointer", 0) or 0)
+    if 0 <= new_last_pointer < len(old_roster):
+        old_entry = old_roster[new_last_pointer]
+        pointed_name = old_entry.get("name", "")
+        for idx, entry in enumerate(new_roster):
+            if entry.get("name") == pointed_name:
+                new_last_pointer = idx
+                break
+
+    return {
+        **state_data,
+        "debt_counts": new_debt,
+        "credit_counts": new_credit,
+        "last_pointer": new_last_pointer,
+    }
+
+
+def _is_roster_order_changed(old_roster: List[dict], new_roster: List[dict]) -> bool:
+    if len(old_roster) != len(new_roster):
+        return True
+    for old, new in zip(old_roster, new_roster):
+        if old.get("id") != new.get("id") or old.get("name") != new.get("name"):
+            return True
+    return False
 
 
 def save_roster_atomic(path: Path, roster_entries: List[dict]) -> None:

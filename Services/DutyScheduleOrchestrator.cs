@@ -546,10 +546,6 @@ public class DutyScheduleOrchestrator : IDisposable
             });
         }
 
-        normalized = normalized
-            .OrderBy(x => x.Id)
-            .ToList();
-
         var builder = new StringBuilder();
         builder.AppendLine("id,name,active");
         foreach (var item in normalized)

@@ -1,8 +1,10 @@
+using System.Collections.ObjectModel;
 using System.Diagnostics;
 using System.Globalization;
 using System.Text;
 using System.Text.Json;
 using System.Threading;
+using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Input;
 using Avalonia.Interactivity;
@@ -72,6 +74,7 @@ public partial class DutyMainSettingsPage : SettingsPageBase
     private List<DutyPlanPreset> _planPresetDrafts = [];
     private string _currentPlanId = string.Empty;
     private bool _isRosterDropActive;
+    private bool _isRosterDragHandlersAttached;
     private string _scheduleEditorSourceDate = string.Empty;
     private bool _isScheduleEditorDirty;
     private bool _settingsDiagnosticsExported;
@@ -332,8 +335,7 @@ public partial class DutyMainSettingsPage : SettingsPageBase
         TraceSettings("page_unloaded");
         if (_isLoadingConfig)
         {
-            SettingsTrace.Invariant("page_unloaded_while_loading", "Settings page unloaded while local settings were still loading.", BuildSettingsTraceSnapshot());
-            return;
+            SettingsTrace.Warn("page_unloaded_while_loading", new { message = "Settings page unloaded while local settings were still loading. Attempting to save anyway.", snapshot = BuildSettingsTraceSnapshot() });
         }
 
         CaptureCurrentPlanDraft();
@@ -852,11 +854,19 @@ public partial class DutyMainSettingsPage : SettingsPageBase
 
     private async void OnApplyAccessSecurityClick(object? sender, RoutedEventArgs e)
     {
+        ValidateStaticToken();
+        if (StaticAccessTokenErrorText.IsVisible)
+        {
+            SetStatus("Token 不能为空，请检查输入。", Brushes.Orange);
+            return;
+        }
+
         await ApplyAccessSecurityAsync(clearStaticToken: false);
     }
 
     private async void OnClearStaticAccessTokenClick(object? sender, RoutedEventArgs e)
     {
+        ClearStaticTokenValidation();
         await ApplyAccessSecurityAsync(clearStaticToken: true);
     }
 
@@ -889,6 +899,70 @@ public partial class DutyMainSettingsPage : SettingsPageBase
         catch (Exception ex)
         {
             SetStatus($"复制 token 失败：{ex.Message}", Brushes.Red);
+        }
+    }
+
+    private void OnStaticAccessTokenTextChanged(object? sender, RoutedEventArgs e)
+    {
+        ValidateStaticToken();
+    }
+
+    private void ValidateStaticToken()
+    {
+        var token = StaticAccessTokenBox.Text ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(token))
+        {
+            StaticAccessTokenErrorText.Text = "Token 不能为空";
+            StaticAccessTokenErrorText.IsVisible = true;
+            StaticAccessTokenBox.BorderBrush = Brushes.Red;
+        }
+        else
+        {
+            StaticAccessTokenErrorText.IsVisible = false;
+            StaticAccessTokenBox.BorderBrush = null;
+        }
+    }
+
+    private void ClearStaticTokenValidation()
+    {
+        StaticAccessTokenErrorText.IsVisible = false;
+        StaticAccessTokenBox.BorderBrush = null;
+    }
+
+    private void OnFixedServerPortTextChanged(object? sender, RoutedEventArgs e)
+    {
+        ValidateFixedServerPort();
+    }
+
+    private void ValidateFixedServerPort()
+    {
+        var text = FixedServerPortBox.Text ?? string.Empty;
+        if (!int.TryParse(text, out var port))
+        {
+            if (text.Length > 0)
+            {
+                FixedServerPortErrorText.Text = "端口必须为数字";
+                FixedServerPortErrorText.IsVisible = true;
+                FixedServerPortBox.BorderBrush = Brushes.Red;
+            }
+            else
+            {
+                FixedServerPortErrorText.IsVisible = false;
+                FixedServerPortBox.BorderBrush = null;
+            }
+            return;
+        }
+
+        if (port < 1024 || port > 65535)
+        {
+            FixedServerPortErrorText.Text = "端口必须在 1024-65535 之间";
+            FixedServerPortErrorText.IsVisible = true;
+            FixedServerPortBox.BorderBrush = Brushes.Red;
+        }
+        else
+        {
+            FixedServerPortErrorText.IsVisible = false;
+            FixedServerPortBox.BorderBrush = null;
         }
     }
 
@@ -1432,7 +1506,9 @@ public partial class DutyMainSettingsPage : SettingsPageBase
 
     private void OnRosterDropZoneDragOver(object? sender, DragEventArgs e)
     {
+        #pragma warning disable CS0618 // DragEventArgs.Data: use IAsyncDataTransfer in Avalonia 12+
         var localPath = TryGetFirstDroppedRosterPath(e.Data, out _);
+        #pragma warning restore CS0618
         var canDrop = !string.IsNullOrWhiteSpace(localPath);
         e.DragEffects = canDrop ? DragDropEffects.Copy : DragDropEffects.None;
         SetRosterDropActive(canDrop);
@@ -1449,7 +1525,9 @@ public partial class DutyMainSettingsPage : SettingsPageBase
         SetRosterDropActive(false);
         try
         {
+            #pragma warning disable CS0618 // DragEventArgs.Data: use IAsyncDataTransfer in Avalonia 12+
             var localPath = TryGetFirstDroppedRosterPath(e.Data, out var supportedCount);
+            #pragma warning restore CS0618
             if (string.IsNullOrWhiteSpace(localPath))
             {
                 SetStatus("请拖入本地 .txt 或 .xlsx 名单文件。", Brushes.Orange);
@@ -1469,6 +1547,339 @@ public partial class DutyMainSettingsPage : SettingsPageBase
     private void OnRosterSelectionChanged(object? sender, SelectionChangedEventArgs e)
     {
         UpdateStudentActionButtons();
+    }
+
+    private ObservableCollection<DutyRosterRow>? _rosterCollection;
+    private List<int> _rosterDragOriginalIds = [];
+    private int _rosterDragSourceIndex = -1;
+    private Point _rosterDragStart;
+    private Point _rosterDragCurrentPos; // 当前拖动位置（用于自动滚动）
+    private bool _rosterDragTriggered;
+
+    private void OnRosterCollectionChanged(object? sender, System.Collections.Specialized.NotifyCollectionChangedEventArgs e)
+    {
+        // All drag reorder saving is handled in OnRosterPointerReleased
+    }
+
+    private Control? _dragCurrentContainer;
+    private Border? _dragGhostElement;
+    private DispatcherTimer? _autoScrollTimer;
+    private const double AutoScrollThreshold = 80; // 距离边缘多少像素时触发自动滚动
+    private const double AutoScrollBaseSpeed = 15; // 基础滚动速度
+
+    private void OnRosterPointerPressed(object? sender, PointerPressedEventArgs e)
+    {
+        if (_rosterCollection == null) return;
+        if (_rosterDragSourceIndex >= 0) return; // Already tracking a drag
+        if (!e.GetCurrentPoint(sender as Control).Properties.IsLeftButtonPressed) return;
+
+        var pos = e.GetPosition(RosterListBox);
+        var hit = RosterListBox.InputHitTest(pos);
+        var container = GetListBoxItemContainer(hit as Control);
+        if (container == null) return;
+
+        var idx = RosterListBox.IndexFromContainer(container);
+        if (idx < 0) return;
+
+        _rosterDragSourceIndex = idx;
+        _rosterDragTriggered = false;
+        _rosterDragStart = pos;
+        _rosterDragCurrentPos = pos;
+        _rosterDragOriginalIds = _rosterCollection.Select(r => r.Id).ToList();
+        _dragCurrentContainer = container;
+
+        // Dim the source item
+        if (container is Border border)
+        {
+            border.Opacity = 0.5;
+        }
+
+        // Create ghost element
+        CreateDragGhost(container as Border, pos);
+
+        // Start auto-scroll timer
+        StartAutoScrollTimer();
+
+        e.Pointer.Capture(container);
+    }
+
+    private void CreateDragGhost(Border? sourceItem, Point startPos)
+    {
+        if (sourceItem == null) return;
+
+        var itemBounds = sourceItem.Bounds;
+
+        // Clone the visual appearance
+        _dragGhostElement = new Border
+        {
+            Background = sourceItem.Background,
+            BorderBrush = new Avalonia.Media.SolidColorBrush(Avalonia.Media.Color.Parse("#4000")),
+            BorderThickness = new Thickness(2),
+            CornerRadius = new CornerRadius(4),
+            Padding = sourceItem.Padding,
+            IsHitTestVisible = false,
+            IsVisible = true,
+            Opacity = 0.9,
+            Width = itemBounds.Width,
+            MinHeight = itemBounds.Height,
+            HorizontalAlignment = Avalonia.Layout.HorizontalAlignment.Left,
+            VerticalAlignment = Avalonia.Layout.VerticalAlignment.Top,
+        };
+
+        // Copy content
+        if (sourceItem.Child is Grid grid)
+        {
+            _dragGhostElement.Child = CloneGridContent(grid);
+        }
+
+        // Add to visual tree
+        var rootPanel = RosterListBox.Parent as Panel ?? RosterListBox.Parent as Grid;
+        if (rootPanel != null)
+        {
+            rootPanel.Children.Add(_dragGhostElement);
+            Canvas.SetLeft(_dragGhostElement, itemBounds.X);
+            Canvas.SetTop(_dragGhostElement, itemBounds.Y);
+        }
+    }
+
+    private static Grid? CloneGridContent(Grid source)
+    {
+        var clone = new Grid { ColumnDefinitions = source.ColumnDefinitions, RowDefinitions = source.RowDefinitions };
+        foreach (var child in source.Children)
+        {
+            if (child is TextBlock tb)
+            {
+                var newTb = new TextBlock
+                {
+                    Text = tb.Text,
+                    VerticalAlignment = tb.VerticalAlignment,
+                    TextTrimming = tb.TextTrimming,
+                    Opacity = tb.Opacity
+                };
+                Grid.SetColumn(newTb, Grid.GetColumn(tb));
+                Grid.SetRow(newTb, Grid.GetRow(tb));
+                clone.Children.Add(newTb);
+            }
+        }
+        return clone;
+    }
+
+    private void StartAutoScrollTimer()
+    {
+        _autoScrollTimer?.Stop();
+        _autoScrollTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(16) }; // ~60fps
+        _autoScrollTimer.Tick += OnAutoScrollTick;
+        _autoScrollTimer.Start();
+    }
+
+    private void StopAutoScrollTimer()
+    {
+        _autoScrollTimer?.Stop();
+        _autoScrollTimer = null;
+    }
+
+    private void OnAutoScrollTick(object? sender, EventArgs e)
+    {
+        if (_rosterDragSourceIndex < 0 || !_rosterDragTriggered) return;
+
+        // Find ScrollViewer through the Scroll property of ListBox
+        var scrollViewer = RosterListBox.Scroll;
+        if (scrollViewer == null) return;
+
+        var pos = _rosterDragCurrentPos;
+        var listHeight = RosterListBox.Bounds.Height;
+        var scrollOffset = scrollViewer.Offset.Y;
+
+        // Check if near top edge
+        if (pos.Y < AutoScrollThreshold)
+        {
+            var distance = AutoScrollThreshold - pos.Y;
+            var speed = AutoScrollBaseSpeed * (1 - distance / AutoScrollThreshold);
+            scrollViewer.Offset = new Vector(scrollViewer.Offset.X, Math.Max(0, scrollOffset - speed));
+        }
+        // Check if near bottom edge
+        else if (pos.Y > listHeight - AutoScrollThreshold)
+        {
+            var distance = pos.Y - (listHeight - AutoScrollThreshold);
+            var speed = AutoScrollBaseSpeed * (1 - distance / AutoScrollThreshold);
+            scrollViewer.Offset = new Vector(scrollViewer.Offset.X, scrollOffset + speed);
+        }
+    }
+
+    private void OnRosterPointerMoved(object? sender, PointerEventArgs e)
+    {
+        if (_rosterCollection == null || _rosterDragSourceIndex < 0 || _dragCurrentContainer == null) return;
+
+        var pos = e.GetPosition(RosterListBox);
+        _rosterDragCurrentPos = pos;
+
+        // Move ghost element to follow pointer
+        if (_dragGhostElement != null)
+        {
+            Canvas.SetLeft(_dragGhostElement, pos.X - (_dragGhostElement.Bounds.Width / 2));
+            Canvas.SetTop(_dragGhostElement, pos.Y - (_dragGhostElement.Bounds.Height / 2));
+        }
+
+        if (!_rosterDragTriggered)
+        {
+            if (Math.Abs(pos.X - _rosterDragStart.X) > 8 || Math.Abs(pos.Y - _rosterDragStart.Y) > 8)
+            {
+                _rosterDragTriggered = true;
+            }
+            return;
+        }
+
+        // Calculate target index based on pointer position (don't modify collection yet)
+        RosterListBox.UpdateLayout();
+        var itemCount = _rosterCollection.Count;
+        var targetIndex = _rosterDragSourceIndex;
+        var minDist = double.MaxValue;
+
+        for (var i = 0; i < itemCount; i++)
+        {
+            if (RosterListBox.ContainerFromIndex(i) is Control tc)
+            {
+                var bounds = tc.Bounds;
+                var itemCenter = bounds.Y + bounds.Height / 2;
+                var dist = Math.Abs(pos.Y - itemCenter);
+                if (dist < minDist)
+                {
+                    minDist = dist;
+                    targetIndex = i;
+                }
+            }
+        }
+
+        // Visual feedback: shift other items to show insertion gap
+        if (targetIndex != _rosterDragSourceIndex)
+        {
+            var rows = _rosterCollection.ToList();
+            var movedRow = rows[_rosterDragSourceIndex];
+            rows.RemoveAt(_rosterDragSourceIndex);
+            var adjustedTarget = targetIndex > _rosterDragSourceIndex ? targetIndex - 1 : targetIndex;
+            adjustedTarget = Math.Max(0, Math.Min(adjustedTarget, rows.Count));
+            rows.Insert(adjustedTarget, movedRow);
+
+            _rosterCollection.Clear();
+            foreach (var r in rows) _rosterCollection.Add(r);
+            RosterListBox.SelectedIndex = adjustedTarget;
+            _rosterDragSourceIndex = adjustedTarget;
+        }
+    }
+
+    private void OnRosterPointerReleased(object? sender, PointerReleasedEventArgs e)
+    {
+        if (_rosterDragSourceIndex < 0) return;
+
+        // Remove ghost element
+        if (_dragGhostElement != null)
+        {
+            var parent = _dragGhostElement.Parent as Panel;
+            parent?.Children.Remove(_dragGhostElement);
+            _dragGhostElement = null;
+        }
+
+        // Reset visual feedback
+        if (_dragCurrentContainer is Border border)
+        {
+            border.Opacity = 1.0;
+        }
+
+        // Stop auto-scroll
+        StopAutoScrollTimer();
+
+        // Restore original order and do final reorder based on target position
+        if (_rosterCollection != null && _rosterDragOriginalIds.Count > 0)
+        {
+            var currentIds = _rosterCollection.Select(r => r.Id).ToList();
+
+            // Restore to original order first
+            if (!currentIds.SequenceEqual(_rosterDragOriginalIds))
+            {
+                var originalOrder = _rosterDragOriginalIds
+                    .Select(id => _rosterCollection.FirstOrDefault(r => r.Id == id))
+                    .Where(r => r != null)
+                    .Select(r => r!)
+                    .ToList();
+
+                _rosterCollection.Clear();
+                foreach (var r in originalOrder) _rosterCollection.Add(r);
+            }
+
+            // Calculate target index from ghost position if drag was triggered
+            if (_rosterDragTriggered)
+            {
+                RosterListBox.UpdateLayout();
+                var pos = _rosterDragCurrentPos;
+                var itemCount = _rosterCollection.Count;
+                var targetIndex = 0;
+                var minDist = double.MaxValue;
+
+                for (var i = 0; i < itemCount; i++)
+                {
+                    if (RosterListBox.ContainerFromIndex(i) is Control tc)
+                    {
+                        var itemCenter = tc.Bounds.Y + tc.Bounds.Height / 2;
+                        var dist = Math.Abs(pos.Y - itemCenter);
+                        if (dist < minDist)
+                        {
+                            minDist = dist;
+                            targetIndex = i;
+                        }
+                    }
+                }
+
+                var sourceIdx = _rosterDragOriginalIds
+                    .Select((id, idx) => (id, idx))
+                    .FirstOrDefault(x => _rosterCollection.Any(r => r.Id == x.id)).idx;
+
+                if (targetIndex != sourceIdx && sourceIdx >= 0)
+                {
+                    var rows = _rosterCollection.ToList();
+                    var movedRow = rows[sourceIdx];
+                    rows.RemoveAt(sourceIdx);
+                    var adjustedTarget = targetIndex > sourceIdx ? targetIndex - 1 : targetIndex;
+                    adjustedTarget = Math.Max(0, Math.Min(adjustedTarget, rows.Count));
+                    rows.Insert(adjustedTarget, movedRow);
+
+                    _rosterCollection.Clear();
+                    foreach (var r in rows) _rosterCollection.Add(r);
+                    RosterListBox.SelectedIndex = adjustedTarget;
+
+                    var finalIds = _rosterCollection.Select(r => r.Id).ToList();
+                    var result = _rosterModule.ReorderStudents(finalIds);
+                    SetStatus(result.Success ? "名单顺序已更新。" : result.Message,
+                        result.Success ? Brushes.Green : Brushes.Orange);
+                    _ = LoadDataAsync("名单重排");
+                }
+            }
+
+            _rosterDragOriginalIds.Clear();
+        }
+
+        e.Pointer.Capture(null);
+        _rosterDragSourceIndex = -1;
+        _rosterDragTriggered = false;
+        _dragCurrentContainer = null;
+    }
+
+    private static Control? GetListBoxItemContainer(Control? hit)
+    {
+        while (hit != null)
+        {
+            if (hit is ListBoxItem) return hit;
+            hit = hit.Parent as Control;
+        }
+        return null;
+    }
+
+    private void AttachListBoxDragHandlers()
+    {
+        if (_isRosterDragHandlersAttached) return;
+        _isRosterDragHandlersAttached = true;
+        RosterListBox.AddHandler(InputElement.PointerPressedEvent, OnRosterPointerPressed, RoutingStrategies.Tunnel);
+        RosterListBox.AddHandler(InputElement.PointerMovedEvent, OnRosterPointerMoved, RoutingStrategies.Tunnel);
+        RosterListBox.AddHandler(InputElement.PointerReleasedEvent, OnRosterPointerReleased, RoutingStrategies.Tunnel);
     }
 
     private async Task ImportRosterFromPathAsync(string localPath, string reason, string successSuffix = "")
@@ -1497,6 +1908,7 @@ public partial class DutyMainSettingsPage : SettingsPageBase
         SetStatus($"{result.Message}{successSuffix}", Brushes.Green);
     }
 
+    #pragma warning disable CS0618 // IDataObject: use IAsyncDataTransfer in Avalonia 12+
     private static string? TryGetFirstDroppedRosterPath(IDataObject data, out int supportedCount)
     {
         supportedCount = 0;
@@ -1521,6 +1933,7 @@ public partial class DutyMainSettingsPage : SettingsPageBase
 
         return firstSupportedPath;
     }
+    #pragma warning restore CS0618
 
     private static bool IsSupportedRosterImportPath(string path)
     {
@@ -2189,9 +2602,13 @@ public partial class DutyMainSettingsPage : SettingsPageBase
 
     private void UpdateStudentActionButtons()
     {
+        var selectedItems = RosterListBox.SelectedItems;
+        var hasSelection = RosterListBox.SelectedItem is DutyRosterRow;
+        var hasMultiSelection = selectedItems != null && selectedItems.Count > 1;
+        ToggleStudentActiveBtn.IsEnabled = hasSelection;
+        DeleteSelectedRosterBtn.IsEnabled = hasSelection;
         if (RosterListBox.SelectedItem is DutyRosterRow selected)
         {
-            ToggleStudentActiveBtn.IsEnabled = true;
             ToggleStudentActiveBtn.Content = selected.Active ? "停用选中" : "启用选中";
             return;
         }
@@ -2203,7 +2620,18 @@ public partial class DutyMainSettingsPage : SettingsPageBase
     private void ApplyRosterPreview(DutyRosterPreview preview)
     {
         var previousSelectedId = (RosterListBox.SelectedItem as DutyRosterRow)?.Id;
-        RosterListBox.ItemsSource = preview.Rows;
+        if (_rosterCollection != null)
+        {
+            _rosterCollection.CollectionChanged -= OnRosterCollectionChanged;
+        }
+        _rosterCollection = new ObservableCollection<DutyRosterRow>(preview.Rows);
+        RosterListBox.ItemsSource = _rosterCollection;
+        _rosterCollection.CollectionChanged += OnRosterCollectionChanged;
+
+        Dispatcher.UIThread.Post(() =>
+        {
+            AttachListBoxDragHandlers();
+        }, DispatcherPriority.Loaded);
         if (previousSelectedId.HasValue)
         {
             RosterListBox.SelectedItem = preview.Rows.FirstOrDefault(x => x.Id == previousSelectedId.Value);
@@ -2485,6 +2913,39 @@ public partial class DutyMainSettingsPage : SettingsPageBase
         {
             SetStatus($"打开名单文件失败：{ex.Message}", Brushes.Red);
         }
+    }
+
+    private void OnSelectAllRosterClick(object? sender, RoutedEventArgs e)
+    {
+        RosterListBox.SelectAll();
+    }
+
+    private void OnClearRosterClick(object? sender, RoutedEventArgs e)
+    {
+        RosterListBox.SelectedIndex = -1;
+    }
+
+    private async void OnDeleteSelectedRosterClick(object? sender, RoutedEventArgs e)
+    {
+        var selectedIds = RosterListBox.SelectedItems
+            ?.Cast<DutyRosterRow>()
+            .Select(r => r.Id)
+            .ToList() ?? [];
+        if (selectedIds.Count == 0)
+        {
+            SetStatus("请先选择要删除的学生。", Brushes.Orange);
+            return;
+        }
+
+        var result = _rosterModule.DeleteStudents(selectedIds);
+        if (!result.Success)
+        {
+            SetStatus(result.Message, Brushes.Orange);
+            return;
+        }
+
+        await LoadDataAsync("名单变更");
+        SetStatus(result.Message, Brushes.Green);
     }
 
     private static bool TryParseBoundedInt(string? text, int min, int max, out int value)

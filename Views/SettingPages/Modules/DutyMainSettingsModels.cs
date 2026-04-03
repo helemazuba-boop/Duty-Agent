@@ -102,7 +102,8 @@ internal readonly record struct DutyRosterMutationResult(
     string Message,
     bool IsDuplicate = false,
     bool? ActiveState = null,
-    int ImportedCount = 0);
+    int ImportedCount = 0,
+    int DeletedCount = 0);
 
 public sealed class DutyScheduleRow
 {

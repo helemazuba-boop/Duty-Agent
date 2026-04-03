@@ -22,7 +22,7 @@ public partial class DutyComponent : ComponentBase<DutyComponentSettings>
 
         _timer = new DispatcherTimer
         {
-            Interval = TimeSpan.FromSeconds(60)
+            Interval = TimeSpan.FromSeconds(Settings?.RefreshIntervalSeconds ?? 60)
         };
         _timer.Tick += (_, _) => _ = UpdateStateAsync();
     }
@@ -105,7 +105,7 @@ public partial class DutyComponent : ComponentBase<DutyComponentSettings>
             : "\uFF1B";
 
         DutyTextRow1.Text = string.Join(separator, segments);
-        DutyTextRow1.ClearValue(TextBlock.ForegroundProperty);
+        ApplyTextStyle(DutyTextRow1);
         DutyTextRow2.IsVisible = false;
     }
 
@@ -140,10 +140,10 @@ public partial class DutyComponent : ComponentBase<DutyComponentSettings>
         var row2Entries = allEntries.Skip(mid).ToList();
 
         DutyTextRow1.Text = FormatRowEntries(row1Entries);
-        DutyTextRow1.ClearValue(TextBlock.ForegroundProperty);
+        ApplyTextStyle(DutyTextRow1);
 
         DutyTextRow2.Text = FormatRowEntries(row2Entries);
-        DutyTextRow2.ClearValue(TextBlock.ForegroundProperty);
+        ApplyTextStyle(DutyTextRow2);
         DutyTextRow2.IsVisible = true;
     }
 
@@ -188,8 +188,26 @@ public partial class DutyComponent : ComponentBase<DutyComponentSettings>
         }
         else
         {
-            DutyTextRow1.ClearValue(TextBlock.ForegroundProperty);
+            ApplyTextStyle(DutyTextRow1);
         }
         DutyTextRow2.IsVisible = false;
+    }
+
+    private void ApplyTextStyle(TextBlock textBlock)
+    {
+        if (Settings == null) return;
+        textBlock.FontSize = Settings.FontSize;
+        if (!string.IsNullOrWhiteSpace(Settings.FontColor))
+        {
+            try
+            {
+                textBlock.Foreground = new SolidColorBrush(
+                    Avalonia.Media.Color.Parse(Settings.FontColor));
+            }
+            catch
+            {
+                textBlock.Foreground = Brushes.Black;
+            }
+        }
     }
 }
