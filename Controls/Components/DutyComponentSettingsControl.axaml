@@ -8,12 +8,29 @@
                   xmlns:models="clr-namespace:DutyAgent.Models"
                   mc:Ignorable="d"
                   d:DesignWidth="400"
-                  d:DesignHeight="120">
+                  d:DesignHeight="220">
     <StackPanel DataContext="{Binding RelativeSource={RelativeSource FindAncestor, AncestorType=ci:ComponentBase}}"
                 Spacing="8" Margin="8">
         <ToggleSwitch IsChecked="{Binding Settings.UseDualRowDisplay}"
                       Content="值日名单双行显示（截取中间分行）" />
         <ToggleSwitch IsChecked="{Binding Settings.UsePerAreaMultiLine}"
                       Content="每个区域一行显示" />
+        <StackPanel Orientation="Horizontal" Spacing="8">
+            <TextBlock Text="字号：" VerticalAlignment="Center" />
+            <NumericUpDown Value="{Binding Settings.FontSize}"
+                           Minimum="10"
+                           Maximum="32"
+                           Increment="1"
+                           Width="100" />
+        </StackPanel>
+        <StackPanel Orientation="Horizontal" Spacing="8">
+            <TextBlock Text="刷新间隔：" VerticalAlignment="Center" />
+            <NumericUpDown Value="{Binding Settings.RefreshIntervalSeconds}"
+                           Minimum="30"
+                           Maximum="300"
+                           Increment="30"
+                           Width="100" />
+            <TextBlock Text="秒" VerticalAlignment="Center" Opacity="0.7" />
+        </StackPanel>
     </StackPanel>
 </ci:ComponentBase>

@@ -3,18 +3,16 @@ from __future__ import annotations
 import json
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Any, Callable, Dict, List, Tuple
 
 from execution_profiles import ExecutionPlan
 from llm_transport import call_llm_json
 from prompt_gateway import build_agent_prompt
 from state_ops import (
-    DEFAULT_ASSIGNMENTS_PER_AREA,
     Context,
     anonymize_instruction,
-    extract_ids_from_value,
-    get_pool_entries_with_date,
+    count_map_to_id_list,
     load_api_key_from_env,
     load_config,
     load_roster,
@@ -64,9 +62,7 @@ def _freeze_snapshot(ctx: Context, input_data: dict) -> FrozenSnapshot:
     config["api_key"] = api_key
     config["llm_stream"] = False
 
-    apply_mode = str(input_data.get("apply_mode", "append")).lower()
-    entries = get_pool_entries_with_date(state_data)
-    start_date = (entries[-1][1] + timedelta(days=1)) if apply_mode == "append" and entries else run_now.date()
+    start_date = run_now.date()
 
     active_ids = [person_id for person_id in all_ids if id_to_active.get(person_id, 1) != 0]
     inactive_ids = [person_id for person_id in all_ids if id_to_active.get(person_id, 1) == 0]
@@ -78,7 +74,6 @@ def _freeze_snapshot(ctx: Context, input_data: dict) -> FrozenSnapshot:
         trace_id=trace_id,
         request_source=request_source,
         instruction=anonymize_instruction(instruction, name_to_id),
-        apply_mode=apply_mode,
         request_time=run_now,
         start_date=start_date,
         config=config,
@@ -89,8 +84,8 @@ def _freeze_snapshot(ctx: Context, input_data: dict) -> FrozenSnapshot:
         active_ids=active_ids,
         inactive_ids=inactive_ids,
         id_to_active=id_to_active,
-        debt_list=extract_ids_from_value(state_data.get("debt_list", []), set(all_ids)),
-        credit_list=extract_ids_from_value(state_data.get("credit_list", []), set(all_ids)),
+        debt_list=count_map_to_id_list(state_data.get("debt_counts", {}), set(all_ids)),
+        credit_list=count_map_to_id_list(state_data.get("credit_counts", {}), set(all_ids)),
         last_pointer=int(state_data.get("last_pointer", 0) or 0),
         previous_note=str(state_data.get("next_run_note", "") or "").strip(),
         duty_rule=anonymize_instruction(str(config.get("duty_rule", "") or ""), name_to_id),
@@ -226,7 +221,6 @@ def run_multi_agent_schedule(
             {
                 "request_time": snapshot.request_time.strftime("%Y-%m-%d %H:%M"),
                 "instruction": snapshot.instruction,
-                "default_slot_count": DEFAULT_ASSIGNMENTS_PER_AREA,
                 "previous_note": snapshot.previous_note,
                 "duty_rule": snapshot.duty_rule,
             },

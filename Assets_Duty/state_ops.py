@@ -1,17 +1,21 @@
 from __future__ import annotations
 
 import csv
+import ctypes
 import json
 import os
+import shutil
 import re
 import time
 from datetime import date, datetime
+from ctypes import wintypes
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Tuple
+from typing import Callable, Dict, Iterable, List, Optional, Tuple
 
 from diagnostics import truncate_for_log
 
 DEFAULT_ASSIGNMENTS_PER_AREA = 2
+DEFAULT_SINGLE_AREA_NAME = "值日"
 DEFAULT_BASE_URL = "https://integrate.api.nvidia.com/v1"
 DEFAULT_MODEL = "moonshotai/kimi-k2-thinking"
 DEFAULT_MODEL_PROFILE = "auto"
@@ -34,6 +38,22 @@ STATE_LOCK_TIMEOUT_SECONDS = 20
 STATE_LOCK_RETRY_INTERVAL_SECONDS = 0.2
 STATE_LOCK_STALE_SECONDS = 120
 CONFIG_LOCK_TIMEOUT_SECONDS = 30
+
+_WINDOWS_STILL_ACTIVE = 259
+_WINDOWS_ERROR_ACCESS_DENIED = 5
+_WINDOWS_ERROR_INVALID_PARAMETER = 87
+_WINDOWS_ERROR_NOT_FOUND = 1168
+_WINDOWS_PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+
+_KERNEL32 = None
+if os.name == "nt":
+    _KERNEL32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    _KERNEL32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    _KERNEL32.OpenProcess.restype = wintypes.HANDLE
+    _KERNEL32.GetExitCodeProcess.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
+    _KERNEL32.GetExitCodeProcess.restype = wintypes.BOOL
+    _KERNEL32.CloseHandle.argtypes = [wintypes.HANDLE]
+    _KERNEL32.CloseHandle.restype = wintypes.BOOL
 
 
 class Context:
@@ -121,10 +141,8 @@ def normalize_plan_mode_id(value) -> str:
     return {
         "standard": "standard",
         "default": "standard",
-        "campus_6agent": "campus_6agent",
-        "campus6agent": "campus_6agent",
-        "6agent": "campus_6agent",
-        "multi_agent": "campus_6agent",
+        "agents": "agents",
+        "multi_agent": "agents",
         "incremental_small": "incremental_small",
         "incremental": "incremental_small",
         "small_incremental": "incremental_small",
@@ -163,7 +181,7 @@ def _normalize_plan_name(name: object, mode_id: str, index: int, model: str = ""
     if index <= 3:
         return {
             "standard": "标准",
-            "campus_6agent": "6Agent",
+            "agents": "Agents",
             "incremental_small": "增量小模型",
         }.get(mode_id, "标准")
     return model or f"方案预设 {index}"
@@ -183,9 +201,9 @@ def _create_default_plan_presets() -> List[dict]:
             "multi_agent_execution_mode": "auto",
         },
         {
-            "id": "campus-6agent",
-            "name": "6Agent",
-            "mode_id": "campus_6agent",
+            "id": "agents",
+            "name": "Agents",
+            "mode_id": "agents",
             "api_key": "",
             "base_url": DEFAULT_BASE_URL,
             "model": DEFAULT_MODEL,
@@ -236,7 +254,7 @@ def _normalize_plan_presets(raw_plan_presets) -> List[dict]:
                 "multi_agent_execution_mode": normalize_multi_agent_execution_mode(
                     candidate.get("multi_agent_execution_mode", DEFAULT_MULTI_AGENT_EXECUTION_MODE)
                 )
-                if mode_id == "campus_6agent"
+                if mode_id == "agents"
                 else "auto",
             }
         )
@@ -311,11 +329,11 @@ def _hydrate_runtime_config(persisted: dict) -> dict:
         "base_url": selected_plan["base_url"],
         "model": selected_plan["model"],
         "model_profile": selected_plan["model_profile"],
-        "orchestration_mode": "multi_agent" if selected_mode_id == "campus_6agent" else "single_pass",
+        "orchestration_mode": "multi_agent" if selected_mode_id == "agents" else "single_pass",
         "multi_agent_execution_mode": normalize_multi_agent_execution_mode(
             selected_plan.get("multi_agent_execution_mode", DEFAULT_MULTI_AGENT_EXECUTION_MODE)
         )
-        if selected_mode_id == "campus_6agent"
+        if selected_mode_id == "agents"
         else "auto",
         "single_pass_strategy": INCREMENTAL_SINGLE_PASS_STRATEGY if selected_mode_id == "incremental_small" else "auto",
         "provider_hint": selected_plan["provider_hint"],
@@ -374,13 +392,32 @@ def _read_lock_metadata(lock_path: Path) -> tuple[Optional[int], Optional[dateti
 def _is_process_alive(pid: int) -> bool:
     if pid <= 0:
         return False
+    if os.name == "nt" and _KERNEL32 is not None:
+        handle = _KERNEL32.OpenProcess(_WINDOWS_PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+        if not handle:
+            error = ctypes.get_last_error()
+            if error == _WINDOWS_ERROR_ACCESS_DENIED:
+                return True
+            if error in {_WINDOWS_ERROR_INVALID_PARAMETER, _WINDOWS_ERROR_NOT_FOUND}:
+                return False
+            return False
+        try:
+            exit_code = wintypes.DWORD()
+            if not _KERNEL32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
+                error = ctypes.get_last_error()
+                if error == _WINDOWS_ERROR_ACCESS_DENIED:
+                    return True
+                return False
+            return exit_code.value == _WINDOWS_STILL_ACTIVE
+        finally:
+            _KERNEL32.CloseHandle(handle)
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
         return False
     except PermissionError:
         return True
-    except OSError:
+    except (OSError, SystemError, ValueError):
         return False
     return True
 
@@ -470,8 +507,54 @@ def update_state(
         current = load_state(path)
         updated = updater(current)
         next_state = updated if isinstance(updated, dict) else current
+        if path.exists():
+            prev_path = path.with_suffix(".prev" + path.suffix)
+            shutil.copy2(str(path), str(prev_path))
         save_json_atomic(path, next_state)
         return next_state
+    finally:
+        release_state_file_lock(lock_path)
+
+
+
+def save_state(ctx: Context, state: dict) -> dict:
+    """
+    将 state 保存到 ctx.paths["state"]，保留 .prev 备份。
+    """
+    path = ctx.paths["state"]
+    lock_path = path.with_suffix(path.suffix + ".lock")
+    acquire_state_file_lock(lock_path, timeout_seconds=STATE_LOCK_TIMEOUT_SECONDS)
+    try:
+        if path.exists():
+            prev_path = path.with_suffix(".prev" + path.suffix)
+            shutil.copy2(str(path), str(prev_path))
+        save_json_atomic(path, state)
+        return state
+    finally:
+        release_state_file_lock(lock_path)
+
+
+def has_previous_state(path: "Path") -> bool:
+    prev_path = path.with_suffix(".prev" + path.suffix)
+    return prev_path.exists()
+
+
+def rollback_state(
+    path: "Path",
+    *,
+    timeout_seconds: int = STATE_LOCK_TIMEOUT_SECONDS,
+    stop_event=None,
+) -> dict:
+    lock_path = path.with_suffix(path.suffix + ".lock")
+    prev_path = path.with_suffix(".prev" + path.suffix)
+    acquire_state_file_lock(lock_path, timeout_seconds=timeout_seconds, stop_event=stop_event)
+    try:
+        if not prev_path.exists():
+            raise FileNotFoundError("No previous state to rollback to.")
+        prev_state = load_state(prev_path)
+        save_json_atomic(path, prev_state)
+        prev_path.unlink(missing_ok=True)
+        return prev_state
     finally:
         release_state_file_lock(lock_path)
 
@@ -856,7 +939,7 @@ def load_roster(csv_path: Path) -> Tuple[Dict[str, int], Dict[int, str], List[in
             all_ids.append(person_id)
             id_to_active[person_id] = active
 
-    all_ids = sorted(set(all_ids))
+    all_ids = list(dict.fromkeys(all_ids))
     if not all_ids:
         raise ValueError("No people in roster.csv.")
     return name_to_id, id_to_name, all_ids, id_to_active
@@ -932,8 +1015,61 @@ def normalize_roster_entries(entries: object) -> List[dict]:
             }
         )
 
-    normalized.sort(key=lambda item: item["id"])
     return normalized
+
+
+def remap_state_ids(
+    state_data: dict,
+    old_roster: List[dict],
+    new_roster: List[dict],
+) -> dict:
+    """
+    当 roster 顺序变化导致 ID 重编号时，同步迁移 state.json。
+    以姓名为准，debt/credit 跟随人走。
+    """
+    name_to_old_id: Dict[str, int] = {e["name"]: e["id"] for e in old_roster}
+    name_to_new_id: Dict[str, int] = {e["name"]: e["id"] for e in new_roster}
+
+    new_debt: Dict[int, int] = {}
+    for old_id_str, count in (state_data.get("debt_counts") or {}).items():
+        old_id = int(old_id_str)
+        name = next((e["name"] for e in old_roster if e["id"] == old_id), None)
+        if name and name in name_to_new_id:
+            new_id = name_to_new_id[name]
+            new_debt[new_id if new_id != old_id else old_id] = count
+
+    new_credit: Dict[int, int] = {}
+    for old_id_str, count in (state_data.get("credit_counts") or {}).items():
+        old_id = int(old_id_str)
+        name = next((e["name"] for e in old_roster if e["id"] == old_id), None)
+        if name and name in name_to_new_id:
+            new_id = name_to_new_id[name]
+            new_credit[new_id if new_id != old_id else old_id] = count
+
+    new_last_pointer = int(state_data.get("last_pointer", 0) or 0)
+    if 0 <= new_last_pointer < len(old_roster):
+        old_entry = old_roster[new_last_pointer]
+        pointed_name = old_entry.get("name", "")
+        for idx, entry in enumerate(new_roster):
+            if entry.get("name") == pointed_name:
+                new_last_pointer = idx
+                break
+
+    return {
+        **state_data,
+        "debt_counts": new_debt,
+        "credit_counts": new_credit,
+        "last_pointer": new_last_pointer,
+    }
+
+
+def _is_roster_order_changed(old_roster: List[dict], new_roster: List[dict]) -> bool:
+    if len(old_roster) != len(new_roster):
+        return True
+    for old, new in zip(old_roster, new_roster):
+        if old.get("id") != new.get("id") or old.get("name") != new.get("name"):
+            return True
+    return False
 
 
 def save_roster_atomic(path: Path, roster_entries: List[dict]) -> None:
@@ -984,13 +1120,105 @@ def save_roster_entries(ctx: Context, roster_entries: object) -> List[dict]:
     return normalized
 
 
+def normalize_count_map(value: object, valid_ids: Optional[set[int]] = None) -> Dict[int, int]:
+    counts: Dict[int, int] = {}
+
+    if isinstance(value, dict):
+        items = value.items()
+    elif isinstance(value, list):
+        items = ((item, 1) for item in value)
+    elif isinstance(value, str):
+        stripped = value.strip()
+        items = ((part.strip(), 1) for part in stripped.split(",") if part.strip()) if stripped else []
+    elif isinstance(value, (int, float)):
+        items = ((value, 1),)
+    else:
+        items = ()
+
+    for raw_key, raw_count in items:
+        try:
+            person_id = int(raw_key)
+        except (TypeError, ValueError):
+            continue
+        if person_id <= 0:
+            continue
+        if valid_ids is not None and person_id not in valid_ids:
+            continue
+
+        try:
+            count = int(raw_count)
+        except (TypeError, ValueError):
+            count = 1
+        if count <= 0:
+            continue
+
+        counts[person_id] = counts.get(person_id, 0) + count
+
+    return counts
+
+
+def count_map_to_id_list(value: object, valid_ids: Optional[set[int]] = None) -> List[int]:
+    return sorted(normalize_count_map(value, valid_ids).keys())
+
+
+def format_count_map_for_prompt(value: object, valid_ids: Optional[set[int]] = None) -> str:
+    counts = normalize_count_map(value, valid_ids)
+    if not counts:
+        return ""
+    parts: List[str] = []
+    for person_id in sorted(counts.keys()):
+        count = counts[person_id]
+        parts.append(f"{person_id}*{count}" if count > 1 else str(person_id))
+    return " ".join(parts)
+
+
+def clone_count_map(value: object, valid_ids: Optional[set[int]] = None) -> Dict[int, int]:
+    return dict(normalize_count_map(value, valid_ids))
+
+
+def increment_count_map_entry(counts: Dict[int, int], person_id: int, amount: int = 1) -> None:
+    if person_id <= 0 or amount <= 0:
+        return
+    counts[person_id] = counts.get(person_id, 0) + amount
+
+
+def decrement_count_map_entry(counts: Dict[int, int], person_id: int, amount: int = 1) -> bool:
+    if person_id <= 0 or amount <= 0:
+        return False
+    current = counts.get(person_id, 0)
+    if current <= 0:
+        return False
+    next_value = current - amount
+    if next_value > 0:
+        counts[person_id] = next_value
+    else:
+        counts.pop(person_id, None)
+    return True
+
+
+def apply_count_map_delta(base_counts: object, delta_counts: object, valid_ids: Optional[set[int]] = None) -> Dict[int, int]:
+    merged = clone_count_map(base_counts, valid_ids)
+    for person_id, count in normalize_count_map(delta_counts, valid_ids).items():
+        increment_count_map_entry(merged, person_id, count)
+    return merged
+
+
+def resolve_debt_credit_conflicts(debt_counts: object, credit_counts: object) -> Tuple[Dict[int, int], Dict[int, int]]:
+    debt = clone_count_map(debt_counts)
+    credit = clone_count_map(credit_counts)
+    for person_id in list(credit.keys()):
+        if debt.get(person_id, 0) > 0:
+            credit.pop(person_id, None)
+    return debt, credit
+
+
 def load_state(path: Path) -> dict:
     if not path.exists():
         return {
             "schedule_pool": [],
             "next_run_note": "",
-            "debt_list": [],
-            "credit_list": [],
+            "debt_counts": {},
+            "credit_counts": {},
             "last_pointer": 0,
         }
     with open(path, "r", encoding="utf-8-sig") as file:
@@ -999,10 +1227,14 @@ def load_state(path: Path) -> dict:
         data["schedule_pool"] = []
     if "next_run_note" not in data or not isinstance(data["next_run_note"], str):
         data["next_run_note"] = ""
-    if "debt_list" not in data or not isinstance(data["debt_list"], list):
-        data["debt_list"] = []
-    if "credit_list" not in data or not isinstance(data["credit_list"], list):
-        data["credit_list"] = []
+    data["debt_counts"] = normalize_count_map(data.get("debt_counts", data.get("debt_list", [])))
+    data["credit_counts"] = normalize_count_map(data.get("credit_counts", data.get("credit_list", [])))
+    data["debt_counts"], data["credit_counts"] = resolve_debt_credit_conflicts(
+        data["debt_counts"],
+        data["credit_counts"],
+    )
+    data.pop("debt_list", None)
+    data.pop("credit_list", None)
     data["last_pointer"] = parse_int(data.get("last_pointer"), 0, 0, 1_000_000_000)
     return data
 
@@ -1073,16 +1305,36 @@ def _load_active_name_to_id(roster_path: Path) -> Dict[str, int]:
     }
 
 
-def _normalize_existing_id_list(raw_values: object) -> set[int]:
-    normalized: set[int] = set()
-    for raw_value in raw_values if isinstance(raw_values, list) else []:
-        try:
-            person_id = int(raw_value)
-        except (TypeError, ValueError):
-            continue
-        if person_id > 0:
-            normalized.add(person_id)
-    return normalized
+def _clone_schedule_entry_payload(entry: object) -> dict:
+    if not isinstance(entry, dict):
+        return {
+            "date": "",
+            "day": "",
+            "area_assignments": {},
+            "note": "",
+        }
+
+    return {
+        "date": str(entry.get("date", "") or "").strip(),
+        "day": str(entry.get("day", "") or "").strip(),
+        "area_assignments": _normalize_schedule_entry_area_assignments(entry.get("area_assignments")),
+        "note": str(entry.get("note", "") or "").strip(),
+    }
+
+
+def _schedule_entries_equal(left: object, right: object) -> bool:
+    return _clone_schedule_entry_payload(left) == _clone_schedule_entry_payload(right)
+
+
+def _find_schedule_entry(schedule_pool: List[dict], target_date: str) -> dict | None:
+    return next(
+        (
+            entry
+            for entry in schedule_pool
+            if str(entry.get("date", "") or "").strip() == target_date
+        ),
+        None,
+    )
 
 
 def save_schedule_entry_edit(ctx: Context, payload: dict) -> dict:
@@ -1105,8 +1357,78 @@ def save_schedule_entry_edit(ctx: Context, payload: dict) -> dict:
     normalized_day = _normalize_schedule_entry_day(request.get("day"), parsed_target_date)
     normalized_assignments = _normalize_schedule_entry_area_assignments(request.get("area_assignments"))
     normalized_note = str(request.get("note", "") or "").strip()
-    create_if_missing = bool(request.get("create_if_missing", False))
+    confirm_overwrite = bool(request.get("confirm_overwrite", False))
     active_name_to_id = _load_active_name_to_id(ctx.paths["roster"])
+    proposed_entry = {
+        "date": normalized_target_date,
+        "day": normalized_day,
+        "area_assignments": normalized_assignments,
+        "note": normalized_note,
+    }
+
+    current_state = load_state(ctx.paths["state"])
+    current_pool = [dict(entry) for entry in current_state.get("schedule_pool", []) if isinstance(entry, dict)]
+    item = _find_schedule_entry(current_pool, source_date) if source_date else None
+    if source_date and item is None:
+        raise ValueError("Schedule entry not found.")
+    duplicate = _find_schedule_entry(current_pool, normalized_target_date)
+
+    if item is None:
+        if duplicate is None:
+            action = "create"
+        elif _schedule_entries_equal(duplicate, proposed_entry):
+            return {
+                "status": "success",
+                "message": "Schedule unchanged. Ledger unchanged.",
+                "ledger_mode": ledger_mode,
+                "ledger_applied": False,
+                "state": current_state,
+            }
+        elif not confirm_overwrite:
+            return {
+                "status": "confirmation_required",
+                "message": "Target date already has a schedule entry. Confirmation required before overwrite.",
+                "ledger_mode": ledger_mode,
+                "ledger_applied": False,
+                "overwrite_target_date": normalized_target_date,
+                "existing_entry": _clone_schedule_entry_payload(duplicate),
+                "proposed_entry": proposed_entry,
+            }
+        else:
+            action = "overwrite_existing"
+    else:
+        if duplicate is item or duplicate is None:
+            if _schedule_entries_equal(item, proposed_entry):
+                return {
+                    "status": "success",
+                    "message": "Schedule unchanged. Ledger unchanged.",
+                    "ledger_mode": ledger_mode,
+                    "ledger_applied": False,
+                    "state": current_state,
+                }
+            if duplicate is item and not confirm_overwrite:
+                return {
+                    "status": "confirmation_required",
+                    "message": "Target date already has a schedule entry. Confirmation required before overwrite.",
+                    "ledger_mode": ledger_mode,
+                    "ledger_applied": False,
+                    "overwrite_target_date": normalized_target_date,
+                    "existing_entry": _clone_schedule_entry_payload(item),
+                    "proposed_entry": proposed_entry,
+                }
+            action = "update_existing"
+        else:
+            if not confirm_overwrite:
+                return {
+                    "status": "confirmation_required",
+                    "message": "Target date already has a schedule entry. Confirmation required before overwrite.",
+                    "ledger_mode": ledger_mode,
+                    "ledger_applied": False,
+                    "overwrite_target_date": normalized_target_date,
+                    "existing_entry": _clone_schedule_entry_payload(duplicate),
+                    "proposed_entry": proposed_entry,
+                }
+            action = "move_and_overwrite"
 
     ledger_applied = False
 
@@ -1115,59 +1437,67 @@ def save_schedule_entry_edit(ctx: Context, payload: dict) -> dict:
         next_state = dict(current_state)
         schedule_pool = [dict(entry) for entry in next_state.get("schedule_pool", []) if isinstance(entry, dict)]
 
-        item = None
-        if source_date:
-            item = next((entry for entry in schedule_pool if str(entry.get("date", "")).strip() == source_date), None)
+        current_item = _find_schedule_entry(schedule_pool, source_date) if source_date else None
+        current_duplicate = _find_schedule_entry(schedule_pool, normalized_target_date)
+        if source_date and current_item is None:
+            raise ValueError("Schedule entry not found.")
 
-        duplicate = next((entry for entry in schedule_pool if str(entry.get("date", "")).strip() == normalized_target_date), None)
-        if item is None:
-            if not create_if_missing:
+        if action == "create":
+            target_item = {}
+            schedule_pool.append(target_item)
+            ledger_reference = target_item
+        elif action == "overwrite_existing":
+            if current_duplicate is None:
+                raise ValueError("Schedule entry not found for target date.")
+            target_item = current_duplicate
+            ledger_reference = current_duplicate
+        elif action == "move_and_overwrite":
+            if current_item is None or current_duplicate is None or current_item is current_duplicate:
+                raise ValueError("Schedule entry overwrite target is invalid.")
+            schedule_pool = [entry for entry in schedule_pool if entry is not current_item]
+            target_item = current_duplicate
+            ledger_reference = current_item
+        else:
+            if current_item is None:
                 raise ValueError("Schedule entry not found.")
-            if duplicate is not None:
-                raise ValueError("Schedule entry already exists for target date.")
-            item = {}
-            schedule_pool.append(item)
-        elif item is not duplicate and duplicate is not None:
-            raise ValueError("Schedule entry already exists for target date.")
+            target_item = current_item
+            ledger_reference = current_item
 
-        old_names = _collect_assignment_names(item.get("area_assignments"))
+        old_names = _collect_assignment_names(ledger_reference.get("area_assignments"))
 
-        item["date"] = normalized_target_date
-        item["day"] = normalized_day
-        item["area_assignments"] = normalized_assignments
-        item["note"] = normalized_note
+        target_item["date"] = normalized_target_date
+        target_item["day"] = normalized_day
+        target_item["area_assignments"] = normalized_assignments
+        target_item["note"] = normalized_note
 
         if ledger_mode == "record":
             new_names = _collect_assignment_names(normalized_assignments)
             removed_names = old_names - new_names
             added_names = new_names - old_names
 
-            debt_set = _normalize_existing_id_list(next_state.get("debt_list", []))
-            credit_set = _normalize_existing_id_list(next_state.get("credit_list", []))
-            original_debt = set(debt_set)
-            original_credit = set(credit_set)
+            debt_counts = clone_count_map(next_state.get("debt_counts", {}))
+            credit_counts = clone_count_map(next_state.get("credit_counts", {}))
+            original_debt = dict(debt_counts)
+            original_credit = dict(credit_counts)
 
             for name in removed_names:
                 person_id = active_name_to_id.get(name)
                 if person_id is None:
                     continue
-                if person_id in credit_set:
-                    credit_set.remove(person_id)
-                else:
-                    debt_set.add(person_id)
+                if not decrement_count_map_entry(credit_counts, person_id):
+                    increment_count_map_entry(debt_counts, person_id)
 
             for name in added_names:
                 person_id = active_name_to_id.get(name)
                 if person_id is None:
                     continue
-                if person_id in debt_set:
-                    debt_set.remove(person_id)
-                else:
-                    credit_set.add(person_id)
+                if not decrement_count_map_entry(debt_counts, person_id):
+                    increment_count_map_entry(credit_counts, person_id)
 
-            ledger_applied = debt_set != original_debt or credit_set != original_credit
-            next_state["debt_list"] = sorted(debt_set)
-            next_state["credit_list"] = sorted(credit_set)
+            debt_counts, credit_counts = resolve_debt_credit_conflicts(debt_counts, credit_counts)
+            ledger_applied = debt_counts != original_debt or credit_counts != original_credit
+            next_state["debt_counts"] = debt_counts
+            next_state["credit_counts"] = credit_counts
 
         next_state["schedule_pool"] = sorted(
             schedule_pool,
@@ -1177,7 +1507,7 @@ def save_schedule_entry_edit(ctx: Context, payload: dict) -> dict:
 
     updated_state = update_state(ctx.paths["state"], _apply_state_update)
 
-    if create_if_missing and not source_date:
+    if action == "create":
         message = "Schedule created."
     else:
         message = "Schedule updated."
@@ -1269,7 +1599,16 @@ def anonymize_instruction(text: str, name_to_id: Dict[str, int]) -> str:
 
 
 def extract_ids_from_value(value, active_set: set, limit: Optional[int] = None) -> List[int]:
-    if isinstance(value, str):
+    if isinstance(value, dict):
+        items = []
+        for key, count in value.items():
+            try:
+                parsed_count = int(count or 0)
+            except (TypeError, ValueError):
+                continue
+            if parsed_count > 0:
+                items.append(key)
+    elif isinstance(value, str):
         value = value.strip(" []")
         items = [part.strip() for part in value.split(",")] if value else []
     elif isinstance(value, list):

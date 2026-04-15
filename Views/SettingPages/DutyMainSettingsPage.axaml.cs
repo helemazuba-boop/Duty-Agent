@@ -1,8 +1,10 @@
-﻿using System.Diagnostics;
+using System.Collections.ObjectModel;
+using System.Diagnostics;
 using System.Globalization;
 using System.Text;
 using System.Text.Json;
 using System.Threading;
+using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Input;
 using Avalonia.Interactivity;
@@ -11,6 +13,7 @@ using Avalonia.Platform.Storage;
 using Avalonia.Threading;
 using ClassIsland.Core.Abstractions.Controls;
 using ClassIsland.Core.Attributes;
+using ClassIsland.Core.Helpers.UI;
 using ClassIsland.Shared;
 using DutyAgent.Models;
 using DutyAgent.Services;
@@ -26,7 +29,6 @@ public partial class DutyMainSettingsPage : SettingsPageBase
 {
     private DutyScheduleOrchestrator Service { get; } = IAppHost.GetService<DutyScheduleOrchestrator>();
     private IPythonIpcService PythonIpcService { get; } = IAppHost.GetService<IPythonIpcService>();
-    private DutyNotificationService NotificationService { get; } = IAppHost.GetService<DutyNotificationService>();
     private IDutySettingsRepository SettingsRepository { get; } = IAppHost.GetService<IDutySettingsRepository>();
     private DutyBackendSettingsSyncService BackendSettingsSyncService { get; } = IAppHost.GetService<DutyBackendSettingsSyncService>();
     private DutyPluginPaths PluginPaths { get; } = IAppHost.GetService<DutyPluginPaths>();
@@ -62,6 +64,7 @@ public partial class DutyMainSettingsPage : SettingsPageBase
     private int _dataLoadRevision;
     private int _runSessionRevision;
     private int _activeRunSessionRevision;
+    private bool _isScheduleRunning;
     private int _configEditRevision;
     private DutyBackendSyncStatusSnapshot _backendSyncStatus = new();
     private DutySettingsDocument? _lastLoadedSettingsDocument;
@@ -71,6 +74,7 @@ public partial class DutyMainSettingsPage : SettingsPageBase
     private List<DutyPlanPreset> _planPresetDrafts = [];
     private string _currentPlanId = string.Empty;
     private bool _isRosterDropActive;
+    private bool _isRosterDragHandlersAttached;
     private string _scheduleEditorSourceDate = string.Empty;
     private bool _isScheduleEditorDirty;
     private bool _settingsDiagnosticsExported;
@@ -82,6 +86,7 @@ public partial class DutyMainSettingsPage : SettingsPageBase
     public DutyMainSettingsPage()
     {
         InitializeComponent();
+        ConfigureTimingEditors();
         _hostModule = new DutyMainSettingsHostModule();
         _backendModule = new DutyMainSettingsBackendModule();
         _saveCoordinator = new DutyMainSettingsSaveCoordinator(SettingsRepository, BackendSettingsSyncService, _hostModule, _backendModule, SettingsTrace);
@@ -99,6 +104,9 @@ public partial class DutyMainSettingsPage : SettingsPageBase
         _reasoningStreamFlushTimer.Tick += OnReasoningStreamFlushTick;
         Loaded += OnPageLoaded;
         Unloaded += OnPageUnloaded;
+        PluginDataPathText.Text = PluginPaths.DataDirectory;
+        MultiAgentExecutionModeItem.Content = "Agents 执行顺序";
+        MultiAgentExecutionModeItem.Description = "仅对 Agents 方案生效。";
         _backendSyncStatus = BackendSettingsSyncService.GetStatusSnapshot();
         ExecuteWithoutConfigEvents(() =>
         {
@@ -107,7 +115,6 @@ public partial class DutyMainSettingsPage : SettingsPageBase
             InitializeAccessTokenModeOptions();
             InitializeServerPortModeOptions();
             InitializeComponentRefreshTimeOptions();
-            InitializeDutyReminderTimeOptions();
             InitializeScheduleDayOptions();
             InitializeScheduleRecordModeOptions();
             UpdateExecutionModeVisibility();
@@ -123,9 +130,64 @@ public partial class DutyMainSettingsPage : SettingsPageBase
         _ = LoadDataAsync("页面初始化");
     }
 
+    private void ConfigureTimingEditors()
+    {
+        ConfigureRotationTimeEditor();
+        ConfigureDutyReminderEditor();
+    }
+
+    private void ConfigureRotationTimeEditor()
+    {
+        if (FindSettingsExpanderItem(ComponentRefreshHourComboBox) is { } item)
+        {
+            item.Content = "值日轮换时间";
+            item.Description = "到达该时间后，首页组件切换显示下一天的值日安排。";
+        }
+    }
+
+    private void ConfigureDutyReminderEditor()
+    {
+        DutyReminderTimesBox.IsVisible = true;
+        DutyReminderHourComboBox.IsVisible = false;
+        DutyReminderMinuteComboBox.IsVisible = false;
+        if (DutyReminderHourComboBox.Parent is Control hourField)
+        {
+            hourField.IsVisible = false;
+        }
+
+        if (DutyReminderMinuteComboBox.Parent is Control minuteField)
+        {
+            minuteField.IsVisible = false;
+        }
+
+        if (FindSettingsExpanderItem(DutyReminderTimesBox) is { } item)
+        {
+            item.Content = "提醒时间";
+            item.Description = "支持输入多个提醒时间，使用逗号、分号或换行分隔。";
+        }
+    }
+
+    private static SettingsExpanderItem? FindSettingsExpanderItem(Control control)
+    {
+        Control? current = control;
+        while (current != null)
+        {
+            if (current is SettingsExpanderItem item)
+            {
+                return item;
+            }
+
+            current = current.Parent as Control;
+        }
+
+        return null;
+    }
+
     private void OnPageLoaded(object? sender, RoutedEventArgs e)
     {
+        ConfigureTimingEditors();
         EnsureBackendSyncSubscription();
+        Service.ScheduleUpdated += OnScheduleUpdated;
         DutyDiagnosticsLogger.Info("SettingsPage", "Settings page loaded; beginning unified settings load.");
         TraceSettings("page_loaded");
         _ = WarnIfInitialSettingsStillUnavailableAsync();
@@ -265,6 +327,7 @@ public partial class DutyMainSettingsPage : SettingsPageBase
 
     private void OnPageUnloaded(object? sender, RoutedEventArgs e)
     {
+        Service.ScheduleUpdated -= OnScheduleUpdated;
         ReleaseBackendSyncSubscription();
         Interlocked.Increment(ref _configLoadRevision);
         _configApplyDebounceTimer.Stop();
@@ -272,12 +335,19 @@ public partial class DutyMainSettingsPage : SettingsPageBase
         TraceSettings("page_unloaded");
         if (_isLoadingConfig)
         {
-            SettingsTrace.Invariant("page_unloaded_while_loading", "Settings page unloaded while local settings were still loading.", BuildSettingsTraceSnapshot());
-            return;
+            SettingsTrace.Warn("page_unloaded_while_loading", new { message = "Settings page unloaded while local settings were still loading. Attempting to save anyway.", snapshot = BuildSettingsTraceSnapshot() });
         }
 
         CaptureCurrentPlanDraft();
         QueueConfigApply(immediate: true);
+    }
+
+    private void OnScheduleUpdated(object? sender, EventArgs e)
+    {
+        Dispatcher.UIThread.Post(() =>
+        {
+            _ = LoadDataAsync("后台自动排班更新");
+        }, DispatcherPriority.Background);
     }
 
     private void EnsureBackendSyncSubscription()
@@ -361,7 +431,7 @@ public partial class DutyMainSettingsPage : SettingsPageBase
 
     private void UpdateExecutionModeVisibility()
     {
-        var isMultiAgent = string.Equals(GetSelectedPlanModeId(), DutyBackendModeIds.Campus6Agent, StringComparison.Ordinal);
+        var isMultiAgent = string.Equals(GetSelectedPlanModeId(), DutyBackendModeIds.Agents, StringComparison.Ordinal);
         MultiAgentExecutionModeItem.IsVisible = isMultiAgent;
     }
 
@@ -371,14 +441,6 @@ public partial class DutyMainSettingsPage : SettingsPageBase
         ComponentRefreshMinuteComboBox.ItemsSource = Enumerable.Range(0, 60).Select(x => x.ToString("D2")).ToList();
         ComponentRefreshHourComboBox.SelectedItem = "08";
         ComponentRefreshMinuteComboBox.SelectedItem = "00";
-    }
-
-    private void InitializeDutyReminderTimeOptions()
-    {
-        DutyReminderHourComboBox.ItemsSource = Enumerable.Range(0, 24).Select(x => x.ToString("D2")).ToList();
-        DutyReminderMinuteComboBox.ItemsSource = Enumerable.Range(0, 60).Select(x => x.ToString("D2")).ToList();
-        DutyReminderHourComboBox.SelectedItem = "07";
-        DutyReminderMinuteComboBox.SelectedItem = "40";
     }
 
     private void InitializeScheduleDayOptions()
@@ -426,6 +488,25 @@ public partial class DutyMainSettingsPage : SettingsPageBase
 
     private async void OnRunAgentClick(object? sender, RoutedEventArgs e)
     {
+        if (_isScheduleRunning)
+        {
+            RunAgentBtn.IsEnabled = false;
+            SetStatus("正在发送取消请求...", Brushes.Orange);
+            try
+            {
+                await Service.CancelActiveScheduleAsync();
+            }
+            catch (Exception ex)
+            {
+                SetStatus($"取消请求失败：{ex.Message}", Brushes.Red);
+            }
+            finally
+            {
+                RunAgentBtn.IsEnabled = true;
+            }
+            return;
+        }
+
         var runSessionRevision = Interlocked.Increment(ref _runSessionRevision);
         _activeRunSessionRevision = runSessionRevision;
         ResetReasoningStreamBuffer(runSessionRevision);
@@ -435,14 +516,15 @@ public partial class DutyMainSettingsPage : SettingsPageBase
         _configApplyDebounceTimer.Stop();
         await FlushPendingConfigApplyAsync();
 
-        const string applyMode = "replace_all";
-
         try
         {
-            RunAgentBtn.IsEnabled = false;
+            _isScheduleRunning = true;
+            RunAgentBtnContent.Text = "取消执行";
+            RunAgentBtnContent.Glyph = "\uE711";
+            RunAgentBtn.Classes.Remove("accent");
             ReasoningBoardContainer.IsVisible = true;
             ReasoningBoardText.Text = string.Empty;
-            ReasoningBoardContainer.BorderBrush = new Avalonia.Media.SolidColorBrush(Avalonia.Media.Color.Parse("#20000000")); // Subtle default border
+            ReasoningBoardContainer.BorderBrush = new Avalonia.Media.SolidColorBrush(Avalonia.Media.Color.Parse("#20000000"));
             UpdateRunTracking("执行中");
             SetStatus(
                 useDefaultInstruction
@@ -452,7 +534,6 @@ public partial class DutyMainSettingsPage : SettingsPageBase
 
             var result = await Service.RunCoreAgentAsync(
                 instruction,
-                applyMode,
                 progress: progress =>
                 {
                     var phase = (progress.Phase ?? string.Empty).Trim().ToLowerInvariant();
@@ -527,6 +608,12 @@ public partial class DutyMainSettingsPage : SettingsPageBase
                       () => { _ = LoadDataAsync("排班完成"); },
                       DispatcherPriority.Background);
             }
+            else if (string.Equals(result.Code, "cancelled", StringComparison.OrdinalIgnoreCase))
+            {
+                ReasoningBoardContainer.BorderBrush = Brushes.Orange;
+                UpdateRunTracking("已取消");
+                SetStatus("排班执行已取消。", Brushes.Orange);
+            }
             else
             {
                 ReasoningBoardContainer.BorderBrush = Brushes.Red;
@@ -547,9 +634,44 @@ public partial class DutyMainSettingsPage : SettingsPageBase
           {
               StopReasoningStreamFlush();
               _activeRunSessionRevision = 0;
+              _isScheduleRunning = false;
+              RunAgentBtnContent.Text = "开始排班（覆盖）";
+              RunAgentBtnContent.Glyph = "\uE768";
+              if (!RunAgentBtn.Classes.Contains("accent"))
+              {
+                  RunAgentBtn.Classes.Add("accent");
+              }
               RunAgentBtn.IsEnabled = true;
           }
       }
+
+    private async void OnRollbackClick(object? sender, RoutedEventArgs e)
+    {
+        RollbackBtn.IsEnabled = false;
+        SetStatus("正在滚回上一次排班...", Brushes.Gray);
+        try
+        {
+            var result = await Service.RollbackScheduleAsync();
+            if (result.Success)
+            {
+                SetStatus("已成功滚回排班。", Brushes.Green);
+                _ = LoadDataAsync("滚回完成");
+            }
+            else
+            {
+                var message = string.IsNullOrWhiteSpace(result.Message) ? "滚回失败。" : $"滚回失败：{result.Message}";
+                SetStatus(message, Brushes.Red);
+            }
+        }
+        catch (Exception ex)
+        {
+            SetStatus($"滚回异常：{ex.Message}", Brushes.Red);
+        }
+        finally
+        {
+            RollbackBtn.IsEnabled = true;
+        }
+    }
 
     private void OnConfigInputLostFocus(object? sender, RoutedEventArgs e)
     {
@@ -732,11 +854,19 @@ public partial class DutyMainSettingsPage : SettingsPageBase
 
     private async void OnApplyAccessSecurityClick(object? sender, RoutedEventArgs e)
     {
+        ValidateStaticToken();
+        if (StaticAccessTokenErrorText.IsVisible)
+        {
+            SetStatus("Token 不能为空，请检查输入。", Brushes.Orange);
+            return;
+        }
+
         await ApplyAccessSecurityAsync(clearStaticToken: false);
     }
 
     private async void OnClearStaticAccessTokenClick(object? sender, RoutedEventArgs e)
     {
+        ClearStaticTokenValidation();
         await ApplyAccessSecurityAsync(clearStaticToken: true);
     }
 
@@ -769,6 +899,70 @@ public partial class DutyMainSettingsPage : SettingsPageBase
         catch (Exception ex)
         {
             SetStatus($"复制 token 失败：{ex.Message}", Brushes.Red);
+        }
+    }
+
+    private void OnStaticAccessTokenTextChanged(object? sender, RoutedEventArgs e)
+    {
+        ValidateStaticToken();
+    }
+
+    private void ValidateStaticToken()
+    {
+        var token = StaticAccessTokenBox.Text ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(token))
+        {
+            StaticAccessTokenErrorText.Text = "Token 不能为空";
+            StaticAccessTokenErrorText.IsVisible = true;
+            StaticAccessTokenBox.BorderBrush = Brushes.Red;
+        }
+        else
+        {
+            StaticAccessTokenErrorText.IsVisible = false;
+            StaticAccessTokenBox.BorderBrush = null;
+        }
+    }
+
+    private void ClearStaticTokenValidation()
+    {
+        StaticAccessTokenErrorText.IsVisible = false;
+        StaticAccessTokenBox.BorderBrush = null;
+    }
+
+    private void OnFixedServerPortTextChanged(object? sender, RoutedEventArgs e)
+    {
+        ValidateFixedServerPort();
+    }
+
+    private void ValidateFixedServerPort()
+    {
+        var text = FixedServerPortBox.Text ?? string.Empty;
+        if (!int.TryParse(text, out var port))
+        {
+            if (text.Length > 0)
+            {
+                FixedServerPortErrorText.Text = "端口必须为数字";
+                FixedServerPortErrorText.IsVisible = true;
+                FixedServerPortBox.BorderBrush = Brushes.Red;
+            }
+            else
+            {
+                FixedServerPortErrorText.IsVisible = false;
+                FixedServerPortBox.BorderBrush = null;
+            }
+            return;
+        }
+
+        if (port < 1024 || port > 65535)
+        {
+            FixedServerPortErrorText.Text = "端口必须在 1024-65535 之间";
+            FixedServerPortErrorText.IsVisible = true;
+            FixedServerPortBox.BorderBrush = Brushes.Red;
+        }
+        else
+        {
+            FixedServerPortErrorText.IsVisible = false;
+            FixedServerPortBox.BorderBrush = null;
         }
     }
 
@@ -1312,7 +1506,9 @@ public partial class DutyMainSettingsPage : SettingsPageBase
 
     private void OnRosterDropZoneDragOver(object? sender, DragEventArgs e)
     {
+        #pragma warning disable CS0618 // DragEventArgs.Data: use IAsyncDataTransfer in Avalonia 12+
         var localPath = TryGetFirstDroppedRosterPath(e.Data, out _);
+        #pragma warning restore CS0618
         var canDrop = !string.IsNullOrWhiteSpace(localPath);
         e.DragEffects = canDrop ? DragDropEffects.Copy : DragDropEffects.None;
         SetRosterDropActive(canDrop);
@@ -1329,7 +1525,9 @@ public partial class DutyMainSettingsPage : SettingsPageBase
         SetRosterDropActive(false);
         try
         {
+            #pragma warning disable CS0618 // DragEventArgs.Data: use IAsyncDataTransfer in Avalonia 12+
             var localPath = TryGetFirstDroppedRosterPath(e.Data, out var supportedCount);
+            #pragma warning restore CS0618
             if (string.IsNullOrWhiteSpace(localPath))
             {
                 SetStatus("请拖入本地 .txt 或 .xlsx 名单文件。", Brushes.Orange);
@@ -1349,6 +1547,339 @@ public partial class DutyMainSettingsPage : SettingsPageBase
     private void OnRosterSelectionChanged(object? sender, SelectionChangedEventArgs e)
     {
         UpdateStudentActionButtons();
+    }
+
+    private ObservableCollection<DutyRosterRow>? _rosterCollection;
+    private List<int> _rosterDragOriginalIds = [];
+    private int _rosterDragSourceIndex = -1;
+    private Point _rosterDragStart;
+    private Point _rosterDragCurrentPos; // 当前拖动位置（用于自动滚动）
+    private bool _rosterDragTriggered;
+
+    private void OnRosterCollectionChanged(object? sender, System.Collections.Specialized.NotifyCollectionChangedEventArgs e)
+    {
+        // All drag reorder saving is handled in OnRosterPointerReleased
+    }
+
+    private Control? _dragCurrentContainer;
+    private Border? _dragGhostElement;
+    private DispatcherTimer? _autoScrollTimer;
+    private const double AutoScrollThreshold = 80; // 距离边缘多少像素时触发自动滚动
+    private const double AutoScrollBaseSpeed = 15; // 基础滚动速度
+
+    private void OnRosterPointerPressed(object? sender, PointerPressedEventArgs e)
+    {
+        if (_rosterCollection == null) return;
+        if (_rosterDragSourceIndex >= 0) return; // Already tracking a drag
+        if (!e.GetCurrentPoint(sender as Control).Properties.IsLeftButtonPressed) return;
+
+        var pos = e.GetPosition(RosterListBox);
+        var hit = RosterListBox.InputHitTest(pos);
+        var container = GetListBoxItemContainer(hit as Control);
+        if (container == null) return;
+
+        var idx = RosterListBox.IndexFromContainer(container);
+        if (idx < 0) return;
+
+        _rosterDragSourceIndex = idx;
+        _rosterDragTriggered = false;
+        _rosterDragStart = pos;
+        _rosterDragCurrentPos = pos;
+        _rosterDragOriginalIds = _rosterCollection.Select(r => r.Id).ToList();
+        _dragCurrentContainer = container;
+
+        // Dim the source item
+        if (container is Border border)
+        {
+            border.Opacity = 0.5;
+        }
+
+        // Create ghost element
+        CreateDragGhost(container as Border, pos);
+
+        // Start auto-scroll timer
+        StartAutoScrollTimer();
+
+        e.Pointer.Capture(container);
+    }
+
+    private void CreateDragGhost(Border? sourceItem, Point startPos)
+    {
+        if (sourceItem == null) return;
+
+        var itemBounds = sourceItem.Bounds;
+
+        // Clone the visual appearance
+        _dragGhostElement = new Border
+        {
+            Background = sourceItem.Background,
+            BorderBrush = new Avalonia.Media.SolidColorBrush(Avalonia.Media.Color.Parse("#4000")),
+            BorderThickness = new Thickness(2),
+            CornerRadius = new CornerRadius(4),
+            Padding = sourceItem.Padding,
+            IsHitTestVisible = false,
+            IsVisible = true,
+            Opacity = 0.9,
+            Width = itemBounds.Width,
+            MinHeight = itemBounds.Height,
+            HorizontalAlignment = Avalonia.Layout.HorizontalAlignment.Left,
+            VerticalAlignment = Avalonia.Layout.VerticalAlignment.Top,
+        };
+
+        // Copy content
+        if (sourceItem.Child is Grid grid)
+        {
+            _dragGhostElement.Child = CloneGridContent(grid);
+        }
+
+        // Add to visual tree
+        var rootPanel = RosterListBox.Parent as Panel ?? RosterListBox.Parent as Grid;
+        if (rootPanel != null)
+        {
+            rootPanel.Children.Add(_dragGhostElement);
+            Canvas.SetLeft(_dragGhostElement, itemBounds.X);
+            Canvas.SetTop(_dragGhostElement, itemBounds.Y);
+        }
+    }
+
+    private static Grid? CloneGridContent(Grid source)
+    {
+        var clone = new Grid { ColumnDefinitions = source.ColumnDefinitions, RowDefinitions = source.RowDefinitions };
+        foreach (var child in source.Children)
+        {
+            if (child is TextBlock tb)
+            {
+                var newTb = new TextBlock
+                {
+                    Text = tb.Text,
+                    VerticalAlignment = tb.VerticalAlignment,
+                    TextTrimming = tb.TextTrimming,
+                    Opacity = tb.Opacity
+                };
+                Grid.SetColumn(newTb, Grid.GetColumn(tb));
+                Grid.SetRow(newTb, Grid.GetRow(tb));
+                clone.Children.Add(newTb);
+            }
+        }
+        return clone;
+    }
+
+    private void StartAutoScrollTimer()
+    {
+        _autoScrollTimer?.Stop();
+        _autoScrollTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(16) }; // ~60fps
+        _autoScrollTimer.Tick += OnAutoScrollTick;
+        _autoScrollTimer.Start();
+    }
+
+    private void StopAutoScrollTimer()
+    {
+        _autoScrollTimer?.Stop();
+        _autoScrollTimer = null;
+    }
+
+    private void OnAutoScrollTick(object? sender, EventArgs e)
+    {
+        if (_rosterDragSourceIndex < 0 || !_rosterDragTriggered) return;
+
+        // Find ScrollViewer through the Scroll property of ListBox
+        var scrollViewer = RosterListBox.Scroll;
+        if (scrollViewer == null) return;
+
+        var pos = _rosterDragCurrentPos;
+        var listHeight = RosterListBox.Bounds.Height;
+        var scrollOffset = scrollViewer.Offset.Y;
+
+        // Check if near top edge
+        if (pos.Y < AutoScrollThreshold)
+        {
+            var distance = AutoScrollThreshold - pos.Y;
+            var speed = AutoScrollBaseSpeed * (1 - distance / AutoScrollThreshold);
+            scrollViewer.Offset = new Vector(scrollViewer.Offset.X, Math.Max(0, scrollOffset - speed));
+        }
+        // Check if near bottom edge
+        else if (pos.Y > listHeight - AutoScrollThreshold)
+        {
+            var distance = pos.Y - (listHeight - AutoScrollThreshold);
+            var speed = AutoScrollBaseSpeed * (1 - distance / AutoScrollThreshold);
+            scrollViewer.Offset = new Vector(scrollViewer.Offset.X, scrollOffset + speed);
+        }
+    }
+
+    private void OnRosterPointerMoved(object? sender, PointerEventArgs e)
+    {
+        if (_rosterCollection == null || _rosterDragSourceIndex < 0 || _dragCurrentContainer == null) return;
+
+        var pos = e.GetPosition(RosterListBox);
+        _rosterDragCurrentPos = pos;
+
+        // Move ghost element to follow pointer
+        if (_dragGhostElement != null)
+        {
+            Canvas.SetLeft(_dragGhostElement, pos.X - (_dragGhostElement.Bounds.Width / 2));
+            Canvas.SetTop(_dragGhostElement, pos.Y - (_dragGhostElement.Bounds.Height / 2));
+        }
+
+        if (!_rosterDragTriggered)
+        {
+            if (Math.Abs(pos.X - _rosterDragStart.X) > 8 || Math.Abs(pos.Y - _rosterDragStart.Y) > 8)
+            {
+                _rosterDragTriggered = true;
+            }
+            return;
+        }
+
+        // Calculate target index based on pointer position (don't modify collection yet)
+        RosterListBox.UpdateLayout();
+        var itemCount = _rosterCollection.Count;
+        var targetIndex = _rosterDragSourceIndex;
+        var minDist = double.MaxValue;
+
+        for (var i = 0; i < itemCount; i++)
+        {
+            if (RosterListBox.ContainerFromIndex(i) is Control tc)
+            {
+                var bounds = tc.Bounds;
+                var itemCenter = bounds.Y + bounds.Height / 2;
+                var dist = Math.Abs(pos.Y - itemCenter);
+                if (dist < minDist)
+                {
+                    minDist = dist;
+                    targetIndex = i;
+                }
+            }
+        }
+
+        // Visual feedback: shift other items to show insertion gap
+        if (targetIndex != _rosterDragSourceIndex)
+        {
+            var rows = _rosterCollection.ToList();
+            var movedRow = rows[_rosterDragSourceIndex];
+            rows.RemoveAt(_rosterDragSourceIndex);
+            var adjustedTarget = targetIndex > _rosterDragSourceIndex ? targetIndex - 1 : targetIndex;
+            adjustedTarget = Math.Max(0, Math.Min(adjustedTarget, rows.Count));
+            rows.Insert(adjustedTarget, movedRow);
+
+            _rosterCollection.Clear();
+            foreach (var r in rows) _rosterCollection.Add(r);
+            RosterListBox.SelectedIndex = adjustedTarget;
+            _rosterDragSourceIndex = adjustedTarget;
+        }
+    }
+
+    private void OnRosterPointerReleased(object? sender, PointerReleasedEventArgs e)
+    {
+        if (_rosterDragSourceIndex < 0) return;
+
+        // Remove ghost element
+        if (_dragGhostElement != null)
+        {
+            var parent = _dragGhostElement.Parent as Panel;
+            parent?.Children.Remove(_dragGhostElement);
+            _dragGhostElement = null;
+        }
+
+        // Reset visual feedback
+        if (_dragCurrentContainer is Border border)
+        {
+            border.Opacity = 1.0;
+        }
+
+        // Stop auto-scroll
+        StopAutoScrollTimer();
+
+        // Restore original order and do final reorder based on target position
+        if (_rosterCollection != null && _rosterDragOriginalIds.Count > 0)
+        {
+            var currentIds = _rosterCollection.Select(r => r.Id).ToList();
+
+            // Restore to original order first
+            if (!currentIds.SequenceEqual(_rosterDragOriginalIds))
+            {
+                var originalOrder = _rosterDragOriginalIds
+                    .Select(id => _rosterCollection.FirstOrDefault(r => r.Id == id))
+                    .Where(r => r != null)
+                    .Select(r => r!)
+                    .ToList();
+
+                _rosterCollection.Clear();
+                foreach (var r in originalOrder) _rosterCollection.Add(r);
+            }
+
+            // Calculate target index from ghost position if drag was triggered
+            if (_rosterDragTriggered)
+            {
+                RosterListBox.UpdateLayout();
+                var pos = _rosterDragCurrentPos;
+                var itemCount = _rosterCollection.Count;
+                var targetIndex = 0;
+                var minDist = double.MaxValue;
+
+                for (var i = 0; i < itemCount; i++)
+                {
+                    if (RosterListBox.ContainerFromIndex(i) is Control tc)
+                    {
+                        var itemCenter = tc.Bounds.Y + tc.Bounds.Height / 2;
+                        var dist = Math.Abs(pos.Y - itemCenter);
+                        if (dist < minDist)
+                        {
+                            minDist = dist;
+                            targetIndex = i;
+                        }
+                    }
+                }
+
+                var sourceIdx = _rosterDragOriginalIds
+                    .Select((id, idx) => (id, idx))
+                    .FirstOrDefault(x => _rosterCollection.Any(r => r.Id == x.id)).idx;
+
+                if (targetIndex != sourceIdx && sourceIdx >= 0)
+                {
+                    var rows = _rosterCollection.ToList();
+                    var movedRow = rows[sourceIdx];
+                    rows.RemoveAt(sourceIdx);
+                    var adjustedTarget = targetIndex > sourceIdx ? targetIndex - 1 : targetIndex;
+                    adjustedTarget = Math.Max(0, Math.Min(adjustedTarget, rows.Count));
+                    rows.Insert(adjustedTarget, movedRow);
+
+                    _rosterCollection.Clear();
+                    foreach (var r in rows) _rosterCollection.Add(r);
+                    RosterListBox.SelectedIndex = adjustedTarget;
+
+                    var finalIds = _rosterCollection.Select(r => r.Id).ToList();
+                    var result = _rosterModule.ReorderStudents(finalIds);
+                    SetStatus(result.Success ? "名单顺序已更新。" : result.Message,
+                        result.Success ? Brushes.Green : Brushes.Orange);
+                    _ = LoadDataAsync("名单重排");
+                }
+            }
+
+            _rosterDragOriginalIds.Clear();
+        }
+
+        e.Pointer.Capture(null);
+        _rosterDragSourceIndex = -1;
+        _rosterDragTriggered = false;
+        _dragCurrentContainer = null;
+    }
+
+    private static Control? GetListBoxItemContainer(Control? hit)
+    {
+        while (hit != null)
+        {
+            if (hit is ListBoxItem) return hit;
+            hit = hit.Parent as Control;
+        }
+        return null;
+    }
+
+    private void AttachListBoxDragHandlers()
+    {
+        if (_isRosterDragHandlersAttached) return;
+        _isRosterDragHandlersAttached = true;
+        RosterListBox.AddHandler(InputElement.PointerPressedEvent, OnRosterPointerPressed, RoutingStrategies.Tunnel);
+        RosterListBox.AddHandler(InputElement.PointerMovedEvent, OnRosterPointerMoved, RoutingStrategies.Tunnel);
+        RosterListBox.AddHandler(InputElement.PointerReleasedEvent, OnRosterPointerReleased, RoutingStrategies.Tunnel);
     }
 
     private async Task ImportRosterFromPathAsync(string localPath, string reason, string successSuffix = "")
@@ -1377,6 +1908,7 @@ public partial class DutyMainSettingsPage : SettingsPageBase
         SetStatus($"{result.Message}{successSuffix}", Brushes.Green);
     }
 
+    #pragma warning disable CS0618 // IDataObject: use IAsyncDataTransfer in Avalonia 12+
     private static string? TryGetFirstDroppedRosterPath(IDataObject data, out int supportedCount)
     {
         supportedCount = 0;
@@ -1401,6 +1933,7 @@ public partial class DutyMainSettingsPage : SettingsPageBase
 
         return firstSupportedPath;
     }
+    #pragma warning restore CS0618
 
     private static bool IsSupportedRosterImportPath(string path)
     {
@@ -1632,7 +2165,7 @@ public partial class DutyMainSettingsPage : SettingsPageBase
                 SetAutoRunTimeSelection(hostSettings.AutoRunTime);
                 AutoRunTriggerNotificationSwitch.IsChecked = hostSettings.AutoRunTriggerNotificationEnabled;
                 DutyReminderEnabledSwitch.IsChecked = hostSettings.DutyReminderEnabled;
-                SetDutyReminderTimeSelection(hostSettings.DutyReminderTime);
+                DutyReminderTimesBox.Text = DutyMainSettingsHostModule.FormatDutyReminderTimes(hostSettings.DutyReminderTimes);
                 SetServerPortModeSelection(hostSettings.ServerPortMode);
                 FixedServerPortBox.Text = hostSettings.FixedServerPortText;
                 EnableMcpSwitch.IsChecked = hostSettings.EnableMcp;
@@ -1706,8 +2239,7 @@ public partial class DutyMainSettingsPage : SettingsPageBase
         AutoRunMinuteComboBox.IsEnabled = enabled;
         AutoRunTriggerNotificationSwitch.IsEnabled = enabled;
         DutyReminderEnabledSwitch.IsEnabled = enabled;
-        DutyReminderHourComboBox.IsEnabled = enabled;
-        DutyReminderMinuteComboBox.IsEnabled = enabled;
+        DutyReminderTimesBox.IsEnabled = enabled;
         UpdateAccessSecurityControlsState(enabled);
         UpdateMcpEndpointControlsState(enabled);
         EnableWebDebugLayerSwitch.IsEnabled = enabled;
@@ -1915,7 +2447,7 @@ public partial class DutyMainSettingsPage : SettingsPageBase
             AutoRunTime = host.AutoRunTime,
             AutoRunTriggerNotificationEnabled = host.AutoRunTriggerNotificationEnabled,
             DutyReminderEnabled = host.DutyReminderEnabled,
-            DutyReminderTime = (host.DutyReminderTimes ?? []).FirstOrDefault(x => !string.IsNullOrWhiteSpace(x)) ?? "07:40",
+            DutyReminderTimes = DutyMainSettingsHostModule.NormalizeDutyReminderTimes(host.DutyReminderTimes),
             ServerPortMode = DutyServerPortModes.Normalize(host.ServerPortMode),
             FixedServerPortText = host.FixedServerPort?.ToString() ?? string.Empty,
             EnableMcp = host.EnableMcp,
@@ -1989,10 +2521,10 @@ public partial class DutyMainSettingsPage : SettingsPageBase
             BaseUrl = selectedPlan.BaseUrl,
             Model = selectedPlan.Model,
             ModelProfile = selectedPlan.ModelProfile,
-            OrchestrationMode = string.Equals(selectedModeId, DutyBackendModeIds.Campus6Agent, StringComparison.Ordinal)
+            OrchestrationMode = string.Equals(selectedModeId, DutyBackendModeIds.Agents, StringComparison.Ordinal)
                 ? "multi_agent"
                 : "single_pass",
-            MultiAgentExecutionMode = string.Equals(selectedModeId, DutyBackendModeIds.Campus6Agent, StringComparison.Ordinal)
+            MultiAgentExecutionMode = string.Equals(selectedModeId, DutyBackendModeIds.Agents, StringComparison.Ordinal)
                 ? selectedPlan.MultiAgentExecutionMode
                 : "auto",
             SinglePassStrategy = string.Equals(selectedModeId, DutyBackendModeIds.IncrementalSmall, StringComparison.Ordinal)
@@ -2070,9 +2602,13 @@ public partial class DutyMainSettingsPage : SettingsPageBase
 
     private void UpdateStudentActionButtons()
     {
+        var selectedItems = RosterListBox.SelectedItems;
+        var hasSelection = RosterListBox.SelectedItem is DutyRosterRow;
+        var hasMultiSelection = selectedItems != null && selectedItems.Count > 1;
+        ToggleStudentActiveBtn.IsEnabled = hasSelection;
+        DeleteSelectedRosterBtn.IsEnabled = hasSelection;
         if (RosterListBox.SelectedItem is DutyRosterRow selected)
         {
-            ToggleStudentActiveBtn.IsEnabled = true;
             ToggleStudentActiveBtn.Content = selected.Active ? "停用选中" : "启用选中";
             return;
         }
@@ -2084,7 +2620,18 @@ public partial class DutyMainSettingsPage : SettingsPageBase
     private void ApplyRosterPreview(DutyRosterPreview preview)
     {
         var previousSelectedId = (RosterListBox.SelectedItem as DutyRosterRow)?.Id;
-        RosterListBox.ItemsSource = preview.Rows;
+        if (_rosterCollection != null)
+        {
+            _rosterCollection.CollectionChanged -= OnRosterCollectionChanged;
+        }
+        _rosterCollection = new ObservableCollection<DutyRosterRow>(preview.Rows);
+        RosterListBox.ItemsSource = _rosterCollection;
+        _rosterCollection.CollectionChanged += OnRosterCollectionChanged;
+
+        Dispatcher.UIThread.Post(() =>
+        {
+            AttachListBoxDragHandlers();
+        }, DispatcherPriority.Loaded);
         if (previousSelectedId.HasValue)
         {
             RosterListBox.SelectedItem = preview.Rows.FirstOrDefault(x => x.Id == previousSelectedId.Value);
@@ -2112,6 +2659,7 @@ public partial class DutyMainSettingsPage : SettingsPageBase
 
         PopulateScheduleEditorFromSelection();
         ScheduleSummaryText.Text = preview.Summary;
+        RollbackBtn.IsVisible = preview.Rows.Count > 0;
         ScheduleEmptyStatePanel.IsVisible = preview.Rows.Count == 0;
     }
 
@@ -2195,7 +2743,7 @@ public partial class DutyMainSettingsPage : SettingsPageBase
                 day: targetDay,
                 areaAssignments: areaAssignments,
                 note: note,
-                createIfMissing: false,
+                confirmOverwrite: true,
                 recordDebtCreditChanges: recordDebtCreditChanges);
 
             _pendingScheduleSelectionDate = targetDate;
@@ -2241,7 +2789,7 @@ public partial class DutyMainSettingsPage : SettingsPageBase
                 day: targetDay,
                 areaAssignments: areaAssignments,
                 note: note,
-                createIfMissing: true,
+                confirmOverwrite: true,
                 recordDebtCreditChanges: recordDebtCreditChanges);
 
             _pendingScheduleSelectionDate = targetDate;
@@ -2367,6 +2915,39 @@ public partial class DutyMainSettingsPage : SettingsPageBase
         }
     }
 
+    private void OnSelectAllRosterClick(object? sender, RoutedEventArgs e)
+    {
+        RosterListBox.SelectAll();
+    }
+
+    private void OnClearRosterClick(object? sender, RoutedEventArgs e)
+    {
+        RosterListBox.SelectedIndex = -1;
+    }
+
+    private async void OnDeleteSelectedRosterClick(object? sender, RoutedEventArgs e)
+    {
+        var selectedIds = RosterListBox.SelectedItems
+            ?.Cast<DutyRosterRow>()
+            .Select(r => r.Id)
+            .ToList() ?? [];
+        if (selectedIds.Count == 0)
+        {
+            SetStatus("请先选择要删除的学生。", Brushes.Orange);
+            return;
+        }
+
+        var result = _rosterModule.DeleteStudents(selectedIds);
+        if (!result.Success)
+        {
+            SetStatus(result.Message, Brushes.Orange);
+            return;
+        }
+
+        await LoadDataAsync("名单变更");
+        SetStatus(result.Message, Brushes.Green);
+    }
+
     private static bool TryParseBoundedInt(string? text, int min, int max, out int value)
     {
         if (int.TryParse(text, out value))
@@ -2388,29 +2969,7 @@ public partial class DutyMainSettingsPage : SettingsPageBase
 
     private void OnTestNotificationClicked(object? sender, RoutedEventArgs e)
     {
-        var duration = (int)NotificationDurationSlider.Value;
-        NotificationService.Publish(
-            "\u6D4B\u8BD5\u901A\u77E5",
-            "\u6559\u5BA4\uFF1A\u5F20\u4E09\u3001\u674E\u56DB\uFF1B\u6E05\u6D01\u533A\uFF1A\u738B\u4E94\u3001\u8D75\u516D",
-            duration);
-    }
-
-    private string GetSelectedDutyReminderTime()
-    {
-        var hour = DutyReminderHourComboBox.SelectedItem as string ?? "07";
-        var minute = DutyReminderMinuteComboBox.SelectedItem as string ?? "40";
-        return $"{hour}:{minute}";
-    }
-
-    private void SetDutyReminderTimeSelection(string? dutyReminderTime)
-    {
-        if (!TimeSpan.TryParse(dutyReminderTime, out var parsed))
-        {
-            parsed = new TimeSpan(7, 40, 0);
-        }
-
-        DutyReminderHourComboBox.SelectedItem = parsed.Hours.ToString("D2");
-        DutyReminderMinuteComboBox.SelectedItem = parsed.Minutes.ToString("D2");
+        Service.PublishDutyReminderNotificationNow();
     }
 
     private static bool TryNormalizeScheduleDate(string? rawDate, out string normalizedDate, out DateTime parsedDate)
@@ -2691,7 +3250,7 @@ public partial class DutyMainSettingsPage : SettingsPageBase
         plan.Model = (ModelBox.Text ?? string.Empty).Trim();
         plan.BaseUrl = (BaseUrlBox.Text ?? string.Empty).Trim();
         plan.ModelProfile = GetSelectedModelProfile();
-        plan.MultiAgentExecutionMode = string.Equals(plan.ModeId, DutyBackendModeIds.Campus6Agent, StringComparison.Ordinal)
+        plan.MultiAgentExecutionMode = string.Equals(plan.ModeId, DutyBackendModeIds.Agents, StringComparison.Ordinal)
             ? GetSelectedMultiAgentExecutionMode()
             : "auto";
     }
@@ -2766,7 +3325,7 @@ public partial class DutyMainSettingsPage : SettingsPageBase
             Model = source?.Model ?? "moonshotai/kimi-k2-thinking",
             ModelProfile = source?.ModelProfile ?? "auto",
             ProviderHint = source?.ProviderHint ?? string.Empty,
-            MultiAgentExecutionMode = string.Equals(modeId, DutyBackendModeIds.Campus6Agent, StringComparison.Ordinal)
+            MultiAgentExecutionMode = string.Equals(modeId, DutyBackendModeIds.Agents, StringComparison.Ordinal)
                 ? source?.MultiAgentExecutionMode ?? "auto"
                 : "auto"
         };
@@ -2776,8 +3335,8 @@ public partial class DutyMainSettingsPage : SettingsPageBase
     {
         return modeId switch
         {
-            DutyBackendModeIds.Campus6Agent => "6Agent",
-            DutyBackendModeIds.IncrementalSmall => "增量小模型",
+            DutyBackendModeIds.Agents => "Agents",
+            DutyBackendModeIds.IncrementalSmall => "增量",
             _ => "标准"
         };
     }
@@ -2786,7 +3345,7 @@ public partial class DutyMainSettingsPage : SettingsPageBase
     {
         return modeId switch
         {
-            DutyBackendModeIds.Campus6Agent => "使用 6Agent 执行链路，适合校园计算中心模型与更稳定的结构化排班。",
+            DutyBackendModeIds.Agents => "使用 Agents 执行链路，适合更稳定的结构化排班。",
             DutyBackendModeIds.IncrementalSmall => "使用详细提示词的单次执行方案，适合推理稳定的小模型。",
             _ => "默认的单次执行方案，优先控制 token 消耗并保持响应速度。"
         };
@@ -2931,7 +3490,7 @@ public partial class DutyMainSettingsPage : SettingsPageBase
             ComponentRefreshTime = GetSelectedComponentRefreshTime(),
             AutoRunTriggerNotificationEnabled = AutoRunTriggerNotificationSwitch.IsChecked == true,
             DutyReminderEnabled = DutyReminderEnabledSwitch.IsChecked == true,
-            DutyReminderTime = GetSelectedDutyReminderTime(),
+            DutyReminderTimes = DutyMainSettingsHostModule.NormalizeDutyReminderTimes([DutyReminderTimesBox.Text ?? string.Empty]),
             ServerPortMode = GetSelectedServerPortMode(),
             FixedServerPortText = (FixedServerPortBox.Text ?? string.Empty).Trim(),
             EnableMcp = EnableMcpSwitch.IsChecked == true,
@@ -3149,6 +3708,63 @@ public partial class DutyMainSettingsPage : SettingsPageBase
                 automatic = true,
                 error = ex.Message
             }, "ERROR");
+        }
+    }
+
+    private async void OnResetPluginDataClick(object? sender, RoutedEventArgs e)
+    {
+        var topLevel = TopLevel.GetTopLevel(this);
+        var confirmed = await ContentDialogHelper.ShowConfirmationDialog(
+            "重置 Duty-Agent 插件数据",
+            "此操作会清空 Duty-Agent 的插件设置、后端配置、名单、排班状态和兼容旧版遗留数据。仅删除插件或重新安装插件并不会自动执行这个重置操作。\n\n如果你确认要继续，请输入：我确认重置 Duty-Agent 数据",
+            "我确认重置 Duty-Agent 数据",
+            topLevel,
+            positiveText: "重置",
+            negativeText: "取消");
+        if (!confirmed)
+        {
+            return;
+        }
+
+        try
+        {
+            ResetPluginDataBtn.IsEnabled = false;
+            RunAgentBtn.IsEnabled = false;
+            TraceSettings("plugin_data_reset_requested");
+            SetStatus("正在重置插件数据...", Brushes.Orange);
+
+            await PythonIpcService.StopAsync();
+            var document = SettingsRepository.ResetPersistedData();
+            BackendSettingsSyncService.RequestSync("plugin_data_reset");
+            await PythonIpcService.RestartEngineAsync();
+
+            ExecuteWithoutConfigEvents(() =>
+            {
+                InstructionBox.Text = string.Empty;
+                ReasoningBoardText.Text = string.Empty;
+                ReasoningBoardContainer.IsVisible = false;
+            });
+
+            ApplyLoadedSettingsDocument(document, showStatusMessage: false);
+            await LoadDataAsync("插件数据重置");
+
+            TraceSettings("plugin_data_reset_completed", new
+            {
+                data_directory = PluginPaths.DataDirectory
+            });
+            UpdateConfigTracking("插件数据已重置");
+            UpdateDataTracking("插件数据已重置");
+            SetStatus("插件数据已重置，当前已恢复到默认状态。", Brushes.Green);
+        }
+        catch (Exception ex)
+        {
+            TraceSettings("plugin_data_reset_failed", new { error = ex.Message }, "ERROR");
+            SetStatus($"重置插件数据失败：{ex.Message}", Brushes.Red);
+        }
+        finally
+        {
+            ResetPluginDataBtn.IsEnabled = true;
+            RunAgentBtn.IsEnabled = true;
         }
     }
 

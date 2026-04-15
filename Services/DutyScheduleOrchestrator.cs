@@ -25,9 +25,11 @@ public class DutyScheduleOrchestrator : IDisposable
     
     private readonly Timer _debounceTimer;
     private readonly Timer _autoRunTimer;
+    private readonly Timer _currentDutyBoundaryTimer;
     private readonly SemaphoreSlim _runCoreGate = new(1, 1);
     private readonly object _dutyReminderLock = new();
-    private readonly HashSet<string> _sentDutyReminderSlots = new(StringComparer.Ordinal);
+    private readonly object _currentDutyBoundaryLock = new();
+    private readonly Dictionary<string, string> _publishedDutyReminderSignatures = new(StringComparer.Ordinal);
     private readonly DutyPluginPaths _pluginPaths;
     private bool _runtimeStarted;
     private bool _pendingAutomationStateChange;
@@ -72,8 +74,16 @@ public class DutyScheduleOrchestrator : IDisposable
         _automationBridge = automationBridge;
         _pluginPaths = pluginPaths;
 
-        _stateManager.StateChanged += (_, _) => DebounceUpdateNotification(notifyAutomationBridge: true);
-        _configManager.ConfigChanged += (_, _) => DebounceUpdateNotification();
+        _stateManager.StateChanged += (_, _) =>
+        {
+            DebounceUpdateNotification(notifyAutomationBridge: true);
+            TryPublishDutyReminderNotifications(DateTime.Now, allowRepublishIfChanged: true);
+        };
+        _configManager.ConfigChanged += (_, _) =>
+        {
+            DebounceUpdateNotification();
+            ScheduleCurrentDutyBoundaryRefresh();
+        };
 
         _debounceTimer = new Timer(500) { AutoReset = false };
         _debounceTimer.Elapsed += (_, _) =>
@@ -92,6 +102,13 @@ public class DutyScheduleOrchestrator : IDisposable
 
         _autoRunTimer = new Timer(60_000) { AutoReset = true };
         _autoRunTimer.Elapsed += (_, _) => TryRunAutoSchedule();
+
+        _currentDutyBoundaryTimer = new Timer { AutoReset = false };
+        _currentDutyBoundaryTimer.Elapsed += (_, _) =>
+        {
+            DebounceUpdateNotification();
+            ScheduleCurrentDutyBoundaryRefresh();
+        };
     }
 
     private void DebounceUpdateNotification(bool notifyAutomationBridge = false)
@@ -156,28 +173,25 @@ public class DutyScheduleOrchestrator : IDisposable
     }
 
     public DutyState LoadState() => _stateManager.LoadState();
-    public void SaveState(DutyState state) => _stateManager.SaveState(state);
 
-    public bool RunCoreAgent(string instruction, string applyMode = "append")
+    public bool RunCoreAgent(string instruction)
     {
-        var result = RunCoreAgentWithMessage(instruction, applyMode);
+        var result = RunCoreAgentWithMessage(instruction);
         return result.Success;
     }
 
     public CoreRunResult RunCoreAgentWithMessage(
         string instruction,
-        string applyMode = "append",
         Action<CoreRunProgress>? progress = null,
         bool isAutoRun = false)
     {
-        var t = RunCoreAgentAsync(instruction, applyMode, progress, isAutoRun);
+        var t = RunCoreAgentAsync(instruction, progress, isAutoRun);
         t.Wait();
         return t.Result;
     }
 
     public async Task<CoreRunResult> RunCoreAgentAsync(
         string instruction,
-        string applyMode = "append",
         Action<CoreRunProgress>? progress = null,
         bool isAutoRun = false)
     {
@@ -193,18 +207,17 @@ public class DutyScheduleOrchestrator : IDisposable
             var inputData = new
             {
                 instruction = effectiveInstruction,
-                apply_mode = applyMode,
                 request_source = isAutoRun ? "automation" : "host"
             };
 
             var result = await _ipcService.RunScheduleAsync(inputData, progress, CancellationToken.None).ConfigureAwait(false);
-            PublishAutomationRunResult(effectiveInstruction, applyMode, result, isAutoRun);
+            PublishAutomationRunResult(effectiveInstruction, result, isAutoRun);
             return result;
         }
         catch (Exception ex)
         {
             var result = CoreRunResult.Fail($"Execution error: {ex.Message}");
-            PublishAutomationRunResult(effectiveInstruction, applyMode, result, isAutoRun);
+            PublishAutomationRunResult(effectiveInstruction, result, isAutoRun);
             return result;
         }
         finally
@@ -236,6 +249,12 @@ public class DutyScheduleOrchestrator : IDisposable
         await _ipcService.RestartEngineAsync().ConfigureAwait(false);
     }
 
+    public Task CancelActiveScheduleAsync(CancellationToken cancellationToken = default)
+        => _ipcService.SendCancelScheduleAsync(cancellationToken);
+
+    public Task<CoreRunResult> RollbackScheduleAsync(CancellationToken cancellationToken = default)
+        => _ipcService.SendRollbackScheduleAsync(cancellationToken);
+
     public void StartRuntime()
     {
         if (_runtimeStarted)
@@ -245,6 +264,7 @@ public class DutyScheduleOrchestrator : IDisposable
 
         _runtimeStarted = true;
         _autoRunTimer.Start();
+        ScheduleCurrentDutyBoundaryRefresh();
     }
 
     public void StopRuntime()
@@ -256,6 +276,7 @@ public class DutyScheduleOrchestrator : IDisposable
 
         _runtimeStarted = false;
         _autoRunTimer.Stop();
+        _currentDutyBoundaryTimer.Stop();
         _debounceTimer.Stop();
     }
 
@@ -360,54 +381,37 @@ public class DutyScheduleOrchestrator : IDisposable
         {
             LoadConfig();
             var now = DateTime.Now;
-            TryPublishDutyReminderNotifications(now);
 
             var mode = (Config.AutoRunMode ?? "Off").Trim();
-            if (string.Equals(mode, "Off", StringComparison.OrdinalIgnoreCase))
+            if (!string.Equals(mode, "Off", StringComparison.OrdinalIgnoreCase))
             {
-                return;
+                var today = now.ToString("yyyy-MM-dd");
+                if (!string.Equals(Config.LastAutoRunDate, today, StringComparison.Ordinal) &&
+                    IsAutoRunTriggered(mode, Config.AutoRunParameter, Config.LastAutoRunDate, now) &&
+                    TimeSpan.TryParse(Config.AutoRunTime, out var targetTime) &&
+                    now.TimeOfDay >= targetTime &&
+                    _runCoreGate.CurrentCount != 0)
+                {
+                    PublishAutoRunTriggeredNotification(now);
+                    var result = RunCoreAgentWithMessage(AutoRunInstruction, isAutoRun: true);
+                    if (!string.Equals(result.Code, "busy", StringComparison.Ordinal))
+                    {
+                        PublishRunCompletionNotification(
+                            instruction: AutoRunInstruction,
+                            resultMessage: result.Message,
+                            success: result.Success,
+                            isAutoRun: true);
+
+                        UpdateHostConfig(config =>
+                        {
+                            config.LastAutoRunDate = today;
+                            config.AiConsecutiveFailures = 0;
+                        });
+                    }
+                }
             }
 
-            var today = now.ToString("yyyy-MM-dd");
-            if (string.Equals(Config.LastAutoRunDate, today, StringComparison.Ordinal))
-            {
-                return;
-            }
-
-            if (!IsAutoRunTriggered(mode, Config.AutoRunParameter, Config.LastAutoRunDate, now))
-            {
-                return;
-            }
-
-            if (!TimeSpan.TryParse(Config.AutoRunTime, out var targetTime) || now.TimeOfDay < targetTime)
-            {
-                return;
-            }
-
-            if (_runCoreGate.CurrentCount == 0)
-            {
-                return;
-            }
-
-            PublishAutoRunTriggeredNotification(now);
-            var result = RunCoreAgentWithMessage(AutoRunInstruction, applyMode: "replace_all", isAutoRun: true);
-            if (string.Equals(result.Code, "busy", StringComparison.Ordinal))
-            {
-                return;
-            }
-
-            PublishRunCompletionNotification(
-                instruction: AutoRunInstruction,
-                applyMode: "replace_all",
-                resultMessage: result.Message,
-                success: result.Success,
-                isAutoRun: true);
-
-            UpdateHostConfig(config =>
-            {
-                config.LastAutoRunDate = today;
-                config.AiConsecutiveFailures = 0;
-            });
+            TryPublishDutyReminderNotifications(now);
         }
         catch
         {
@@ -419,6 +423,7 @@ public class DutyScheduleOrchestrator : IDisposable
         StopRuntime();
         _debounceTimer.Dispose();
         _autoRunTimer.Dispose();
+        _currentDutyBoundaryTimer.Dispose();
         _runCoreGate.Dispose();
     }
 
@@ -431,9 +436,9 @@ public class DutyScheduleOrchestrator : IDisposable
         var targetDate = current.Date;
 
         if (TimeSpan.TryParse(Config.ComponentRefreshTime, out var refreshTime) &&
-            current.TimeOfDay < refreshTime)
+            current.TimeOfDay >= refreshTime)
         {
-            targetDate = targetDate.AddDays(-1);
+            targetDate = targetDate.AddDays(1);
         }
 
         return targetDate;
@@ -472,18 +477,7 @@ public class DutyScheduleOrchestrator : IDisposable
 
     public Dictionary<string, List<string>> GetAreaAssignments(SchedulePoolItem item)
     {
-        var assignments = BuildAreaAssignments(item);
-        var areaNames = NormalizeAreaNames(item.AreaAssignments.Keys);
-        if (areaNames.Count == 0)
-        {
-            areaNames = GetAreaNames();
-        }
-
-        foreach (var area in areaNames)
-        {
-            assignments.TryAdd(area, []);
-        }
-        return assignments;
+        return BuildAreaAssignments(item);
     }
 
     public List<RosterEntry> LoadRosterEntries()
@@ -552,10 +546,6 @@ public class DutyScheduleOrchestrator : IDisposable
             });
         }
 
-        normalized = normalized
-            .OrderBy(x => x.Id)
-            .ToList();
-
         var builder = new StringBuilder();
         builder.AppendLine("id,name,active");
         foreach (var item in normalized)
@@ -578,7 +568,7 @@ public class DutyScheduleOrchestrator : IDisposable
         string? day,
         IDictionary<string, List<string>>? areaAssignments,
         string? note,
-        bool createIfMissing,
+        bool confirmOverwrite,
         bool recordDebtCreditChanges,
         CancellationToken cancellationToken = default)
     {
@@ -595,7 +585,7 @@ public class DutyScheduleOrchestrator : IDisposable
             Day = normalizedDay,
             AreaAssignments = NormalizeAreaAssignmentsForState(areaAssignments),
             Note = (note ?? string.Empty).Trim(),
-            CreateIfMissing = createIfMissing,
+            ConfirmOverwrite = confirmOverwrite,
             LedgerMode = recordDebtCreditChanges ? "record" : "skip"
         };
 
@@ -791,7 +781,6 @@ public class DutyScheduleOrchestrator : IDisposable
 
     private void PublishAutomationRunResult(
         string instruction,
-        string applyMode,
         CoreRunResult result,
         bool isAutoRun)
     {
@@ -804,7 +793,6 @@ public class DutyScheduleOrchestrator : IDisposable
             DateTimeOffset.Now,
             result.Success,
             instruction,
-            applyMode,
             result.Message,
             result.Code,
             isAutoRun));
@@ -812,7 +800,6 @@ public class DutyScheduleOrchestrator : IDisposable
 
     public void PublishRunCompletionNotification(
         string? instruction,
-        string? applyMode,
         string? resultMessage,
         bool success = true,
         bool isAutoRun = false)
@@ -822,22 +809,13 @@ public class DutyScheduleOrchestrator : IDisposable
             LoadConfig();
             var duration = Math.Clamp(Config.NotificationDurationSeconds, 3, 15);
             var now = DateTime.Now;
-            var today = now.ToString("yyyy-MM-dd");
-            var areaNames = GetAreaNames();
-            var state = LoadState();
-            var item = state.SchedulePool.LastOrDefault(x => string.Equals(x.Date, today, StringComparison.Ordinal));
+            var targetDate = GetCurrentScheduleDate(now).ToString("yyyy-MM-dd");
+            var item = GetScheduleItem(targetDate);
             var assignments = item is null
                 ? new Dictionary<string, List<string>>(StringComparer.Ordinal)
                 : GetAreaAssignments(item);
 
-            var segments = areaNames
-                .Select(area =>
-                {
-                    var students = assignments.TryGetValue(area, out var names) ? names : [];
-                    var peopleText = students.Count > 0 ? string.Join("\u3001", students) : "\u65E0";
-                    return $"{area}\uFF1A{peopleText}";
-                })
-                .ToList();
+            var segments = FormatAreaAssignments(assignments, emptyStudentLabel: "\u65E0");
 
             var scene = isAutoRun ? "\u81EA\u52A8\u6392\u73ED" : "\u6392\u73ED\u4EFB\u52A1";
             var status = success ? "\u5DF2\u5B8C\u6210" : "\u6267\u884C\u5931\u8D25";
@@ -882,7 +860,7 @@ public class DutyScheduleOrchestrator : IDisposable
         var dateValue = (dateText ?? string.Empty).Trim();
         if (dateValue.Length == 0)
         {
-            dateValue = DateTime.Now.ToString("yyyy-MM-dd");
+            dateValue = GetCurrentScheduleDate().ToString("yyyy-MM-dd");
         }
 
         var timeValue = (timeText ?? string.Empty).Trim();
@@ -894,7 +872,7 @@ public class DutyScheduleOrchestrator : IDisposable
         PublishDutyReminderNotification(dateValue, timeValue);
     }
 
-    private void TryPublishDutyReminderNotifications(DateTime now)
+    private void TryPublishDutyReminderNotifications(DateTime now, bool allowRepublishIfChanged = false)
     {
         if (!Config.DutyReminderEnabled)
         {
@@ -907,67 +885,156 @@ public class DutyScheduleOrchestrator : IDisposable
             return;
         }
 
-        var today = now.ToString("yyyy-MM-dd");
-        var dueTimes = new List<string>();
+        var targetDate = GetCurrentScheduleDate(now).ToString("yyyy-MM-dd");
+        List<string> dueTimes;
 
         lock (_dutyReminderLock)
         {
-            _sentDutyReminderSlots.RemoveWhere(x => !x.StartsWith($"{today}|", StringComparison.Ordinal));
-
-            foreach (var reminderTime in reminderTimes)
-            {
-                if (!TimeSpan.TryParse(reminderTime, out var triggerTime))
-                {
-                    continue;
-                }
-
-                var triggerAt = now.Date.Add(triggerTime);
-                if (now < triggerAt || now >= triggerAt.AddMinutes(1))
-                {
-                    continue;
-                }
-
-                var slotKey = $"{today}|{reminderTime}";
-                if (_sentDutyReminderSlots.Add(slotKey))
-                {
-                    dueTimes.Add(reminderTime);
-                }
-            }
+            CleanupPublishedDutyReminderSlots(targetDate);
+            dueTimes = GetDueDutyReminderTimes(now, reminderTimes);
         }
 
         foreach (var reminderTime in dueTimes)
         {
-            PublishDutyReminderNotification(today, reminderTime);
+            PublishDutyReminderNotificationIfNeeded(targetDate, reminderTime, allowRepublishIfChanged);
         }
     }
 
     private void PublishDutyReminderNotification(string dateText, string timeText)
     {
         var duration = Math.Clamp(Config.NotificationDurationSeconds, 3, 15);
-        var state = LoadState();
-        var areaNames = GetAreaNames();
-        var item = state.SchedulePool.LastOrDefault(x => string.Equals(x.Date, dateText, StringComparison.Ordinal));
+        var item = GetScheduleItem(dateText);
         var assignments = item is null
             ? new Dictionary<string, List<string>>(StringComparer.Ordinal)
             : GetAreaAssignments(item);
 
-        var assignmentSegments = areaNames
-            .Select(area =>
-            {
-                var students = assignments.TryGetValue(area, out var names) ? names : [];
-                var studentText = students.Count > 0 ? string.Join("\u3001", students) : "\u65E0";
-                return $"{area}\uFF1A{studentText}";
-            })
-            .ToList();
+        var assignmentSegments = FormatAreaAssignments(assignments, emptyStudentLabel: "\u65E0");
 
-        var primaryText = item is null
-            ? $"\u503C\u65E5\u63D0\u9192 {dateText} {timeText}"
-            : $"\u4ECA\u65E5\u503C\u65E5\u63D0\u9192 {timeText}";
+        var primaryText = $"\u5F53\u524D\u503C\u65E5\u63D0\u9192 {timeText}";
         var scrollingText = item is null
-            ? "\u4ECA\u65E5\u6682\u65E0\u503C\u65E5\u5B89\u6392"
-            : string.Join("\uFF1B", assignmentSegments);
+            ? $"{dateText} \u6682\u65E0\u503C\u65E5\u5B89\u6392"
+            : assignmentSegments.Count > 0 ? string.Join("\uFF1B", assignmentSegments) : $"{dateText} \u6682\u65E0\u503C\u65E5\u5B89\u6392";
 
         _notificationService.Publish(primaryText, scrollingText, duration);
+    }
+
+    private void PublishDutyReminderNotificationIfNeeded(string dateText, string timeText, bool allowRepublishIfChanged)
+    {
+        var slotKey = $"{dateText}|{timeText}";
+        var signature = BuildDutyReminderSignature(dateText);
+
+        lock (_dutyReminderLock)
+        {
+            if (_publishedDutyReminderSignatures.TryGetValue(slotKey, out var existingSignature))
+            {
+                if (!allowRepublishIfChanged || string.Equals(existingSignature, signature, StringComparison.Ordinal))
+                {
+                    return;
+                }
+            }
+
+            _publishedDutyReminderSignatures[slotKey] = signature;
+        }
+
+        PublishDutyReminderNotification(dateText, timeText);
+    }
+
+    private List<string> GetDueDutyReminderTimes(DateTime now, IEnumerable<string> reminderTimes)
+    {
+        var dueTimes = new List<string>();
+        foreach (var reminderTime in reminderTimes)
+        {
+            if (!TimeSpan.TryParse(reminderTime, out var triggerTime))
+            {
+                continue;
+            }
+
+            var triggerAt = now.Date.Add(triggerTime);
+            if (now >= triggerAt && now < triggerAt.AddMinutes(1))
+            {
+                dueTimes.Add(reminderTime);
+            }
+        }
+
+        return dueTimes;
+    }
+
+    private void CleanupPublishedDutyReminderSlots(string targetDate)
+    {
+        var staleKeys = _publishedDutyReminderSignatures.Keys
+            .Where(key => !key.StartsWith($"{targetDate}|", StringComparison.Ordinal))
+            .ToList();
+        foreach (var staleKey in staleKeys)
+        {
+            _publishedDutyReminderSignatures.Remove(staleKey);
+        }
+    }
+
+    private string BuildDutyReminderSignature(string dateText)
+    {
+        var item = GetScheduleItem(dateText);
+        if (item is null)
+        {
+            return $"{dateText}|empty";
+        }
+
+        var assignments = GetAreaAssignments(item);
+        var builder = new StringBuilder(dateText);
+        foreach (var area in assignments.Keys.OrderBy(name => name, StringComparer.Ordinal))
+        {
+            builder.Append('|').Append(area).Append('=');
+            builder.Append(string.Join(",", assignments[area]));
+        }
+
+        var note = (item.Note ?? string.Empty).Trim();
+        if (note.Length > 0)
+        {
+            builder.Append("|note=").Append(note);
+        }
+
+        return builder.ToString();
+    }
+
+    private static List<string> FormatAreaAssignments(
+        IReadOnlyDictionary<string, List<string>> assignments,
+        string emptyStudentLabel)
+    {
+        return assignments
+            .Where(x => !string.IsNullOrWhiteSpace(x.Key))
+            .Select(x =>
+            {
+                var students = x.Value?.Where(name => !string.IsNullOrWhiteSpace(name)).ToList() ?? [];
+                var peopleText = students.Count > 0 ? string.Join("\u3001", students) : emptyStudentLabel;
+                return $"{x.Key}\uFF1A{peopleText}";
+            })
+            .ToList();
+    }
+
+    private void ScheduleCurrentDutyBoundaryRefresh()
+    {
+        if (!_runtimeStarted)
+        {
+            return;
+        }
+
+        LoadConfig();
+        var now = DateTime.Now;
+        var refreshTime = TimeSpan.TryParse(Config.ComponentRefreshTime, out var configuredTime)
+            ? configuredTime
+            : new TimeSpan(8, 0, 0);
+        var nextBoundary = now.Date.Add(refreshTime);
+        if (now >= nextBoundary)
+        {
+            nextBoundary = nextBoundary.AddDays(1);
+        }
+
+        var nextIntervalMs = Math.Max(1000d, (nextBoundary - now).TotalMilliseconds);
+        lock (_currentDutyBoundaryLock)
+        {
+            _currentDutyBoundaryTimer.Stop();
+            _currentDutyBoundaryTimer.Interval = nextIntervalMs;
+            _currentDutyBoundaryTimer.Start();
+        }
     }
 
 

@@ -59,16 +59,71 @@ internal sealed class DutyMainSettingsRosterModule
 
     public DutyRosterMutationResult DeleteStudent(int id)
     {
+        return DeleteStudents([id]);
+    }
+
+    public DutyRosterMutationResult DeleteStudents(IEnumerable<int> ids)
+    {
+        var idSet = new HashSet<int>(ids);
+        if (idSet.Count == 0)
+        {
+            return new DutyRosterMutationResult(false, "未选中任何学生。");
+        }
+
         var roster = _service.LoadRosterEntries();
-        var target = roster.FirstOrDefault(x => x.Id == id);
-        if (target == null)
+        var toDelete = roster.Where(x => idSet.Contains(x.Id)).ToList();
+        if (toDelete.Count == 0)
         {
             return new DutyRosterMutationResult(false, "未找到选中的学生记录。");
         }
 
-        roster.RemoveAll(x => x.Id == id);
+        var deletedNames = string.Join("、", toDelete.Select(x => x.Name));
+        roster.RemoveAll(x => idSet.Contains(x.Id));
         _service.SaveRosterEntries(roster);
-        return new DutyRosterMutationResult(true, $"已删除学生：{target.Name}");
+        return new DutyRosterMutationResult(
+            true,
+            $"已删除 {toDelete.Count} 名学生：{deletedNames}",
+            DeletedCount: toDelete.Count);
+    }
+
+    public DutyRosterMutationResult ReorderStudents(List<int> orderedIds)
+    {
+        if (orderedIds == null || orderedIds.Count == 0)
+        {
+            return new DutyRosterMutationResult(false, "名单为空。");
+        }
+
+        var roster = _service.LoadRosterEntries();
+        var presentIds = new HashSet<int>(orderedIds);
+
+        var reordered = orderedIds
+            .Select(id => roster.FirstOrDefault(x => x.Id == id))
+            .Where(x => x != null)
+            .Cast<RosterEntry>()
+            .ToList();
+
+        foreach (var entry in roster)
+        {
+            if (!presentIds.Contains(entry.Id))
+            {
+                reordered.Add(entry);
+            }
+        }
+
+        _service.SaveRosterEntries(reordered);
+        return new DutyRosterMutationResult(true, $"名单顺序已更新。");
+    }
+
+    public (int existingCount, int incomingCount) GetImportPreview(IEnumerable<string> names)
+    {
+        var roster = _service.LoadRosterEntries();
+        var existingNames = new HashSet<string>(roster.Select(x => x.Name), StringComparer.OrdinalIgnoreCase);
+        var normalizedNames = (names ?? [])
+            .Select(x => (x ?? string.Empty).Trim())
+            .Where(x => x.Length > 0)
+            .ToList();
+        var incomingCount = normalizedNames.Count(n => !existingNames.Contains(n));
+        return (roster.Count, incomingCount);
     }
 
     public DutyRosterMutationResult ImportStudents(IEnumerable<string> names)

@@ -390,7 +390,7 @@ public sealed class DutyBackendSettingsSyncService : IDisposable
             presets =
             [
                 CreateDefaultPlanPreset(DutyBackendModeIds.Standard),
-                CreateDefaultPlanPreset(DutyBackendModeIds.Campus6Agent),
+                CreateDefaultPlanPreset(DutyBackendModeIds.Agents),
                 CreateDefaultPlanPreset(DutyBackendModeIds.IncrementalSmall)
             ];
         }
@@ -406,7 +406,7 @@ public sealed class DutyBackendSettingsSyncService : IDisposable
             preset.Model = string.IsNullOrWhiteSpace(preset.Model) ? DefaultModel : preset.Model.Trim();
             preset.ModelProfile = NormalizeModelProfile(preset.ModelProfile);
             preset.ProviderHint = (preset.ProviderHint ?? string.Empty).Trim();
-            preset.MultiAgentExecutionMode = string.Equals(preset.ModeId, DutyBackendModeIds.Campus6Agent, StringComparison.Ordinal)
+            preset.MultiAgentExecutionMode = string.Equals(preset.ModeId, DutyBackendModeIds.Agents, StringComparison.Ordinal)
                 ? NormalizeMultiAgentExecutionMode(preset.MultiAgentExecutionMode)
                 : "auto";
         }
@@ -432,7 +432,7 @@ public sealed class DutyBackendSettingsSyncService : IDisposable
             Id = modeId,
             Name = modeId switch
             {
-                DutyBackendModeIds.Campus6Agent => "6Agent",
+                DutyBackendModeIds.Agents => "Agents",
                 DutyBackendModeIds.IncrementalSmall => "增量小模型",
                 _ => "标准"
             },
@@ -448,10 +448,8 @@ public sealed class DutyBackendSettingsSyncService : IDisposable
     {
         return (modeId ?? DutyBackendModeIds.Standard).Trim().ToLowerInvariant() switch
         {
-            DutyBackendModeIds.Campus6Agent => DutyBackendModeIds.Campus6Agent,
-            "campus6agent" => DutyBackendModeIds.Campus6Agent,
-            "6agent" => DutyBackendModeIds.Campus6Agent,
-            "multi_agent" => DutyBackendModeIds.Campus6Agent,
+            DutyBackendModeIds.Agents => DutyBackendModeIds.Agents,
+            "multi_agent" => DutyBackendModeIds.Agents,
             DutyBackendModeIds.IncrementalSmall => DutyBackendModeIds.IncrementalSmall,
             "incremental" => DutyBackendModeIds.IncrementalSmall,
             "small_incremental" => DutyBackendModeIds.IncrementalSmall,

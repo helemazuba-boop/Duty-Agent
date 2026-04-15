@@ -26,6 +26,7 @@ from engine import (
     restore_schedule,
     validate_llm_schedule_entries,
 )
+from state_ops import DEFAULT_SINGLE_AREA_NAME
 
 
 class TestAreaNameNormalization(unittest.TestCase):
@@ -72,15 +73,14 @@ class TestNormalizeScheduleNoValidation(unittest.TestCase):
         # Result should still have only 1 ID
         self.assertEqual(normalized[0]["area_ids"]["A"], [1])
 
-    def test_filters_inactive_ids(self):
-        """Should still filter out inactive IDs."""
+    def test_unknown_or_inactive_ids_raise(self):
+        """Unknown IDs should fail instead of being silently filtered."""
         raw = [{"date": "2023-10-23", "area_ids": {"A": [1, 999]}}]
         active = [1]
         areas = ["A"]
         counts = {"A": 2}
-        
-        normalized = normalize_multi_area_schedule_ids(raw, active, areas, counts)
-        self.assertEqual(normalized[0]["area_ids"]["A"], [1])
+        with self.assertRaisesRegex(ValueError, "unknown or inactive ID 999 on 2023-10-23/A"):
+            normalize_multi_area_schedule_ids(raw, active, areas, counts)
 
     def test_dynamic_areas_without_predefined(self):
         """When configured area_names is empty, only AI dynamic areas should remain."""
@@ -92,6 +92,20 @@ class TestNormalizeScheduleNoValidation(unittest.TestCase):
         normalized = normalize_multi_area_schedule_ids(raw, active, areas, counts)
         self.assertEqual(len(normalized), 1)
         self.assertEqual(set(normalized[0]["area_ids"].keys()), {"后花园", "天台"})
+
+
+    def test_same_day_cross_area_duplicates_are_allowed(self):
+        raw = [{"date": "2023-10-23", "area_ids": {"教室": [1], "清洁区": [1]}}]
+
+        normalized = normalize_multi_area_schedule_ids(raw, [1], [], {})
+        self.assertEqual(normalized[0]["area_ids"]["教室"], [1])
+        self.assertEqual(normalized[0]["area_ids"]["清洁区"], [1])
+
+    def test_same_area_duplicates_raise(self):
+        raw = [{"date": "2023-10-23", "area_ids": {"教室": [1, 1]}}]
+
+        with self.assertRaisesRegex(ValueError, "duplicate ID 1 on 2023-10-23/教室"):
+            normalize_multi_area_schedule_ids(raw, [1], [], {})
 
 
 class TestScheduleValidation(unittest.TestCase):
@@ -142,10 +156,9 @@ class TestRestoreScheduleDirectDate(unittest.TestCase):
         self.assertEqual(restored[0]["note"], "Old Note")
 
 
-class TestMergeSchedulePoolReplaceFuture(unittest.TestCase):
-    """Bug #2: replace_future should use start_date, not datetime.now()."""
+class TestMergeSchedulePool(unittest.TestCase):
 
-    def test_replace_future_uses_start_date(self):
+    def test_returns_sorted_entries(self):
         """Only entries before start_date are kept."""
         pool = [
             {"date": "2026-02-10"},
@@ -157,63 +170,47 @@ class TestMergeSchedulePoolReplaceFuture(unittest.TestCase):
         new_entries = [{"date": "2026-02-12"}, {"date": "2026-02-13"}]
         start = date(2026, 2, 12)
 
-        result = merge_schedule_pool(state, new_entries, "replace_future", start)
+        result = merge_schedule_pool([{"date": "2026-02-12"}, {"date": "2026-02-10"}, {"date": "2026-02-11"}])
         dates = [e["date"] for e in result]
         # 2026-02-10 and 2026-02-11 are before start_date → kept
         # 2026-02-12 and 2026-02-13 come from new_entries
-        self.assertIn("2026-02-10", dates)
-        self.assertIn("2026-02-11", dates)
-        self.assertIn("2026-02-12", dates)
-        self.assertIn("2026-02-13", dates)
-        self.assertEqual(len(result), 4)
+        self.assertEqual(dates, ["2026-02-10", "2026-02-11", "2026-02-12"])
 
-    def test_replace_future_does_not_keep_start_date_old(self):
-        """Old entry on start_date itself should be replaced by new entry."""
+    def test_duplicate_date_keeps_last_entry(self):
         pool = [{"date": "2026-02-12", "old": True}]
         state = {"schedule_pool": pool}
         new_entries = [{"date": "2026-02-12", "old": False}]
         start = date(2026, 2, 12)
 
-        result = merge_schedule_pool(state, new_entries, "replace_future", start)
+        result = merge_schedule_pool([{"date": "2026-02-12", "old": True}, {"date": "2026-02-12", "old": False}])
         self.assertEqual(len(result), 1)
-        # new entry wins via dedupe (later in merged list)
         self.assertFalse(result[0].get("old", True))
 
-    def test_replace_all(self):
-        """replace_all discards all old entries."""
+    def test_ignores_entries_without_date(self):
         pool = [{"date": "2026-02-10"}, {"date": "2026-02-11"}]
         state = {"schedule_pool": pool}
         new_entries = [{"date": "2026-02-12"}]
 
-        result = merge_schedule_pool(state, new_entries, "replace_all", date(2026, 2, 12))
+        result = merge_schedule_pool([{"date": ""}, {"note": "missing"}, {"date": "2026-02-12"}])
         self.assertEqual(len(result), 1)
         self.assertEqual(result[0]["date"], "2026-02-12")
 
     def test_append(self):
-        """append merges old + new, deduped."""
-        pool = [{"date": "2026-02-10"}]
-        state = {"schedule_pool": pool}
-        new_entries = [{"date": "2026-02-11"}]
-
-        result = merge_schedule_pool(state, new_entries, "append", date(2026, 2, 11))
+        result = merge_schedule_pool(
+            [
+                {"date": "2026-02-10"},
+                {"date": "2026-02-11"},
+            ]
+        )
         self.assertEqual(len(result), 2)
 
-    def test_append_overwrites_existing_date(self):
-        pool = [{"date": "2026-02-10", "note": "old"}]
-        state = {"schedule_pool": pool}
-        new_entries = [{"date": "2026-02-10", "note": "new"}]
-
-        result = merge_schedule_pool(state, new_entries, "append", date(2026, 2, 11))
+    def test_duplicate_date_keeps_last_entry_with_append_name(self):
+        result = merge_schedule_pool([{"date": "2026-02-10", "note": "old"}, {"date": "2026-02-10", "note": "new"}])
         self.assertEqual(len(result), 1)
         self.assertEqual(result[0]["note"], "new")
 
-    def test_replace_overlap_empty_restored_keeps_existing(self):
-        """replace_overlap with empty restored should keep existing pool without crashing."""
-        pool = [{"date": "2026-02-10"}, {"date": "2026-02-11"}]
-        state = {"schedule_pool": pool}
-
-        result = merge_schedule_pool(state, [], "replace_overlap", date(2026, 2, 11))
-        self.assertEqual([x["date"] for x in result], ["2026-02-10", "2026-02-11"])
+    def test_empty_list_returns_empty(self):
+        self.assertEqual(merge_schedule_pool([]), [])
 
 
 class TestAnonymizeInstruction(unittest.TestCase):
@@ -281,7 +278,7 @@ class TestSaveJsonAtomic(unittest.TestCase):
 
 
 class TestCallLlmPayloadIsolation(unittest.TestCase):
-    def test_parse_retry_does_not_mutate_input_messages(self):
+    def test_parse_failure_does_not_mutate_input_messages(self):
         messages = [{"role": "user", "content": "hello"}]
         config = {
             "base_url": "https://example.com",
@@ -289,15 +286,9 @@ class TestCallLlmPayloadIsolation(unittest.TestCase):
             "api_key": "k",
             "llm_stream": False,
         }
-        with patch(
-            "llm_transport.call_llm_raw",
-            return_value="no csv here",
-        ), patch(
-            "llm_transport.request_llm_non_stream",
-            return_value="<csv>\nDate,Assigned_IDs,Note\n2023-10-10,4,ok\n</csv>",
-        ):
-            parsed, _ = call_llm(messages, config)
-        self.assertEqual(parsed["schedule"][0]["date"], "2023-10-10")
+        with patch("llm_transport.call_llm_raw", return_value="no v2 sections here"):
+            with self.assertRaisesRegex(RuntimeError, "Parse failed"):
+                call_llm(messages, config)
         self.assertEqual(messages, [{"role": "user", "content": "hello"}])
 
 
@@ -314,24 +305,19 @@ class TestDynamicAreaExtractionLimit(unittest.TestCase):
 
 
 class TestMergeSchedulePoolRobustness(unittest.TestCase):
-    def test_replace_future_skips_non_dict_pool_items(self):
-        state = {"schedule_pool": ["bad", 123, {"date": "2026-02-10"}, {"date": "2026-02-12"}]}
-        new_entries = [{"date": "2026-02-12", "note": "new"}]
-
-        result = merge_schedule_pool(state, new_entries, "replace_future", date(2026, 2, 12))
+    def test_skips_non_dict_pool_items(self):
+        result = merge_schedule_pool(["bad", 123, {"date": "2026-02-10"}, {"date": "2026-02-12", "note": "new"}])
         self.assertEqual(result, [{"date": "2026-02-10"}, {"date": "2026-02-12", "note": "new"}])
 
-    def test_replace_overlap_preserves_invalid_date_entries(self):
-        state = {
-            "schedule_pool": [
+    def test_preserves_invalid_date_entries(self):
+        result = merge_schedule_pool(
+            [
                 {"date": "2026-02-09", "note": "before"},
                 {"date": "not-a-date", "note": "legacy"},
                 {"date": "2026-02-10", "note": "old"},
+                {"date": "2026-02-10", "note": "new"},
             ]
-        }
-        new_entries = [{"date": "2026-02-10", "note": "new"}]
-
-        result = merge_schedule_pool(state, new_entries, "replace_overlap", date(2026, 2, 10))
+        )
         notes_by_date = {entry["date"]: entry.get("note", "") for entry in result}
         self.assertEqual(notes_by_date["2026-02-09"], "before")
         self.assertEqual(notes_by_date["2026-02-10"], "new")
@@ -339,7 +325,7 @@ class TestMergeSchedulePoolRobustness(unittest.TestCase):
 
 
 class TestCreditReconciliation(unittest.TestCase):
-    def test_uses_original_credit_when_llm_field_missing(self):
+    def test_keeps_original_credit_when_no_delta_and_no_consumption(self):
         result = reconcile_credit_list(
             original_credit_list=[7],
             new_credit_ids_from_llm=[],
@@ -348,9 +334,9 @@ class TestCreditReconciliation(unittest.TestCase):
             debt_list=[],
             has_llm_field=False,
         )
-        self.assertEqual(result, [7])
+        self.assertEqual(result, {7: 1})
 
-    def test_uses_llm_credit_when_field_present(self):
+    def test_merges_credit_delta_into_existing_counts(self):
         result = reconcile_credit_list(
             original_credit_list=[7, 8],
             new_credit_ids_from_llm=[8],
@@ -359,7 +345,7 @@ class TestCreditReconciliation(unittest.TestCase):
             debt_list=[],
             has_llm_field=True,
         )
-        self.assertEqual(result, [8])
+        self.assertEqual(result, {7: 1, 8: 2})
 
     def test_filters_debt_and_invalid_ids(self):
         result = reconcile_credit_list(
@@ -370,7 +356,7 @@ class TestCreditReconciliation(unittest.TestCase):
             debt_list=[9],
             has_llm_field=True,
         )
-        self.assertEqual(result, [7])
+        self.assertEqual(result, {7: 2})
 
 
 if __name__ == "__main__":

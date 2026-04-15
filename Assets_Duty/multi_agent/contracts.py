@@ -10,7 +10,6 @@ class FrozenSnapshot:
     trace_id: str
     request_source: str
     instruction: str
-    apply_mode: str
     request_time: datetime
     start_date: date
     config: Dict[str, Any]

@@ -4,7 +4,9 @@ import threading
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
+import state_ops
 from runtime import DutyRuntime
 from state_ops import acquire_state_file_lock, release_state_file_lock
 
@@ -37,6 +39,11 @@ class TestStateLocking(unittest.TestCase):
                 self.assertLess(time.monotonic() - started_at, 0.2)
             finally:
                 release_state_file_lock(lock_path)
+
+    def test_is_process_alive_handles_systemerror_from_os_kill(self):
+        with mock.patch.object(state_ops.os, "name", "posix"):
+            with mock.patch.object(state_ops.os, "kill", side_effect=SystemError("kill failed")):
+                self.assertFalse(state_ops._is_process_alive(12345))
 
 
 class TestCommandServiceSingleFlight(unittest.TestCase):

@@ -86,7 +86,6 @@ public sealed record DutyScheduleRunEvent(
     DateTimeOffset OccurredAt,
     bool Success,
     string Instruction,
-    string ApplyMode,
     string Message,
     string? Code,
     bool IsAutoRun);

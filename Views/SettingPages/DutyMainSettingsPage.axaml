@@ -6,6 +6,8 @@
                      xmlns:ci="http://classisland.tech/schemas/xaml/core"
                      xmlns:ui="clr-namespace:FluentAvalonia.UI.Controls;assembly=FluentAvalonia"
                      xmlns:local="clr-namespace:DutyAgent.Views.SettingPages"
+                     xmlns:i="using:Avalonia.Xaml.Interactions"
+                     xmlns:id="using:Avalonia.Xaml.Interactions.DragAndDrop"
                      x:DataType="local:DutyMainSettingsPage"
                      d:DataContext="{d:DesignInstance local:DutyMainSettingsPage}"
                      mc:Ignorable="d">
@@ -13,21 +15,22 @@
     <ScrollViewer HorizontalScrollBarVisibility="Disabled">
         <StackPanel Classes="settings-container animated-intro">
 
-            <ui:InfoBar x:Name="StatusInfoBar"
-                        Margin="0,0,0,12"
-                        IsOpen="True"
-                        IsClosable="False"
-                        Severity="Informational"
-                        Title="就绪"
-                        Message="配置状态：未应用（--:--:--）&#10;运行状态：待命（--:--:--）｜数据状态：未刷新（--:--:--）">
-                <ui:InfoBar.ActionButton>
-                    <Button x:Name="RefreshDataBtn"
-                            Click="OnRefreshDataClick"
-                            VerticalAlignment="Center">
-                        <ci:IconText Glyph="&#xE0B5;" Text="刷新数据" />
-                    </Button>
-                </ui:InfoBar.ActionButton>
-            </ui:InfoBar>
+            <Grid ColumnDefinitions="*,Auto" Margin="0,0,0,12">
+                <ui:InfoBar x:Name="StatusInfoBar"
+                            Grid.Column="0"
+                            IsOpen="True"
+                            IsClosable="False"
+                            Severity="Informational"
+                            Title="就绪"
+                            Message="配置状态：未应用（--:--:--）&#10;运行状态：待命（--:--:--）｜数据状态：未刷新（--:--:--）" />
+                <Button x:Name="RefreshDataBtn"
+                        Grid.Column="1"
+                        Click="OnRefreshDataClick"
+                        VerticalAlignment="Center"
+                        Margin="8,0,0,0">
+                    <ci:IconText Glyph="&#xE0B5;" Text="刷新数据" />
+                </Button>
+            </Grid>
 
             <ci:IconText Glyph="&#xE8FD;" Text="排班" Margin="0,0,0,4" />
 
@@ -35,13 +38,13 @@
                                  Description="留空时按当前方案执行；填写指令会覆盖本次排班上下文。"
                                  IsExpanded="True">
                 <ui:SettingsExpander.IconSource>
-                    <ui:FontIconSource Glyph="&#xE768;" FontFamily="Segoe MDL2 Assets" />
+                    <ui:FontIconSource Glyph="&#xE768;" />
                 </ui:SettingsExpander.IconSource>
                 <ui:SettingsExpander.Footer>
                     <Button x:Name="RunAgentBtn"
                             Classes="accent"
                             Click="OnRunAgentClick">
-                        <ci:IconText Glyph="&#xE768;" Text="开始排班（覆盖）" />
+                        <ci:IconText x:Name="RunAgentBtnContent" Glyph="&#xE768;" Text="开始排班（覆盖）" />
                     </Button>
                 </ui:SettingsExpander.Footer>
                 <StackPanel Spacing="12" Margin="12,0,12,12">
@@ -76,7 +79,7 @@
                                  IsExpanded="True"
                                  Margin="0,4,0,0">
                 <ui:SettingsExpander.IconSource>
-                    <ui:FontIconSource Glyph="&#xE7C1;" FontFamily="Segoe MDL2 Assets" />
+                    <ui:FontIconSource Glyph="&#xE7C1;" />
                 </ui:SettingsExpander.IconSource>
                 <ui:SettingsExpanderItem Content="当前方案"
                                          Description="选择本次排班使用的方案，也可以在这里新建、复制和删除方案。">
@@ -119,7 +122,7 @@
                                   HorizontalAlignment="Stretch"
                                   SelectionChanged="OnConfigSelectionChanged">
                             <ComboBoxItem Content="标准" Tag="standard" />
-                            <ComboBoxItem Content="6Agent" Tag="campus_6agent" />
+                            <ComboBoxItem Content="Agents" Tag="agents" />
                             <ComboBoxItem Content="增量小模型" Tag="incremental_small" />
                         </ComboBox>
                     </ui:SettingsExpanderItem.Footer>
@@ -135,8 +138,8 @@
                     </ui:SettingsExpanderItem.Footer>
                 </ui:SettingsExpanderItem>
                 <ui:SettingsExpanderItem x:Name="MultiAgentExecutionModeItem"
-                                         Content="6Agent 执行顺序"
-                                         Description="仅对 6Agent 方案生效。">
+                                         Content="Agents 执行顺序"
+                                         Description="仅对 Agents 方案生效。">
                     <ui:SettingsExpanderItem.Footer>
                         <ComboBox x:Name="MultiAgentExecutionModeComboBox"
                                   Width="220"
@@ -203,7 +206,7 @@
                                  IsExpanded="False"
                                  Margin="0,4,0,0">
                 <ui:SettingsExpander.IconSource>
-                    <ui:FontIconSource Glyph="&#xE945;" FontFamily="Segoe MDL2 Assets" />
+                    <ui:FontIconSource Glyph="&#xE945;" />
                 </ui:SettingsExpander.IconSource>
                 <StackPanel Spacing="8" Margin="12,0,12,12">
                     <TextBox x:Name="DutyRuleBox"
@@ -356,7 +359,18 @@
                             </StackPanel>
                         </Border>
 
-                        <TextBlock x:Name="ScheduleSummaryText" Text="暂无排班数据。" Opacity="0.75" />
+                        <Grid ColumnDefinitions="*,Auto">
+                            <TextBlock x:Name="ScheduleSummaryText" Grid.Column="0"
+                                       Text="暂无排班数据。" Opacity="0.75"
+                                       VerticalAlignment="Center" />
+                            <Button x:Name="RollbackBtn" Grid.Column="1"
+                                    Click="OnRollbackClick"
+                                    IsVisible="False"
+                                    Margin="8,0,0,0"
+                                    ToolTip.Tip="将排班还原到上一次执行前的状态">
+                                <ci:IconText Glyph="&#xE7A7;" Text="滚回更改" />
+                            </Button>
+                        </Grid>
                     </StackPanel>
                 </TabItem>
 
@@ -393,6 +407,16 @@
                                     <TextBlock FontFamily="Segoe MDL2 Assets, Segoe Fluent Icons, Segoe UI Symbol"
                                                Text="&#xE8E5;" />
                                 </Button>
+                                <Button x:Name="SelectAllRosterBtn"
+                                        Content="全选"
+                                        Click="OnSelectAllRosterClick" />
+                                <Button x:Name="ClearRosterBtn"
+                                        Content="清空"
+                                        Click="OnClearRosterClick" />
+                                <Button x:Name="DeleteSelectedRosterBtn"
+                                        Content="删除选中"
+                                        IsEnabled="False"
+                                        Click="OnDeleteSelectedRosterClick" />
                             </StackPanel>
                         </Grid>
 
@@ -424,7 +448,8 @@
                                              SelectionChanged="OnRosterSelectionChanged">
                                         <ListBox.ItemTemplate>
                                             <DataTemplate>
-                                                <Border Padding="12,12" BorderBrush="#10000000" BorderThickness="0,0,0,1">
+                                                <Border Padding="12,12" BorderBrush="#10000000" BorderThickness="0,0,0,1"
+                                                        x:Name="RosterItemBorder">
                                                     <Grid ColumnDefinitions="64,2*,1.8*,84,84" ColumnSpacing="8">
                                                         <TextBlock Grid.Column="0" Text="{Binding Id}" VerticalAlignment="Center" Opacity="0.75" />
                                                         <TextBlock Grid.Column="1" Text="{Binding Name}" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
@@ -436,6 +461,15 @@
                                             </DataTemplate>
                                         </ListBox.ItemTemplate>
                                     </ListBox>
+                                    <!-- Insertion indicator line for drag feedback -->
+                                    <Border x:Name="DragInsertIndicator"
+                                            Grid.Row="1"
+                                            IsVisible="False"
+                                            Height="3"
+                                            Background="{DynamicResource AccentFillColorDefaultBrush}"
+                                            CornerRadius="1.5"
+                                            ZIndex="100"
+                                            Margin="8,0,8,0" />
                                     <StackPanel x:Name="RosterEmptyStatePanel"
                                                 Grid.Row="1"
                                                 HorizontalAlignment="Center"
@@ -496,7 +530,7 @@
                                  Description="按设定周期自动生成下一轮排班。"
                                  IsExpanded="False">
                 <ui:SettingsExpander.IconSource>
-                    <ui:FontIconSource Glyph="&#xE823;" FontFamily="Segoe MDL2 Assets" />
+                    <ui:FontIconSource Glyph="&#xE823;" />
                 </ui:SettingsExpander.IconSource>
                 <ui:SettingsExpanderItem Content="触发策略"
                                          Description="选择自动排班的执行频率。">
@@ -603,11 +637,11 @@
             </ui:SettingsExpander>
 
             <ui:SettingsExpander Header="值日提醒"
-                                 Description="在设定时间提醒当天值日安排。"
+                                 Description="在设定时间提醒当前值日安排。"
                                  IsExpanded="False"
                                  Margin="0,4,0,0">
                 <ui:SettingsExpander.IconSource>
-                    <ui:FontIconSource Glyph="&#xE7F4;" FontFamily="Segoe MDL2 Assets" />
+                    <ui:FontIconSource Glyph="&#xE7F4;" />
                 </ui:SettingsExpander.IconSource>
                 <ui:SettingsExpander.Footer>
                     <ToggleSwitch x:Name="DutyReminderEnabledSwitch"
@@ -616,21 +650,32 @@
                                   Unchecked="OnConfigToggleChanged" />
                 </ui:SettingsExpander.Footer>
                 <ui:SettingsExpanderItem Content="提醒时间"
-                                         Description="控制当天值日通知的提醒时刻。">
+                                         Description="控制当前值日安排通知的提醒时刻。">
                     <ui:SettingsExpanderItem.Footer>
                         <StackPanel Orientation="Horizontal" Spacing="8">
                             <ci:Field Suffix="时">
                                 <ComboBox x:Name="DutyReminderHourComboBox"
+                                          IsVisible="False"
                                           Width="88"
                                           HorizontalAlignment="Left"
                                           SelectionChanged="OnConfigSelectionChanged" />
                             </ci:Field>
                             <ci:Field Suffix="分">
                                 <ComboBox x:Name="DutyReminderMinuteComboBox"
+                                          IsVisible="False"
                                           Width="88"
                                           HorizontalAlignment="Left"
                                           SelectionChanged="OnConfigSelectionChanged" />
                             </ci:Field>
+                            <TextBox x:Name="DutyReminderTimesBox"
+                                     Width="320"
+                                     MinHeight="56"
+                                     AcceptsReturn="True"
+                                     TextWrapping="Wrap"
+                                     Watermark="例如：07:40, 12:10; 16:30"
+                                     TextChanged="OnConfigInputTextChanged"
+                                     LostFocus="OnConfigInputLostFocus"
+                                     KeyDown="OnConfigInputKeyDown" />
                         </StackPanel>
                     </ui:SettingsExpanderItem.Footer>
                 </ui:SettingsExpanderItem>
@@ -652,7 +697,7 @@
                     </ui:SettingsExpanderItem.Footer>
                 </ui:SettingsExpanderItem>
                 <ui:SettingsExpanderItem Content="测试通知"
-                                         Description="立刻预览当前提醒样式。">
+                                         Description="立刻预览当前值日提醒样式。">
                     <ui:SettingsExpanderItem.Footer>
                         <Button x:Name="TestNotificationButton" Click="OnTestNotificationClicked">
                             <ci:IconText Glyph="&#xE7F4;" Text="测试通知" />
@@ -670,7 +715,7 @@
                                  IsExpanded="False"
                                  Margin="0,0,0,12">
                 <ui:SettingsExpander.IconSource>
-                    <ui:FontIconSource Glyph="&#xE72E;" FontFamily="Segoe MDL2 Assets" />
+                    <ui:FontIconSource Glyph="&#xE72E;" />
                 </ui:SettingsExpander.IconSource>
                 <StackPanel Spacing="8" Margin="12,0,12,12">
                     <ui:SettingsExpanderItem Content="Token 模式"
@@ -698,10 +743,17 @@
                     <ui:SettingsExpanderItem Content="静态 Token"
                                              Description="仅在切换到静态模式时提交；已保存的静态 token 不会回填显示。">
                         <ui:SettingsExpanderItem.Footer>
+                            <StackPanel Orientation="Vertical" Spacing="4">
                             <TextBox x:Name="StaticAccessTokenBox"
                                      Width="320"
                                      PasswordChar="*"
-                                     Watermark="输入新的静态 token" />
+                                     Watermark="输入新的静态 token"
+                                     TextChanged="OnStaticAccessTokenTextChanged" />
+                            <TextBlock x:Name="StaticAccessTokenErrorText"
+                                       Foreground="Red"
+                                       FontSize="12"
+                                       IsVisible="False" />
+                            </StackPanel>
                         </ui:SettingsExpanderItem.Footer>
                     </ui:SettingsExpanderItem>
                 </StackPanel>
@@ -734,7 +786,7 @@
                                  Description="允许外部通过 MCP 导入值日相关数据。服务端口会同时影响 MCP、REST API 与页面访问。修改后建议重启应用。"
                                  IsExpanded="False">
                 <ui:SettingsExpander.IconSource>
-                    <ui:FontIconSource Glyph="&#xE943;" FontFamily="Segoe MDL2 Assets" />
+                    <ui:FontIconSource Glyph="&#xE943;" />
                 </ui:SettingsExpander.IconSource>
                 <StackPanel Spacing="8" Margin="12,0,12,12">
                     <ui:SettingsExpanderItem Content="启用 MCP"
@@ -762,11 +814,17 @@
                                              Content="固定服务端口"
                                              Description="仅在固定端口模式下生效。若端口冲突，后端会回退到随机端口并在本次运行禁用 MCP。">
                         <ui:SettingsExpanderItem.Footer>
+                            <StackPanel Orientation="Vertical" Spacing="4">
                             <TextBox x:Name="FixedServerPortBox"
                                      Width="220"
                                      HorizontalAlignment="Stretch"
                                      Watermark="输入 1024-65535"
-                                     TextChanged="OnConfigInputTextChanged" />
+                                     TextChanged="OnFixedServerPortTextChanged" />
+                            <TextBlock x:Name="FixedServerPortErrorText"
+                                       Foreground="Red"
+                                       FontSize="12"
+                                       IsVisible="False" />
+                            </StackPanel>
                         </ui:SettingsExpanderItem.Footer>
                     </ui:SettingsExpanderItem>
                     <ui:SettingsExpanderItem Content="当前状态"
@@ -799,7 +857,7 @@
                                  IsExpanded="False"
                                  Margin="0,4,0,0">
                 <ui:SettingsExpander.IconSource>
-                    <ui:FontIconSource Glyph="&#xE7BA;" FontFamily="Segoe MDL2 Assets" />
+                    <ui:FontIconSource Glyph="&#xE7BA;" />
                 </ui:SettingsExpander.IconSource>
                 <ui:SettingsExpander.Footer>
                     <ToggleSwitch x:Name="EnableWebDebugLayerSwitch"
@@ -808,6 +866,33 @@
                                   Unchecked="OnConfigToggleChanged" />
                 </ui:SettingsExpander.Footer>
             </ui:SettingsExpander>
+
+            <ui:SettingsExpander Header="插件数据"
+                                 Description="ClassIsland 卸载插件时不会自动删除该插件的配置目录；如果需要真正清空 Duty-Agent 的配置、名单和排班状态，请使用这里的重置操作。"
+                                 IsExpanded="False"
+                                 Margin="0,4,0,0">
+                <ui:SettingsExpander.IconSource>
+                    <ui:FontIconSource Glyph="&#xE74D;" />
+                </ui:SettingsExpander.IconSource>
+                <StackPanel Spacing="8" Margin="12,0,12,12">
+                    <ui:SettingsExpanderItem Content="当前数据目录"
+                                             Description="这里保存插件设置、后端配置、名单和排班状态；重装插件不会自动清空它。">
+                        <ui:SettingsExpanderItem.Footer>
+                            <TextBlock x:Name="PluginDataPathText"
+                                       Width="420"
+                                       Opacity="0.82"
+                                       TextWrapping="Wrap" />
+                        </ui:SettingsExpanderItem.Footer>
+                    </ui:SettingsExpanderItem>
+                </StackPanel>
+                <ui:SettingsExpander.Footer>
+                    <Button x:Name="ResetPluginDataBtn"
+                            Click="OnResetPluginDataClick"
+                            MinWidth="140"
+                            Content="重置插件数据" />
+                </ui:SettingsExpander.Footer>
+            </ui:SettingsExpander>
         </StackPanel>
     </ScrollViewer>
 </ci:SettingsPageBase>
+

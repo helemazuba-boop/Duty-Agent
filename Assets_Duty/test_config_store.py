@@ -95,7 +95,7 @@ class TestConfigStore(unittest.TestCase):
             patch_config(
                 context,
                 {
-                    "selected_plan_id": "campus-6agent",
+                    "selected_plan_id": "agents",
                     "plan_presets": [
                         {
                             "id": "standard",
@@ -109,9 +109,9 @@ class TestConfigStore(unittest.TestCase):
                             "multi_agent_execution_mode": "auto",
                         },
                         {
-                            "id": "campus-6agent",
-                            "name": "6Agent",
-                            "mode_id": "campus_6agent",
+                            "id": "agents",
+                            "name": "Agents",
+                            "mode_id": "agents",
                             "api_key": "",
                             "base_url": "http://127.0.0.1:11434/v1",
                             "model": "campus-model",
@@ -133,7 +133,7 @@ class TestConfigStore(unittest.TestCase):
             updated_config,
         )
 
-        self.assertEqual(updated_config["selected_plan_id"], "campus-6agent")
+        self.assertEqual(updated_config["selected_plan_id"], "agents")
         self.assertEqual(updated_config["orchestration_mode"], "multi_agent")
         self.assertEqual(updated_config["model_profile"], "campus_small")
         self.assertEqual(updated_config["multi_agent_execution_mode"], "serial")

@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any, Callable, Dict, Optional
 
 from engine import run_schedule
-from state_ops import Context, load_config, load_roster_entries, load_state, patch_config, save_roster_entries, save_schedule_entry_edit
+from state_ops import Context, has_previous_state, load_config, load_roster_entries, load_state, patch_config, remap_state_ids, rollback_state, save_roster_entries, save_schedule_entry_edit, save_state, _is_roster_order_changed
 
 
 class CommandService:
@@ -20,7 +20,6 @@ class CommandService:
             "Starting run_schedule.",
             trace_id=request_payload["trace_id"],
             request_source=request_payload["request_source"],
-            apply_mode=request_payload.get("apply_mode", ""),
             instruction_length=len(str(request_payload.get("instruction", "") or "")),
         )
 
@@ -122,7 +121,25 @@ class CommandService:
             trace_id=effective_trace_id,
             request_source=request_source,
         )
+
+        try:
+            old_roster = load_roster_entries(context.paths["roster"])
+        except (FileNotFoundError, ValueError):
+            old_roster = []
+
         result = save_roster_entries(context, roster_payload)
+
+        if old_roster and _is_roster_order_changed(old_roster, result):
+            old_state = load_state(context.paths["state"])
+            new_state = remap_state_ids(old_state, old_roster, result)
+            if new_state != old_state:
+                save_state(context, new_state)
+            self._runtime.logger.info(
+                "CommandService",
+                "Roster order changed, state IDs remapped.",
+                trace_id=effective_trace_id,
+            )
+
         self._runtime.logger.info(
             "CommandService",
             "Finished update_roster.",
@@ -148,7 +165,7 @@ class CommandService:
             ledger_mode=str((schedule_payload or {}).get("ledger_mode", "") or ""),
             target_date=str((schedule_payload or {}).get("target_date", "") or ""),
             source_date=str((schedule_payload or {}).get("source_date", "") or ""),
-            create_if_missing=bool((schedule_payload or {}).get("create_if_missing", False)),
+            confirm_overwrite=bool((schedule_payload or {}).get("confirm_overwrite", False)),
         )
         context = Context(
             self._runtime.data_dir,
@@ -171,6 +188,9 @@ class CommandService:
                 "roster": roster,
                 "state": result.get("state") or load_state(context.paths["state"]),
             },
+            "overwrite_target_date": result.get("overwrite_target_date"),
+            "existing_entry": result.get("existing_entry"),
+            "proposed_entry": result.get("proposed_entry"),
         }
         self._runtime.logger.info(
             "CommandService",
@@ -183,3 +203,39 @@ class CommandService:
             schedule_count=len(response["snapshot"]["state"].get("schedule_pool", [])),
         )
         return response
+
+    def rollback_schedule(
+        self,
+        trace_id: str | None = None,
+        request_source: str = "api",
+    ) -> Dict[str, Any]:
+        effective_trace_id = trace_id or self._runtime.new_trace_id()
+        context = Context(
+            self._runtime.data_dir,
+            logger=self._runtime.logger,
+            trace_id=effective_trace_id,
+            request_source=request_source,
+        )
+        if not has_previous_state(context.paths["state"]):
+            return {
+                "status": "error",
+                "message": "No previous state available to rollback.",
+            }
+        self._runtime.logger.info(
+            "CommandService",
+            "Starting rollback_schedule.",
+            trace_id=effective_trace_id,
+            request_source=request_source,
+        )
+        rolled_back = rollback_state(context.paths["state"])
+        self._runtime.logger.info(
+            "CommandService",
+            "Finished rollback_schedule.",
+            trace_id=effective_trace_id,
+            request_source=request_source,
+            schedule_count=len(rolled_back.get("schedule_pool", [])),
+        )
+        return {
+            "status": "success",
+            "state": rolled_back,
+        }

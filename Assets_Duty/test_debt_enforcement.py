@@ -18,7 +18,7 @@ class TestDebtQueueFallback(unittest.TestCase):
             new_debt_ids_from_llm=[3],
             normalized_schedule=normalized_ids,
         )
-        self.assertEqual(result, [2, 3])
+        self.assertEqual(result, {2: 1, 3: 1})
 
     def test_scheduled_ids_removed_from_debt_even_if_llm_reports_them(self):
         normalized_ids = [{"date": "2026-02-20", "area_ids": {"A": [1, 2]}}]
@@ -27,7 +27,7 @@ class TestDebtQueueFallback(unittest.TestCase):
             new_debt_ids_from_llm=[1, 4],
             normalized_schedule=normalized_ids,
         )
-        self.assertEqual(result, [4])
+        self.assertEqual(result, {1: 1, 4: 1})
 
     def test_non_dict_entries_do_not_crash_recovery(self):
         normalized_ids = ["bad", {"area_ids": {"A": [1]}}, 123]
@@ -36,11 +36,11 @@ class TestDebtQueueFallback(unittest.TestCase):
             new_debt_ids_from_llm=[],
             normalized_schedule=normalized_ids,
         )
-        self.assertEqual(result, [2])
+        self.assertEqual(result, {2: 1})
 
 
 class TestCreditSemantics(unittest.TestCase):
-    def test_llm_remaining_credit_is_source_of_truth(self):
+    def test_credit_delta_is_incremental(self):
         result = reconcile_credit_list(
             original_credit_list=[10, 11],
             new_credit_ids_from_llm=[11],
@@ -49,7 +49,7 @@ class TestCreditSemantics(unittest.TestCase):
             debt_list=[],
             has_llm_field=True,
         )
-        self.assertEqual(result, [11])
+        self.assertEqual(result, {10: 1, 11: 2})
 
 
 if __name__ == "__main__":

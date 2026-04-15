@@ -51,8 +51,8 @@ class TestScheduleEntryEditStore(unittest.TestCase):
                         }
                     ],
                     "next_run_note": "keep-note",
-                    "debt_list": [3],
-                    "credit_list": [1],
+                    "debt_counts": {3: 1},
+                    "credit_counts": {1: 1},
                     "last_pointer": 9,
                 },
             )
@@ -65,7 +65,7 @@ class TestScheduleEntryEditStore(unittest.TestCase):
                     "day": "周六",
                     "area_assignments": {"教室": ["Bob", "Carol"]},
                     "note": "updated",
-                    "create_if_missing": False,
+                    "confirm_overwrite": True,
                     "ledger_mode": "record",
                 },
             )
@@ -74,8 +74,8 @@ class TestScheduleEntryEditStore(unittest.TestCase):
         self.assertEqual(result["status"], "success")
         self.assertTrue(result["ledger_applied"])
         self.assertEqual(state["schedule_pool"][0]["area_assignments"], {"教室": ["Bob", "Carol"]})
-        self.assertEqual(state["debt_list"], [])
-        self.assertEqual(state["credit_list"], [])
+        self.assertEqual(state["debt_counts"], {})
+        self.assertEqual(state["credit_counts"], {})
         self.assertEqual(state["next_run_note"], "keep-note")
         self.assertEqual(state["last_pointer"], 9)
 
@@ -102,8 +102,8 @@ class TestScheduleEntryEditStore(unittest.TestCase):
                         }
                     ],
                     "next_run_note": "keep-note",
-                    "debt_list": [3],
-                    "credit_list": [1],
+                    "debt_counts": {3: 1},
+                    "credit_counts": {1: 1},
                     "last_pointer": 9,
                 },
             )
@@ -116,7 +116,7 @@ class TestScheduleEntryEditStore(unittest.TestCase):
                     "day": "周六",
                     "area_assignments": {"教室": ["Bob", "Carol"]},
                     "note": "updated",
-                    "create_if_missing": False,
+                    "confirm_overwrite": True,
                     "ledger_mode": "skip",
                 },
             )
@@ -125,12 +125,12 @@ class TestScheduleEntryEditStore(unittest.TestCase):
         self.assertEqual(result["status"], "success")
         self.assertFalse(result["ledger_applied"])
         self.assertEqual(state["schedule_pool"][0]["area_assignments"], {"教室": ["Bob", "Carol"]})
-        self.assertEqual(state["debt_list"], [3])
-        self.assertEqual(state["credit_list"], [1])
+        self.assertEqual(state["debt_counts"], {3: 1})
+        self.assertEqual(state["credit_counts"], {1: 1})
         self.assertEqual(state["next_run_note"], "keep-note")
         self.assertEqual(state["last_pointer"], 9)
 
-    def test_rejects_duplicate_target_date(self):
+    def test_duplicate_target_date_requires_confirmation(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             context = Context(Path(temp_dir))
             _seed_state(
@@ -141,25 +141,65 @@ class TestScheduleEntryEditStore(unittest.TestCase):
                         {"date": "2026-03-22", "day": "周日", "area_assignments": {}, "note": ""},
                     ],
                     "next_run_note": "",
-                    "debt_list": [],
-                    "credit_list": [],
+                    "debt_counts": {},
+                    "credit_counts": {},
                     "last_pointer": 0,
                 },
             )
 
-            with self.assertRaisesRegex(ValueError, "already exists"):
-                save_schedule_entry_edit(
-                    context,
-                    {
-                        "source_date": "2026-03-21",
-                        "target_date": "2026-03-22",
-                        "area_assignments": {},
-                        "create_if_missing": False,
-                        "ledger_mode": "record",
-                    },
-                )
+            result = save_schedule_entry_edit(
+                context,
+                {
+                    "source_date": "2026-03-21",
+                    "target_date": "2026-03-22",
+                    "area_assignments": {},
+                    "confirm_overwrite": False,
+                    "ledger_mode": "record",
+                },
+            )
+            state = load_state(context.paths["state"])
 
-    def test_rejects_missing_source_date_when_create_disabled(self):
+        self.assertEqual(result["status"], "confirmation_required")
+        self.assertEqual(result["overwrite_target_date"], "2026-03-22")
+        self.assertEqual(len(state["schedule_pool"]), 2)
+
+    def test_confirm_overwrite_replaces_existing_target_date(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            context = Context(Path(temp_dir))
+            _seed_state(
+                context,
+                {
+                    "schedule_pool": [
+                        {"date": "2026-03-21", "day": "鍛ㄥ叚", "area_assignments": {"鏁欏": ["Alice"]}, "note": "src"},
+                        {"date": "2026-03-22", "day": "鍛ㄦ棩", "area_assignments": {"鏁欏": ["Bob"]}, "note": "dst"},
+                    ],
+                    "next_run_note": "",
+                    "debt_counts": {},
+                    "credit_counts": {},
+                    "last_pointer": 0,
+                },
+            )
+
+            result = save_schedule_entry_edit(
+                context,
+                {
+                    "source_date": "2026-03-21",
+                    "target_date": "2026-03-22",
+                    "day": "鍛ㄦ棩",
+                    "area_assignments": {"鏁欏": ["Carol"]},
+                    "note": "updated",
+                    "confirm_overwrite": True,
+                    "ledger_mode": "skip",
+                },
+            )
+            state = load_state(context.paths["state"])
+
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(len(state["schedule_pool"]), 1)
+        self.assertEqual(state["schedule_pool"][0]["date"], "2026-03-22")
+        self.assertEqual(state["schedule_pool"][0]["area_assignments"], {"鏁欏": ["Carol"]})
+
+    def test_rejects_missing_source_date(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             context = Context(Path(temp_dir))
             _seed_state(
@@ -167,8 +207,8 @@ class TestScheduleEntryEditStore(unittest.TestCase):
                 {
                     "schedule_pool": [],
                     "next_run_note": "",
-                    "debt_list": [],
-                    "credit_list": [],
+                    "debt_counts": {},
+                    "credit_counts": {},
                     "last_pointer": 0,
                 },
             )
@@ -180,7 +220,7 @@ class TestScheduleEntryEditStore(unittest.TestCase):
                         "source_date": "2026-03-21",
                         "target_date": "2026-03-21",
                         "area_assignments": {},
-                        "create_if_missing": False,
+                        "confirm_overwrite": False,
                         "ledger_mode": "record",
                     },
                 )
@@ -200,8 +240,8 @@ class TestScheduleEntryEditStore(unittest.TestCase):
                 {
                     "schedule_pool": [],
                     "next_run_note": "",
-                    "debt_list": [2],
-                    "credit_list": [],
+                    "debt_counts": {2: 1},
+                    "credit_counts": {},
                     "last_pointer": 0,
                 },
             )
@@ -214,14 +254,14 @@ class TestScheduleEntryEditStore(unittest.TestCase):
                     "day": "周六",
                     "area_assignments": {"教室": ["Bob", "Carol"]},
                     "note": "",
-                    "create_if_missing": True,
+                    "confirm_overwrite": False,
                     "ledger_mode": "record",
                 },
             )
             state = load_state(context.paths["state"])
 
-        self.assertEqual(state["debt_list"], [2])
-        self.assertEqual(state["credit_list"], [])
+        self.assertEqual(state["debt_counts"], {2: 1})
+        self.assertEqual(state["credit_counts"], {})
 
 
 class TestScheduleEntryEditApi(unittest.TestCase):
@@ -244,8 +284,8 @@ class TestScheduleEntryEditApi(unittest.TestCase):
                         {"date": "2026-03-21", "day": "周六", "area_assignments": {"教室": ["Alice"]}, "note": ""}
                     ],
                     "next_run_note": "",
-                    "debt_list": [],
-                    "credit_list": [],
+                    "debt_counts": {},
+                    "credit_counts": {},
                     "last_pointer": 0,
                 },
             )
@@ -260,7 +300,7 @@ class TestScheduleEntryEditApi(unittest.TestCase):
                             "day": "周六",
                             "area_assignments": {"教室": ["Bob"]},
                             "note": "edited",
-                            "create_if_missing": False,
+                            "confirm_overwrite": True,
                             "ledger_mode": "skip",
                         },
                         headers=_auth_headers(runtime),
@@ -274,6 +314,54 @@ class TestScheduleEntryEditApi(unittest.TestCase):
         self.assertEqual(payload["ledger_mode"], "skip")
         self.assertIn("snapshot", payload)
         self.assertEqual(payload["snapshot"]["state"]["schedule_pool"][0]["area_assignments"], {"教室": ["Bob"]})
+
+    def test_post_schedule_entry_requires_confirmation_by_default(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            original_runtime = getattr(app.state, "runtime", None)
+            runtime = create_runtime(Path(temp_dir))
+            context = Context(Path(temp_dir))
+            _seed_roster(
+                context,
+                [
+                    {"id": 1, "name": "Alice", "active": True},
+                    {"id": 2, "name": "Bob", "active": True},
+                ],
+            )
+            _seed_state(
+                context,
+                {
+                    "schedule_pool": [
+                        {"date": "2026-03-21", "day": "鍛ㄥ叚", "area_assignments": {"鏁欏": ["Alice"]}, "note": ""}
+                    ],
+                    "next_run_note": "",
+                    "debt_counts": {},
+                    "credit_counts": {},
+                    "last_pointer": 0,
+                },
+            )
+            app.state.runtime = runtime
+            try:
+                with TestClient(app) as client:
+                    response = client.post(
+                        "/api/v1/duty/schedule-entry",
+                        json={
+                            "source_date": "2026-03-21",
+                            "target_date": "2026-03-21",
+                            "day": "鍛ㄥ叚",
+                            "area_assignments": {"鏁欏": ["Bob"]},
+                            "note": "edited",
+                            "ledger_mode": "skip",
+                        },
+                        headers=_auth_headers(runtime),
+                    )
+            finally:
+                app.state.runtime = original_runtime
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["status"], "confirmation_required")
+        self.assertEqual(payload["overwrite_target_date"], "2026-03-21")
+        self.assertEqual(payload["snapshot"]["state"]["schedule_pool"][0]["area_assignments"], {"鏁欏": ["Alice"]})
 
     def test_duty_live_supports_schedule_entry_save_while_run_is_active(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -294,8 +382,8 @@ class TestScheduleEntryEditApi(unittest.TestCase):
                         {"date": "2026-03-21", "day": "周六", "area_assignments": {"教室": ["Alice"]}, "note": ""}
                     ],
                     "next_run_note": "",
-                    "debt_list": [],
-                    "credit_list": [],
+                    "debt_counts": {},
+                    "credit_counts": {},
                     "last_pointer": 0,
                 },
             )
@@ -317,7 +405,6 @@ class TestScheduleEntryEditApi(unittest.TestCase):
                                     "type": "schedule_run",
                                     "client_change_id": "run-1",
                                     "instruction": "run",
-                                    "apply_mode": "append",
                                 }
                             )
                             websocket.send_json(
@@ -329,7 +416,7 @@ class TestScheduleEntryEditApi(unittest.TestCase):
                                     "day": "周六",
                                     "area_assignments": {"教室": ["Bob"]},
                                     "note": "edited",
-                                    "create_if_missing": False,
+                                    "confirm_overwrite": True,
                                     "ledger_mode": "skip",
                                 }
                             )

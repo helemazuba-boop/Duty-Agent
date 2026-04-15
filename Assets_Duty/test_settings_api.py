@@ -64,7 +64,6 @@ class TestDutyLiveApi(unittest.TestCase):
                                     "client_change_id": "run-1",
                                     "request_source": "test_suite",
                                     "instruction": "run",
-                                    "apply_mode": "append",
                                 }
                             )
 

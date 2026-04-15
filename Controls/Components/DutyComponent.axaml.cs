@@ -1,4 +1,4 @@
-﻿using Avalonia.Controls;
+using Avalonia.Controls;
 using Avalonia.Interactivity;
 using Avalonia.Media;
 using Avalonia.Threading;
@@ -22,9 +22,9 @@ public partial class DutyComponent : ComponentBase<DutyComponentSettings>
 
         _timer = new DispatcherTimer
         {
-            Interval = TimeSpan.FromSeconds(60)
+            Interval = TimeSpan.FromSeconds(Settings?.RefreshIntervalSeconds ?? 60)
         };
-        _timer.Tick += (_, _) => UpdateState();
+        _timer.Tick += (_, _) => _ = UpdateStateAsync();
     }
 
     protected override void OnLoaded(RoutedEventArgs e)
@@ -32,7 +32,7 @@ public partial class DutyComponent : ComponentBase<DutyComponentSettings>
         base.OnLoaded(e);
         _service.ScheduleUpdated += OnScheduleUpdated;
         _timer.Start();
-        UpdateState();
+        _ = UpdateStateAsync();
     }
 
     protected override void OnUnloaded(RoutedEventArgs e)
@@ -44,44 +44,43 @@ public partial class DutyComponent : ComponentBase<DutyComponentSettings>
 
     private void OnScheduleUpdated(object? sender, EventArgs e)
     {
-        UpdateState();
+        Dispatcher.UIThread.Post(() => _ = UpdateStateAsync());
     }
 
-    private void UpdateState()
+    private async Task UpdateStateAsync()
     {
         try
         {
-            var state = _service.LoadState();
-            if (state.SchedulePool.Count == 0)
+            var data = await Task.Run(() =>
             {
-                ShowSingleRow("\u6682\u65E0\u6392\u73ED\u6570\u636E", isError: true);
+                var state = _service.LoadState();
+                if (state.SchedulePool.Count == 0) return (HasData: false, Item: (object?)null, Assignments: (Dictionary<string, List<string>>?)null, Error: "\u6682\u65E0\u6392\u73ED\u6570\u636E");
+                var item = _service.GetCurrentScheduleItem();
+                if (item == null) return (HasData: false, Item: (object?)null, Assignments: (Dictionary<string, List<string>>?)null, Error: "\u8BE5\u65E5\u6682\u65E0\u503C\u65E5\u5B89\u6392");
+                var assignments = _service.GetAreaAssignments(item);
+                return (HasData: true, Item: (object?)item, Assignments: (Dictionary<string, List<string>>?)assignments, Error: (string?)null);
+            });
+
+            if (!data.HasData)
+            {
+                ShowSingleRow(data.Error!, isError: true);
                 return;
             }
 
-            var item = _service.GetCurrentScheduleItem();
-            if (item == null)
+            var areaOrder = data.Assignments!.Keys.ToList();
+            if (areaOrder.Count == 0)
             {
-                ShowSingleRow("\u8BE5\u65E5\u6682\u65E0\u503C\u65E5\u5B89\u6392", isError: true);
+                ShowSingleRow("\u8BE5\u65E5\u6682\u65E0\u503C\u65E5\u5B89\u6392");
                 return;
-            }
-
-            var areaOrder = _service.GetAreaNames();
-            var assignments = _service.GetAreaAssignments(item);
-            foreach (var area in assignments.Keys)
-            {
-                if (!areaOrder.Contains(area, StringComparer.Ordinal))
-                {
-                    areaOrder.Add(area);
-                }
             }
 
             if (Settings?.UseDualRowDisplay == true)
             {
-                RenderDualRow(areaOrder, assignments);
+                RenderDualRow(areaOrder, data.Assignments!);
             }
             else
             {
-                RenderSingleRow(areaOrder, assignments);
+                RenderSingleRow(areaOrder, data.Assignments!);
             }
         }
         catch
@@ -106,7 +105,7 @@ public partial class DutyComponent : ComponentBase<DutyComponentSettings>
             : "\uFF1B";
 
         DutyTextRow1.Text = string.Join(separator, segments);
-        DutyTextRow1.ClearValue(TextBlock.ForegroundProperty);
+        ApplyTextStyle(DutyTextRow1);
         DutyTextRow2.IsVisible = false;
     }
 
@@ -141,10 +140,10 @@ public partial class DutyComponent : ComponentBase<DutyComponentSettings>
         var row2Entries = allEntries.Skip(mid).ToList();
 
         DutyTextRow1.Text = FormatRowEntries(row1Entries);
-        DutyTextRow1.ClearValue(TextBlock.ForegroundProperty);
+        ApplyTextStyle(DutyTextRow1);
 
         DutyTextRow2.Text = FormatRowEntries(row2Entries);
-        DutyTextRow2.ClearValue(TextBlock.ForegroundProperty);
+        ApplyTextStyle(DutyTextRow2);
         DutyTextRow2.IsVisible = true;
     }
 
@@ -189,8 +188,26 @@ public partial class DutyComponent : ComponentBase<DutyComponentSettings>
         }
         else
         {
-            DutyTextRow1.ClearValue(TextBlock.ForegroundProperty);
+            ApplyTextStyle(DutyTextRow1);
         }
         DutyTextRow2.IsVisible = false;
+    }
+
+    private void ApplyTextStyle(TextBlock textBlock)
+    {
+        if (Settings == null) return;
+        textBlock.FontSize = Settings.FontSize;
+        if (!string.IsNullOrWhiteSpace(Settings.FontColor))
+        {
+            try
+            {
+                textBlock.Foreground = new SolidColorBrush(
+                    Avalonia.Media.Color.Parse(Settings.FontColor));
+            }
+            catch
+            {
+                textBlock.Foreground = Brushes.Black;
+            }
+        }
     }
 }

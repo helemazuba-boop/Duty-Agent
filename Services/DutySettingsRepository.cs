@@ -14,6 +14,7 @@ public interface IDutySettingsRepository
     DutyLocalSettingsDocument SavePatch(DutySettingsPatchRequest patch);
     DutyHostAccessSecurityMutationResult SaveHostAccessSecurity(DutyHostAccessSecuritySaveRequest request);
     DutyConfig ReplaceFromProjectedConfig(DutyConfig projectedConfig);
+    DutySettingsDocument ResetPersistedData();
 }
 
 public sealed class DutySettingsChangedEventArgs : EventArgs
@@ -306,6 +307,77 @@ public sealed partial class DutySettingsRepository : IDutySettingsRepository
         return projectedResult;
     }
 
+    public DutySettingsDocument ResetPersistedData()
+    {
+        DutySettingsChangedEventArgs? changedArgs;
+        DutySettingsDocument document;
+
+        lock (_gate)
+        {
+            var nextSettings = CreateDefaultLocalSettings();
+            var nextRuntimeState = new DutyHostRuntimeState();
+
+            _settingsTrace.Warn("settings_reset_started", new
+            {
+                settings_path = _pluginPaths.SettingsPath,
+                host_state_path = _pluginPaths.HostStatePath,
+                backend_config_path = _pluginPaths.ConfigPath,
+                state_path = _pluginPaths.StatePath,
+                roster_path = _pluginPaths.RosterPath
+            });
+
+            WriteJsonAtomicallyTracked(_pluginPaths.SettingsPath, nextSettings, "settings_json_reset", new
+            {
+                version = nextSettings.Version
+            });
+            WriteJsonAtomicallyTracked(_pluginPaths.HostStatePath, nextRuntimeState, "host_state_json_reset", null);
+            WriteCompatibilityHostConfig(nextSettings, nextRuntimeState);
+
+            TryDeleteFile(_pluginPaths.ConfigPath);
+            TryDeleteFile(_pluginPaths.ConfigLockPath);
+            TryDeleteFile(_pluginPaths.HostConfigLockPath);
+            TryDeleteFile(_pluginPaths.SettingsLockPath);
+            TryDeleteFile(_pluginPaths.HostStateLockPath);
+            TryDeleteFile(_pluginPaths.StatePath);
+            TryDeleteFile(_pluginPaths.StateLockPath);
+            TryDeleteFile(_pluginPaths.RosterPath);
+            TryDeleteFile(_pluginPaths.RosterLockPath);
+            TryDeleteFile(_pluginPaths.SettingsDraftPath);
+            TryDeleteFile(_pluginPaths.SettingsDraftLockPath);
+            TryDeleteFile(_pluginPaths.ProcessSnapshotPath);
+            TryDeleteFile(_pluginPaths.ProcessSnapshotLockPath);
+            TryDeleteFile(_pluginPaths.LegacyConfigPath);
+            TryDeleteFile(_pluginPaths.LegacyConfigLockPath);
+            TryDeleteFile(_pluginPaths.LegacyStatePath);
+            TryDeleteFile(_pluginPaths.LegacyStateLockPath);
+            TryDeleteFile(_pluginPaths.LegacyRosterPath);
+            TryDeleteFile(_pluginPaths.LegacyRosterLockPath);
+            TryDeleteFile(_pluginPaths.LegacyProcessSnapshotPath);
+            TryDeleteFile(_pluginPaths.LegacyProcessSnapshotLockPath);
+
+            document = CreateSettingsDocument(nextSettings);
+            changedArgs = CreateChangedEventArgs(
+                nextSettings,
+                nextRuntimeState,
+                hostSettingsChanged: true,
+                backendSettingsChanged: true,
+                runtimeStateChanged: true);
+
+            _settingsTrace.Warn("settings_reset_completed", new
+            {
+                settings_file = _settingsTrace.CaptureFileSnapshot(_pluginPaths.SettingsPath),
+                host_state_file = _settingsTrace.CaptureFileSnapshot(_pluginPaths.HostStatePath),
+                host_config_file = _settingsTrace.CaptureFileSnapshot(_pluginPaths.HostConfigPath),
+                backend_config_exists = File.Exists(_pluginPaths.ConfigPath),
+                state_exists = File.Exists(_pluginPaths.StatePath),
+                roster_exists = File.Exists(_pluginPaths.RosterPath)
+            });
+        }
+
+        RaiseSettingsChanged(changedArgs);
+        return document;
+    }
+
     private void EnsureInitialized()
     {
         lock (_gate)
@@ -421,7 +493,7 @@ public sealed partial class DutySettingsRepository : IDutySettingsRepository
         settings.Host.AutoRunTime = NormalizeTime(hostPatch.AutoRunTime, settings.Host.AutoRunTime);
         settings.Host.AutoRunTriggerNotificationEnabled = hostPatch.AutoRunTriggerNotificationEnabled;
         settings.Host.DutyReminderEnabled = hostPatch.DutyReminderEnabled;
-        settings.Host.DutyReminderTimes = [NormalizeReminderTime((hostPatch.DutyReminderTimes ?? []).FirstOrDefault())];
+        settings.Host.DutyReminderTimes = NormalizeReminderTimes(hostPatch.DutyReminderTimes);
         settings.Host.ServerPortMode = DutyServerPortModes.Normalize(hostPatch.ServerPortMode);
         settings.Host.FixedServerPort = NormalizeServicePort(hostPatch.FixedServerPort);
         settings.Host.EnableMcp = hostPatch.EnableMcp;
@@ -469,7 +541,7 @@ public sealed partial class DutySettingsRepository : IDutySettingsRepository
 
         if (patch.DutyReminderTimes != null)
         {
-            host.DutyReminderTimes = [NormalizeReminderTime(patch.DutyReminderTimes.FirstOrDefault())];
+            host.DutyReminderTimes = NormalizeReminderTimes(patch.DutyReminderTimes);
         }
 
         if (patch.ServerPortMode != null)
@@ -599,7 +671,7 @@ public sealed partial class DutySettingsRepository : IDutySettingsRepository
             preset.Model = string.IsNullOrWhiteSpace(preset.Model) ? DefaultModel : preset.Model.Trim();
             preset.ModelProfile = NormalizeModelProfile(preset.ModelProfile);
             preset.ProviderHint = (preset.ProviderHint ?? string.Empty).Trim();
-            preset.MultiAgentExecutionMode = string.Equals(preset.ModeId, DutyBackendModeIds.Campus6Agent, StringComparison.Ordinal)
+            preset.MultiAgentExecutionMode = string.Equals(preset.ModeId, DutyBackendModeIds.Agents, StringComparison.Ordinal)
                 ? NormalizeMultiAgentExecutionMode(preset.MultiAgentExecutionMode)
                 : "auto";
         }
@@ -853,9 +925,9 @@ public sealed partial class DutySettingsRepository : IDutySettingsRepository
             },
             new DutyPlanPreset
             {
-                Id = DutyBackendModeIds.Campus6Agent,
-                Name = "6Agent",
-                ModeId = DutyBackendModeIds.Campus6Agent,
+                Id = DutyBackendModeIds.Agents,
+                Name = "Agents",
+                ModeId = DutyBackendModeIds.Agents,
                 BaseUrl = DefaultBaseUrl,
                 Model = DefaultModel,
                 ModelProfile = "auto",
@@ -969,10 +1041,8 @@ public sealed partial class DutySettingsRepository : IDutySettingsRepository
     {
         return (modeId ?? DutyBackendModeIds.Standard).Trim().ToLowerInvariant() switch
         {
-            DutyBackendModeIds.Campus6Agent => DutyBackendModeIds.Campus6Agent,
-            "campus6agent" => DutyBackendModeIds.Campus6Agent,
-            "6agent" => DutyBackendModeIds.Campus6Agent,
-            "multi_agent" => DutyBackendModeIds.Campus6Agent,
+            DutyBackendModeIds.Agents => DutyBackendModeIds.Agents,
+            "multi_agent" => DutyBackendModeIds.Agents,
             DutyBackendModeIds.IncrementalSmall => DutyBackendModeIds.IncrementalSmall,
             "incremental" => DutyBackendModeIds.IncrementalSmall,
             "small_incremental" => DutyBackendModeIds.IncrementalSmall,
@@ -1018,11 +1088,35 @@ public sealed partial class DutySettingsRepository : IDutySettingsRepository
 
     private static List<string> NormalizeReminderTimes(IEnumerable<string>? values)
     {
-        var normalized = (values ?? [])
-            .Select(NormalizeReminderTime)
-            .Distinct(StringComparer.Ordinal)
-            .OrderBy(x => x, StringComparer.Ordinal)
-            .ToList();
+        var normalized = new List<string>();
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        if (values != null)
+        {
+            foreach (var raw in values)
+            {
+                var text = raw ?? string.Empty;
+                foreach (var token in text.Split([',', ';', '\r', '\n'], StringSplitOptions.RemoveEmptyEntries))
+                {
+                    if (!TimeSpan.TryParse(token.Trim(), out var parsed))
+                    {
+                        continue;
+                    }
+
+                    if (parsed < TimeSpan.Zero || parsed >= TimeSpan.FromDays(1))
+                    {
+                        continue;
+                    }
+
+                    var time = $"{parsed.Hours:D2}:{parsed.Minutes:D2}";
+                    if (seen.Add(time))
+                    {
+                        normalized.Add(time);
+                    }
+                }
+            }
+        }
+
+        normalized.Sort(StringComparer.Ordinal);
         return normalized.Count == 0 ? [DefaultDutyReminderTime] : normalized;
     }
 

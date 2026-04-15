@@ -65,10 +65,8 @@ internal sealed class DutyMainSettingsBackendModule
     {
         return (modeId ?? DutyBackendModeIds.Standard).Trim().ToLowerInvariant() switch
         {
-            DutyBackendModeIds.Campus6Agent => DutyBackendModeIds.Campus6Agent,
-            "campus6agent" => DutyBackendModeIds.Campus6Agent,
-            "6agent" => DutyBackendModeIds.Campus6Agent,
-            "multi_agent" => DutyBackendModeIds.Campus6Agent,
+            DutyBackendModeIds.Agents => DutyBackendModeIds.Agents,
+            "multi_agent" => DutyBackendModeIds.Agents,
             DutyBackendModeIds.IncrementalSmall => DutyBackendModeIds.IncrementalSmall,
             "incremental" => DutyBackendModeIds.IncrementalSmall,
             "small_incremental" => DutyBackendModeIds.IncrementalSmall,
@@ -232,7 +230,7 @@ internal sealed class DutyMainSettingsBackendModule
                 Model = resolvedModel.Length == 0 ? DefaultModel : resolvedModel,
                 ModelProfile = DutyScheduleOrchestrator.NormalizeModelProfile(plan.ModelProfile),
                 ProviderHint = (plan.ProviderHint ?? string.Empty).Trim(),
-                MultiAgentExecutionMode = string.Equals(modeId, DutyBackendModeIds.Campus6Agent, StringComparison.Ordinal)
+                MultiAgentExecutionMode = string.Equals(modeId, DutyBackendModeIds.Agents, StringComparison.Ordinal)
                     ? DutyScheduleOrchestrator.NormalizeMultiAgentExecutionMode(plan.MultiAgentExecutionMode)
                     : "auto"
             });
@@ -247,7 +245,7 @@ internal sealed class DutyMainSettingsBackendModule
         return
         [
             CreateDefaultPlanPreset(DutyBackendModeIds.Standard),
-            CreateDefaultPlanPreset(DutyBackendModeIds.Campus6Agent),
+            CreateDefaultPlanPreset(DutyBackendModeIds.Agents),
             CreateDefaultPlanPreset(DutyBackendModeIds.IncrementalSmall)
         ];
     }
@@ -346,7 +344,7 @@ internal sealed class DutyMainSettingsBackendModule
     {
         return modeId switch
         {
-            DutyBackendModeIds.Campus6Agent => "6Agent",
+            DutyBackendModeIds.Agents => "Agents",
             DutyBackendModeIds.IncrementalSmall => "\u589e\u91cf\u5c0f\u6a21\u578b",
             _ => "\u6807\u51c6"
         };
