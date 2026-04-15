@@ -1,0 +1,8 @@
+id: duty-agent-bridge
+name: Duty-Agent 桥接
+description: 与独立 Duty-Agent 软件联动，在 ClassIsland 中显示通知和组件
+entranceAssembly: "DutyAgentBridge.dll"
+url: https://github.com/helemazuba-boop/Duty-Agent
+version: 0.50.0
+apiVersion: 2.0.0.0
+author: helemazuba-boop

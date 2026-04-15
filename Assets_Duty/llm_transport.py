@@ -21,6 +21,41 @@ LLM_MAX_RETRIES = 2
 LLM_RETRY_BACKOFF_SECONDS = 2
 LLM_STREAM_ENABLED_DEFAULT = True
 LLM_STREAM_PROGRESS_MIN_INTERVAL_SECONDS = 0.2
+
+# Module-level storage for streaming tool-call extraction.
+# qwen3.5 emits tool_calls as non-SSE JSON between SSE chunks.
+_stream_final_json: Optional[dict] = None
+
+
+def get_and_clear_stream_final_json() -> Optional[dict]:
+    """Return the stored final JSON from the most recent streaming response, then clear it."""
+    global _stream_final_json
+    obj = _stream_final_json
+    _stream_final_json = None
+    return obj
+
+
+def _extract_tool_calls_from_obj(obj: dict) -> List[dict]:
+    """Pull fill_schedule tool calls from a response dict."""
+    results: List[dict] = []
+    tc_list: List[dict] = []
+    for choice in obj.get("choices", []):
+        tc_list.extend(choice.get("message", {}).get("tool_calls", []))
+    tc_list.extend(obj.get("tool_calls", []))
+    for tc in tc_list:
+        fn = tc.get("function", tc)
+        name = str(fn.get("name", "")).strip()
+        if name == "fill_schedule":
+            raw_args = fn.get("arguments", "{}")
+            if isinstance(raw_args, str):
+                try:
+                    args = json.loads(raw_args)
+                except Exception:
+                    args = {"schedule": raw_args}
+            else:
+                args = raw_args or {}
+            results.append({"name": name, "arguments": args})
+    return results
 _REASONING_BLOCK_PATTERN = re.compile(
     r"<(?P<tag>think|thinking|reasoning|analysis)\b[^>]*>.*?</(?P=tag)>",
     re.DOTALL | re.IGNORECASE,
@@ -176,6 +211,13 @@ def request_llm_non_stream(url: str, payload: dict, api_key: str, stop_event: Op
     finally:
         response.close()
     parsed = json.loads(raw)
+    # Extract tool_calls if present (qwen3.5 may not put them in message.content)
+    tc = _extract_tool_calls_from_obj(parsed)
+    if tc:
+        return json.dumps({"tool_calls": [
+            {"function": {"name": t["name"], "arguments": json.dumps(t["arguments"])}}
+            for t in tc
+        ]})
     content = extract_text_from_non_stream_response(parsed)
     if not content.strip():
         raise RuntimeError("LLM returned empty content.")
@@ -192,6 +234,8 @@ def request_llm_stream(url: str, payload: dict, api_key: str, progress_callback=
     raw_lines: List[str] = []
     saw_sse_data = False
     last_progress_emit_at = time.time()
+    global _stream_final_json
+    _stream_final_json = None
 
     if progress_callback:
         progress_callback("stream_start", "Streaming response opened.", "")
@@ -206,7 +250,27 @@ def request_llm_stream(url: str, payload: dict, api_key: str, progress_callback=
             decoded = raw_line.decode("utf-8", errors="ignore")
             raw_lines.append(decoded)
             line = decoded.strip()
-            if not line or line.startswith(":") or not line.startswith("data:"):
+
+            # Handle non-SSE JSON lines (qwen3.5 emits tool_calls this way between chunks)
+            if line and not line.startswith(":") and not line.startswith("data:"):
+                if line != "[DONE]":
+                    try:
+                        event_obj = json.loads(line)
+                        _stream_final_json = event_obj
+                        # Detect tool_calls in the non-SSE message
+                        msg = event_obj.get("choices", [{}])[0].get("message", {})
+                        if msg.get("tool_calls"):
+                            chunks.append("[TOOL_CALL]")
+                            saw_sse_data = True  # treat as valid response
+                        text = extract_text_from_stream_event(event_obj)
+                        if text:
+                            chunks.append(text)
+                            buffered_for_progress.append(text)
+                    except Exception:
+                        pass
+                continue
+
+            if not line.startswith("data:"):
                 continue
 
             saw_sse_data = True
@@ -256,7 +320,7 @@ def request_llm_stream(url: str, payload: dict, api_key: str, progress_callback=
     return content
 
 
-def _build_llm_target(config: dict, messages: List[dict], transport_overrides: Optional[dict] = None) -> Tuple[str, dict, str]:
+def _build_llm_target(config: dict, messages: List[dict], transport_overrides: Optional[dict] = None, tools: Optional[List[dict]] = None) -> Tuple[str, dict, str]:
     base_url = str(config["base_url"]).rstrip("/")
     if base_url.lower().endswith("/chat/completions"):
         url = base_url
@@ -282,8 +346,18 @@ def call_llm_raw(
     progress_callback=None,
     stop_event=None,
     transport_overrides: Optional[dict] = None,
+    tools: Optional[List[dict]] = None,
 ) -> str:
-    url, payload, api_key = _build_llm_target(config, messages, transport_overrides)
+    url, payload, api_key = _build_llm_target(config, messages, transport_overrides, tools)
+    if tools:
+        payload["tools"] = list(tools)
+        # tool_choice: auto is the default and preferred for tool use
+        payload["tool_choice"] = {"type": "function", "function": {"name": "fill_schedule"}}
+
+    # Disable thinking for Ollama to prevent qwen3.5 from hiding tool_calls in <think> blocks
+    base_url = str(config.get("base_url", "")).lower()
+    if "ollama" in base_url:
+        payload["think"] = False
 
     stream_enabled = _parse_bool(
         config.get("llm_stream", config.get("stream", LLM_STREAM_ENABLED_DEFAULT)),
@@ -303,11 +377,34 @@ def call_llm_raw(
                     "Streaming not supported by endpoint. Falling back to non-stream mode.",
                     "",
                 )
-    if not content:
+
+    # Streaming returned empty content with tools -> fall back to non-stream
+    # (qwen3.5 does not properly stream tool_calls; non-stream is reliable)
+    if not content.strip() and tools:
+        if progress_callback:
+            progress_callback(
+                "stream_fallback",
+                "Streaming returned empty content with tools. Falling back to non-stream mode.",
+                "",
+            )
         content = execute_with_retries(
             lambda: request_llm_non_stream(url, payload, api_key, stop_event),
             mode="non_stream",
         )
+
+    # Handle streaming tool_calls: when content is the [TOOL_CALL] marker,
+    # extract the actual tool_calls from the stored streaming JSON.
+    if content == "[TOOL_CALL]":
+        final_json = get_and_clear_stream_final_json()
+        if final_json:
+            tc = _extract_tool_calls_from_obj(final_json)
+            if tc:
+                return json.dumps({"tool_calls": [
+                    {"function": {"name": t["name"], "arguments": json.dumps(t["arguments"])}}
+                    for t in tc
+                ]})
+        return "[TOOL_CALL]"
+
     return content
 
 

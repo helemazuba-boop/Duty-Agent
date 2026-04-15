@@ -4,9 +4,10 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Tuple
 
 SUPPORTED_MODEL_PROFILES = ("auto", "cloud", "campus_small", "edge", "custom")
-SUPPORTED_ORCHESTRATION_MODES = ("auto", "single_pass", "multi_agent")
+SUPPORTED_ORCHESTRATION_MODES = ("auto", "single_pass", "multi_agent", "tool_loop", "orchestrator")
 SUPPORTED_MULTI_AGENT_EXECUTION_MODES = ("auto", "parallel", "serial")
 SUPPORTED_SINGLE_PASS_STRATEGIES = ("auto", "cloud_standard", "edge_tuned", "edge_generic", "incremental_thinking")
+SUPPORTED_TOOL_LOOP_TRIGGERS = ("ini_tool", "force_tool_loop", "never_tool_loop")
 
 MODEL_PROFILE_ALIASES = {
     "auto": "auto",
@@ -29,6 +30,12 @@ ORCHESTRATION_ALIASES = {
     "multi_agent": "multi_agent",
     "multi-agent": "multi_agent",
     "staged": "multi_agent",
+    "tool_loop": "tool_loop",
+    "tool-loop": "tool_loop",
+    "ini_tool": "tool_loop",
+    "tool": "tool_loop",
+    "orchestrator": "orchestrator",
+    "agent": "orchestrator",
 }
 
 MULTI_AGENT_EXECUTION_ALIASES = {
@@ -166,6 +173,15 @@ def resolve_execution_profile(input_data: Dict[str, Any], config: Dict[str, Any]
     )
 
 
+def _resolve_tool_loop_trigger(config: Dict[str, Any]) -> str:
+    raw = str(config.get("tool_loop_mode") or config.get("tool_loop") or "auto").strip().lower()
+    if raw in {"force", "forced", "always"}:
+        return "force_tool_loop"
+    if raw in {"never", "disabled", "no"}:
+        return "never_tool_loop"
+    return "ini_tool"
+
+
 def build_execution_plan(profile: ExecutionProfile) -> ExecutionPlan:
     tasks = (
         AgentTaskSpec("agent1_anchor", "stage0_anchor", "anchor"),
@@ -186,6 +202,14 @@ def build_execution_plan(profile: ExecutionProfile) -> ExecutionPlan:
         runtime_mode = "multi_agent_serial" if profile.multi_agent_execution_mode == "serial" else "multi_agent_parallel"
         prompt_pack_strategy = "staged_serial" if runtime_mode == "multi_agent_serial" else "staged_parallel"
         notes.append("Multi-agent executor selected explicitly.")
+    elif profile.orchestration_mode == "tool_loop":
+        runtime_mode = "tool_loop"
+        prompt_pack_strategy = "ini_tool"
+        notes.append("Tool-loop executor selected (INI-based AI polling loop).")
+    elif profile.orchestration_mode == "orchestrator":
+        runtime_mode = "orchestrator"
+        prompt_pack_strategy = "orchestrator"
+        notes.append("Orchestrator executor selected (LLM orchestrator + TimeWindow agents).")
     else:
         if profile.model_profile == "campus_small":
             runtime_mode = "multi_agent_serial" if profile.multi_agent_execution_mode == "serial" else "multi_agent_parallel"
@@ -196,6 +220,8 @@ def build_execution_plan(profile: ExecutionProfile) -> ExecutionPlan:
 
     if runtime_mode.startswith("multi_agent"):
         notes.append("Agents DAG execution enabled.")
+    elif runtime_mode == "tool_loop":
+        notes.append("INI tool-loop AI polling loop enabled.")
     else:
         notes.append(f"Single-pass strategy resolved to {profile.single_pass_strategy}.")
 

@@ -80,17 +80,13 @@ def build_prompt_messages(
     single_pass_strategy: str = "cloud_standard",
     last_pointer: int = 0,
 ) -> List[Dict[str, str]]:
-    del area_names
-    del area_per_day_counts
-    del previous_context
-
     inactive_ids = [person_id for person_id, active in id_to_active.items() if active == 0]
     compact_mode = (
         single_pass_strategy != "incremental_thinking"
         and (model_profile == "campus_small" or orchestration_mode == "multi_agent")
     )
 
-    params_list = [
+    params_list: List[str] = [
         f"all_roster_ids={_format_ids(all_ids)}",
         f"current_time={current_time}",
         f"start_date={start_date}",
@@ -112,9 +108,6 @@ def build_prompt_messages(
     if is_module_active("inactive", instruction, bool(inactive_ids)):
         params_list.append(PROMPTS["param_inactive"].format(inactive_ids=_format_ids(inactive_ids)))
         methods_list.append(PROMPTS["rule_inactive"])
-
-    if is_module_active("multi_day", instruction, False):
-        methods_list.append(PROMPTS["rule_multi_day"])
 
     duty_rule = str(duty_rule or "").strip()
     if duty_rule:
@@ -146,4 +139,6 @@ def build_prompt_messages(
         dynamic_parameters=dynamic_parameters,
         dynamic_methods=dynamic_methods,
     )
+    if previous_context:
+        system_content = system_content.rstrip() + "\n\n" + previous_context
     return [{"role": "user", "content": system_content}]

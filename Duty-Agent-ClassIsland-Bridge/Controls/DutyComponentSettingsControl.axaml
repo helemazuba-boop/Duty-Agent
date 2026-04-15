@@ -1,0 +1,29 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+             xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+             mc:Ignorable="d" d:DesignWidth="400" d:DesignHeight="300"
+             x:Class="DutyAgentBridge.Controls.DutyComponentSettingsControl">
+  <StackPanel Margin="16">
+    <TextBlock Text="\u503C\u65E5\u4EBA\u5458 \u8BBE\u7F6E" FontSize="18" FontWeight="Bold" Margin="0,0,0,16"/>
+    <!-- 刷新间隔 -->
+    <StackPanel Margin="0,0,0,12">
+      <TextBlock Text="\u5237\u65B0\u95F4\u9694\uFF08\u79D2\uFF09" FontWeight="SemiBold"/>
+      <NumericUpDown Value="60" Minimum="10" Maximum="3600" Increment="10" Width="200" Margin="0,4,0,0"/>
+    </StackPanel>
+    <!-- 字体大小 -->
+    <StackPanel Margin="0,0,0,12">
+      <TextBlock Text="\u5B57\u4F53\u5927\u5C0F" FontWeight="SemiBold"/>
+      <NumericUpDown Value="14" Minimum="8" Maximum="32" Width="200" Margin="0,4,0,0"/>
+    </StackPanel>
+    <!-- 字体颜色 -->
+    <StackPanel Margin="0,0,0,12">
+      <TextBlock Text="\u5B57\u4F53\u989C\u8272" FontWeight="SemiBold"/>
+      <TextBox Text="" Width="200" Margin="0,4,0,0" Watermark="#000000"/>
+    </StackPanel>
+    <!-- 双行显示 -->
+    <CheckBox Content="\u542F\u7528\u53CC\u884C\u663E\u793A" Margin="0,0,0,8"/>
+    <!-- 每个区域换行 -->
+    <CheckBox Content="\u6BCF\u4E2A\u533A\u57DF\u6362\u884C\u663E\u793A" Margin="0,0,0,8"/>
+  </StackPanel>
+</UserControl>

@@ -36,3 +36,14 @@ deploy.bat
 
 !Assets_Duty/python-embed/**/*.pyd
 cipx/
+
+# 忽略 Python 缓存文件
+__pycache__/
+*.py[cod]
+*$py.class
+.pyc
+
+venv/
+.venv/
+env/
+node_modules

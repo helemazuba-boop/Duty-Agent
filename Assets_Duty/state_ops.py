@@ -293,6 +293,7 @@ def _create_default_persisted_config() -> dict:
         "selected_plan_id": DEFAULT_SELECTED_PLAN_ID,
         "plan_presets": _create_default_plan_presets(),
         "duty_rule": "",
+        "polling": {"hints_on": True, "max_rounds": 15},
     }
 
 
@@ -308,11 +309,21 @@ def _normalize_persisted_config(config: dict | None) -> dict:
     source = dict(config) if isinstance(config, dict) else {}
     plan_presets = _normalize_plan_presets(source.get("plan_presets"))
     selected_plan_id = normalize_selected_plan_id(source.get("selected_plan_id"), plan_presets, source)
+
+    raw_polling = source.get("polling") or {}
+    if not isinstance(raw_polling, dict):
+        raw_polling = {}
+    polling: dict = {
+        "hints_on": bool(raw_polling.get("hints_on", True)),
+        "max_rounds": max(1, min(int(raw_polling.get("max_rounds", 15) or 15), 100)),
+    }
+
     return {
         "version": _normalize_config_version(source.get("version", DEFAULT_CONFIG_VERSION)),
         "selected_plan_id": selected_plan_id,
         "plan_presets": plan_presets,
         "duty_rule": str(source.get("duty_rule", "") or "").strip(),
+        "polling": polling,
     }
 
 
@@ -340,6 +351,7 @@ def _hydrate_runtime_config(persisted: dict) -> dict:
         "selected_plan_id": selected_plan_id,
         "plan_presets": plan_presets,
         "duty_rule": normalized["duty_rule"],
+        "polling": normalized["polling"],
     }
 
 
@@ -646,6 +658,7 @@ def _persisted_config_body(config: dict | None) -> dict:
         "selected_plan_id": normalized["selected_plan_id"],
         "plan_presets": normalized["plan_presets"],
         "duty_rule": normalized["duty_rule"],
+        "polling": normalized.get("polling", {}),
     }
 
 

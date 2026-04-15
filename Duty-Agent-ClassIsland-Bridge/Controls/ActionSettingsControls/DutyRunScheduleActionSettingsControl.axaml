@@ -1,0 +1,27 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+             xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+             mc:Ignorable="d" d:DesignWidth="400" d:DesignHeight="300"
+             x:Class="DutyAgentBridge.Controls.ActionSettingsControls.DutyRunScheduleActionSettingsControl">
+  <StackPanel Margin="16">
+    <TextBlock Text="\u6267\u884C\u503C\u65E5\u6392\u73ED \u8BBE\u7F6E" FontSize="16" FontWeight="Bold" Margin="0,0,0,16"/>
+
+    <!-- 排班指令 -->
+    <StackPanel Margin="0,0,0,12">
+      <TextBlock Text="\u6392\u73ED\u6307\u4EE4" FontWeight="SemiBold" Margin="0,0,0,4"/>
+      <TextBox Text="" Watermark="\u8BF7\u8F93\u5165\u6392\u73ED\u6307\u4EE4..." Height="80" TextWrapping="Wrap" AcceptsReturn="True"/>
+      <TextBlock Text="\u9ED8\u8BA4\u6307\u4EE4\uFF1A\u201C\u8BF7\u57FA\u4E8E\u5F53\u524D\u540D\u518C\u81EA\u52A8\u751F\u6210\u503C\u65E5\u5B89\u6392\u3002\u201D" FontSize="11" Foreground="#8c8c8c" Margin="0,4,0,0"/>
+    </StackPanel>
+
+    <!-- 完成通知 -->
+    <CheckBox Content="\u6267\u884C\u5B8C\u6210\u540E\u53D1\u5E03\u901A\u77E5" IsChecked="True" Margin="0,0,0,8"/>
+
+    <!-- 说明 -->
+    <Border Background="#f5f5f5" CornerRadius="4" Padding="8">
+      <TextBlock TextWrapping="Wrap" FontSize="12" Foreground="#666">
+        \u8BE5\u52A8\u4F5C\u5C06\u901A\u8FC7桥接\u63D0\u4EA4\u7ED9\u72EC\u7ACB\u8F6F\u4EF6\u6267\u884C AI \u6392\u73ED\u3002\u8BF7\u786E\u4FDD\u72EC\u7ACB\u8F6F\u4EF6\u5DF2\u542F\u52A8\u5E76\u8FDE\u63A5\u6B63\u5E38\u3002
+      </TextBlock>
+    </Border>
+  </StackPanel>
+</UserControl>

@@ -1,0 +1,31 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+             xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+             mc:Ignorable="d" d:DesignWidth="400" d:DesignHeight="200"
+             x:Class="DutyAgentBridge.Controls.RuleSettingsControls.DutyAssignedStudentRuleSettingsControl">
+  <StackPanel Margin="16">
+    <TextBlock Text="\u4ECA\u65E5\u503C\u65E5\u5339\u914D \u8BBE\u7F6E" FontSize="16" FontWeight="Bold" Margin="0,0,0,16"/>
+
+    <!-- 学生姓名 -->
+    <StackPanel Margin="0,0,0,12">
+      <TextBlock Text="\u5B66\u751F\u59D3\u540D" FontWeight="SemiBold" Margin="0,0,0,4"/>
+      <TextBox Text="" Watermark="\u7A7A\u767D\u4E3A\u5339\u914D\u6240\u6709\u5B66\u751F" Width="300" HorizontalAlignment="Left"/>
+      <TextBlock Text="\u7A7A\u767D\u65F6\u5339\u914D\u6240\u6709\u5B66\u751F" FontSize="11" Foreground="#8c8c8c" Margin="0,4,0,0"/>
+    </StackPanel>
+
+    <!-- 区域名称 -->
+    <StackPanel Margin="0,0,0,12">
+      <TextBlock Text="\u533A\u57DF\u540D\u79F0" FontWeight="SemiBold" Margin="0,0,0,4"/>
+      <TextBox Text="" Watermark="\u7A7A\u767D\u4E3A\u5339\u914D\u6240\u6709\u533A\u57DF" Width="300" HorizontalAlignment="Left"/>
+      <TextBlock Text="\u7A7A\u767D\u65F6\u5728\u6240\u6709\u533A\u57DF\u4E2D\u5339\u914D" FontSize="11" Foreground="#8c8c8c" Margin="0,4,0,0"/>
+    </StackPanel>
+
+    <!-- 说明 -->
+    <Border Background="#f5f5f5" CornerRadius="4" Padding="8">
+      <TextBlock TextWrapping="Wrap" FontSize="12" Foreground="#666">
+        \u5F53\u524D\u7F6E\u4E3A\u4ECA\u65E5\u503C\u65E5\u5B89\u6392\u3002\u8BE5\u89C4\u5219\u68C0\u6D4B\u6307\u5B9A\u5B66\u751F\u6216\u533A\u57DF\u662F\u5426\u5728\u4ECA\u65E5\u503C\u65E5\u6392\u73ED\u4E2D\u3002
+      </TextBlock>
+    </Border>
+  </StackPanel>
+</UserControl>

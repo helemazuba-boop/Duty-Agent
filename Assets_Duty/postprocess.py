@@ -163,7 +163,19 @@ def normalize_multi_area_schedule_ids(
     area_names: List[str],
     area_per_day_counts: Dict[str, int],
 ) -> List[dict]:
-    del area_per_day_counts
+    """Normalize schedule entries to a consistent format.
+
+    Args:
+        schedule_raw: raw schedule entries from LLM.
+        active_ids: list of active person IDs.
+        area_names: ordered list of area names.
+        area_per_day_counts: per-area per-day required counts (e.g. {"教室": 2}).
+            Used for validation when non-empty. Currently a placeholder for
+            future enforcement of minimum/maximum persons per area per day.
+    """
+    # NOTE: area_per_day_counts is accepted but not yet enforced.
+    # Future: validate that each (date, area) has >= area_per_day_counts[area] persons.
+    del area_per_day_counts  # reserved for future use
     active_set = set(active_ids)
     normalized: List[dict] = []
     if not isinstance(schedule_raw, list):

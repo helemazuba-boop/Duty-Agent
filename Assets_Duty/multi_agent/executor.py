@@ -285,6 +285,7 @@ def run_multi_agent_schedule(
                 "dates": barrier1["dates"],
                 "total_slots": barrier1["total_slots"],
                 "active_ids": snapshot.active_ids,
+                "inactive_ids": snapshot.inactive_ids,
                 "absent_ids": barrier1["absent_ids"],
                 "debt_list": snapshot.debt_list,
                 "new_debt_ids": barrier1["new_debt_ids"],
