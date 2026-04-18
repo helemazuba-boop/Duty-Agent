@@ -2,17 +2,18 @@ import axios, { type AxiosInstance } from 'axios';
 import type { Workspace, ScheduleEntry, RosterPerson } from '@/types';
 
 // Token is injected by main.ts interceptor; expose getToken/setToken for WebSocket composables
-let _token = localStorage.getItem('duty_access_token') ?? '';
 export function setToken(t: string) {
-  _token = t;
   localStorage.setItem('duty_access_token', t);
 }
 export function getToken() {
-  return _token;
+  // Prefer dev token, fallback to persisted token
+  return (window as any).__DEV_TOKEN__ ?? localStorage.getItem('duty_access_token') ?? '';
 }
 
 const http: AxiosInstance = axios.create({
-  baseURL: 'http://localhost:8765',
+  // Use relative URL so requests go through Vite proxy in dev,
+  // and match the app's mounted path in desktop (http://127.0.0.1:8765/app -> relative /api/* resolves correctly)
+  baseURL: '',
   timeout: 30000,
 });
 

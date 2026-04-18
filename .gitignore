@@ -33,7 +33,7 @@ Thumbs.db
 CLAUDE.md
 deploy.bat
 *.cipx
-
+.cursor
 !Assets_Duty/python-embed/**/*.pyd
 cipx/
 

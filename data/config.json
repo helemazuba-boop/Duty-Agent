@@ -1,0 +1,44 @@
+{
+  "version": 1,
+  "selected_plan_id": "standard",
+  "plan_presets": [
+    {
+      "id": "standard",
+      "name": "标准",
+      "mode_id": "standard",
+      "api_key": "",
+      "base_url": "https://integrate.api.nvidia.com/v1",
+      "model": "moonshotai/kimi-k2-thinking",
+      "model_profile": "auto",
+      "provider_hint": "",
+      "multi_agent_execution_mode": "auto"
+    },
+    {
+      "id": "agents",
+      "name": "Agents",
+      "mode_id": "agents",
+      "api_key": "",
+      "base_url": "https://integrate.api.nvidia.com/v1",
+      "model": "moonshotai/kimi-k2-thinking",
+      "model_profile": "auto",
+      "provider_hint": "",
+      "multi_agent_execution_mode": "auto"
+    },
+    {
+      "id": "incremental-small",
+      "name": "增量小模型",
+      "mode_id": "incremental_small",
+      "api_key": "",
+      "base_url": "https://integrate.api.nvidia.com/v1",
+      "model": "moonshotai/kimi-k2-thinking",
+      "model_profile": "auto",
+      "provider_hint": "",
+      "multi_agent_execution_mode": "auto"
+    }
+  ],
+  "duty_rule": "",
+  "polling": {
+    "hints_on": true,
+    "max_rounds": 15
+  }
+}

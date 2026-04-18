@@ -6,10 +6,10 @@ from fastapi import APIRouter, HTTPException, Request
 
 try:
     from models.schemas import DutyBackendConfigPatch
-    from state_ops import ConfigVersionConflictError
+    from state_ops import ConfigVersionConflictError, sanitize_error_for_client
 except ImportError:
     from ..models.schemas import DutyBackendConfigPatch
-    from ..state_ops import ConfigVersionConflictError
+    from ..state_ops import ConfigVersionConflictError, sanitize_error_for_client
 
 router = APIRouter(prefix="/api/v1", tags=["Config"])
 
@@ -88,7 +88,7 @@ async def patch_config(config_patch: DutyBackendConfigPatch, request: Request):
             duration_ms=round((time.monotonic() - started_at) * 1000, 2),
             patch_keys=sorted(list(patch_payload.keys())),
         )
-        raise HTTPException(status_code=409, detail=str(ex)) from ex
+        raise HTTPException(status_code=409, detail=sanitize_error_for_client(str(ex))) from ex
     except Exception as ex:
         runtime.logger.error(
             "ConfigRoute",

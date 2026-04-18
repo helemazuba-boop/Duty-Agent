@@ -29,6 +29,7 @@ from state_ops import (
     load_state,
     normalize_area_names,
     save_json_atomic,
+    sanitize_error_for_client,
 )
 from tool_loop.executor import run_tool_loop_schedule
 
@@ -88,6 +89,6 @@ def run_schedule(ctx: Context, input_data: dict, emit_progress_fn=None, stop_eve
             )
         return {
             "status": "error",
-            "message": str(ex),
+            "message": _sanitize_error_message(str(ex)),
             "trace_id": str(payload.get("trace_id", "")).strip() if isinstance(payload, dict) else "",
         }

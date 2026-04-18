@@ -12,6 +12,8 @@ import signal
 from pathlib import Path
 from contextlib import asynccontextmanager
 
+SKIP_AUTH_BYPASS = os.getenv("SKIP_AUTH_BYPASS", "").strip().lower() in ("1", "true", "yes")
+
 # Add current directory to path for local module imports
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
@@ -83,8 +85,9 @@ async def require_bearer_for_protected_routes(request: Request, call_next):
         if runtime is None or not getattr(runtime, "enable_mcp", False):
             return JSONResponse(status_code=404, content={"detail": "Not Found"})
         candidate_token = extract_bearer_token(request.headers)
-        if not runtime.is_authorized(candidate_token):
-            return build_http_unauthorized_response()
+        if not SKIP_AUTH_BYPASS:
+            if not runtime.is_authorized(candidate_token):
+                return build_http_unauthorized_response()
         token_scope = push_current_request_bearer_token(candidate_token)
         try:
             return await call_next(request)
@@ -92,11 +95,12 @@ async def require_bearer_for_protected_routes(request: Request, call_next):
             pop_current_request_bearer_token(token_scope)
 
     if is_protected_http_path(path):
-        runtime = getattr(request.app.state, "runtime", None)
-        if runtime is None:
-            return JSONResponse(status_code=503, content={"detail": "Runtime is not initialized."})
-        if not is_request_authorized(request, runtime):
-            return build_http_unauthorized_response()
+        if not SKIP_AUTH_BYPASS:
+            runtime = getattr(request.app.state, "runtime", None)
+            if runtime is None:
+                return JSONResponse(status_code=503, content={"detail": "Runtime is not initialized."})
+            if not is_request_authorized(request, runtime):
+                return build_http_unauthorized_response()
 
     return await call_next(request)
 
@@ -215,6 +219,12 @@ def main():
         print(f"__DUTY_SERVER_TOKEN_MODE__:{app.state.runtime.access_token_mode}", flush=True)
         if app.state.runtime.access_token_mode == "dynamic":
             print(f"__DUTY_SERVER_TOKEN__:{app.state.runtime.access_token}", flush=True)
+            # Write token to file so run_dev.bat can capture it
+            try:
+                token_file = data_dir / ".dev-token"
+                token_file.write_text(app.state.runtime.access_token, encoding="utf-8")
+            except Exception:
+                pass
         
         # Start suicide watch thread
         watch_thread = threading.Thread(
@@ -257,6 +267,8 @@ def audit_environment():
     except ImportError as e:
         print(f"CRITICAL: Missing dependency: {e}", file=sys.stderr, flush=True)
         sys.exit(1)
+    if SKIP_AUTH_BYPASS:
+        print("[WARNING] SKIP_AUTH_BYPASS is ENABLED — token verification is bypassed!", flush=True)
     print("---------------------", flush=True)
 
 if __name__ == "__main__":

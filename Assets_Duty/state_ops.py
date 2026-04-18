@@ -4,8 +4,8 @@ import csv
 import ctypes
 import json
 import os
-import shutil
 import re
+import shutil
 import time
 from datetime import date, datetime
 from ctypes import wintypes
@@ -13,6 +13,13 @@ from pathlib import Path
 from typing import Callable, Dict, Iterable, List, Optional, Tuple
 
 from diagnostics import truncate_for_log
+
+# Re-exported for use by other modules (engine, routers, etc.)
+def sanitize_error_for_client(msg: str) -> str:
+    """Strip internal file paths and sensitive details from error messages before returning to the client."""
+    msg = re.sub(r'[A-Za-z]:\\[^\s"<>|]+', '<内部路径>', msg)
+    msg = re.sub(r'line \d+', 'line N', msg)
+    return msg
 
 DEFAULT_ASSIGNMENTS_PER_AREA = 2
 DEFAULT_SINGLE_AREA_NAME = "值日"
@@ -920,7 +927,7 @@ def load_api_key_from_env() -> str:
 
 def load_roster(csv_path: Path) -> Tuple[Dict[str, int], Dict[int, str], List[int], Dict[int, int]]:
     if not csv_path.exists():
-        raise FileNotFoundError(f"roster.csv not found: {csv_path}")
+        raise FileNotFoundError("roster.csv not found. Please add members in the roster management page.")
 
     name_to_id: Dict[str, int] = {}
     id_to_name: Dict[int, str] = {}

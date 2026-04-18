@@ -139,7 +139,12 @@ def is_protected_http_path(path: str) -> bool:
 def build_http_unauthorized_response() -> JSONResponse:
     return JSONResponse(
         status_code=401,
-        headers={"WWW-Authenticate": "Bearer"},
+        headers={
+            "WWW-Authenticate": "Bearer",
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Headers": "*",
+            "Access-Control-Allow-Methods": "*",
+        },
         content={"detail": UNAUTHORIZED_DETAIL},
     )
 

@@ -20,6 +20,9 @@ const refresh = async () => {
   loading.value = true;
   try {
     workspace.value = await api.getSnapshot();
+  } catch (e) {
+    console.error('[ArrangementPage] refresh failed:', e);
+    workspace.value = null;
   } finally {
     loading.value = false;
   }
@@ -40,9 +43,13 @@ const handleNewSchedule = () => {
 };
 
 const handleEditorSave = async (entry: ScheduleEntry) => {
-  await api.saveScheduleEntry(entry);
-  await refresh();
-  editorOpen.value = false;
+  try {
+    await api.saveScheduleEntry(entry);
+    await refresh();
+    editorOpen.value = false;
+  } catch (e) {
+    console.error('[ArrangementPage] save failed:', e);
+  }
 };
 </script>
 

@@ -23,8 +23,8 @@ const messages = ref<ChatMsg[]>([]);
 
 const { isRunning, currentPhase, progress, runSchedule } = useScheduleWebSocket();
 
-// Backend URL (fixed, same as C# plugin)
-const BASE_URL = 'http://localhost:8765';
+// baseUrl is empty → requests go through Vite proxy (dev) or match /app/* (desktop)
+const BASE_URL = '';
 
 // Quick commands
 const quickInstructions = [

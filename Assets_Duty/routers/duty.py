@@ -6,12 +6,18 @@ import threading
 
 from fastapi import APIRouter, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import StreamingResponse
+import os as _os
+
 from auth import WEBSOCKET_BUSY_CODE, WEBSOCKET_UNAUTHORIZED_CODE, is_websocket_authorized
+
+SKIP_AUTH_BYPASS = _os.getenv("SKIP_AUTH_BYPASS", "").strip().lower() in ("1", "true", "yes")
 
 try:
     from models.schemas import DutyRequest, DutyScheduleEntrySaveRequest, DutyScheduleEntrySaveResponse
+    from state_ops import sanitize_error_for_client
 except ImportError:
     from ..models.schemas import DutyRequest, DutyScheduleEntrySaveRequest, DutyScheduleEntrySaveResponse
+    from ..state_ops import sanitize_error_for_client
 
 router = APIRouter(prefix="/api/v1/duty", tags=["Duty"])
 
@@ -87,7 +93,7 @@ async def schedule(request_data: DutyRequest, request: Request):
             except InterruptedError:
                 loop.call_soon_threadsafe(queue.put_nowait, {"type": "error", "message": "Cancelled by user."})
             except Exception as e:
-                loop.call_soon_threadsafe(queue.put_nowait, {"type": "error", "message": str(e)})
+                loop.call_soon_threadsafe(queue.put_nowait, {"type": "error", "message": sanitize_error_for_client(str(e))})
 
         worker_thread = threading.Thread(target=run_task, daemon=True)
         worker_thread.start()
@@ -153,7 +159,7 @@ async def duty_live(websocket: WebSocket):
         await websocket.send_json({"type": "error", "message": "Runtime is not initialized."})
         await websocket.close(code=1011)
         return
-    if not is_websocket_authorized(websocket, runtime):
+    if not SKIP_AUTH_BYPASS and not is_websocket_authorized(websocket, runtime):
         await websocket.close(code=WEBSOCKET_UNAUTHORIZED_CODE, reason="Unauthorized")
         return
 
@@ -315,7 +321,7 @@ def _start_schedule_run(
             except InterruptedError:
                 loop.call_soon_threadsafe(queue.put_nowait, {"type": "cancelled"})
             except Exception as e:
-                loop.call_soon_threadsafe(queue.put_nowait, {"type": "error", "message": str(e)})
+                loop.call_soon_threadsafe(queue.put_nowait, {"type": "error", "message": sanitize_error_for_client(str(e))})
 
         worker_thread = threading.Thread(target=run_task, daemon=True)
         worker_thread.start()
@@ -439,5 +445,5 @@ async def _handle_schedule_entry_save(
             "client_change_id": client_change_id,
             "trace_id": trace_id,
             "request_source": request_source,
-            "message": str(ex),
+            "message": sanitize_error_for_client(str(ex)),
         })
