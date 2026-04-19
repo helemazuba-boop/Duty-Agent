@@ -4,12 +4,6 @@ import tailwindcss from '@tailwindcss/vite'
 import { resolve } from 'path'
 import { readFileSync, existsSync } from 'fs'
 
-// Read token from .env.local (written by run_dev.bat at startup)
-const envPath = resolve(__dirname, '.env.local')
-const token = existsSync(envPath)
-  ? readFileSync(envPath, 'utf-8').match(/^VITE_BACKEND_TOKEN=(.+)/m)?.[1] ?? ''
-  : ''
-
 // https://vite.dev/config/
 export default defineConfig({
   plugins: [
@@ -18,9 +12,16 @@ export default defineConfig({
     {
       name: 'inject-dev-token',
       transformIndexHtml(html) {
+        // Read token on every request so it picks up new backend token after backend restart
+        const envPath = resolve(__dirname, '.env.local')
+        const token = existsSync(envPath)
+          ? readFileSync(envPath, 'utf-8').match(/^VITE_BACKEND_TOKEN=(.+)/m)?.[1] ?? ''
+          : ''
         if (!token) return html
-        // Inject before any other tags so it is guaranteed available before any module code runs
-        return html.replace('<head>', `<head>\n<script>window.__DEV_TOKEN__=${JSON.stringify(token)};</script>`)
+        return html.replace(
+          '<head>',
+          `<head>\n<script>window.__DEV_TOKEN__=${JSON.stringify(token)};</script>`
+        )
       },
     },
   ],

@@ -2,12 +2,17 @@
 Duty-Agent Dev Environment Orchestrator
 ========================================
 启动后端 → 捕获 token → 写入 .env.local → 启动前端 → 打开浏览器
+
+用法:
+    python orchestrator.py          # 正常启动（带鉴权）
+    python orchestrator.py --skip-auth  # 跳过鉴权（开发调试用）
 """
 import subprocess
 import sys
 import time
 import os
 import socket
+import argparse
 from pathlib import Path
 
 BACKEND_TOKEN_FILE = r"D:\projects\Duty-Agent\Assets_Duty\data\.dev-token"
@@ -41,12 +46,26 @@ def write_env_local(token: str) -> None:
 
 
 def main():
+    parser = argparse.ArgumentParser(description="Duty-Agent Dev Environment Startup")
+    parser.add_argument(
+        "--skip-auth",
+        action="store_true",
+        help="跳过 Token 鉴权（开发调试用）",
+    )
+    args = parser.parse_args()
+
+    skip_auth = args.skip_auth
+    env = os.environ.copy()
+    if skip_auth:
+        env["SKIP_AUTH_BYPASS"] = "1"
+        print("[INFO] SKIP_AUTH_BYPASS=1 — Token 鉴权已禁用")
+
     print("=" * 60)
     print("  Duty-Agent Dev Environment Startup")
     print("=" * 60)
+    if skip_auth:
+        print("  [MODE] 绕过鉴权（开发调试）")
     print()
-
-    # 1. Start backend
     print("[1/5] python-embed check OK")
     print("[2/5] Starting backend (port 8765)...")
 
@@ -57,6 +76,7 @@ def main():
         creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         text=True,
         bufsize=1,
+        env=env,
     )
 
     token = None

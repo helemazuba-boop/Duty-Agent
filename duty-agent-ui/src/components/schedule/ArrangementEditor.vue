@@ -88,7 +88,7 @@ const handleClose = () => {
 
 const handleSave = () => {
   emit('save', {
-    date: props.date,
+    date: selectedDate.value ?? props.date ?? '',
     note: note.value,
     area_assignments: assignments.value,
   });

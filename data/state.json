@@ -1,0 +1,20 @@
+{
+  "schedule_pool": [
+    {
+      "date": "2026-04-21",
+      "day": "周二",
+      "area_assignments": {
+        "区域1": [
+          "111"
+        ]
+      },
+      "note": ""
+    }
+  ],
+  "next_run_note": "",
+  "debt_counts": {},
+  "credit_counts": {
+    "1": 1
+  },
+  "last_pointer": 0
+}
