@@ -4,6 +4,7 @@
  */
 
 import { ref } from 'vue';
+import { apiUrl, wsUrl } from '@/api/baseUrl';
 
 export interface ScheduleProgress {
   phase: string;
@@ -26,9 +27,16 @@ export interface RunScheduleOptions {
   signal?: AbortSignal;
 }
 
-function getWsBaseUrl(baseUrl: string): string {
-  // baseUrl is like http://127.0.0.1:8765
-  return baseUrl.replace(/^http/, 'ws') + '/api/v1/duty/live';
+function getScheduleApiUrl(baseUrl: string): string {
+  return baseUrl ? `${baseUrl}/api/v1/duty/schedule` : apiUrl('/api/v1/duty/schedule');
+}
+
+function getScheduleWsUrl(baseUrl: string): string {
+  if (baseUrl) {
+    return baseUrl.replace(/^http/, 'ws') + '/api/v1/duty/live';
+  }
+
+  return wsUrl('/api/v1/duty/live');
 }
 
 async function runScheduleSSE(
@@ -37,7 +45,7 @@ async function runScheduleSSE(
 ): Promise<ScheduleResult> {
   const { baseUrl, token, instruction, signal } = opts;
 
-  const response = await fetch(`${baseUrl}/api/v1/duty/schedule`, {
+  const response = await fetch(getScheduleApiUrl(baseUrl), {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -133,7 +141,7 @@ export function useScheduleWebSocket() {
 
     try {
       // --- WebSocket primary path ---
-      const wsUrl = getWsBaseUrl(baseUrl);
+      const scheduleWsUrl = getScheduleWsUrl(baseUrl);
       const clientChangeId = crypto.randomUUID().replace(/-/g, '');
       const traceId = `fe-${Date.now()}`;
 
@@ -141,7 +149,7 @@ export function useScheduleWebSocket() {
       let wsDone = false;
 
       const wsResult = await new Promise<ScheduleResult>((resolve, reject) => {
-        ws = new WebSocket(wsUrl);
+        ws = new WebSocket(scheduleWsUrl);
 
         ws.onopen = () => {
           // Send hello handshake

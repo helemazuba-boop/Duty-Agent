@@ -20,6 +20,7 @@ public interface IIpcBridgeService : IDisposable
     Task ConnectAsync(CancellationToken cancellationToken = default);
     void Disconnect();
     void Reconnect();
+    Task SendHeartbeatAsync(CancellationToken cancellationToken = default);
 
     Task<CoreRunResult> RunScheduleAsync(
         string instruction,
@@ -193,24 +194,7 @@ public sealed class IpcBridgeService : IIpcBridgeService
 
             SetState(IpcBridgeState.Connecting);
 
-            // 健康检查：发送一个简单的 GET 请求验证连通性
-            var healthUrl = $"http://127.0.0.1:{port}/health";
-            try
-            {
-                using var healthRequest = new HttpRequestMessage(HttpMethod.Get, healthUrl);
-                if (!string.IsNullOrWhiteSpace(_accessToken))
-                {
-                    healthRequest.Headers.TryAddWithoutValidation(AuthorizationHeader, $"Bearer {_accessToken}");
-                }
-                using var healthResponse = await _httpClient.SendAsync(healthRequest, TimeSpan.FromSeconds(5), linkedCt);
-                // 不管健康检查是否成功，只要能连接就认为连接建立
-            }
-            catch
-            {
-                // 健康检查失败不代表连接失败（独立软件可能没有 /health 端点）
-                // 只要端口能连通就认为 OK
-            }
-
+            await SendHeartbeatCoreAsync(port, linkedCt);
             SetState(IpcBridgeState.Connected);
         }
         catch (OperationCanceledException)
@@ -263,10 +247,15 @@ public sealed class IpcBridgeService : IIpcBridgeService
         _ = ConnectAsync();
     }
 
+    public async Task SendHeartbeatAsync(CancellationToken cancellationToken = default)
+    {
+        EnsureConnected();
+        await SendHeartbeatCoreAsync(_currentMeta!.Port, cancellationToken);
+    }
+
     private async Task<StandaloneMeta?> LoadMetaWithRetryAsync(CancellationToken cancellationToken)
     {
         var timeoutAt = DateTime.UtcNow.Add(_connectTimeout);
-        Exception? lastException = null;
 
         while (DateTime.UtcNow < timeoutAt && !cancellationToken.IsCancellationRequested)
         {
@@ -624,6 +613,41 @@ public sealed class IpcBridgeService : IIpcBridgeService
         return JsonSerializer.Deserialize<T>(responseText, JsonOptions) ?? default!;
     }
 
+    private async Task SendHeartbeatCoreAsync(int port, CancellationToken cancellationToken)
+    {
+        if (port <= 0)
+        {
+            throw new InvalidOperationException("Duty-Agent backend port is not available.");
+        }
+
+        using var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutCts.Token);
+        using var request = new HttpRequestMessage(HttpMethod.Post, $"http://127.0.0.1:{port}/api/v1/bridge/heartbeat");
+        ApplyAuth(request);
+        request.Headers.TryAddWithoutValidation(TraceHeader, CreateTraceId());
+        request.Headers.TryAddWithoutValidation(RequestSourceHeader, "bridge");
+        request.Content = new StringContent("{}", Encoding.UTF8, "application/json");
+
+        HttpResponseMessage response;
+        try
+        {
+            response = await _httpClient.SendAsync(request, linkedCts.Token);
+        }
+        catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
+        {
+            throw new TimeoutException("Bridge heartbeat timed out.");
+        }
+
+        using (response)
+        {
+            var responseText = await response.Content.ReadAsStringAsync(cancellationToken);
+            if (!response.IsSuccessStatusCode)
+            {
+                throw new HttpRequestException($"Bridge heartbeat failed with HTTP {response.StatusCode}: {responseText}");
+            }
+        }
+    }
+
     private async Task<ClientWebSocket> EnsureSocketConnectedAsync(CancellationToken cancellationToken)
     {
         if (_controlSocket is { State: WebSocketState.Open })
@@ -761,6 +785,8 @@ public sealed class IpcBridgeService : IIpcBridgeService
     }
 
     private static string CreateTraceId() => $"bridge-{Guid.NewGuid():N}";
+
+    #endregion
 
     public void Dispose()
     {

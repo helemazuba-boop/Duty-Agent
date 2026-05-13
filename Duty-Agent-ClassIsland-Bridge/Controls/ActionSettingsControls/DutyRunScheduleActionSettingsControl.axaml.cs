@@ -1,6 +1,7 @@
 using Avalonia.Controls;
 using Avalonia.Interactivity;
 using ClassIsland.Core.Abstractions.Automation;
+using ClassIsland.Core.Abstractions.Controls;
 using DutyAgentBridge.Models;
 
 namespace DutyAgentBridge.Services.Automations.Actions;

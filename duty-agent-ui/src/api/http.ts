@@ -1,6 +1,7 @@
 import axios, { type AxiosInstance } from 'axios';
 import { message } from 'ant-design-vue';
 import type { Workspace, ScheduleEntry, RosterPerson } from '@/types';
+import { API_BASE_URL } from './baseUrl';
 
 function getAccessToken(): string {
   return (window as any).__DEV_TOKEN__ ?? localStorage.getItem('duty_access_token') ?? '';
@@ -14,8 +15,18 @@ export function getToken() {
   return getAccessToken();
 }
 
+export interface BridgeStatus {
+  status: 'connected' | 'disconnected';
+  connected: boolean;
+  last_seen_at: number | null;
+  last_seen_iso: string | null;
+  age_seconds: number | null;
+  ttl_seconds: number;
+  source: string | null;
+}
+
 const http: AxiosInstance = axios.create({
-  baseURL: '',
+  baseURL: API_BASE_URL,
   timeout: 30000,
 });
 
@@ -56,6 +67,11 @@ http.interceptors.response.use(
 export const api = {
   async getSnapshot(): Promise<Workspace> {
     const { data } = await http.get<Workspace>('/api/v1/snapshot');
+    return data;
+  },
+
+  async getBridgeStatus(): Promise<BridgeStatus> {
+    const { data } = await http.get<BridgeStatus>('/api/v1/bridge/status');
     return data;
   },
 

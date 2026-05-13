@@ -87,6 +87,26 @@ public sealed class CoreRunResult
 
     [JsonPropertyName("ai_response")]
     public string? AiResponse { get; set; }
+
+    public static CoreRunResult Ok(string message = "Success", string? aiResponse = null)
+    {
+        return new CoreRunResult
+        {
+            Success = true,
+            Message = message,
+            AiResponse = aiResponse
+        };
+    }
+
+    public static CoreRunResult Fail(string message, string? code = null)
+    {
+        return new CoreRunResult
+        {
+            Success = false,
+            Message = message,
+            Code = code
+        };
+    }
 }
 
 /// <summary>

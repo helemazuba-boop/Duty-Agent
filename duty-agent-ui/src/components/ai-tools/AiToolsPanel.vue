@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref } from 'vue';
 import { Card, Switch, Table, Button, Space, Tag, Tooltip, message } from 'ant-design-vue';
-import { DeleteOutlined, CheckCircleOutlined, CloseCircleOutlined } from '@ant-design/icons';
+import { DeleteOutlined, CheckCircleOutlined, CloseCircleOutlined, PlusOutlined } from '@ant-design/icons-vue';
 import { useAiToolsStore } from '@/stores/aiToolsStore';
 import ToolServerForm from './ToolServerForm.vue';
 import ToolPreview from './ToolPreview.vue';
@@ -36,7 +36,7 @@ const handleConnect = async (id: string) => {
 </script>
 
 <template>
-  <div>
+  <div class="ai-tools-panel">
     <!-- 启用开关 -->
     <Card size="small" style="margin-bottom: 16px">
       <Space>
@@ -53,6 +53,7 @@ const handleConnect = async (id: string) => {
       <template #title>工具服务器</template>
       <template #extra>
         <Button type="primary" @click="formOpen = true">
+          <template #icon><PlusOutlined /></template>
           添加服务器
         </Button>
       </template>
@@ -61,6 +62,7 @@ const handleConnect = async (id: string) => {
         :columns="columns"
         :data-source="store.config.toolServers"
         :pagination="false"
+        :scroll="{ x: 720 }"
         row-key="id"
       >
         <template #bodyCell="{ column, record }">
@@ -166,3 +168,18 @@ const handleConnect = async (id: string) => {
     />
   </div>
 </template>
+
+<style scoped>
+.ai-tools-panel {
+  min-width: 0;
+}
+
+.server-url {
+  display: inline-block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  vertical-align: bottom;
+  white-space: nowrap;
+}
+</style>

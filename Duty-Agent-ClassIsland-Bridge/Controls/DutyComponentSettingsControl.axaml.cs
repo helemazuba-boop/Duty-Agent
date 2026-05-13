@@ -1,9 +1,8 @@
 using Avalonia.Controls;
-using ClassIsland.Core.Abstractions.Controls;
 
 namespace DutyAgentBridge.Controls;
 
-public partial class DutyComponentSettingsControl : SettingsControlBase
+public partial class DutyComponentSettingsControl : UserControl
 {
     public DutyComponentSettingsControl()
     {

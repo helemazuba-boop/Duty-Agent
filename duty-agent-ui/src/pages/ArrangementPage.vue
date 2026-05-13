@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue';
 import { Segmented, Spin, Space } from 'ant-design-vue';
-import { PlusOutlined, ReloadOutlined } from '@ant-design/icons';
+import { PlusOutlined, ReloadOutlined } from '@ant-design/icons-vue';
 import ScheduleCalendar from '@/components/schedule/ScheduleCalendar.vue';
 import ScheduleTable from '@/components/schedule/ScheduleTable.vue';
 import ArrangementEditor from '@/components/schedule/ArrangementEditor.vue';

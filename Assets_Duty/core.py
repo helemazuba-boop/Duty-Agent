@@ -34,7 +34,7 @@ from auth import (
 )
 from mcp_server import build_mcp_http_app
 from runtime import create_runtime
-from routers import config, duty, roster
+from routers import bridge, config, duty, roster
 import uvicorn
 
 WEB_DIRECTORY = Path(__file__).resolve().parent / "web"
@@ -113,6 +113,7 @@ if WEB_DIRECTORY.is_dir():
 
 # Register modular routers
 app.include_router(duty.router)
+app.include_router(bridge.router)
 app.include_router(config.router)
 app.include_router(roster.router)
 

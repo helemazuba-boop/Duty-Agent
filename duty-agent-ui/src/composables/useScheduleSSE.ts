@@ -4,6 +4,7 @@
  */
 
 import { ref } from 'vue';
+import { apiUrl } from '@/api/baseUrl';
 import type { ScheduleProgress, ScheduleResult } from './useScheduleWebSocket';
 
 export interface RunScheduleSSEOptions {
@@ -28,7 +29,9 @@ export function useScheduleSSE() {
     error.value = null;
 
     try {
-      const response = await fetch(`${baseUrl}/api/v1/duty/schedule`, {
+      const response = await fetch(
+        baseUrl ? `${baseUrl}/api/v1/duty/schedule` : apiUrl('/api/v1/duty/schedule'),
+        {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -36,7 +39,8 @@ export function useScheduleSSE() {
         },
         body: JSON.stringify({ instruction }),
         signal,
-      });
+        },
+      );
 
       if (!response.ok) {
         throw new Error(`HTTP ${response.status}: ${response.statusText}`);

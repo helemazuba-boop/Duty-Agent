@@ -6,6 +6,7 @@ import { readFileSync, existsSync } from 'fs'
 
 // https://vite.dev/config/
 export default defineConfig({
+  base: './',
   plugins: [
     vue(),
     tailwindcss(),

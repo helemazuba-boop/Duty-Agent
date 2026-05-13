@@ -8,6 +8,8 @@
     <Version>0.50.0</Version>
     <Authors>helemazuba-boop</Authors>
     <Description>与独立 Duty-Agent 软件联动，在 ClassIsland 中显示通知和组件</Description>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
   </PropertyGroup>
 
   <ItemGroup>

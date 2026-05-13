@@ -1,4 +1,4 @@
-import { createRouter, createWebHistory } from 'vue-router';
+import { createRouter, createWebHashHistory } from 'vue-router';
 
 const routes = [
   {
@@ -27,11 +27,6 @@ const routes = [
         component: () => import('@/pages/SchedulePage.vue'),
       },
       {
-        path: 'ai-schedule',
-        name: 'AiSchedule',
-        component: () => import('@/pages/SchedulePage.vue'),
-      },
-      {
         path: 'settings',
         name: 'Settings',
         component: () => import('@/pages/SettingsPage.vue'),
@@ -41,6 +36,6 @@ const routes = [
 ];
 
 export const router = createRouter({
-  history: createWebHistory(),
+  history: createWebHashHistory(),
   routes,
 });

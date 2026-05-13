@@ -7,7 +7,7 @@ import {
   CheckCircleOutlined,
   ClockCircleOutlined,
   ReloadOutlined,
-} from '@ant-design/icons';
+} from '@ant-design/icons-vue';
 import { api } from '@/api/http';
 import type { Workspace } from '@/types';
 

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue';
 import { Tag } from 'ant-design-vue';
-import { EditOutlined } from '@ant-design/icons';
+import { EditOutlined } from '@ant-design/icons-vue';
 import type { ScheduleEntry } from '@/types';
 
 interface Props {

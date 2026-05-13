@@ -9,7 +9,7 @@ namespace DutyAgentBridge.Services.Automations.Actions;
 /// 执行值日排班动作
 /// </summary>
 [ActionInfo(
-    DutyAutomationIds.RunScheduleAction,
+    DutyAutomationIds.RunScheduleActionId,
     "\u6267\u884C\u503C\u65E5\u6392\u73ED",
     "\uE31E")]
 public sealed class DutyRunScheduleAction : ActionBase<DutyRunScheduleActionSettings>

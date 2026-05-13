@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, watch, computed } from 'vue';
 import { Drawer, Button, DatePicker, Input, Select, Tag, Divider } from 'ant-design-vue';
-import { DeleteOutlined } from '@ant-design/icons';
+import { DeleteOutlined } from '@ant-design/icons-vue';
 import type { ScheduleEntry, RosterPerson } from '@/types';
 
 interface Props {

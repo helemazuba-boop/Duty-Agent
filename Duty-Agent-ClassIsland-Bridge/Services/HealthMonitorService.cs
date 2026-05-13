@@ -109,6 +109,10 @@ public sealed class HealthMonitorService : IHealthMonitorService
                 {
                     HandleProcessDied();
                 }
+                else
+                {
+                    OnMetaLoaded(_lastMeta);
+                }
                 return;
             }
 
@@ -205,6 +209,10 @@ public sealed class HealthMonitorService : IHealthMonitorService
                     });
                     _ = ConnectBridgeAsync();
                 }
+                else
+                {
+                    _ = SendHeartbeatAsync();
+                }
                 break;
 
             case IpcBridgeState.NotInstalled:
@@ -230,6 +238,21 @@ public sealed class HealthMonitorService : IHealthMonitorService
         catch (Exception ex)
         {
             Diagnostics.Error("HealthMonitor", "Failed to connect bridge.", ex);
+        }
+    }
+
+    private async Task SendHeartbeatAsync()
+    {
+        try
+        {
+            await _bridge.SendHeartbeatAsync();
+        }
+        catch (Exception ex)
+        {
+            Diagnostics.Error("HealthMonitor", "Bridge heartbeat failed.", ex);
+            _bridge.Disconnect();
+            BridgeStateRequested?.Invoke(this, IpcBridgeState.Error);
+            _ = ConnectBridgeAsync();
         }
     }
 

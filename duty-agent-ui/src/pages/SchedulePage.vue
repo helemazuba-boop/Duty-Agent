@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, nextTick, watch } from 'vue';
 import { Input, Button, Space, Tag, message } from 'ant-design-vue';
-import { ThunderboltOutlined, ClearOutlined } from '@ant-design/icons';
+import { ThunderboltOutlined, ClearOutlined } from '@ant-design/icons-vue';
 import { useScheduleWebSocket } from '@/composables/useScheduleWebSocket';
 import { getToken } from '@/api/http';
 

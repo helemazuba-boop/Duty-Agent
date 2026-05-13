@@ -6,20 +6,21 @@ using DutyAgentBridge.Controls;
 using DutyAgentBridge.Models;
 using DutyAgentBridge.Services;
 using DutyAgentBridge.Services.Automations.Actions;
-using DutyAgentBridge.Services.Automations.Rules;
+using DutyAgentBridge.Controls.RuleSettingsControls;
 using DutyAgentBridge.Views;
 using ClassIsland.Shared;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using System.Diagnostics;
 using System.IO;
+using System.Reflection;
+using System.Text.Json;
 
 namespace DutyAgentBridge;
 
 [PluginEntrance]
 public class Plugin : PluginBase
 {
-    private const string MetaFileName = ".duty-agent-meta.json";
-
     public override void Initialize(HostBuilderContext context, IServiceCollection services)
     {
         // 注册路径服务
@@ -74,13 +75,19 @@ public class Plugin : PluginBase
                 .Where(info => info.Id.StartsWith("duty-agent-bridge"))
                 .ToList();
 
-            if (InjectService.TryGetAddSettingsPageGroupMethod(out var addSettingsPageGroupMethod))
+            if (InjectService.TryGetAddSettingsPageGroupMethod(out var addSettingsPageGroupMethod) &&
+                addSettingsPageGroupMethod != null)
             {
                 addSettingsPageGroupMethod.Invoke(
                     typeof(SettingsWindowRegistryExtensions),
                     [services, "duty-agent-bridge.group", "\uE31E", "Duty-Agent 桥接"]);
 
                 var groupIdProperty = InjectService.GetSettingsPageInfoGroupIdProperty();
+                if (groupIdProperty == null)
+                {
+                    return;
+                }
+
                 foreach (var info in registeredSettingsPageInfos)
                 {
                     groupIdProperty.SetValue(info, "duty-agent-bridge.group");
@@ -114,6 +121,8 @@ public interface IBridgePaths
 
 public sealed class BridgePaths : IBridgePaths
 {
+    private const string MetaFileName = ".duty-agent-meta.json";
+
     public string PluginConfigFolder { get; }
 
     public string SharedConfigFolder { get; }
@@ -128,6 +137,7 @@ public sealed class BridgePaths : IBridgePaths
         var configFolder = GetClassIslandConfigFolder();
         SharedConfigFolder = Path.Combine(configFolder, "DutyAgentBridge");
         PluginConfigFolder = SharedConfigFolder; // 桥接插件与独立软件共用同一目录
+        LogsDirectory = Path.Combine(SharedConfigFolder, "logs");
 
         Directory.CreateDirectory(SharedConfigFolder);
         Directory.CreateDirectory(LogsDirectory);
@@ -139,14 +149,112 @@ public sealed class BridgePaths : IBridgePaths
     {
         // 尝试从环境变量获取 ClassIsland 配置目录
         var envPath = Environment.GetEnvironmentVariable("CLASSISLAND_CONFIG_PATH");
-        if (!string.IsNullOrWhiteSpace(envPath) && Directory.Exists(envPath))
+        if (!string.IsNullOrWhiteSpace(envPath))
         {
-            return envPath;
+            return Path.GetFullPath(envPath);
+        }
+
+        var appDataConfigFolder = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "ClassIsland",
+            "Config");
+        var candidates = EnumeratePortableConfigCandidates()
+            .Append(appDataConfigFolder)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        var liveMetaConfigFolder = candidates.FirstOrDefault(HasLiveMetaFile);
+        if (!string.IsNullOrWhiteSpace(liveMetaConfigFolder))
+        {
+            return liveMetaConfigFolder;
+        }
+
+        foreach (var candidate in candidates)
+        {
+            if (Directory.Exists(candidate))
+            {
+                return candidate;
+            }
         }
 
         // 回退到 AppData
-        var appData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
-        return Path.Combine(appData, "ClassIsland", "Config");
+        return appDataConfigFolder;
+    }
+
+    private static bool HasLiveMetaFile(string configFolder)
+    {
+        try
+        {
+            var metaPath = Path.Combine(configFolder, "DutyAgentBridge", MetaFileName);
+            if (!File.Exists(metaPath))
+            {
+                return false;
+            }
+
+            using var document = JsonDocument.Parse(File.ReadAllText(metaPath));
+            if (!document.RootElement.TryGetProperty("pid", out var pidElement) ||
+                !pidElement.TryGetInt32(out var pid) ||
+                pid <= 0)
+            {
+                return false;
+            }
+
+            var process = Process.GetProcessById(pid);
+            return !process.HasExited;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static IEnumerable<string> EnumeratePortableConfigCandidates()
+    {
+        var assemblyDirectory = Path.GetDirectoryName(typeof(BridgePaths).Assembly.Location);
+        foreach (var candidate in EnumerateConfigCandidatesFromPath(assemblyDirectory))
+        {
+            yield return candidate;
+        }
+
+        foreach (var process in Process.GetProcessesByName("ClassIsland"))
+        {
+            string? executablePath = null;
+            try
+            {
+                executablePath = process.MainModule?.FileName;
+            }
+            catch
+            {
+            }
+
+            foreach (var candidate in EnumerateConfigCandidatesFromPath(Path.GetDirectoryName(executablePath)))
+            {
+                yield return candidate;
+            }
+        }
+    }
+
+    private static IEnumerable<string> EnumerateConfigCandidatesFromPath(string? startPath)
+    {
+        if (string.IsNullOrWhiteSpace(startPath))
+        {
+            yield break;
+        }
+
+        var current = new DirectoryInfo(startPath);
+        while (current != null)
+        {
+            yield return Path.Combine(current.FullName, "data", "Config");
+
+            var currentConfig = Path.Combine(current.FullName, "Config");
+            if (Directory.Exists(Path.Combine(current.FullName, "Plugins")) ||
+                File.Exists(Path.Combine(current.FullName, "Settings.json")))
+            {
+                yield return currentConfig;
+            }
+
+            current = current.Parent;
+        }
     }
 }
 

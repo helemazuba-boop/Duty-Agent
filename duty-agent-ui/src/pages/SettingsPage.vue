@@ -5,16 +5,18 @@ import {
 } from 'ant-design-vue';
 import {
   SaveOutlined, InfoCircleOutlined, ThunderboltOutlined,
-} from '@ant-design/icons';
+} from '@ant-design/icons-vue';
 import AiToolsPanel from '@/components/ai-tools/AiToolsPanel.vue';
 import { api } from '@/api/http';
 
 const { Text } = Typography;
 const activeTab = ref('ai-schedule');
 
-// ======== 后端连接状态 ========
+// ======== 连接状态 ========
 const backendConnected = ref(false);
 const backendLoading = ref(false);
+const bridgeConnected = ref(false);
+const bridgeLoading = ref(false);
 
 const checkBackend = async () => {
   backendLoading.value = true;
@@ -26,6 +28,22 @@ const checkBackend = async () => {
   } finally {
     backendLoading.value = false;
   }
+};
+
+const checkBridge = async () => {
+  bridgeLoading.value = true;
+  try {
+    const status = await api.getBridgeStatus();
+    bridgeConnected.value = status.connected && status.status === 'connected';
+  } catch {
+    bridgeConnected.value = false;
+  } finally {
+    bridgeLoading.value = false;
+  }
+};
+
+const checkConnections = async () => {
+  await Promise.allSettled([checkBackend(), checkBridge()]);
 };
 
 // ======== AI 排班配置 ========
@@ -57,7 +75,7 @@ const modelProfileOptions = [
 ];
 
 onMounted(async () => {
-  await checkBackend();
+  await checkConnections();
   try {
     const config = await api.getConfig();
     dutyRule.value = config.duty_rule || '';
@@ -130,26 +148,37 @@ const notificationDuration = ref(8);
     <a-tabs v-model:activeKey="activeTab">
 
       <!-- ======== AI 排班 ======== -->
-      <a-tabs-tab-pane key="ai-schedule" tab="AI 排班">
+      <a-tab-pane key="ai-schedule" tab="AI 排班">
         <div class="tab-content">
 
-          <!-- 后端连接状态 -->
+          <!-- 连接状态 -->
           <a-card class="mb-16">
-            <div class="backend-status-row">
-              <div class="backend-status-left">
-                <div style="display: flex; align-items: center; gap: 8px">
+            <div class="connection-status-row">
+              <div class="connection-status-list">
+                <div class="connection-status-item">
                   <Tag :color="backendConnected ? 'green' : 'red'" style="border-radius: 12px; margin: 0">
-                    {{ backendConnected ? '● 已连接' : '○ 未连接' }}
+                    {{ backendConnected ? '● 后端已启动' : '○ 后端未连接' }}
                   </Tag>
                   <span v-if="backendConnected" style="font-size: 13px; color: var(--da-text-secondary)">
-                    令牌由 ClassIsland 插件自动注入
+                    令牌由独立客户端注入
                   </span>
                   <span v-else style="font-size: 13px; color: var(--da-text-secondary)">
-                    请确保 ClassIsland 插件已启动
+                    请先启动 Duty-Agent 独立客户端
+                  </span>
+                </div>
+                <div class="connection-status-item">
+                  <Tag :color="bridgeConnected ? 'green' : 'default'" style="border-radius: 12px; margin: 0">
+                    {{ bridgeConnected ? '● ClassIsland 已连接' : '○ ClassIsland 未连接' }}
+                  </Tag>
+                  <span v-if="bridgeConnected" style="font-size: 13px; color: var(--da-text-secondary)">
+                    Duty-Agent-ClassIsland-Bridge 正在同步
+                  </span>
+                  <span v-else style="font-size: 13px; color: var(--da-text-secondary)">
+                    未检测到 ClassIsland Bridge，ClassIsland 未启动或桥接插件未连接
                   </span>
                 </div>
               </div>
-              <Button size="small" :loading="backendLoading" @click="checkBackend">
+              <Button size="small" :loading="backendLoading || bridgeLoading" @click="checkConnections">
                 <template #icon><ThunderboltOutlined /></template>
                 检测连接
               </Button>
@@ -267,15 +296,15 @@ const notificationDuration = ref(8);
             </div>
           </a-card>
         </div>
-      </a-tabs-tab-pane>
+      </a-tab-pane>
 
       <!-- ======== AI 工具 ======== -->
-      <a-tabs-tab-pane key="ai-tools" tab="AI 工具">
+      <a-tab-pane key="ai-tools" tab="AI 工具">
         <AiToolsPanel />
-      </a-tabs-tab-pane>
+      </a-tab-pane>
 
       <!-- ======== 自动运行 ======== -->
-      <a-tabs-tab-pane key="auto-run" tab="自动运行">
+      <a-tab-pane key="auto-run" tab="自动运行">
         <div class="tab-content">
 
           <!-- 自动排班 -->
@@ -385,10 +414,10 @@ const notificationDuration = ref(8);
             </div>
           </a-card>
         </div>
-      </a-tabs-tab-pane>
+      </a-tab-pane>
 
       <!-- ======== 通知设置 ======== -->
-      <a-tabs-tab-pane key="notification" tab="通知设置">
+      <a-tab-pane key="notification" tab="通知设置">
         <a-card>
           <template #title>通知设置</template>
           <div class="empty-state">
@@ -397,7 +426,7 @@ const notificationDuration = ref(8);
             <div class="empty-state-desc">配置排班通知和提醒方式（待实现）</div>
           </div>
         </a-card>
-      </a-tabs-tab-pane>
+      </a-tab-pane>
 
     </a-tabs>
   </div>
@@ -408,22 +437,39 @@ const notificationDuration = ref(8);
   display: flex;
   flex-direction: column;
   gap: 0;
+  min-width: 0;
+}
+
+:deep(.ant-tabs-content),
+:deep(.ant-tabs-tabpane) {
+  min-width: 0;
 }
 
 .mb-16 {
   margin-bottom: 16px;
 }
 
-/* Backend status */
-.backend-status-row {
+/* Connection status */
+.connection-status-row {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 16px;
 }
 
-.backend-status-left {
+.connection-status-list {
   flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+.connection-status-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
 }
 
 /* Duty rule */

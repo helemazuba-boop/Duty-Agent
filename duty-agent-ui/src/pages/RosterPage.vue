@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue';
 import { Table, Tag, Space, Modal, Input, message, Popconfirm, Tooltip } from 'ant-design-vue';
-import { EditOutlined, DeleteOutlined, UserAddOutlined, ReloadOutlined, UserSwitchOutlined } from '@ant-design/icons';
+import { EditOutlined, DeleteOutlined, UserAddOutlined, ReloadOutlined, UserSwitchOutlined } from '@ant-design/icons-vue';
 import type { RosterPerson } from '@/types';
 import { useRoster } from '@/composables/useRoster';
 

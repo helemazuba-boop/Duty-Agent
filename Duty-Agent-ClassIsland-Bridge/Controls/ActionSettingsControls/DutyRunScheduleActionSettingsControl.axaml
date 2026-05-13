@@ -3,7 +3,7 @@
              xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
              xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
              mc:Ignorable="d" d:DesignWidth="400" d:DesignHeight="300"
-             x:Class="DutyAgentBridge.Controls.ActionSettingsControls.DutyRunScheduleActionSettingsControl">
+             x:Class="DutyAgentBridge.Services.Automations.Actions.DutyRunScheduleActionSettingsControl">
   <StackPanel Margin="16">
     <TextBlock Text="\u6267\u884C\u503C\u65E5\u6392\u73ED \u8BBE\u7F6E" FontSize="16" FontWeight="Bold" Margin="0,0,0,16"/>
 

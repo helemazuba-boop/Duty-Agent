@@ -112,5 +112,6 @@ public sealed class DutyRuleHandlerService
 /// </summary>
 public static class DutyAutomationIds
 {
+    public const string RunScheduleActionId = "duty-bridge.run-schedule-action";
     public const string TodayAssignedRule = "duty-bridge.today-assigned-rule";
 }

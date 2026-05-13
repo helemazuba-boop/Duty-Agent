@@ -130,11 +130,9 @@ public sealed class DutyNotificationProvider : NotificationProviderBase
             var primaryText = success ? $"排班任务已完成" : $"排班执行失败";
             var scrollingText = message;
 
-            var maskContent = NotificationContent.CreateSimpleTextContent(primaryText, null)
-            {
-                Duration = TimeSpan.FromSeconds(2),
-                IsSpeechEnabled = false
-            };
+            var maskContent = NotificationContent.CreateSimpleTextContent(primaryText, null);
+            maskContent.Duration = TimeSpan.FromSeconds(2);
+            maskContent.IsSpeechEnabled = false;
 
             NotificationContent overlayContent;
             if (string.IsNullOrWhiteSpace(scrollingText))
@@ -171,11 +169,9 @@ public sealed class DutyNotificationProvider : NotificationProviderBase
             var primaryText = "自动排班已开始执行";
             var scrollingText = $"{now:yyyy-MM-dd HH:mm} 任务已加入队列";
 
-            var maskContent = NotificationContent.CreateSimpleTextContent(primaryText, null)
-            {
-                Duration = TimeSpan.FromSeconds(2),
-                IsSpeechEnabled = false
-            };
+            var maskContent = NotificationContent.CreateSimpleTextContent(primaryText, null);
+            maskContent.Duration = TimeSpan.FromSeconds(2);
+            maskContent.IsSpeechEnabled = false;
 
             var overlayContent = NotificationContent.CreateRollingTextContent(
                 $"{primaryText}  {scrollingText}",
@@ -223,11 +219,9 @@ public sealed class DutyNotificationProvider : NotificationProviderBase
                     : $"{DateTime.Now:yyyy-MM-dd} 暂无值日安排";
             }
 
-            var maskContent = NotificationContent.CreateSimpleTextContent(primaryText, null)
-            {
-                Duration = TimeSpan.FromSeconds(2),
-                IsSpeechEnabled = false
-            };
+            var maskContent = NotificationContent.CreateSimpleTextContent(primaryText, null);
+            maskContent.Duration = TimeSpan.FromSeconds(2);
+            maskContent.IsSpeechEnabled = false;
 
             var overlayContent = NotificationContent.CreateRollingTextContent(
                 $"{primaryText}  {scrollingText}",

@@ -1,5 +1,6 @@
 using Avalonia.Controls;
 using ClassIsland.Core.Abstractions.Automation;
+using ClassIsland.Core.Abstractions.Controls;
 
 namespace DutyAgentBridge.Controls.RuleSettingsControls;
 
