@@ -47,3 +47,13 @@ venv/
 .venv/
 env/
 node_modules
+
+# Local standalone client release outputs
+.release/
+PublishOutput/
+
+# Qoder / tool artifacts
+.qoder/
+.tmp-run/
+data/state.prev.json
+*.bak_a6

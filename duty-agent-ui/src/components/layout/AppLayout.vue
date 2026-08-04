@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { RouterLink, RouterView } from 'vue-router';
+import { computed } from 'vue';
+import { RouterLink, RouterView, useRoute } from 'vue-router';
 import { Layout, Menu, Typography } from 'ant-design-vue';
 import {
   CalendarOutlined,
@@ -11,6 +12,8 @@ import {
 
 const { Sider, Content } = Layout;
 const { Title } = Typography;
+const route = useRoute();
+const selectedMenuKeys = computed(() => [route.path.split('/')[1] || 'dashboard']);
 </script>
 
 <template>
@@ -20,7 +23,7 @@ const { Title } = Typography;
         <Title :level="4" class="app-brand-title">排班管理</Title>
       </div>
 
-      <Menu mode="inline" theme="dark" class="app-menu">
+      <Menu mode="inline" theme="dark" class="app-menu" :selected-keys="selectedMenuKeys">
         <Menu.Item key="dashboard">
           <template #icon><DashboardOutlined /></template>
           <RouterLink to="/dashboard">首页仪表盘</RouterLink>

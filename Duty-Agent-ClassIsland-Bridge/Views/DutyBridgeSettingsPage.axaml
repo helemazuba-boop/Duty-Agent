@@ -7,56 +7,61 @@
 
   <ScrollViewer>
     <StackPanel Margin="24">
-
-      <!-- 页面标题 -->
       <TextBlock Text="Duty-Agent 桥接设置" FontSize="24" FontWeight="Bold" Margin="0,0,0,24"/>
 
-      <!-- 连接状态卡片 -->
       <Border Background="#f5f5f5" CornerRadius="8" Padding="16" Margin="0,0,0,16">
         <StackPanel>
-          <TextBlock Text="\u8FDE\u63A5\u72B6\u6001" FontSize="14" FontWeight="SemiBold" Margin="0,0,0,8"/>
-          <TextBlock x:Name="StatusIndicator" Text="\u25CB \u672A\u8FDE\u63A5" FontSize="16" Margin="0,0,0,4"/>
+          <TextBlock Text="连接状态" FontSize="14" FontWeight="SemiBold" Margin="0,0,0,8"/>
+          <TextBlock x:Name="StatusIndicator" Text="○ 未连接" FontSize="16" Margin="0,0,0,4"/>
           <TextBlock x:Name="ConnectionDetails" Text="" FontSize="12" Foreground="#8c8c8c" IsVisible="False" Margin="0,0,0,12"/>
           <StackPanel Orientation="Horizontal" Spacing="8">
-            <Button x:Name="ReconnectButton" Content="\u91CD\u65B0\u8FDE\u63A5" Click="OnReconnectClick" Width="100"/>
-            <Button Content="\u6253\u5F00\u72B6\u6001\u76EE\u5F55" Click="OnOpenStandaloneClick" Width="120"/>
+            <Button x:Name="ReconnectButton" Content="重新连接" Click="OnReconnectClick" Width="100"/>
+            <Button Content="打开状态目录" Click="OnOpenStandaloneClick" Width="120"/>
           </StackPanel>
         </StackPanel>
       </Border>
 
-      <!-- 提示信息 -->
       <Border Background="#e6f7ff" BorderBrush="#91d5ff" BorderThickness="1" CornerRadius="8" Padding="12" Margin="0,0,0,16">
         <StackPanel>
-          <TextBlock Text="\u63D0\u793A" FontWeight="SemiBold" Margin="0,0,0,4"/>
-          <TextBlock TextWrapping="Wrap" FontSize="12" Foreground="#666">
-            \u6B64\u63D2\u4EF6\u9700\u8981\u4E0E\u72EC\u7ACB Duty-Agent \u8F6F\u4EF6\u914D\u5408\u4F7F\u7528\u3002\u8BF7\u786E\u4FDD\u72EC\u7ACB\u8F6F\u4EF6\u5DF2\u542F\u52A8\u5E76\u8FDE\u63A5\u6B63\u5E38\u3002
-          </TextBlock>
-          <TextBlock TextWrapping="Wrap" FontSize="12" Foreground="#666" Margin="0,4,0,0">
-            \u72EC\u7ACB\u8F6F\u4EF6\u7BA1\u7406\u6240\u6709\u8BBE\u7F6E\uFF08\u540D\u518C\u3001\u6392\u73ED\u3001\u81EA\u52A8\u8FD0\u884C\u7B49\uFF09\uFF0C\u6B64\u63D2\u4EF6\u53EA\u8D1F\u8D1F\u901A\u77E5\u548C\u663E\u793A\u3002
-          </TextBlock>
+          <TextBlock Text="提示" FontWeight="SemiBold" Margin="0,0,0,4"/>
+          <TextBlock TextWrapping="Wrap" FontSize="12" Foreground="#666"
+                     Text="此插件需要与独立 Duty-Agent 客户端配合使用。独立客户端会写入 meta 文件，插件根据该文件获取端口和 token。"/>
         </StackPanel>
       </Border>
 
-      <!-- 测试区域 -->
       <Border Background="#fafafa" CornerRadius="8" Padding="16" Margin="0,0,0,16">
         <StackPanel>
-          <TextBlock Text="\u6D4B\u8BD5\u533A\u57DF" FontSize="14" FontWeight="SemiBold" Margin="0,0,0,8"/>
+          <TextBlock Text="路径诊断" FontSize="14" FontWeight="SemiBold" Margin="0,0,0,8"/>
+          <TextBlock x:Name="ConfigSourceText" Text="" FontSize="12" Foreground="#666" TextWrapping="Wrap" Margin="0,0,0,4"/>
+          <TextBlock x:Name="ConfigFolderText" Text="" FontSize="12" Foreground="#666" TextWrapping="Wrap" Margin="0,0,0,4"/>
+          <TextBlock x:Name="MetaFileText" Text="" FontSize="12" Foreground="#666" TextWrapping="Wrap" Margin="0,0,0,4"/>
+          <TextBlock x:Name="LogsDirectoryText" Text="" FontSize="12" Foreground="#666" TextWrapping="Wrap" Margin="0,0,0,8"/>
+          <TextBlock Text="候选路径" FontSize="12" FontWeight="SemiBold" Margin="0,0,0,4"/>
+          <TextBlock x:Name="ConfigCandidatesText" Text="" FontSize="12" Foreground="#666" TextWrapping="Wrap"/>
+          <StackPanel Orientation="Horizontal" Spacing="8" Margin="0,12,0,0">
+            <Button Content="打开配置目录" Click="OnOpenConfigFolderClick" Width="120"/>
+            <Button Content="打开日志目录" Click="OnOpenLogsFolderClick" Width="120"/>
+          </StackPanel>
+        </StackPanel>
+      </Border>
+
+      <Border Background="#fafafa" CornerRadius="8" Padding="16" Margin="0,0,0,16">
+        <StackPanel>
+          <TextBlock Text="测试区域" FontSize="14" FontWeight="SemiBold" Margin="0,0,0,8"/>
           <StackPanel Orientation="Horizontal" Spacing="8" Margin="0,0,0,8">
-            <Button x:Name="TestScheduleButton" Content="\u6D4B\u8BD5\u6392\u73ED" Click="OnTestScheduleClick" Width="100"/>
+            <Button x:Name="TestScheduleButton" Content="测试排班" Click="OnTestScheduleClick" Width="100"/>
           </StackPanel>
           <TextBlock x:Name="TestResult" Text="" FontSize="12" IsVisible="False" TextWrapping="Wrap"/>
         </StackPanel>
       </Border>
 
-      <!-- 关于 -->
       <Border Background="#fafafa" CornerRadius="8" Padding="16">
         <StackPanel>
-          <TextBlock Text="\u5173\u4E8E" FontSize="14" FontWeight="SemiBold" Margin="0,0,0,8"/>
+          <TextBlock Text="关于" FontSize="14" FontWeight="SemiBold" Margin="0,0,0,8"/>
           <TextBlock Text="Duty-Agent Bridge v0.50.0" FontSize="12" Foreground="#8c8c8c"/>
-          <TextBlock Text="\u4E0E\u72EC\u7ACB Duty-Agent \u8F6F\u4EF6\u901A\u4FE1\uFF0C\u63D0\u4F9B ClassIsland \u901A\u77E5\u548C\u663E\u793A\u529F\u80FD" FontSize="12" Foreground="#8c8c8c" TextWrapping="Wrap"/>
+          <TextBlock Text="与独立 Duty-Agent 客户端通信，提供 ClassIsland 通知和显示功能" FontSize="12" Foreground="#8c8c8c" TextWrapping="Wrap"/>
         </StackPanel>
       </Border>
-
     </StackPanel>
   </ScrollViewer>
 </UserControl>

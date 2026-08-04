@@ -1,6 +1,6 @@
 {
-  "version": 1,
-  "selected_plan_id": "standard",
+  "version": 2,
+  "selected_plan_id": "offline",
   "plan_presets": [
     {
       "id": "standard",
@@ -34,11 +34,24 @@
       "model_profile": "auto",
       "provider_hint": "",
       "multi_agent_execution_mode": "auto"
+    },
+    {
+      "id": "offline",
+      "name": "离线算法",
+      "mode_id": "offline",
+      "api_key": "",
+      "base_url": "https://integrate.api.nvidia.com/v1",
+      "model": "moonshotai/kimi-k2-thinking",
+      "model_profile": "auto",
+      "provider_hint": "",
+      "multi_agent_execution_mode": "auto"
     }
   ],
   "duty_rule": "",
   "polling": {
     "hints_on": true,
     "max_rounds": 15
-  }
+  },
+  "offline_schedule_days": 7,
+  "offline_skip_weekends": true
 }

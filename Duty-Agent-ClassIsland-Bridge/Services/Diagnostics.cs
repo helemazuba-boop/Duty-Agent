@@ -11,7 +11,7 @@ namespace DutyAgentBridge.Services;
 public static class Diagnostics
 {
     private static readonly ConcurrentQueue<BridgeLogEntry> _entries = new();
-    private static readonly string _logDirectory;
+    private static string _logDirectory;
     private static readonly object _writeLock = new();
     private const int MaxInMemoryEntries = 500;
 
@@ -29,6 +29,23 @@ public static class Diagnostics
         catch
         {
             _logDirectory = Path.GetTempPath();
+        }
+    }
+
+    public static void Initialize(string logDirectory)
+    {
+        if (string.IsNullOrWhiteSpace(logDirectory))
+        {
+            return;
+        }
+
+        try
+        {
+            Directory.CreateDirectory(logDirectory);
+            _logDirectory = logDirectory;
+        }
+        catch
+        {
         }
     }
 

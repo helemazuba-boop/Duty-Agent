@@ -8,6 +8,7 @@ import traceback
 from execution_profiles import build_execution_plan, resolve_execution_profile
 from llm_transport import call_llm
 from multi_agent import run_multi_agent_schedule
+from offline_scheduler import run_offline_schedule
 from orchestrator.executor import run_orchestrator_schedule
 from postprocess import (
     dedupe_pool_by_date,
@@ -70,6 +71,8 @@ def run_schedule(ctx: Context, input_data: dict, emit_progress_fn=None, stop_eve
             result = run_tool_loop_schedule(ctx, payload, execution_plan, emit_progress_fn, stop_event)
         elif execution_plan.runtime_mode == "orchestrator":
             result = run_orchestrator_schedule(ctx, payload, execution_plan, emit_progress_fn, stop_event)
+        elif execution_plan.runtime_mode == "offline":
+            result = run_offline_schedule(ctx, payload, execution_plan, emit_progress_fn, stop_event)
         else:
             result = run_single_pass_schedule(ctx, payload, execution_plan, emit_progress_fn, stop_event)
 

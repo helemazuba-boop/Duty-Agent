@@ -25,6 +25,48 @@ export interface BridgeStatus {
   source: string | null;
 }
 
+export interface NotificationSettings {
+  version: number;
+  notification_entry: 'system' | 'classisland' | 'both' | 'off';
+  system_notifications_enabled: boolean;
+  schedule_completion_notification_enabled: boolean;
+  auto_run_trigger_notification_enabled: boolean;
+  duty_reminder_enabled: boolean;
+  duty_reminder_times: string[];
+  notification_duration_seconds: number;
+  auto_run_mode: 'Off' | 'Weekly' | 'Monthly' | 'Custom';
+  auto_run_parameter: string;
+  auto_run_time: string;
+  auto_run_retry_times: number;
+  client_auto_start: boolean;
+  client_close_action: 'ask' | 'tray' | 'exit';
+}
+
+export type NotificationSettingsPatch = Partial<Omit<NotificationSettings, 'version'>> & {
+  expected_version?: number;
+};
+
+export interface ReadinessCheck {
+  id: string;
+  ok: boolean;
+  detail: string;
+  fix: string;
+  warn?: boolean;
+}
+
+export interface Readiness {
+  ready: boolean;
+  checks: ReadinessCheck[];
+  next_steps: string[];
+}
+
+export interface ModelProbeResult {
+  ok: boolean;
+  status: string;
+  detail: string;
+  fix: string;
+}
+
 const http: AxiosInstance = axios.create({
   baseURL: API_BASE_URL,
   timeout: 30000,
@@ -81,6 +123,32 @@ export const api = {
   },
   async updateConfig(config: any) {
     const { data } = await http.patch('/api/v1/config', config);
+    return data;
+  },
+  async getReadiness(probeModel = false): Promise<Readiness> {
+    const { data } = await http.get<Readiness>('/api/v1/readiness', {
+      params: probeModel ? { probe_model: true } : undefined,
+    });
+    return data;
+  },
+  async probeModel(payload: { base_url: string; model: string; api_key?: string }): Promise<ModelProbeResult> {
+    const { data } = await http.post<ModelProbeResult>('/api/v1/duty/model-probe', payload);
+    return data;
+  },
+  async getNotificationSettings(): Promise<NotificationSettings> {
+    const { data } = await http.get<NotificationSettings>('/api/v1/notifications/settings');
+    return data;
+  },
+  async updateNotificationSettings(settings: NotificationSettingsPatch): Promise<NotificationSettings> {
+    const { data } = await http.patch<NotificationSettings>('/api/v1/notifications/settings', settings);
+    return data;
+  },
+  async testNotification() {
+    const { data } = await http.post('/api/v1/notifications/test', {
+      title: 'Duty-Agent 通知测试',
+      body: '独立客户端系统通知已连接。',
+      route: '/settings',
+    });
     return data;
   },
 

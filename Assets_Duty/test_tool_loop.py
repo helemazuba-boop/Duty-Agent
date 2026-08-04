@@ -12,7 +12,7 @@ import shutil
 import sys
 import tempfile
 import unittest
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 from typing import Dict, List, Optional
 from unittest.mock import patch
@@ -82,6 +82,12 @@ def make_plan() -> ExecutionPlan:
         tasks=(),
         notes=(),
     )
+
+
+class FixedToolLoopDateTime(datetime):
+    @staticmethod
+    def now():
+        return datetime(2026, 4, 5)
 
 
 # ------------------------------------------------------------------------------
@@ -503,11 +509,13 @@ A = 教室
             }]
         })
 
-        with patch("tool_loop.executor.call_llm_raw") as mock_llm:
+        from tool_loop import executor as tool_loop_executor
+
+        with patch("tool_loop.executor.call_llm_raw") as mock_llm, \
+             patch.object(tool_loop_executor, "datetime", FixedToolLoopDateTime):
             mock_llm.return_value = tool_call_response
 
-            from tool_loop.executor import run_tool_loop_schedule
-            result = run_tool_loop_schedule(
+            result = tool_loop_executor.run_tool_loop_schedule(
                 ctx=ctx,
                 input_data={"instruction": "安排4月6日到4月7日"},
                 execution_plan=plan,
@@ -554,11 +562,13 @@ A = 教室
             }]
         })
 
-        with patch("tool_loop.executor.call_llm_raw") as mock_llm:
+        from tool_loop import executor as tool_loop_executor
+
+        with patch("tool_loop.executor.call_llm_raw") as mock_llm, \
+             patch.object(tool_loop_executor, "datetime", FixedToolLoopDateTime):
             mock_llm.return_value = tool_call_response
 
-            from tool_loop.executor import run_tool_loop_schedule
-            result = run_tool_loop_schedule(
+            result = tool_loop_executor.run_tool_loop_schedule(
                 ctx=ctx,
                 input_data={"instruction": "安排4月6日到4月7日"},
                 execution_plan=plan,

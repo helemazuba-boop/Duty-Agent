@@ -1,4 +1,4 @@
-using System.Text.Json.Serialization;
+﻿using System.Text.Json.Serialization;
 
 namespace DutyAgentBridge.Models;
 
@@ -129,6 +129,35 @@ public sealed class CoreRunProgress
 /// <summary>
 /// 后端配置（来自 GET /api/v1/config）
 /// </summary>
+public sealed class DutyNotificationEvent
+{
+    [JsonPropertyName("id")]
+    public string Id { get; set; } = "";
+
+    [JsonPropertyName("type")]
+    public string Type { get; set; } = "";
+
+    [JsonPropertyName("title")]
+    public string Title { get; set; } = "Duty-Agent";
+
+    [JsonPropertyName("body")]
+    public string Body { get; set; } = "";
+
+    [JsonPropertyName("level")]
+    public string Level { get; set; } = "info";
+
+    [JsonPropertyName("route")]
+    public string Route { get; set; } = "/dashboard";
+
+    [JsonPropertyName("source")]
+    public string Source { get; set; } = "";
+
+    [JsonPropertyName("targets")]
+    public List<string> Targets { get; set; } = [];
+
+    [JsonPropertyName("created_at")]
+    public double CreatedAt { get; set; }
+}
 public sealed class DutyBackendConfig
 {
     [JsonPropertyName("version")]

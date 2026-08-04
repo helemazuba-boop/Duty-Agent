@@ -777,16 +777,16 @@ def call_llm_json(
     raise RuntimeError(f"JSON parse failed: {last_parse_error}")
 
 
-def call_llm(
-    messages: List[dict],
-    config: dict,
-    progress_callback=None,
-    stop_event=None,
-    transport_overrides: Optional[dict] = None,
-    *,
+def parse_schedule_completion(
+    content: str,
     start_date_value: date | str | None = None,
 ) -> Tuple[dict, str]:
-    content = call_llm_raw(messages, config, progress_callback, stop_event, transport_overrides)
+    """Parse a raw model completion (V2 INI, CSV fallback) into schedule + state_delta.
+
+    This is the pure parsing half of :func:`call_llm`, extracted so the same
+    protocol can parse completions produced by an external AI (see the CLI
+    plan-prompt / plan-ingest delegation flow) without touching transport.
+    """
     normalized_content = _normalize_structured_output(content)
 
     try:
@@ -816,6 +816,19 @@ def call_llm(
                 "state_delta": {"debt_counts": {}, "credit_counts": {}},
             }, content
         raise RuntimeError(f"Parse failed: {kv_error}") from kv_error
+
+
+def call_llm(
+    messages: List[dict],
+    config: dict,
+    progress_callback=None,
+    stop_event=None,
+    transport_overrides: Optional[dict] = None,
+    *,
+    start_date_value: date | str | None = None,
+) -> Tuple[dict, str]:
+    content = call_llm_raw(messages, config, progress_callback, stop_event, transport_overrides)
+    return parse_schedule_completion(content, start_date_value)
 
 
 def _parse_bool(value, default: bool) -> bool:

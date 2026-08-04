@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Tuple
 
 SUPPORTED_MODEL_PROFILES = ("auto", "cloud", "campus_small", "edge", "custom")
-SUPPORTED_ORCHESTRATION_MODES = ("auto", "single_pass", "multi_agent", "tool_loop", "orchestrator")
+SUPPORTED_ORCHESTRATION_MODES = ("auto", "single_pass", "multi_agent", "tool_loop", "orchestrator", "offline")
 SUPPORTED_MULTI_AGENT_EXECUTION_MODES = ("auto", "parallel", "serial")
 SUPPORTED_SINGLE_PASS_STRATEGIES = ("auto", "cloud_standard", "edge_tuned", "edge_generic", "incremental_thinking")
 SUPPORTED_TOOL_LOOP_TRIGGERS = ("ini_tool", "force_tool_loop", "never_tool_loop")
@@ -36,6 +36,10 @@ ORCHESTRATION_ALIASES = {
     "tool": "tool_loop",
     "orchestrator": "orchestrator",
     "agent": "orchestrator",
+    "offline": "offline",
+    "algorithm": "offline",
+    "deterministic": "offline",
+    "local": "offline",
 }
 
 MULTI_AGENT_EXECUTION_ALIASES = {
@@ -210,6 +214,12 @@ def build_execution_plan(profile: ExecutionProfile) -> ExecutionPlan:
         runtime_mode = "orchestrator"
         prompt_pack_strategy = "orchestrator"
         notes.append("Orchestrator executor selected (LLM orchestrator + TimeWindow agents).")
+    elif profile.orchestration_mode == "offline":
+        runtime_mode = "offline"
+        prompt_pack_strategy = "offline"
+        # No LLM stages: the deterministic scheduler ignores the agent DAG.
+        tasks = (AgentTaskSpec("offline_scheduler", "stage3_assemble", "offline", llm_required=False),)
+        notes.append("Offline deterministic executor selected (no LLM).")
     else:
         if profile.model_profile == "campus_small":
             runtime_mode = "multi_agent_serial" if profile.multi_agent_execution_mode == "serial" else "multi_agent_parallel"
@@ -222,6 +232,8 @@ def build_execution_plan(profile: ExecutionProfile) -> ExecutionPlan:
         notes.append("Agents DAG execution enabled.")
     elif runtime_mode == "tool_loop":
         notes.append("INI tool-loop AI polling loop enabled.")
+    elif runtime_mode == "offline":
+        notes.append("Offline deterministic rotation enabled (no model call).")
     else:
         notes.append(f"Single-pass strategy resolved to {profile.single_pass_strategy}.")
 

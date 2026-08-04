@@ -34,7 +34,7 @@ from auth import (
 )
 from mcp_server import build_mcp_http_app
 from runtime import create_runtime
-from routers import bridge, config, duty, roster
+from routers import bridge, config, duty, notifications, readiness, roster
 import uvicorn
 
 WEB_DIRECTORY = Path(__file__).resolve().parent / "web"
@@ -47,6 +47,10 @@ async def lifespan(app: FastAPI):
     async with app.state.mcp_http_app.router.lifespan_context(app.state.mcp_http_app):
         yield
     app.state.mcp_http_app = None
+    runtime = getattr(app.state, "runtime", None)
+    if runtime is not None:
+        runtime.stop_notification_workers()
+        runtime.stop_auto_run_worker()
     # Shutdown logic
     print("[Lifespan] Engine shutting down", flush=True)
 
@@ -114,8 +118,10 @@ if WEB_DIRECTORY.is_dir():
 # Register modular routers
 app.include_router(duty.router)
 app.include_router(bridge.router)
+app.include_router(notifications.router)
 app.include_router(config.router)
 app.include_router(roster.router)
+app.include_router(readiness.router)
 
 @app.get("/")
 async def root(request: Request):
@@ -183,9 +189,16 @@ def monitor_parent_process():
         finally:
             kernel32.CloseHandle(handle)
     else:
-        # Fallback for Posix (os.getppid() monitor)
+        # Fallback for Posix (os.getppid() monitor). ``os.kill(pid, 0)`` alone is
+        # PID-reuse unsafe: once the parent dies and the PID is recycled, the
+        # probe keeps succeeding and the backend outlives its host forever.
+        # ``getppid()`` changing (reparent to init/subreaper) is the reliable
+        # death signal, so check it first and keep the kill-probe as backup.
         print(f"[Lifecycle] Posix SuicideWatch active for parent PID: {parent_pid}", flush=True)
         while True:
+            if os.getppid() != parent_pid:
+                print(f"[Lifecycle] Parent {parent_pid} lost (reparented). Shutting down self...", flush=True)
+                os._exit(0)
             try:
                 os.kill(parent_pid, 0)
             except OSError:
@@ -199,6 +212,7 @@ def main():
     parser.add_argument("--server", action="store_true", help="Run in HTTP server mode")
     parser.add_argument("--port", type=int, default=0, help="Port to listen on (0 for random)")
     parser.add_argument("--disable-mcp-runtime", action="store_true", help="Disable MCP for this process without changing saved config")
+    parser.add_argument("--no-parent-watch", action="store_true", help="Skip the parent-process SuicideWatch; the process lifecycle is managed by an external manager (e.g. duty-cli serve) via a pid file.")
     args = parser.parse_args()
 
     data_dir = Path(args.data_dir).resolve()
@@ -227,13 +241,17 @@ def main():
             except Exception:
                 pass
         
-        # Start suicide watch thread
-        watch_thread = threading.Thread(
-            target=monitor_parent_process, 
-            daemon=True,
-            name="SuicideWatch"
-        )
-        watch_thread.start()
+        # Start suicide watch thread (skipped when an external lifecycle
+        # manager such as ``duty-cli serve`` owns this process via a pid file).
+        if not args.no_parent_watch:
+            watch_thread = threading.Thread(
+                target=monitor_parent_process, 
+                daemon=True,
+                name="SuicideWatch"
+            )
+            watch_thread.start()
+        else:
+            print("[Lifecycle] SuicideWatch disabled (--no-parent-watch).", flush=True)
 
         uvicorn.run(app, host="127.0.0.1", port=actual_port, log_level="warning")
     else:

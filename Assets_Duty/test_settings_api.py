@@ -167,6 +167,127 @@ class TestDutyLiveApi(unittest.TestCase):
         self.assertEqual(success.status_code, 200)
         self.assertEqual(failure.status_code, 401)
 
+    def test_notification_settings_reject_stale_expected_version(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            original_runtime = getattr(app.state, "runtime", None)
+            runtime = create_runtime(Path(temp_dir))
+            app.state.runtime = runtime
+            try:
+                with TestClient(app) as client:
+                    first = client.get("/api/v1/notifications/settings", headers=_auth_headers(runtime))
+                    first_version = first.json()["version"]
+
+                    success = client.patch(
+                        "/api/v1/notifications/settings",
+                        json={
+                            "expected_version": first_version,
+                            "notification_entry": "both",
+                        },
+                        headers=_auth_headers(runtime),
+                    )
+                    stale = client.patch(
+                        "/api/v1/notifications/settings",
+                        json={
+                            "expected_version": first_version,
+                            "notification_entry": "off",
+                        },
+                        headers=_auth_headers(runtime),
+                    )
+            finally:
+                app.state.runtime = original_runtime
+
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(success.status_code, 200)
+        self.assertEqual(stale.status_code, 409)
+
+
+class TestAutoRunSettingsApi(unittest.TestCase):
+    """The notifications/settings endpoint also carries the auto-run schedule
+    fields so the Web settings page can configure auto-run."""
+
+    def _with_runtime(self, temp_dir: str):
+        runtime = create_runtime(Path(temp_dir))
+        # Stop daemon workers so they don't race the TemporaryDirectory cleanup.
+        runtime.stop_auto_run_worker()
+        runtime.stop_notification_workers()
+        return runtime
+
+    def test_get_includes_auto_run_fields(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            original_runtime = getattr(app.state, "runtime", None)
+            runtime = self._with_runtime(temp_dir)
+            app.state.runtime = runtime
+            try:
+                with TestClient(app) as client:
+                    response = client.get("/api/v1/notifications/settings", headers=_auth_headers(runtime))
+            finally:
+                app.state.runtime = original_runtime
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["auto_run_mode"], "Off")
+        self.assertIn("auto_run_parameter", payload)
+        self.assertEqual(payload["auto_run_time"], "08:00")
+        self.assertEqual(payload["auto_run_retry_times"], 3)
+
+    def test_patch_auto_run_fields_persists_to_host_config(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            original_runtime = getattr(app.state, "runtime", None)
+            runtime = self._with_runtime(temp_dir)
+            app.state.runtime = runtime
+            try:
+                with TestClient(app) as client:
+                    response = client.patch(
+                        "/api/v1/notifications/settings",
+                        json={
+                            "auto_run_mode": "Weekly",
+                            "auto_run_parameter": "Friday",
+                            "auto_run_time": "07:30",
+                            "auto_run_retry_times": 5,
+                        },
+                        headers=_auth_headers(runtime),
+                    )
+                persisted = runtime._load_host_config()
+            finally:
+                app.state.runtime = original_runtime
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["auto_run_mode"], "Weekly")
+        self.assertEqual(payload["auto_run_parameter"], "Friday")
+        self.assertEqual(payload["auto_run_time"], "07:30")
+        self.assertEqual(payload["auto_run_retry_times"], 5)
+        self.assertEqual(persisted["auto_run_mode"], "Weekly")
+        self.assertEqual(persisted["auto_run_parameter"], "Friday")
+        self.assertEqual(persisted["auto_run_time"], "07:30")
+        self.assertEqual(persisted["auto_run_retry_times"], 5)
+
+    def test_patch_auto_run_normalizes_invalid_values(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            original_runtime = getattr(app.state, "runtime", None)
+            runtime = self._with_runtime(temp_dir)
+            app.state.runtime = runtime
+            try:
+                with TestClient(app) as client:
+                    response = client.patch(
+                        "/api/v1/notifications/settings",
+                        json={
+                            "auto_run_mode": "bogus",
+                            "auto_run_time": "25:99",
+                            "auto_run_retry_times": 99,
+                        },
+                        headers=_auth_headers(runtime),
+                    )
+            finally:
+                app.state.runtime = original_runtime
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        # Normalization: unknown mode -> Off, bad time -> default, retry clamped to 20.
+        self.assertEqual(payload["auto_run_mode"], "Off")
+        self.assertEqual(payload["auto_run_time"], "08:00")
+        self.assertEqual(payload["auto_run_retry_times"], 20)
+
 
 if __name__ == "__main__":
     unittest.main()

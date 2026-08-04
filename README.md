@@ -160,6 +160,64 @@ $env:DUTY_AGENT_API_KEY = "<provider-api-key>"
 - 如果 MCP 客户端报 `ERR_CONNECTION_REFUSED`，优先检查后端是否已启动，以及你填写的端口是否就是设置页显示的当前服务端口；这一步通常和 token 无关。
 - 如果固定端口被占用，宿主会回退到随机端口继续启动，但本次运行会禁用 MCP。设置页会明确显示“已回退随机端口，MCP 已禁用”，此时外部 MCP 客户端无法连接，直到你修复端口冲突并重启。
 
+### CLI（外部 AI 上下文工程）
+
+如果你已经有一套成型的外部上下文工程（例如 Claude Code、Codex 等外部 AI），可以让**外部 AI 接管推理层**，而 Duty-Agent 继续负责全部确定性能力（Prompt 组织、匿名化、解析、校验、账本结算）。切割点只有一处：Prompt 原本发给你在方案里配置的模型 provider，现在改为交给外部 AI，要求它按当前模式格式（V2 纯文本 INI）产出，再回喂给后端跑现有解析与结算。
+
+当前版本仅支持 `single_pass` 模式的无状态两阶段委派；其余多轮模式（Agents / orchestrator / tool_loop）保持原有 provider 链路不变。发给外部 AI 的 Prompt 天然只含数字 ID，不含真实姓名（ID 匿名为硬约束）。
+
+两阶段委派流程：
+
+```text
+            plan-prompt                       plan-ingest
+  ┌──────────────────────────┐     ┌────────────────────────────────┐
+  │ CLI --instruction "本周排班" │     │ CLI --completion <V2 INI>       │
+  │        │                 │     │        --handle <resume_context> │
+  ▼        ▼                 │     │        │                        │
+Duty-Agent 构建匿名 Prompt ───┘     ▼        ▼                        │
+  │  (prompt_text + resume_context) │  Duty-Agent 解析/校验/还原/结算 ──┘
+  ▼                                 ▼
+外部 AI 按 V2 INI 格式推理 ────────▶ state.json 落地 + 返回 snapshot
+```
+
+- `plan-prompt`：返回 `prompt_text` / `messages` / `resume_context`（一个不透明的可序列化 JSON handle）。
+- 外部 AI：读取 `prompt_text`，自行推理出 V2 INI 排班文本。
+- `plan-ingest`：把 completion 与 `resume_context` 回喂后端，落地排班并返回 `snapshot`。
+
+CLI 默认连接**已经运行**的后端，连接信息解析优先级：`--base-url`/`--token` 显式参数 > 环境变量 `DUTY_AGENT_BASE_URL` / `DUTY_AGENT_TOKEN` > 自动发现 `.duty-agent-meta.json` > `--data-dir` 下的 `data/.dev-token` + `--port`（默认 8765）。
+
+若后端尚未运行，外部 AI 可**仅凭 CLI 端到端自举**，无需手工拉起进程：
+
+```bash
+# 0) 探活 / 自举 / 停止（serve 幂等：已在跑则直接复用）
+duty-cli.bat status                       # 探活：running/managed/version
+duty-cli.bat serve --port 8765            # 后台分离拉起后端，写 pid + meta + token
+duty-cli.bat serve --stop                 # 停止由 CLI 托管的后端
+```
+
+`serve` 以分离进程方式启动 `core.py --server --no-parent-watch`（跳过父进程自杀监控，改由 pid 文件托管生命周期），健康检查通过后把端口/token 写入 `<data-dir>/.duty-agent-meta.json`，后续命令即可自动发现。注意：`serve`/`status` 的 `--port`、`--data-dir` 是子命令参数（可放在子命令后）；其余命令的 `--port`/`--data-dir` 是全局参数，需放在子命令之前。
+
+外部 AI 的典型 shell 调用样例：
+
+```bash
+# 1) 取回匿名 Prompt（stdout 恒为单个 JSON）
+duty-cli.bat plan-prompt --instruction "本周排班" > prompt.json
+
+# 2) 外部 AI 读取 prompt.json 里的 prompt_text，推理出 V2 INI，写入 out.ini；
+#    并把 prompt.json 里的 resume_context 原样存为 handle.json
+
+# 3) 回喂 completion 与 handle，落地排班（PowerShell 下用 --*-file 避开 @ 与 splatting 冲突）
+duty-cli.bat plan-ingest --completion-file out.ini --handle-file handle.json
+```
+
+`--completion` / `--handle` 仍支持字面量、`@文件路径`、`-`（stdin）；但 PowerShell / opencode 环境下 `@` 会与 splatting 运算符冲突，优先用 `--completion-file` / `--handle-file`（各文件型参数均有 `--*-file` 伴生项，且 BOM 安全）。
+
+CLI 面向 AI 自发现设计：运行 `duty-cli.bat describe`（或**不带任何子命令直接运行** `duty-cli.bat`）会输出全部子命令的机器可读 JSON schema（无需网络），外部 AI 可据此自动编排调用。即便 AI 敲错命令或漏传必填参数，stdout 仍返回 `{"status":"error",...}` 并附 `hint` 指向 `describe`（退出码 2），因此零先验的首次接触即可自解释。除委派命令外，CLI 还复用现有 REST 暴露了确定性子命令：`inspect`、`get-config`、`update-config`、`get-roster`、`replace-roster`、`edit-entry`、`rollback`、`health`；以及生命周期命令 `serve`（含 `--stop`/`--force`）、`status`。
+
+输出约定：stdout 恒为单个 JSON（UTF-8），进度/日志走 stderr；失败时退出码非 0 且 stdout 为 `{"status":"error",...}`；返回体中的 `api_key` 默认脱敏，加 `--show-secrets` 可保留，`--pretty` 供人类阅读。
+
+除委派两阶段外，CLI 还提供 `run --instruction "..."`：由后端直接调用**其自身配置的模型 provider**完成一次排班（provider 路径，适用于不由外部 AI 接管推理的场景）；配合 `update-config` 把选中方案的 `base_url`/`model` 指向本地模型（如 LM Studio `http://localhost:1234/v1`）即可本地跑通。
+
 ### API
 
 后端提供正式 API，可作为后续控制台、局域网接入或其他程序集成的基础。

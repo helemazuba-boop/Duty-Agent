@@ -6,8 +6,9 @@ using DutyAgentBridge.Models;
 namespace DutyAgentBridge.Services;
 
 /// <summary>
-/// 独立软件健康监控服务
-/// 通过文件变化检测独立软件状态，无需轮询 HTTP
+/// 独立软件健康监控服务。
+/// 每 5s 轮询一次 meta 文件（stat + 按需解析）判断独立软件状态；已连接时同一节拍
+/// 发送 HTTP 心跳维持后端的 bridge 在线判定（TTL 见后端 runtime）。
 /// </summary>
 public interface IHealthMonitorService : IDisposable
 {
@@ -29,6 +30,8 @@ public sealed class HealthMonitorService : IHealthMonitorService
     private StandaloneMeta? _lastMeta;
     private bool _isRunning;
     private readonly object _lock = new();
+    private int _checkInFlight;
+    private int _connectInFlight;
 
     private const int DefaultIntervalMs = 5000;
 
@@ -90,6 +93,14 @@ public sealed class HealthMonitorService : IHealthMonitorService
 
     private void CheckMetaFile()
     {
+        // 重入闸门：System.Timers.Timer(AutoReset) 在线程池上触发，慢磁盘/杀软扫描
+        // 卡住一个 tick 时，下一个 tick 会并发进入：_lastMeta/_lastMetaWriteTime
+        // 被多线程读写，且可能同时发起多个连接。进行中则直接跳过本节拍。
+        if (Interlocked.CompareExchange(ref _checkInFlight, 1, 0) != 0)
+        {
+            return;
+        }
+
         try
         {
             var metaPath = _paths.MetaFilePath;
@@ -144,6 +155,10 @@ public sealed class HealthMonitorService : IHealthMonitorService
         {
             Diagnostics.Error("HealthMonitor", "Failed to check meta file.", ex);
         }
+        finally
+        {
+            Interlocked.Exchange(ref _checkInFlight, 0);
+        }
     }
 
     private static bool IsProcessAlive(int pid)
@@ -166,6 +181,7 @@ public sealed class HealthMonitorService : IHealthMonitorService
         if (currentState == IpcBridgeState.Connected || currentState == IpcBridgeState.Connecting)
         {
             Diagnostics.Warn("HealthMonitor", "Meta file disappeared, requesting disconnect.");
+            _bridge.Disconnect();
             BridgeStateRequested?.Invoke(this, IpcBridgeState.Disconnected);
         }
         else if (currentState == IpcBridgeState.Initial || currentState == IpcBridgeState.Checking)
@@ -177,6 +193,7 @@ public sealed class HealthMonitorService : IHealthMonitorService
     private void HandleProcessDied()
     {
         Diagnostics.Warn("HealthMonitor", "Standalone process died.", new { pid = _lastMeta?.ProcessId });
+        _bridge.Disconnect();
         BridgeStateRequested?.Invoke(this, IpcBridgeState.Error);
     }
 
@@ -231,6 +248,13 @@ public sealed class HealthMonitorService : IHealthMonitorService
 
     private async Task ConnectBridgeAsync()
     {
+        // 连接去抖：多个节拍/状态分支都可能 fire-and-forget 发起连接，
+        // 同一时刻只允许一个在飞，避免并行连接风暴。
+        if (Interlocked.CompareExchange(ref _connectInFlight, 1, 0) != 0)
+        {
+            return;
+        }
+
         try
         {
             await _bridge.ConnectAsync();
@@ -238,6 +262,10 @@ public sealed class HealthMonitorService : IHealthMonitorService
         catch (Exception ex)
         {
             Diagnostics.Error("HealthMonitor", "Failed to connect bridge.", ex);
+        }
+        finally
+        {
+            Interlocked.Exchange(ref _connectInFlight, 0);
         }
     }
 

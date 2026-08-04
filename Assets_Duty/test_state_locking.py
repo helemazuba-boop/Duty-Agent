@@ -60,5 +60,57 @@ class TestCommandServiceSingleFlight(unittest.TestCase):
         self.assertIn("already in progress", result["message"].lower())
 
 
+class TestUpdateHostRuntimeFieldsConcurrency(unittest.TestCase):
+    """update_host_runtime_fields must do load-modify-write under one lock so
+    that concurrent writers of different fields never clobber each other."""
+
+    def test_concurrent_runtime_field_updates_persist_without_loss_or_deadlock(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            ctx = state_ops.Context(Path(temp_dir))
+            # Seed a complete default host-config (last_auto_run_date="", ai_consecutive_failures=0).
+            state_ops.save_host_config(ctx, {})
+
+            dates = [f"2026-01-{day:02d}" for day in range(1, 6)]  # 5 distinct non-default dates
+            failures = [10, 20, 30, 40, 50]  # 5 distinct non-default counts
+
+            errors = []
+
+            def write_date(value):
+                try:
+                    state_ops.update_host_runtime_fields(ctx, {"last_auto_run_date": value})
+                except BaseException as ex:  # noqa: BLE001 — surface any failure (incl. lock timeout)
+                    errors.append(ex)
+
+            def write_failures(value):
+                try:
+                    state_ops.update_host_runtime_fields(ctx, {"ai_consecutive_failures": value})
+                except BaseException as ex:  # noqa: BLE001
+                    errors.append(ex)
+
+            threads = [threading.Thread(target=write_date, args=(d,)) for d in dates]
+            threads += [threading.Thread(target=write_failures, args=(f,)) for f in failures]
+
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join(timeout=30)
+
+            self.assertEqual(errors, [], "concurrent update_host_runtime_fields calls must not raise")
+            self.assertFalse(any(t.is_alive() for t in threads), "threads must not deadlock")
+
+            # Fresh read from disk — proves the values actually persisted.
+            final = state_ops.load_host_config(ctx)
+            self.assertIn(
+                final["last_auto_run_date"],
+                set(dates),
+                "last_auto_run_date must survive concurrent writes by other-field writers",
+            )
+            self.assertIn(
+                final["ai_consecutive_failures"],
+                set(failures),
+                "ai_consecutive_failures must survive concurrent writes by other-field writers",
+            )
+
+
 if __name__ == "__main__":
     unittest.main()

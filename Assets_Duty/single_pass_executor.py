@@ -5,7 +5,7 @@ from datetime import datetime
 from typing import Any, Dict
 
 from execution_profiles import ExecutionPlan
-from llm_transport import call_llm
+from llm_transport import call_llm_raw, parse_schedule_completion
 from postprocess import (
     estimate_pointer_progress,
     merge_schedule_pool,
@@ -37,13 +37,20 @@ def _resolve_transport_overrides(plan: ExecutionPlan) -> Dict[str, Any] | None:
     return None
 
 
-def run_single_pass_schedule(
+def build_single_pass_request(
     ctx: Context,
     input_data: dict,
     execution_plan: ExecutionPlan,
     emit_progress_fn=None,
-    stop_event=None,
-) -> dict:
+) -> tuple[list[dict], dict]:
+    """Build the single_pass prompt (messages) plus a small, serializable resume
+    context, without calling any model.
+
+    ``resume_context`` deliberately carries no roster/state so that the settle
+    half (:func:`apply_single_pass_completion`) re-reads roster/state at apply
+    time, which keeps the external-AI delegation flow stateless and avoids lost
+    updates. It is a JSON-serializable dict.
+    """
     run_now = datetime.now()
     ctx.config = load_config(ctx)
     name_to_id, id_to_name, all_ids, id_to_active = load_roster(ctx.paths["roster"])
@@ -99,14 +106,52 @@ def run_single_pass_schedule(
 
     transport_overrides = _resolve_transport_overrides(execution_plan)
 
-    llm_result, llm_text = call_llm(
-        messages,
-        ctx.config,
-        progress_callback=emit_progress_fn,
-        stop_event=stop_event,
-        transport_overrides=transport_overrides,
-        start_date_value=start_date,
-    )
+    resume_context = {
+        "mode": execution_plan.runtime_mode,
+        "start_date": start_date.isoformat(),
+        "trace_id": trace_id,
+        "prompt_metadata": prompt_metadata,
+        "execution_plan_meta": execution_plan.to_metadata(),
+        "single_pass_strategy": execution_plan.profile.single_pass_strategy,
+        "transport_overrides": transport_overrides or {},
+    }
+    return messages, resume_context
+
+
+def apply_single_pass_completion(
+    ctx: Context,
+    completion_text: str,
+    resume_context: dict,
+    stop_event=None,
+) -> dict:
+    """Parse an already-produced completion (V2 INI / CSV fallback) and settle it
+    into persisted state.
+
+    ``completion_text`` may originate from the provider transport
+    (:func:`run_single_pass_schedule`) or from an external AI via the CLI
+    plan-ingest flow. Roster/state are re-read here so the settle is atomic and
+    stateless with respect to ``resume_context``.
+    """
+    resume_context = dict(resume_context or {})
+    trace_id = str(resume_context.get("trace_id", "")).strip()
+    start_date_value = resume_context.get("start_date")
+    prompt_metadata = resume_context.get("prompt_metadata") or {}
+    execution_plan_meta = resume_context.get("execution_plan_meta") or {}
+    runtime_mode = resume_context.get("mode") or "single_pass"
+    single_pass_strategy = resume_context.get("single_pass_strategy")
+    transport_overrides = resume_context.get("transport_overrides") or {}
+
+    name_to_id, id_to_name, all_ids, id_to_active = load_roster(ctx.paths["roster"])
+    state_data = load_state(ctx.paths["state"])
+
+    area_names: list[str] = []
+    area_per_day_counts: dict[str, int] = {}
+
+    debt_counts = clone_count_map(state_data.get("debt_counts", {}), set(all_ids))
+    credit_counts = clone_count_map(state_data.get("credit_counts", {}), set(all_ids))
+    debt_counts, credit_counts = resolve_debt_credit_conflicts(debt_counts, credit_counts)
+
+    llm_result, llm_text = parse_schedule_completion(completion_text, start_date_value)
     validate_llm_schedule_entries(llm_result.get("schedule", []))
 
     normalized_ids = normalize_multi_area_schedule_ids(
@@ -175,9 +220,38 @@ def run_single_pass_schedule(
         "status": "success",
         "ai_response": llm_text[:AI_RESPONSE_MAX_CHARS],
         "trace_id": trace_id,
-        "selected_executor": execution_plan.runtime_mode,
-        "execution_plan": execution_plan.to_metadata(),
+        "selected_executor": runtime_mode,
+        "execution_plan": execution_plan_meta,
         "prompt_gateway": prompt_metadata,
-        "single_pass_strategy": execution_plan.profile.single_pass_strategy,
-        "transport_overrides": transport_overrides or {},
+        "single_pass_strategy": single_pass_strategy,
+        "transport_overrides": transport_overrides,
     }
+
+
+def run_single_pass_schedule(
+    ctx: Context,
+    input_data: dict,
+    execution_plan: ExecutionPlan,
+    emit_progress_fn=None,
+    stop_event=None,
+) -> dict:
+    """Provider-backed single_pass run: build prompt, call the configured model,
+    then settle. Preserves the original end-to-end behavior; the build/apply
+    split simply lets an external AI substitute for the model call.
+    """
+    messages, resume_context = build_single_pass_request(
+        ctx,
+        input_data,
+        execution_plan,
+        emit_progress_fn=emit_progress_fn,
+    )
+
+    content = call_llm_raw(
+        messages,
+        ctx.config,
+        emit_progress_fn,
+        stop_event,
+        resume_context.get("transport_overrides") or None,
+    )
+
+    return apply_single_pass_completion(ctx, content, resume_context, stop_event=stop_event)

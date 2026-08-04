@@ -21,6 +21,9 @@ public interface IIpcBridgeService : IDisposable
     void Disconnect();
     void Reconnect();
     Task SendHeartbeatAsync(CancellationToken cancellationToken = default);
+    Task ListenNotificationsAsync(
+        Func<DutyNotificationEvent, Task> onNotification,
+        CancellationToken cancellationToken = default);
 
     Task<CoreRunResult> RunScheduleAsync(
         string instruction,
@@ -251,6 +254,68 @@ public sealed class IpcBridgeService : IIpcBridgeService
     {
         EnsureConnected();
         await SendHeartbeatCoreAsync(_currentMeta!.Port, cancellationToken);
+    }
+
+    public async Task ListenNotificationsAsync(
+        Func<DutyNotificationEvent, Task> onNotification,
+        CancellationToken cancellationToken = default)
+    {
+        EnsureConnected();
+        using var request = new HttpRequestMessage(
+            HttpMethod.Get,
+            $"http://127.0.0.1:{_currentMeta!.Port}/api/v1/notifications/stream");
+        ApplyAuth(request);
+        request.Headers.TryAddWithoutValidation(TraceHeader, CreateTraceId());
+        request.Headers.TryAddWithoutValidation(RequestSourceHeader, "bridge");
+
+        using var response = await _httpClient.SendAsync(
+            request,
+            HttpCompletionOption.ResponseHeadersRead,
+            cancellationToken);
+        response.EnsureSuccessStatusCode();
+
+        await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
+        using var reader = new StreamReader(stream);
+        string? eventName = null;
+        var dataBuffer = new StringBuilder();
+
+        while (!cancellationToken.IsCancellationRequested)
+        {
+            var line = await reader.ReadLineAsync(cancellationToken);
+            if (line == null)
+            {
+                break;
+            }
+
+            if (line.Length == 0)
+            {
+                if (string.Equals(eventName, "notification", StringComparison.OrdinalIgnoreCase) &&
+                    dataBuffer.Length > 0)
+                {
+                    var notification = JsonSerializer.Deserialize<DutyNotificationEvent>(
+                        dataBuffer.ToString(),
+                        JsonOptions);
+                    if (notification != null &&
+                        notification.Targets.Any(target => string.Equals(target, "classisland", StringComparison.OrdinalIgnoreCase)))
+                    {
+                        await onNotification(notification);
+                    }
+                }
+
+                eventName = null;
+                dataBuffer.Clear();
+                continue;
+            }
+
+            if (line.StartsWith("event: ", StringComparison.OrdinalIgnoreCase))
+            {
+                eventName = line.Substring(7).Trim();
+            }
+            else if (line.StartsWith("data: ", StringComparison.OrdinalIgnoreCase))
+            {
+                dataBuffer.Append(line.Substring(6));
+            }
+        }
     }
 
     private async Task<StandaloneMeta?> LoadMetaWithRetryAsync(CancellationToken cancellationToken)

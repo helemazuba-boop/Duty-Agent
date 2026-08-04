@@ -40,6 +40,7 @@ DEFAULT_AUTO_RUN_TIME = "08:00"
 DEFAULT_ACCESS_TOKEN_MODE = "dynamic"
 DEFAULT_COMPONENT_REFRESH_TIME = "08:00"
 DEFAULT_NOTIFICATION_DURATION_SECONDS = 8
+DEFAULT_NOTIFICATION_ENTRY = "system"
 DEFAULT_DUTY_REMINDER_TIME = "07:40"
 STATE_LOCK_TIMEOUT_SECONDS = 20
 STATE_LOCK_RETRY_INTERVAL_SECONDS = 0.2
@@ -114,7 +115,7 @@ def normalize_orchestration_mode(value) -> str:
         "unified": "single_pass",
         "multi-agent": "multi_agent",
         "staged": "multi_agent",
-    }.get(normalized, normalized if normalized in {"auto", "single_pass", "multi_agent"} else DEFAULT_ORCHESTRATION_MODE)
+    }.get(normalized, normalized if normalized in {"auto", "single_pass", "multi_agent", "offline"} else DEFAULT_ORCHESTRATION_MODE)
 
 
 def normalize_multi_agent_execution_mode(value) -> str:
@@ -153,6 +154,10 @@ def normalize_plan_mode_id(value) -> str:
         "incremental_small": "incremental_small",
         "incremental": "incremental_small",
         "small_incremental": "incremental_small",
+        "offline": "offline",
+        "algorithm": "offline",
+        "local": "offline",
+        "deterministic": "offline",
     }.get(normalized, DEFAULT_SELECTED_PLAN_ID)
 
 
@@ -185,12 +190,14 @@ def _normalize_plan_name(name: object, mode_id: str, index: int, model: str = ""
     normalized = str(name or "").strip()
     if normalized:
         return normalized
-    if index <= 3:
-        return {
-            "standard": "标准",
-            "agents": "Agents",
-            "incremental_small": "增量小模型",
-        }.get(mode_id, "标准")
+    name_by_mode = {
+        "standard": "标准",
+        "agents": "Agents",
+        "incremental_small": "增量小模型",
+        "offline": "离线算法",
+    }
+    if mode_id in name_by_mode:
+        return name_by_mode[mode_id]
     return model or f"方案预设 {index}"
 
 
@@ -222,6 +229,17 @@ def _create_default_plan_presets() -> List[dict]:
             "id": "incremental-small",
             "name": "增量小模型",
             "mode_id": "incremental_small",
+            "api_key": "",
+            "base_url": DEFAULT_BASE_URL,
+            "model": DEFAULT_MODEL,
+            "model_profile": DEFAULT_MODEL_PROFILE,
+            "provider_hint": "",
+            "multi_agent_execution_mode": "auto",
+        },
+        {
+            "id": "offline",
+            "name": "离线算法",
+            "mode_id": "offline",
             "api_key": "",
             "base_url": DEFAULT_BASE_URL,
             "model": DEFAULT_MODEL,
@@ -266,6 +284,18 @@ def _normalize_plan_presets(raw_plan_presets) -> List[dict]:
             }
         )
 
+    # Ensure the offline (model-free) preset is always available, including for
+    # configs saved before offline mode existed. Without this, existing installs
+    # (whose config.json already lists presets) would never surface the option.
+    if not any(item.get("mode_id") == "offline" for item in normalized):
+        offline_default = next(
+            (dict(preset) for preset in _create_default_plan_presets() if preset["mode_id"] == "offline"),
+            None,
+        )
+        if offline_default is not None:
+            offline_default["id"] = _ensure_unique_plan_id("offline", used_ids)
+            normalized.append(offline_default)
+
     return normalized or _create_default_plan_presets()
 
 
@@ -301,6 +331,8 @@ def _create_default_persisted_config() -> dict:
         "plan_presets": _create_default_plan_presets(),
         "duty_rule": "",
         "polling": {"hints_on": True, "max_rounds": 15},
+        "offline_schedule_days": 7,
+        "offline_skip_weekends": True,
     }
 
 
@@ -331,6 +363,8 @@ def _normalize_persisted_config(config: dict | None) -> dict:
         "plan_presets": plan_presets,
         "duty_rule": str(source.get("duty_rule", "") or "").strip(),
         "polling": polling,
+        "offline_schedule_days": _parse_int_range(source.get("offline_schedule_days", 7), 7, 1, 60),
+        "offline_skip_weekends": bool(source.get("offline_skip_weekends", True)),
     }
 
 
@@ -347,7 +381,11 @@ def _hydrate_runtime_config(persisted: dict) -> dict:
         "base_url": selected_plan["base_url"],
         "model": selected_plan["model"],
         "model_profile": selected_plan["model_profile"],
-        "orchestration_mode": "multi_agent" if selected_mode_id == "agents" else "single_pass",
+        "orchestration_mode": (
+            "offline" if selected_mode_id == "offline"
+            else "multi_agent" if selected_mode_id == "agents"
+            else "single_pass"
+        ),
         "multi_agent_execution_mode": normalize_multi_agent_execution_mode(
             selected_plan.get("multi_agent_execution_mode", DEFAULT_MULTI_AGENT_EXECUTION_MODE)
         )
@@ -359,6 +397,8 @@ def _hydrate_runtime_config(persisted: dict) -> dict:
         "plan_presets": plan_presets,
         "duty_rule": normalized["duty_rule"],
         "polling": normalized["polling"],
+        "offline_schedule_days": normalized.get("offline_schedule_days", 7),
+        "offline_skip_weekends": normalized.get("offline_skip_weekends", True),
     }
 
 
@@ -494,10 +534,25 @@ def acquire_file_lock(
 
 
 def release_file_lock(lock_path: Path) -> None:
-    try:
-        lock_path.unlink()
-    except FileNotFoundError:
-        pass
+    # On Windows, concurrent waiters periodically open the lock file to inspect
+    # stale metadata (see _clear_stale_lock_if_needed). unlink can transiently
+    # fail with PermissionError (WinError 32) while such a read handle is open,
+    # which would orphan the lock and stall all other waiters until it goes
+    # stale. Retry briefly — mirrors the os.replace retry in save_json_atomic.
+    # This is safe: while our unlink keeps failing the file still holds our PID,
+    # so no waiter can re-acquire (O_EXCL) and steal it between our retries.
+    for attempt in range(4):
+        try:
+            lock_path.unlink()
+            return
+        except FileNotFoundError:
+            return
+        except PermissionError:
+            if attempt == 3:
+                # The protected write already succeeded; leave any leftover lock
+                # to be reaped as stale rather than masking the success with an error.
+                return
+            time.sleep(0.05 * (attempt + 1))
 
 
 def acquire_state_file_lock(lock_path: Path, timeout_seconds: int = STATE_LOCK_TIMEOUT_SECONDS, stop_event=None) -> None:
@@ -666,6 +721,8 @@ def _persisted_config_body(config: dict | None) -> dict:
         "plan_presets": normalized["plan_presets"],
         "duty_rule": normalized["duty_rule"],
         "polling": normalized.get("polling", {}),
+        "offline_schedule_days": normalized.get("offline_schedule_days", 7),
+        "offline_skip_weekends": normalized.get("offline_skip_weekends", True),
     }
 
 
@@ -674,7 +731,7 @@ def patch_config(ctx: Context, patch: dict) -> dict:
     unsupported_keys = sorted(
         str(key)
         for key, value in (patch or {}).items()
-        if value is not None and key not in {"expected_version", "selected_plan_id", "plan_presets", "duty_rule"}
+        if value is not None and key not in {"expected_version", "selected_plan_id", "plan_presets", "duty_rule", "offline_schedule_days", "offline_skip_weekends"}
     )
     if unsupported_keys:
         raise ValueError(f"Unsupported config patch keys: {', '.join(unsupported_keys)}")
@@ -760,6 +817,17 @@ def _normalize_duty_reminder_times(raw_times: object) -> List[str]:
     return normalized or [DEFAULT_DUTY_REMINDER_TIME]
 
 
+def _normalize_notification_entry(value: object) -> str:
+    normalized = str(value or "").strip().lower()
+    return normalized if normalized in {"system", "classisland", "both", "off"} else DEFAULT_NOTIFICATION_ENTRY
+
+
+def _normalize_client_close_action(value: object) -> str:
+    """Standalone-client window close behavior: ask | tray | exit."""
+    normalized = str(value or "").strip().lower()
+    return normalized if normalized in {"ask", "tray", "exit"} else "ask"
+
+
 def _create_default_persisted_host_config() -> dict:
     return {
         "version": DEFAULT_HOST_CONFIG_VERSION,
@@ -774,11 +842,17 @@ def _create_default_persisted_host_config() -> dict:
         "auto_run_trigger_notification_enabled": True,
         "auto_run_retry_times": 3,
         "ai_consecutive_failures": 0,
+        "ai_failures_date": "",
         "last_auto_run_date": "",
         "component_refresh_time": DEFAULT_COMPONENT_REFRESH_TIME,
+        "notification_entry": DEFAULT_NOTIFICATION_ENTRY,
+        "system_notifications_enabled": True,
+        "schedule_completion_notification_enabled": True,
         "notification_duration_seconds": DEFAULT_NOTIFICATION_DURATION_SECONDS,
         "duty_reminder_enabled": False,
         "duty_reminder_times": [DEFAULT_DUTY_REMINDER_TIME],
+        "client_auto_start": True,
+        "client_close_action": "ask",
     }
 
 
@@ -812,8 +886,15 @@ def _normalize_persisted_host_config(config: dict | None) -> dict:
         "auto_run_trigger_notification_enabled": parse_bool(source.get("auto_run_trigger_notification_enabled"), True),
         "auto_run_retry_times": _parse_int_range(source.get("auto_run_retry_times"), 3, 0, 20),
         "ai_consecutive_failures": _parse_int_range(source.get("ai_consecutive_failures"), 0, 0, 1000),
+        "ai_failures_date": str(source.get("ai_failures_date", "") or "").strip(),
         "last_auto_run_date": str(source.get("last_auto_run_date", "") or "").strip(),
         "component_refresh_time": _normalize_time_string(source.get("component_refresh_time"), DEFAULT_COMPONENT_REFRESH_TIME),
+        "notification_entry": _normalize_notification_entry(source.get("notification_entry", DEFAULT_NOTIFICATION_ENTRY)),
+        "system_notifications_enabled": parse_bool(source.get("system_notifications_enabled"), True),
+        "schedule_completion_notification_enabled": parse_bool(
+            source.get("schedule_completion_notification_enabled"),
+            True,
+        ),
         "notification_duration_seconds": _parse_int_range(
             source.get("notification_duration_seconds"),
             DEFAULT_NOTIFICATION_DURATION_SECONDS,
@@ -822,6 +903,10 @@ def _normalize_persisted_host_config(config: dict | None) -> dict:
         ),
         "duty_reminder_enabled": parse_bool(source.get("duty_reminder_enabled"), False),
         "duty_reminder_times": _normalize_duty_reminder_times(source.get("duty_reminder_times", [DEFAULT_DUTY_REMINDER_TIME])),
+        # Standalone-client lifecycle switches: stored centrally so the Web
+        # settings page edits them and the C# client observes + applies them.
+        "client_auto_start": parse_bool(source.get("client_auto_start"), True),
+        "client_close_action": _normalize_client_close_action(source.get("client_close_action", "ask")),
     }
 
 
@@ -850,11 +935,17 @@ def _persisted_host_config_body(config: dict | None) -> dict:
         "auto_run_trigger_notification_enabled": normalized["auto_run_trigger_notification_enabled"],
         "auto_run_retry_times": normalized["auto_run_retry_times"],
         "ai_consecutive_failures": normalized["ai_consecutive_failures"],
+        "ai_failures_date": normalized["ai_failures_date"],
         "last_auto_run_date": normalized["last_auto_run_date"],
         "component_refresh_time": normalized["component_refresh_time"],
+        "notification_entry": normalized["notification_entry"],
+        "system_notifications_enabled": normalized["system_notifications_enabled"],
+        "schedule_completion_notification_enabled": normalized["schedule_completion_notification_enabled"],
         "notification_duration_seconds": normalized["notification_duration_seconds"],
         "duty_reminder_enabled": normalized["duty_reminder_enabled"],
         "duty_reminder_times": normalized["duty_reminder_times"],
+        "client_auto_start": normalized["client_auto_start"],
+        "client_close_action": normalized["client_close_action"],
     }
 
 
@@ -912,6 +1003,99 @@ def save_host_config(ctx: Context, config: dict) -> dict:
         static_access_token_configured=str(bool(persisted.get("static_access_token_verifier"))).lower(),
         version=str(persisted.get("version", DEFAULT_HOST_CONFIG_VERSION)),
     )
+    return persisted
+
+
+def patch_host_config(ctx: Context, patch: dict) -> dict:
+    allowed_keys = {
+        "expected_version",
+        "notification_entry",
+        "system_notifications_enabled",
+        "schedule_completion_notification_enabled",
+        "auto_run_trigger_notification_enabled",
+        "notification_duration_seconds",
+        "duty_reminder_enabled",
+        "duty_reminder_times",
+        # Standalone-client lifecycle switches (Web settings "系统与自启" tab).
+        "client_auto_start",
+        "client_close_action",
+        # Auto-run scheduling fields (normalization below coerces mode/time/range).
+        "auto_run_mode",
+        "auto_run_parameter",
+        "auto_run_time",
+        "auto_run_retry_times",
+    }
+    unsupported_keys = sorted(
+        str(key)
+        for key, value in (patch or {}).items()
+        if value is not None and key not in allowed_keys
+    )
+    if unsupported_keys:
+        raise ValueError(f"Unsupported host config patch keys: {', '.join(unsupported_keys)}")
+
+    _log(
+        ctx,
+        "INFO",
+        "HostConfigStore",
+        "Patching host config.",
+        config_path=str(ctx.paths["host_config"]),
+        patch_keys=sorted([str(key) for key, value in (patch or {}).items() if value is not None]),
+    )
+
+    lock_path = _host_config_lock_path(ctx)
+    acquire_file_lock(lock_path, CONFIG_LOCK_TIMEOUT_SECONDS)
+    try:
+        current, _ = _load_persisted_host_config_unlocked(ctx.paths["host_config"])
+        current_version = _normalize_host_config_version(current.get("version", DEFAULT_HOST_CONFIG_VERSION))
+        if (patch or {}).get("expected_version") is not None:
+            expected_version = _normalize_host_config_version((patch or {}).get("expected_version"))
+            if expected_version != current_version:
+                raise ConfigVersionConflictError(expected_version, current_version)
+
+        candidate = dict(current)
+        for key, value in (patch or {}).items():
+            if key == "expected_version" or value is None:
+                continue
+            candidate[key] = value
+
+        persisted = _normalize_persisted_host_config(candidate)
+        if _persisted_host_config_body(persisted) != _persisted_host_config_body(current):
+            persisted["version"] = current_version + 1
+        else:
+            persisted["version"] = current_version
+        save_json_atomic(ctx.paths["host_config"], persisted)
+    finally:
+        release_file_lock(lock_path)
+
+    return persisted
+
+
+def update_host_runtime_fields(ctx: Context, patch: dict | None) -> dict:
+    """
+    Single-lock load-modify-write helper for backend-owned runtime fields.
+
+    ``load_host_config``/``save_host_config`` each acquire the lock independently
+    and ``save_host_config`` overwrites the whole file, so a naive
+    load→modify→save sequence can race with another writer thread and clobber
+    fields updated in between. This helper performs the read-modify-write under
+    one lock acquisition, restricting writes to the runtime-owned whitelist
+    (``last_auto_run_date``/``ai_consecutive_failures``/``ai_failures_date``)
+    that the HTTP ``patch_host_config`` whitelist deliberately excludes — for
+    use by the backend's internal auto-run worker only.
+    """
+    allowed = {"last_auto_run_date", "ai_consecutive_failures", "ai_failures_date"}
+    lock_path = _host_config_lock_path(ctx)
+    acquire_file_lock(lock_path, CONFIG_LOCK_TIMEOUT_SECONDS)
+    try:
+        current, _ = _load_persisted_host_config_unlocked(ctx.paths["host_config"])
+        candidate = dict(current)
+        for key, value in (patch or {}).items():
+            if key in allowed and value is not None:
+                candidate[key] = value
+        persisted = _normalize_persisted_host_config(candidate)
+        save_json_atomic(ctx.paths["host_config"], persisted)
+    finally:
+        release_file_lock(lock_path)
     return persisted
 
 

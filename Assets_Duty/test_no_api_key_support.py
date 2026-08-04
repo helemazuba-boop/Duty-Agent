@@ -110,14 +110,8 @@ class TestExecutorsAllowBlankApiKey(unittest.TestCase):
                 "single_pass_executor.build_single_pass_prompt_messages",
                 return_value=([{"role": "user", "content": "hello"}], {"logical_task_count": 1}),
             ), patch(
-                "single_pass_executor.call_llm",
-                return_value=(
-                    {
-                        "schedule": [{"date": "2026-03-16", "area_ids": {DEFAULT_SINGLE_AREA_NAME: [1]}, "note": ""}],
-                        "state_delta": {"debt_counts": {}, "credit_counts": {}},
-                    },
-                    "ok",
-                ),
+                "single_pass_executor.call_llm_raw",
+                return_value="[areas]\nA=Default\n[schedule]\n12-31=A:1\n",
             ), patch(
                 "single_pass_executor.validate_llm_schedule_entries",
             ), patch(

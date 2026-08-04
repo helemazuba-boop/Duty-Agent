@@ -9,4 +9,4 @@ chcp 65001 >nul
 setlocal enabledelayedexpansion
 set "ARGS=--skip-auth"
 if /i "%~1"=="full-auth" set "ARGS="
-"D:\projects\Duty-Agent\Assets_Duty\python-embed\python.exe" "D:\projects\Duty-Agent\orchestrator.py" %ARGS%
+"%~dp0Assets_Duty\python-embed\python.exe" "%~dp0orchestrator.py" %ARGS%

@@ -17,6 +17,7 @@ internal sealed class BackendProcessManager : IDisposable
     private Process? _process;
     private string? _assetsDirectory;
     private string? _bridgeMetaPath;
+    private ClassIslandConfigDiscovery? _classIslandConfig;
 
     public string AssetsDirectory => _assetsDirectory ??= ResolveAssetsDirectory();
     public string DataDirectory { get; } = Path.Combine(
@@ -24,13 +25,30 @@ internal sealed class BackendProcessManager : IDisposable
         "DutyAgent",
         "data");
     public string BridgeMetaPath => _bridgeMetaPath ??= ResolveBridgeMetaPath();
+    public ClassIslandConfigDiscovery ClassIslandConfig => _classIslandConfig ??= ClassIslandConfigLocator.Discover();
 
     public int Port { get; private set; }
     public string? Token { get; private set; }
     public string BaseUrl => Port > 0 ? $"http://127.0.0.1:{Port}" : string.Empty;
-    public string WebAppUrl => string.IsNullOrWhiteSpace(Token)
-        ? $"{BaseUrl}/app/"
-        : $"{BaseUrl}/app/#/dashboard?access_token={Uri.EscapeDataString(Token)}";
+    public string WebAppUrl => BuildWebAppUrl("/dashboard");
+
+    public string BuildWebAppUrl(string route)
+    {
+        var normalizedRoute = string.IsNullOrWhiteSpace(route) ? "/dashboard" : route.Trim();
+        if (normalizedRoute.StartsWith("#/", StringComparison.Ordinal))
+        {
+            normalizedRoute = normalizedRoute[1..];
+        }
+
+        if (!normalizedRoute.StartsWith("/", StringComparison.Ordinal))
+        {
+            normalizedRoute = $"/{normalizedRoute}";
+        }
+
+        return string.IsNullOrWhiteSpace(Token)
+            ? $"{BaseUrl}/app/#{normalizedRoute}"
+            : $"{BaseUrl}/app/#{normalizedRoute}?access_token={Uri.EscapeDataString(Token)}";
+    }
 
     public async Task StartAsync(CancellationToken cancellationToken)
     {
@@ -148,75 +166,9 @@ internal sealed class BackendProcessManager : IDisposable
         return Path.GetFullPath(match);
     }
 
-    private static string ResolveBridgeMetaPath()
+    private string ResolveBridgeMetaPath()
     {
-        var configFolder = Environment.GetEnvironmentVariable("CLASSISLAND_CONFIG_PATH");
-        if (!string.IsNullOrWhiteSpace(configFolder))
-        {
-            return Path.Combine(Path.GetFullPath(configFolder), "DutyAgentBridge", BridgeMetaFileName);
-        }
-
-        foreach (var candidate in EnumeratePortableConfigCandidates())
-        {
-            if (Directory.Exists(candidate))
-            {
-                return Path.Combine(candidate, "DutyAgentBridge", BridgeMetaFileName);
-            }
-        }
-
-        var appDataConfigFolder = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            "ClassIsland",
-            "Config");
-        return Path.Combine(appDataConfigFolder, "DutyAgentBridge", BridgeMetaFileName);
-    }
-
-    private static IEnumerable<string> EnumeratePortableConfigCandidates()
-    {
-        foreach (var candidate in EnumerateConfigCandidatesFromPath(AppContext.BaseDirectory))
-        {
-            yield return candidate;
-        }
-
-        foreach (var process in Process.GetProcessesByName("ClassIsland"))
-        {
-            string? executablePath = null;
-            try
-            {
-                executablePath = process.MainModule?.FileName;
-            }
-            catch
-            {
-            }
-
-            foreach (var candidate in EnumerateConfigCandidatesFromPath(Path.GetDirectoryName(executablePath)))
-            {
-                yield return candidate;
-            }
-        }
-    }
-
-    private static IEnumerable<string> EnumerateConfigCandidatesFromPath(string? startPath)
-    {
-        if (string.IsNullOrWhiteSpace(startPath))
-        {
-            yield break;
-        }
-
-        var current = new DirectoryInfo(startPath);
-        while (current is not null)
-        {
-            yield return Path.Combine(current.FullName, "data", "Config");
-
-            var currentConfig = Path.Combine(current.FullName, "Config");
-            if (Directory.Exists(Path.Combine(current.FullName, "Plugins")) ||
-                File.Exists(Path.Combine(current.FullName, "Settings.json")))
-            {
-                yield return currentConfig;
-            }
-
-            current = current.Parent;
-        }
+        return Path.Combine(ClassIslandConfig.ConfigFolder, "DutyAgentBridge", BridgeMetaFileName);
     }
 
     private void EnsureRequiredFiles()
@@ -247,19 +199,30 @@ internal sealed class BackendProcessManager : IDisposable
     {
         Directory.CreateDirectory(DataDirectory);
         var hostConfigPath = Path.Combine(DataDirectory, "host-config.json");
+        var hostConfig = new Dictionary<string, object?>();
         if (File.Exists(hostConfigPath))
         {
-            return;
+            try
+            {
+                using var document = JsonDocument.Parse(File.ReadAllText(hostConfigPath, Encoding.UTF8));
+                foreach (var property in document.RootElement.EnumerateObject())
+                {
+                    hostConfig[property.Name] = JsonSerializer.Deserialize<object?>(property.Value.GetRawText());
+                }
+            }
+            catch
+            {
+                hostConfig.Clear();
+            }
         }
 
+        hostConfig["access_token_mode"] = "dynamic";
+        hostConfig["static_access_token_verifier"] = "";
+        hostConfig.TryAdd("enable_mcp", false);
+        hostConfig.TryAdd("enable_webview_debug_layer", false);
+
         var json = JsonSerializer.Serialize(
-            new Dictionary<string, object?>
-            {
-                ["access_token_mode"] = "dynamic",
-                ["static_access_token_verifier"] = "",
-                ["enable_mcp"] = false,
-                ["enable_webview_debug_layer"] = false,
-            },
+            hostConfig,
             new JsonSerializerOptions { WriteIndented = true });
 
         File.WriteAllText(hostConfigPath, json, new UTF8Encoding(false));
@@ -288,7 +251,9 @@ internal sealed class BackendProcessManager : IDisposable
             ["token"] = Token ?? "",
             ["started_at"] = DateTimeOffset.UtcNow.ToString("O"),
             ["data_dir"] = DataDirectory,
-            ["webapp_url"] = WebAppUrl,
+            ["webapp_url"] = $"{BaseUrl}/app/#/dashboard",
+            ["classisland_config_dir"] = ClassIslandConfig.ConfigFolder,
+            ["classisland_config_source"] = ClassIslandConfig.Source,
         };
 
         var json = JsonSerializer.Serialize(payload, new JsonSerializerOptions { WriteIndented = true });

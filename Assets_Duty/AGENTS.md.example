@@ -1,0 +1,62 @@
+# Duty scheduling via the Duty-Agent CLI (template for external AI harnesses)
+
+You are an external AI taking over Duty-Agent's reasoning layer.
+
+Replace `<DUTY_ROOT>` below with the absolute path of the extracted package
+(the directory that contains `Assets_Duty\`). If a backend is already running,
+set `DUTY_AGENT_BASE_URL` / `DUTY_AGENT_TOKEN`; otherwise the CLI can bootstrap
+one itself (`serve`).
+
+## The CLI command
+
+Always invoke the CLI exactly like this (absolute paths, no PATH assumptions):
+
+```
+<DUTY_ROOT>\Assets_Duty\python-embed\python.exe <DUTY_ROOT>\Assets_Duty\cli.py <SUBCOMMAND> [ARGS]
+```
+
+stdout is always one JSON object. Run `... cli.py describe` for the full
+machine-readable catalog (it includes a `first_run` section).
+
+## First run
+
+1. `... cli.py doctor`
+   Starts the backend if needed and returns `{ready, checks, next_steps}`.
+   Follow the `fix` field of any failing check.
+2. If the roster check fails, load one (JSON array of `{id, name, active}`):
+   `... cli.py replace-roster --roster-file roster.json`
+
+## Producing a schedule (two-phase delegation)
+
+1. Build the prompt AND persist the handle in one shot (UTF-8 files; do NOT
+   use PowerShell `>`, it writes UTF-16 that some read tools cannot parse):
+   `... cli.py --out prompt.json plan-prompt --instruction "Give a duty schedule for the next 5 days, one person per day" --handle-out handle.json`
+2. Read `prompt.json`, reason over `prompt_text`, write your answer as a V2 INI
+   file `completion.ini` (grammar below). Use numeric roster IDs, never names.
+3. Ingest (PowerShell-safe file flags, never `@`):
+   `... cli.py plan-ingest --completion-file completion.ini --handle-file handle.json`
+   Confirm `"status": "success"`; on error fix `completion.ini` and re-run with
+   the SAME `handle.json`.
+4. Report the final schedule from the ingest response `snapshot`.
+
+Alternative: to let Duty-Agent's own configured model do the reasoning instead,
+run `... cli.py run --instruction "..."`.
+
+## V2 INI grammar (strict)
+
+```
+[areas]
+A = Classroom
+[schedule]
+07-28 = A:1
+07-29 = A:2
+[state]
+pointer = 2
+```
+
+- `[areas]`: `ALIAS = Area Name`, alias is UPPERCASE (e.g. A, B).
+- `[schedule]`: one line per day, `MM-DD = ALIAS:<space-separated IDs>`, dates
+  strictly ascending, IDs are numeric roster IDs.
+- `[state]` (optional): `pointer = <int>`; `debt = <id>` or `<id>*<count>`;
+  never use `:` in `[state]`.
+- Output the INI only. No prose, no markdown fences.

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue';
+import { computed, ref, onMounted } from 'vue';
 import { Table, Tag, Space, Modal, Input, message, Popconfirm, Tooltip } from 'ant-design-vue';
 import { EditOutlined, DeleteOutlined, UserAddOutlined, ReloadOutlined, UserSwitchOutlined } from '@ant-design/icons-vue';
 import type { RosterPerson } from '@/types';
@@ -31,19 +31,13 @@ const columns = [
   { title: '操作', width: 200, align: 'center' as const, key: 'action' },
 ];
 
-const showData = ref<RosterPerson[]>([]);
-
 const fetchAndSync = async () => {
   await fetch();
-  syncTable();
 };
 
-const syncTable = () => {
-  const rosterVal = roster.value;
-  showData.value = rosterVal.map((r, i) => ({ ...r, index: i + 1 }));
-};
-
-roster; // touch for reactivity
+const showData = computed(() => roster.value.map((r, i) => ({ ...r, index: i + 1 })));
+const activeCount = computed(() => roster.value.filter((person) => person.active).length);
+const inactiveCount = computed(() => roster.value.length - activeCount.value);
 
 const handleAdd = () => {
   newName.value = '';
@@ -61,7 +55,6 @@ const handleDelete = async (name: string) => {
   const updated = roster.value.filter((r) => r.name !== name);
   await update(updated);
   message.success('删除成功');
-  syncTable();
 };
 
 const handleSaveEdit = async () => {
@@ -89,7 +82,6 @@ const handleSaveEdit = async () => {
   await update(updated);
   editModalOpen.value = false;
   message.success(editingPerson.value ? '修改成功' : '添加成功');
-  syncTable();
 };
 
 const toggleActive = async (person: RosterPerson) => {
@@ -98,11 +90,7 @@ const toggleActive = async (person: RosterPerson) => {
   );
   await update(updated);
   message.success(updated.find((r) => r.name === person.name)!.active ? '已设为在职' : '已设为离职');
-  syncTable();
 };
-
-const activeCount = ref(0);
-const inactiveCount = ref(0);
 </script>
 
 <template>

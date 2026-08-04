@@ -15,7 +15,7 @@ namespace DutyAgentBridge.Controls;
 /// 显示今日值日安排
 /// </summary>
 [ComponentInfo(
-    "DUTY-BRIDGE-COMP-001",
+    "bc83d764-4c0d-4a36-a6da-27c96d2c339b",
     "\u503C\u65E5\u4EBA\u5458",
     "\uE31E",
     "\u663E\u793A\u4ECA\u65E5\u503C\u65E5\u5B89\u6392\u3002")]

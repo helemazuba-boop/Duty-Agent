@@ -1,11 +1,71 @@
 {
   "schedule_pool": [
     {
-      "date": "2026-04-21",
-      "day": "周二",
+      "date": "2026-07-29",
+      "day": "Wed",
       "area_assignments": {
         "区域1": [
-          "111"
+          "222"
+        ]
+      },
+      "note": ""
+    },
+    {
+      "date": "2026-07-30",
+      "day": "Thu",
+      "area_assignments": {
+        "区域1": [
+          "222"
+        ]
+      },
+      "note": ""
+    },
+    {
+      "date": "2026-07-31",
+      "day": "Fri",
+      "area_assignments": {
+        "区域1": [
+          "222"
+        ]
+      },
+      "note": ""
+    },
+    {
+      "date": "2026-08-03",
+      "day": "Mon",
+      "area_assignments": {
+        "区域1": [
+          "222"
+        ]
+      },
+      "note": ""
+    },
+    {
+      "date": "2026-08-04",
+      "day": "Tue",
+      "area_assignments": {
+        "区域1": [
+          "222"
+        ]
+      },
+      "note": ""
+    },
+    {
+      "date": "2026-08-05",
+      "day": "Wed",
+      "area_assignments": {
+        "区域1": [
+          "222"
+        ]
+      },
+      "note": ""
+    },
+    {
+      "date": "2026-08-06",
+      "day": "Thu",
+      "area_assignments": {
+        "区域1": [
+          "222"
         ]
       },
       "note": ""
@@ -13,8 +73,6 @@
   ],
   "next_run_note": "",
   "debt_counts": {},
-  "credit_counts": {
-    "1": 1
-  },
+  "credit_counts": {},
   "last_pointer": 0
 }

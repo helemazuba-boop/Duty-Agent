@@ -1,0 +1,63 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install UI dependencies
+        working-directory: duty-agent-ui
+        run: npm ci
+
+      - name: Build release (client + bridge + backend, self-contained, zipped)
+        shell: pwsh
+        run: ./build_client.bat
+
+      - name: Collect release artifacts
+        id: collect
+        shell: pwsh
+        run: |
+          $zips = Get-ChildItem -Path .release -Filter *.zip -File |
+            Sort-Object LastWriteTime -Descending
+          if ($zips.Count -eq 0) { throw "No release zip produced under .release" }
+          $staging = Join-Path $env:RUNNER_TEMP "release-assets"
+          New-Item -ItemType Directory -Force -Path $staging | Out-Null
+          # The two most recent zips are the full package and the -backend package.
+          foreach ($zip in $zips | Select-Object -First 2) {
+            Copy-Item $zip.FullName -Destination $staging -Force
+          }
+          echo "assets_dir=$staging" >> $env:GITHUB_OUTPUT
+
+      - name: Upload workflow artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: duty-agent-release
+          path: ${{ steps.collect.outputs.assets_dir }}/*.zip
+
+      - name: Publish GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ steps.collect.outputs.assets_dir }}/*.zip
+          generate_release_notes: true

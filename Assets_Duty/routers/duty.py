@@ -13,10 +13,22 @@ from auth import WEBSOCKET_BUSY_CODE, WEBSOCKET_UNAUTHORIZED_CODE, is_websocket_
 SKIP_AUTH_BYPASS = _os.getenv("SKIP_AUTH_BYPASS", "").strip().lower() in ("1", "true", "yes")
 
 try:
-    from models.schemas import DutyRequest, DutyScheduleEntrySaveRequest, DutyScheduleEntrySaveResponse
+    from models.schemas import (
+        DutyPlanIngestRequest,
+        DutyPlanPromptRequest,
+        DutyRequest,
+        DutyScheduleEntrySaveRequest,
+        DutyScheduleEntrySaveResponse,
+    )
     from state_ops import sanitize_error_for_client
 except ImportError:
-    from ..models.schemas import DutyRequest, DutyScheduleEntrySaveRequest, DutyScheduleEntrySaveResponse
+    from ..models.schemas import (
+        DutyPlanIngestRequest,
+        DutyPlanPromptRequest,
+        DutyRequest,
+        DutyScheduleEntrySaveRequest,
+        DutyScheduleEntrySaveResponse,
+    )
     from ..state_ops import sanitize_error_for_client
 
 router = APIRouter(prefix="/api/v1/duty", tags=["Duty"])
@@ -130,6 +142,50 @@ async def save_schedule_entry(request_data: DutyScheduleEntrySaveRequest, reques
     payload.setdefault("request_source", request_source)
     return await asyncio.to_thread(
         runtime.command_service.save_schedule_entry,
+        payload,
+        trace_id,
+        request_source,
+    )
+
+
+@router.post("/plan-prompt")
+async def plan_prompt(request_data: DutyPlanPromptRequest, request: Request):
+    runtime = getattr(request.app.state, "runtime", None)
+    if runtime is None:
+        raise HTTPException(status_code=503, detail="Runtime is not initialized.")
+
+    trace_id, request_source = _resolve_request_meta(request, runtime, request_data)
+    if not (request.headers.get("X-Duty-Request-Source") or "").strip() and not (
+        request_data.request_source or ""
+    ).strip():
+        request_source = "cli"
+    payload = request_data.model_dump(exclude_none=True, exclude_unset=True)
+    payload.setdefault("trace_id", trace_id)
+    payload.setdefault("request_source", request_source)
+    return await asyncio.to_thread(
+        runtime.command_service.build_schedule_prompt,
+        payload,
+        trace_id,
+        request_source,
+    )
+
+
+@router.post("/plan-ingest")
+async def plan_ingest(request_data: DutyPlanIngestRequest, request: Request):
+    runtime = getattr(request.app.state, "runtime", None)
+    if runtime is None:
+        raise HTTPException(status_code=503, detail="Runtime is not initialized.")
+
+    trace_id, request_source = _resolve_request_meta(request, runtime, request_data)
+    if not (request.headers.get("X-Duty-Request-Source") or "").strip() and not (
+        request_data.request_source or ""
+    ).strip():
+        request_source = "cli"
+    payload = request_data.model_dump(exclude_none=True, exclude_unset=True)
+    payload.setdefault("trace_id", trace_id)
+    payload.setdefault("request_source", request_source)
+    return await asyncio.to_thread(
+        runtime.command_service.apply_schedule_completion,
         payload,
         trace_id,
         request_source,

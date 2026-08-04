@@ -15,14 +15,10 @@ namespace DutyAgentBridge.Services.Automations.Actions;
 public sealed class DutyRunScheduleAction : ActionBase<DutyRunScheduleActionSettings>
 {
     private readonly IIpcBridgeService _bridge;
-    private readonly DutyNotificationProvider _notificationProvider;
 
-    public DutyRunScheduleAction(
-        IIpcBridgeService bridge,
-        DutyNotificationProvider notificationProvider)
+    public DutyRunScheduleAction(IIpcBridgeService bridge)
     {
         _bridge = bridge;
-        _notificationProvider = notificationProvider;
     }
 
     protected override async Task OnInvoke()
@@ -35,11 +31,6 @@ public sealed class DutyRunScheduleAction : ActionBase<DutyRunScheduleActionSett
         }
 
         var result = await _bridge.RunScheduleAsync(Settings.Instruction);
-
-        if (Settings.PublishCompletionNotification)
-        {
-            _notificationProvider.PublishScheduleCompleted(result.Success, result.Message, Settings.Instruction);
-        }
 
         if (!result.Success)
         {

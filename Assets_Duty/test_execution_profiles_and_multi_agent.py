@@ -133,8 +133,9 @@ class TestExecutionPlanSelection(unittest.TestCase):
     def test_missing_plan_presets_fall_back_to_defaults(self):
         config = normalize_config({})
         self.assertEqual(config["selected_plan_id"], "standard")
-        self.assertEqual(len(config["plan_presets"]), 3)
+        self.assertEqual(len(config["plan_presets"]), 4)
         self.assertEqual(config["plan_presets"][0]["mode_id"], "standard")
+        self.assertEqual(config["plan_presets"][-1]["mode_id"], "offline")
 
     def test_request_overrides_are_ignored_for_execution_profile(self):
         config = normalize_config(

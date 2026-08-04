@@ -9,234 +9,151 @@ using NotificationRequest = ClassIsland.Core.Models.Notification.NotificationReq
 
 namespace DutyAgentBridge.Services;
 
-/// <summary>
-/// 通知提供者（继承 ClassIsland 通知系统）
-/// 通过 IpcBridgeService 获取独立软件的排班状态，发布通知
-/// </summary>
 [NotificationProviderInfo(
-    "DUTY-BRIDGE-NOTIFY-001",
+    "04c55f80-bf1f-4d79-83d9-69f9c1e6d26f",
     "Duty-Agent 桥接通知",
     "\uE7F4",
     "显示来自独立 Duty-Agent 软件的排班通知")]
 public sealed class DutyNotificationProvider : NotificationProviderBase
 {
     private readonly IIpcBridgeService _bridge;
-    private readonly DispatcherTimer _pollTimer;
-    private string? _lastScheduleDate;
-    private string? _lastScheduleContent;
+    private CancellationTokenSource? _streamCts;
+    private Task? _streamTask;
 
     public DutyNotificationProvider(IIpcBridgeService bridge)
     {
         _bridge = bridge;
-
-        // 监听连接状态变化，连接后启动轮询
         _bridge.StateChanged += (_, state) =>
         {
             if (state == IpcBridgeState.Connected)
             {
-                Dispatcher.UIThread.Post(StartPolling);
+                StartNotificationStream();
             }
-            else if (state == IpcBridgeState.Disconnected || state == IpcBridgeState.Error)
+            else if (state is IpcBridgeState.Disconnected or IpcBridgeState.Error or IpcBridgeState.NotInstalled)
             {
-                Dispatcher.UIThread.Post(StopPolling);
+                StopNotificationStream();
             }
         };
-
-        // 监听排班更新事件（如果 WebSocket 连接）
-        _bridge.StateChanged += OnBridgeStateChanged;
-
-        _pollTimer = new DispatcherTimer
-        {
-            Interval = TimeSpan.FromMinutes(1)
-        };
-        _pollTimer.Tick += async (_, _) => await PollScheduleAsync();
     }
 
-    private void OnBridgeStateChanged(object? sender, IpcBridgeState e)
+    public void PublishScheduleCompleted(bool success, string message, string? instruction)
     {
-        // 当连接建立时立即拉取一次状态
-        if (e == IpcBridgeState.Connected)
-        {
-            Dispatcher.UIThread.Post(async () => await PollScheduleAsync());
-        }
+        PublishGenericNotification(success ? "排班任务已完成" : "排班执行失败", message);
     }
 
-    private void StartPolling()
+    public void PublishAutoRunTriggered(DateTime now)
     {
-        _pollTimer.Start();
+        PublishGenericNotification("自动排班已开始执行", $"{now:yyyy-MM-dd HH:mm} 任务已加入队列");
     }
 
-    private void StopPolling()
+    public void PublishDutyReminder(string time, SchedulePoolItem? todayItem)
     {
-        _pollTimer.Stop();
+        PublishGenericNotification($"当前值日提醒 {time}", FormatDutyReminderBody(todayItem));
     }
 
-    private async Task PollScheduleAsync()
+    private void StartNotificationStream()
     {
-        if (_bridge.State != IpcBridgeState.Connected)
+        if (_streamTask is { IsCompleted: false })
         {
             return;
         }
 
+        StopNotificationStream();
+        _streamCts = new CancellationTokenSource();
+        var token = _streamCts.Token;
+        _streamTask = Task.Run(async () =>
+        {
+            while (!token.IsCancellationRequested && _bridge.State == IpcBridgeState.Connected)
+            {
+                try
+                {
+                    await _bridge.ListenNotificationsAsync(HandleNotificationAsync, token);
+                }
+                catch (OperationCanceledException) when (token.IsCancellationRequested)
+                {
+                    return;
+                }
+                catch (Exception ex)
+                {
+                    Diagnostics.Error("DutyNotificationProvider", "Notification stream failed.", ex);
+                    try
+                    {
+                        await Task.Delay(TimeSpan.FromSeconds(5), token);
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        return;
+                    }
+                }
+            }
+        }, token);
+    }
+
+    private void StopNotificationStream()
+    {
         try
         {
-            var snapshot = await _bridge.GetSnapshotAsync();
-            var today = DateTime.Now.ToString("yyyy-MM-dd");
-
-            var todayItem = snapshot.State.SchedulePool
-                .FirstOrDefault(x => string.Equals(x.Date, today, StringComparison.Ordinal));
-
-            if (todayItem == null)
-            {
-                return;
-            }
-
-            var content = SerializeScheduleContent(todayItem);
-
-            // 仅当内容变化时通知
-            if (content != _lastScheduleContent)
-            {
-                _lastScheduleContent = content;
-                _lastScheduleDate = today;
-                // 不自动弹出通知，只在需要时由外部触发
-            }
+            _streamCts?.Cancel();
+            _streamCts?.Dispose();
+            _streamCts = null;
         }
         catch
         {
-            // 静默忽略轮询错误
         }
     }
 
-    private static string SerializeScheduleContent(SchedulePoolItem item)
+    private Task HandleNotificationAsync(DutyNotificationEvent notification)
     {
-        var parts = new List<string>();
-        foreach (var (area, students) in item.AreaAssignments)
-        {
-            if (students.Count > 0)
-            {
-                parts.Add($"{area}：{string.Join("、", students)}");
-            }
-        }
-        return string.Join("；", parts);
+        PublishGenericNotification(notification.Title, notification.Body);
+        return Task.CompletedTask;
     }
 
-    /// <summary>
-    /// 发布排班完成通知（由外部调用，如 RunScheduleAction）
-    /// </summary>
-    public void PublishScheduleCompleted(bool success, string message, string? instruction)
+    private void PublishGenericNotification(string title, string? body)
     {
         Dispatcher.UIThread.Invoke(() =>
         {
-            var primaryText = success ? $"排班任务已完成" : $"排班执行失败";
-            var scrollingText = message;
+            var primaryText = string.IsNullOrWhiteSpace(title) ? "Duty-Agent" : title.Trim();
+            var scrollingText = body?.Trim() ?? "";
 
             var maskContent = NotificationContent.CreateSimpleTextContent(primaryText, null);
             maskContent.Duration = TimeSpan.FromSeconds(2);
             maskContent.IsSpeechEnabled = false;
 
-            NotificationContent overlayContent;
-            if (string.IsNullOrWhiteSpace(scrollingText))
-            {
-                overlayContent = NotificationContent.CreateSimpleTextContent(primaryText, null);
-            }
-            else
-            {
-                overlayContent = NotificationContent.CreateRollingTextContent(
+            var overlayContent = string.IsNullOrWhiteSpace(scrollingText)
+                ? NotificationContent.CreateSimpleTextContent(primaryText, null)
+                : NotificationContent.CreateRollingTextContent(
                     $"{primaryText}  {scrollingText}",
                     TimeSpan.FromSeconds(8),
                     1,
                     null);
-            }
             overlayContent.IsSpeechEnabled = false;
 
-            var request = new NotificationRequest
+            ShowNotification(new NotificationRequest
             {
                 MaskContent = maskContent,
                 OverlayContent = overlayContent
-            };
-
-            ShowNotification(request);
+            });
         });
     }
 
-    /// <summary>
-    /// 发布自动排班触发通知
-    /// </summary>
-    public void PublishAutoRunTriggered(DateTime now)
+    private static string FormatDutyReminderBody(SchedulePoolItem? todayItem)
     {
-        Dispatcher.UIThread.Invoke(() =>
+        if (todayItem == null || todayItem.AreaAssignments.Count == 0)
         {
-            var primaryText = "自动排班已开始执行";
-            var scrollingText = $"{now:yyyy-MM-dd HH:mm} 任务已加入队列";
+            return $"{DateTime.Now:yyyy-MM-dd} 暂无值日安排";
+        }
 
-            var maskContent = NotificationContent.CreateSimpleTextContent(primaryText, null);
-            maskContent.Duration = TimeSpan.FromSeconds(2);
-            maskContent.IsSpeechEnabled = false;
-
-            var overlayContent = NotificationContent.CreateRollingTextContent(
-                $"{primaryText}  {scrollingText}",
-                TimeSpan.FromSeconds(8),
-                1,
-                null);
-            overlayContent.IsSpeechEnabled = false;
-
-            var request = new NotificationRequest
-            {
-                MaskContent = maskContent,
-                OverlayContent = overlayContent
-            };
-
-            ShowNotification(request);
-        });
-    }
-
-    /// <summary>
-    /// 发布值日提醒通知
-    /// </summary>
-    public void PublishDutyReminder(string time, SchedulePoolItem? todayItem)
-    {
-        Dispatcher.UIThread.Invoke(() =>
+        var parts = new List<string>();
+        foreach (var (area, students) in todayItem.AreaAssignments)
         {
-            var primaryText = $"当前值日提醒 {time}";
-
-            string scrollingText;
-            if (todayItem == null || todayItem.AreaAssignments.Count == 0)
+            if (students.Count > 0)
             {
-                scrollingText = $"{DateTime.Now:yyyy-MM-dd} 暂无值日安排";
+                parts.Add($"{area}: {string.Join(", ", students)}");
             }
-            else
-            {
-                var parts = new List<string>();
-                foreach (var (area, students) in todayItem.AreaAssignments)
-                {
-                    if (students.Count > 0)
-                    {
-                        parts.Add($"{area}：{string.Join("、", students)}");
-                    }
-                }
-                scrollingText = parts.Count > 0
-                    ? string.Join("；", parts)
-                    : $"{DateTime.Now:yyyy-MM-dd} 暂无值日安排";
-            }
+        }
 
-            var maskContent = NotificationContent.CreateSimpleTextContent(primaryText, null);
-            maskContent.Duration = TimeSpan.FromSeconds(2);
-            maskContent.IsSpeechEnabled = false;
-
-            var overlayContent = NotificationContent.CreateRollingTextContent(
-                $"{primaryText}  {scrollingText}",
-                TimeSpan.FromSeconds(8),
-                1,
-                null);
-            overlayContent.IsSpeechEnabled = false;
-
-            var request = new NotificationRequest
-            {
-                MaskContent = maskContent,
-                OverlayContent = overlayContent
-            };
-
-            ShowNotification(request);
-        });
+        return parts.Count > 0
+            ? string.Join("; ", parts)
+            : $"{DateTime.Now:yyyy-MM-dd} 暂无值日安排";
     }
 }

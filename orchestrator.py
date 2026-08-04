@@ -15,10 +15,15 @@ import socket
 import argparse
 from pathlib import Path
 
-BACKEND_TOKEN_FILE = r"D:\projects\Duty-Agent\Assets_Duty\data\.dev-token"
-FRONTEND_ENV_FILE = r"D:\projects\Duty-Agent\duty-agent-ui\.env.local"
-BACKEND_PY = r"D:\projects\Duty-Agent\Assets_Duty\core.py"
-PYTHON_EMBED = r"D:\projects\Duty-Agent\Assets_Duty\python-embed\python.exe"
+# Everything is derived from this file's location so the dev flow survives
+# cloning the repo to any path (the old hardcoded D:\projects\... constants
+# broke on every other machine).
+ROOT = Path(__file__).resolve().parent
+BACKEND_TOKEN_FILE = str(ROOT / "Assets_Duty" / "data" / ".dev-token")
+FRONTEND_ENV_FILE = str(ROOT / "duty-agent-ui" / ".env.local")
+BACKEND_PY = str(ROOT / "Assets_Duty" / "core.py")
+PYTHON_EMBED = str(ROOT / "Assets_Duty" / "python-embed" / "python.exe")
+FRONTEND_DIR = str(ROOT / "duty-agent-ui")
 
 
 def wait_port(host: str, port: int, timeout_sec: float = 30) -> bool:
@@ -122,7 +127,7 @@ def main():
     print("[4/5] Starting frontend dev server...")
     frontend_proc = subprocess.Popen(
         ["cmd", "/c", "npm run dev"],
-        cwd=r"D:\projects\Duty-Agent\duty-agent-ui",
+        cwd=FRONTEND_DIR,
         creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         text=True,
         bufsize=1,

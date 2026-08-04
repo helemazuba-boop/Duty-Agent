@@ -10,10 +10,33 @@ import {
 } from '@ant-design/icons-vue';
 import { api } from '@/api/http';
 import type { Workspace } from '@/types';
+import FirstRunWizard from '@/components/onboarding/FirstRunWizard.vue';
 
 const workspace = ref<Workspace | null>(null);
 const loading = ref(false);
 const error = ref<string | null>(null);
+
+const WIZARD_DISMISS_KEY = 'duty_first_run_dismissed';
+const wizardOpen = ref(false);
+
+const maybeOpenWizard = async () => {
+  // Auto-open the first-run wizard once (per browser) when the backend reports
+  // it is not ready. A no-probe readiness check keeps this cheap.
+  if (localStorage.getItem(WIZARD_DISMISS_KEY) === '1') return;
+  try {
+    const readiness = await api.getReadiness(false);
+    if (!readiness.ready) {
+      wizardOpen.value = true;
+    }
+  } catch {
+    // backend not reachable yet; skip silently
+  }
+};
+
+const onWizardCompleted = () => {
+  localStorage.setItem(WIZARD_DISMISS_KEY, '1');
+  refresh();
+};
 
 const refresh = async () => {
   loading.value = true;
@@ -29,13 +52,10 @@ const refresh = async () => {
 
 onMounted(() => {
   refresh();
+  maybeOpenWizard();
 });
 
 const today = new Date().toISOString().split('T')[0];
-
-onMounted(() => {
-  refresh();
-});
 
 const stats = computed(() => {
   const roster = workspace.value?.roster ?? [];
@@ -86,7 +106,7 @@ const stats = computed(() => {
 });
 
 const recentSchedule = computed(() =>
-  (workspace.value?.state?.schedule_pool ?? [])
+  [...(workspace.value?.state?.schedule_pool ?? [])]
     .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime())
     .slice(0, 8),
 );
@@ -239,6 +259,8 @@ const activeRoster = computed(() =>
       show-icon
       closable
     />
+
+    <FirstRunWizard v-model:open="wizardOpen" @completed="onWizardCompleted" />
   </div>
 </template>
 

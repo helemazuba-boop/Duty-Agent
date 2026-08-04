@@ -1,5 +1,6 @@
 using Avalonia.Controls;
 using Avalonia.Interactivity;
+using Avalonia.Media;
 using Avalonia.Threading;
 using ClassIsland.Core.Abstractions.Controls;
 using ClassIsland.Core.Attributes;
@@ -9,16 +10,13 @@ using DutyAgentBridge.Services;
 
 namespace DutyAgentBridge.Views;
 
-/// <summary>
-/// 桥接插件设置页（简化版：仅显示联动状态和入口链接）
-/// </summary>
 [FullWidthPage]
 [HidePageTitle]
-[SettingsPageInfo("duty-agent-bridge.settings", "Duty-Agent 桥接", "\uE31E", "\uE31E")]
+[SettingsPageInfo("duty-agent-bridge.settings", "Duty-Agent \u6865\u63A5", "\uE31E", "\uE31E")]
 public partial class DutyBridgeSettingsPage : SettingsPageBase
 {
     private readonly IIpcBridgeService _bridge = IAppHost.GetService<IIpcBridgeService>();
-    private readonly IHealthMonitorService _healthMonitor = IAppHost.GetService<IHealthMonitorService>();
+    private readonly IBridgePaths _paths = IAppHost.GetService<IBridgePaths>();
 
     public DutyBridgeSettingsPage()
     {
@@ -26,6 +24,7 @@ public partial class DutyBridgeSettingsPage : SettingsPageBase
 
         _bridge.StateChanged += OnBridgeStateChanged;
         UpdateConnectionStatus();
+        UpdatePathDiagnostics();
     }
 
     private void OnBridgeStateChanged(object? sender, IpcBridgeState state)
@@ -38,7 +37,6 @@ public partial class DutyBridgeSettingsPage : SettingsPageBase
         var state = _bridge.State;
         var meta = _bridge.CurrentMeta;
 
-        // 更新状态标签
         StatusIndicator.Text = state switch
         {
             IpcBridgeState.Initial => "\u25CB \u672A\u8FDE\u63A5",
@@ -46,20 +44,19 @@ public partial class DutyBridgeSettingsPage : SettingsPageBase
             IpcBridgeState.Connecting => "\u25CB \u8FDE\u63A5\u4E2D...",
             IpcBridgeState.Connected => "\u25CF \u5DF2\u8FDE\u63A5",
             IpcBridgeState.Disconnected => "\u25CB \u5DF2\u65AD\u5F00",
-            IpcBridgeState.NotInstalled => "\u25CB \u672A\u68C0\u6D4B\u5230\u72EC\u7ACB\u8F6F\u4EF6",
+            IpcBridgeState.NotInstalled => "\u25CB \u672A\u68C0\u6D4B\u5230\u72EC\u7ACB\u5BA2\u6237\u7AEF",
             IpcBridgeState.Error => $"\u26A0 \u9519\u8BEF: {_bridge.LastError ?? ""}",
             _ => "\u25CB \u672A\u77E5"
         };
 
         StatusIndicator.Foreground = state switch
         {
-            IpcBridgeState.Connected => new Avalonia.Media.SolidColorBrush(Avalonia.Media.Color.Parse("#52c41a")),
-            IpcBridgeState.Error => new Avalonia.Media.SolidColorBrush(Avalonia.Media.Color.Parse("#ff4d4f")),
-            _ => new Avalonia.Media.SolidColorBrush(Avalonia.Media.Color.Parse("#8c8c8c"))
+            IpcBridgeState.Connected => new SolidColorBrush(Color.Parse("#52c41a")),
+            IpcBridgeState.Error => new SolidColorBrush(Color.Parse("#ff4d4f")),
+            _ => new SolidColorBrush(Color.Parse("#8c8c8c"))
         };
 
-        // 更新详情
-        if (meta != null)
+        if (meta is not null)
         {
             ConnectionDetails.Text = $"Port: {meta.Port} | PID: {meta.ProcessId} | Version: {meta.Version}";
             ConnectionDetails.IsVisible = true;
@@ -69,31 +66,71 @@ public partial class DutyBridgeSettingsPage : SettingsPageBase
             ConnectionDetails.IsVisible = false;
         }
 
-        // 更新按钮状态
         ReconnectButton.IsEnabled = state != IpcBridgeState.Connecting && state != IpcBridgeState.Checking;
     }
 
-    private async void OnReconnectClick(object? sender, RoutedEventArgs e)
+    private void UpdatePathDiagnostics()
+    {
+        ConfigSourceText.Text = $"\u53D1\u73B0\u6765\u6E90: {_paths.ConfigSource}";
+        ConfigFolderText.Text = $"ClassIsland \u914D\u7F6E\u76EE\u5F55: {_paths.ConfigFolder}";
+        MetaFileText.Text = $"Meta \u6587\u4EF6: {_paths.MetaFilePath}";
+        LogsDirectoryText.Text = $"\u65E5\u5FD7\u76EE\u5F55: {_paths.LogsDirectory}";
+        ConfigCandidatesText.Text = string.Join(
+            Environment.NewLine,
+            _paths.ConfigCandidates.Select(candidate =>
+                $"- [{FormatCandidateState(candidate)}] {candidate.Source}: {candidate.ConfigFolder}"));
+    }
+
+    private static string FormatCandidateState(BridgeConfigCandidate candidate)
+    {
+        if (candidate.HasLiveMeta)
+        {
+            return "\u5B58\u5728, live meta";
+        }
+
+        return candidate.Exists ? "\u5B58\u5728" : "\u4E0D\u5B58\u5728";
+    }
+
+    private void OnReconnectClick(object? sender, RoutedEventArgs e)
     {
         _bridge.Reconnect();
     }
 
     private void OnOpenStandaloneClick(object? sender, RoutedEventArgs e)
     {
-        // 提示用户手动启动独立软件
-        // 可以尝试打开独立软件的安装目录或配置文件
+        var meta = _bridge.CurrentMeta;
+        if (meta is not null && !string.IsNullOrWhiteSpace(meta.DataDir))
+        {
+            OpenFolder(meta.DataDir);
+        }
+        else
+        {
+            OpenFolder(_paths.SharedConfigFolder);
+        }
+    }
+
+    private void OnOpenConfigFolderClick(object? sender, RoutedEventArgs e)
+    {
+        OpenFolder(_paths.SharedConfigFolder);
+    }
+
+    private void OnOpenLogsFolderClick(object? sender, RoutedEventArgs e)
+    {
+        OpenFolder(_paths.LogsDirectory);
+    }
+
+    private static void OpenFolder(string folder)
+    {
         try
         {
-            var meta = _bridge.CurrentMeta;
-            if (meta != null && !string.IsNullOrWhiteSpace(meta.DataDir))
+            if (!string.IsNullOrWhiteSpace(folder))
             {
-                // 打开数据目录
-                System.Diagnostics.Process.Start("explorer.exe", meta.DataDir);
+                Directory.CreateDirectory(folder);
+                System.Diagnostics.Process.Start("explorer.exe", folder);
             }
         }
         catch
         {
-            // 静默忽略
         }
     }
 
@@ -109,18 +146,18 @@ public partial class DutyBridgeSettingsPage : SettingsPageBase
 
         try
         {
-            var result = await _bridge.RunScheduleAsync("请基于当前名册生成值日安排。");
+            var result = await _bridge.RunScheduleAsync("\u8BF7\u57FA\u4E8E\u5F53\u524D\u540D\u518C\u751F\u6210\u503C\u65E5\u5B89\u6392\u3002");
             TestResult.Text = result.Success
                 ? $"\u6210\u529F: {result.Message}"
                 : $"\u5931\u8D25: {result.Message}";
             TestResult.Foreground = result.Success
-                ? new Avalonia.Media.SolidColorBrush(Avalonia.Media.Color.Parse("#52c41a"))
-                : new Avalonia.Media.SolidColorBrush(Avalonia.Media.Color.Parse("#ff4d4f"));
+                ? new SolidColorBrush(Color.Parse("#52c41a"))
+                : new SolidColorBrush(Color.Parse("#ff4d4f"));
         }
         catch (Exception ex)
         {
             TestResult.Text = $"\u9519\u8BEF: {ex.Message}";
-            TestResult.Foreground = new Avalonia.Media.SolidColorBrush(Avalonia.Media.Color.Parse("#ff4d4f"));
+            TestResult.Foreground = new SolidColorBrush(Color.Parse("#ff4d4f"));
         }
     }
 }

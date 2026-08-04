@@ -70,6 +70,12 @@
 	</ItemGroup>
 
 	<ItemGroup>
+		<!-- A6 temporary verification exclude: keep sibling sub-projects out of this plugin's compile glob -->
+		<Compile Remove="DutyAgent.Client\**\*.cs" />
+		<Compile Remove="Duty-Agent-ClassIsland-Bridge\**\*.cs" />
+	</ItemGroup>
+
+	<ItemGroup>
 		<None Update="Assets_Duty\**\*">
 			<CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
 		</None>

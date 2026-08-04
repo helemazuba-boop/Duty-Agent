@@ -6,6 +6,7 @@ import { readFileSync, existsSync } from 'fs'
 
 // https://vite.dev/config/
 export default defineConfig({
+  root: __dirname,
   base: './',
   plugins: [
     vue(),
@@ -29,6 +30,13 @@ export default defineConfig({
   resolve: {
     alias: {
       '@': resolve(__dirname, 'src'),
+    },
+  },
+  build: {
+    outDir: 'dist',
+    emptyOutDir: true,
+    rollupOptions: {
+      input: resolve(__dirname, 'index.html'),
     },
   },
   server: {
