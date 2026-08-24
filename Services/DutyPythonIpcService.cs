@@ -100,6 +100,26 @@ public class DutyPythonIpcService : IPythonIpcService
     private bool _runtimeMcpEnabled;
     private bool _portConflictFallbackActive;
 
+    // Engine crash auto-restart watchdog: bounded retries so a crash-looping
+    // engine cannot spin forever, with counters reset after a long stable run.
+    // When the burst budget is exhausted the watchdog does NOT give up
+    // permanently: it re-arms after this cooldown and tries a fresh burst.
+    // A permanent Faulted state with no recovery path is fatal for an
+    // unattended host — environmental outages (AV scans, port exhaustion)
+    // routinely outlast the ~85s backoff window.
+    private const int AutoRestartMaxConsecutiveFailures = 3;
+    private static readonly TimeSpan[] AutoRestartBackoffSchedule =
+    {
+        TimeSpan.FromSeconds(5),
+        TimeSpan.FromSeconds(20),
+        TimeSpan.FromSeconds(60)
+    };
+    private static readonly TimeSpan AutoRestartStableUptimeThreshold = TimeSpan.FromMinutes(30);
+    private static readonly TimeSpan AutoRestartGiveUpCooldown = TimeSpan.FromMinutes(30);
+    private DateTime _lastEngineReadyUtc = DateTime.MinValue;
+    private int _autoRestartConsecutiveFailures;
+    private int _autoRestartInFlight;
+
     public DutyPythonIpcService(IConfigManager configManager, IDutySettingsRepository settingsRepository, DutyPluginPaths pluginPaths)
     {
         _configManager = configManager;
@@ -620,6 +640,20 @@ public class DutyPythonIpcService : IPythonIpcService
                 }
             }
 
+            if (shouldFaultActiveEngine)
+            {
+                // A long stable run proves the launch config works; only rapid
+                // crash loops should exhaust the restart budget.
+                var uptime = DateTime.UtcNow - _lastEngineReadyUtc;
+                if (uptime >= AutoRestartStableUptimeThreshold)
+                {
+                    _autoRestartConsecutiveFailures = 0;
+                }
+                DutyDiagnosticsLogger.Warn("BackendIpc", "Active engine process exited unexpectedly.",
+                    new { exitCode, uptimeSeconds = (int)uptime.TotalSeconds });
+                ScheduleEngineAutoRestart();
+            }
+
             var activeException = new Exception($"Python engine process exited unexpectedly with code {exitCode}");
             _portTcs.TrySetException(activeException);
             _tokenModeTcs.TrySetException(activeException);
@@ -661,6 +695,7 @@ public class DutyPythonIpcService : IPythonIpcService
             }
 
             startupCompleted = true;
+            _lastEngineReadyUtc = DateTime.UtcNow;
         }
         catch (Exception ex)
         {
@@ -797,12 +832,20 @@ public class DutyPythonIpcService : IPythonIpcService
             _portConflictFallbackActive = false;
         }
         await EnsureReadyAsync().ConfigureAwait(false);
+        // A successful manual recovery must re-arm the auto-restart budget:
+        // otherwise a crash shortly after a manual fix would be immediately
+        // "gave up" without a single automatic attempt.
+        _autoRestartConsecutiveFailures = 0;
     }
 
-    public Task StopAsync()
+    public async Task StopAsync()
     {
         DisposeControlSocket();
-        ShutdownPythonServer();
+        // ShutdownPythonServer blocks for up to ~5s (2s HTTP shutdown request +
+        // 3s process-exit wait). Run it on the pool so a wedged engine that
+        // ignores /shutdown cannot freeze the Avalonia UI thread while the
+        // user is staring at the settings page waiting for the restart.
+        await Task.Run(ShutdownPythonServer).ConfigureAwait(false);
 
         lock (_stateLock)
         {
@@ -829,8 +872,93 @@ public class DutyPythonIpcService : IPythonIpcService
             _runtimeMcpEnabled = false;
             _portConflictFallbackActive = false;
         }
+    }
 
-        return Task.CompletedTask;
+    private void ScheduleEngineAutoRestart()
+    {
+        if (_disposed)
+        {
+            return;
+        }
+
+        // Single-flight gate: the Exited event, a prior watchdog pass, and a
+        // user-initiated restart can all race here; only one loop may run.
+        if (Interlocked.CompareExchange(ref _autoRestartInFlight, 1, 0) != 0)
+        {
+            return;
+        }
+
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                while (!_disposed)
+                {
+                    if (_autoRestartConsecutiveFailures >= AutoRestartMaxConsecutiveFailures)
+                    {
+                        DutyDiagnosticsLogger.Error("BackendIpc", "Engine auto-restart gave up after repeated failures; cooling down before re-arming.",
+                            data: new { attempts = _autoRestartConsecutiveFailures, cooldownMinutes = (int)AutoRestartGiveUpCooldown.TotalMinutes });
+                        // Re-arm instead of dying forever: after the cooldown,
+                        // reset the burst budget and try again as long as the
+                        // engine is still Faulted. One ERROR per cycle keeps
+                        // the log bounded while an unattended host eventually
+                        // recovers once the environment heals.
+                        await Task.Delay(AutoRestartGiveUpCooldown).ConfigureAwait(false);
+                        if (_disposed)
+                        {
+                            return;
+                        }
+
+                        lock (_stateLock)
+                        {
+                            if (_state != EngineState.Faulted)
+                            {
+                                return;
+                            }
+                            _autoRestartConsecutiveFailures = 0;
+                        }
+                        continue;
+                    }
+
+                    var delay = AutoRestartBackoffSchedule[Math.Min(_autoRestartConsecutiveFailures, AutoRestartBackoffSchedule.Length - 1)];
+                    await Task.Delay(delay).ConfigureAwait(false);
+                    if (_disposed)
+                    {
+                        return;
+                    }
+
+                    lock (_stateLock)
+                    {
+                        // A manual restart (or another recovery path) got there first.
+                        if (_state != EngineState.Faulted)
+                        {
+                            return;
+                        }
+                    }
+
+                    _autoRestartConsecutiveFailures++;
+                    DutyDiagnosticsLogger.Warn("BackendIpc", "Attempting engine auto-restart.",
+                        new { attempt = _autoRestartConsecutiveFailures, delaySeconds = (int)delay.TotalSeconds });
+
+                    try
+                    {
+                        await RestartEngineAsync().ConfigureAwait(false);
+                        _autoRestartConsecutiveFailures = 0;
+                        DutyDiagnosticsLogger.Info("BackendIpc", "Engine auto-restart succeeded.");
+                        return;
+                    }
+                    catch (Exception ex)
+                    {
+                        // Loop continues with the next backoff step; state stays
+                        // Faulted so callers fail fast until we recover.
+                        DutyDiagnosticsLogger.Error("BackendIpc", "Engine auto-restart attempt failed.", ex);
+                    }                }
+            }
+            finally
+            {
+                Interlocked.Exchange(ref _autoRestartInFlight, 0);
+            }
+        });
     }
 
     public async Task<CoreRunResult> RunScheduleAsync(object requestPayload, Action<CoreRunProgress>? progressCallback, CancellationToken cancellationToken = default)
@@ -939,6 +1067,10 @@ public class DutyPythonIpcService : IPythonIpcService
         {
             _activeRunSocket = null;
             _activeRunClientChangeId = null;
+            // Release the backend single-owner claim as soon as this run ends;
+            // keeping the cached socket open would lock MCP / Web UI runs out
+            // of /api/v1/duty/live for the whole host uptime (4409 busy).
+            DisposeControlSocket();
         }
     }
 
@@ -1097,8 +1229,19 @@ public class DutyPythonIpcService : IPythonIpcService
         socket.Options.SetRequestHeader(RequestSourceHeaderName, requestSource);
         ApplyAuthorizationHeader(socket.Options);
         var uri = new Uri($"ws://127.0.0.1:{_serverPort}/api/v1/duty/live");
-        await socket.ConnectAsync(uri, cancellationToken).ConfigureAwait(false);
-        _controlSocket = socket;
+        try
+        {
+            await socket.ConnectAsync(uri, cancellationToken).ConfigureAwait(false);
+            _controlSocket = socket;
+        }
+        catch
+        {
+            // ConnectAsync failure (engine down / refused) must not leak the
+            // socket handle: crash-restart cycles would otherwise accumulate
+            // one ClientWebSocket per failed attempt.
+            socket.Dispose();
+            throw;
+        }
 
         await SendControlSocketMessageAsync(socket, new
         {
@@ -1130,30 +1273,49 @@ public class DutyPythonIpcService : IPythonIpcService
         await socket.SendAsync(new ArraySegment<byte>(buffer), WebSocketMessageType.Text, true, cancellationToken).ConfigureAwait(false);
     }
 
+    // A wedged-but-alive engine may neither answer nor close the socket; the
+    // caller would then await forever and — for schedule runs — hold the run
+    // gate until process exit, turning every later run into "busy". The
+    // control channel streams progress/hello messages during real work, so a
+    // long silence means the peer is gone for practical purposes. Timeout is
+    // per message (idle), not per run: multi-minute LLM runs keep resetting it.
+    private static readonly TimeSpan ControlSocketIdleReceiveTimeout = TimeSpan.FromMinutes(15);
+
     private static async Task<JsonDocument> ReceiveControlSocketMessageAsync(
         ClientWebSocket socket,
         CancellationToken cancellationToken)
     {
         var buffer = new byte[8192];
         using var stream = new MemoryStream();
+        using var idleCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        idleCts.CancelAfter(ControlSocketIdleReceiveTimeout);
 
-        while (true)
+        try
         {
-            var result = await socket.ReceiveAsync(new ArraySegment<byte>(buffer), cancellationToken).ConfigureAwait(false);
-            if (result.MessageType == WebSocketMessageType.Close)
+            while (true)
             {
-                throw new WebSocketException("Duty control channel was closed by the server.");
-            }
+                var result = await socket.ReceiveAsync(new ArraySegment<byte>(buffer), idleCts.Token).ConfigureAwait(false);
+                if (result.MessageType == WebSocketMessageType.Close)
+                {
+                    throw new WebSocketException("Duty control channel was closed by the server.");
+                }
 
-            if (result.Count > 0)
-            {
-                stream.Write(buffer, 0, result.Count);
-            }
+                if (result.Count > 0)
+                {
+                    stream.Write(buffer, 0, result.Count);
+                    idleCts.CancelAfter(ControlSocketIdleReceiveTimeout);
+                }
 
-            if (result.EndOfMessage)
-            {
-                break;
+                if (result.EndOfMessage)
+                {
+                    break;
+                }
             }
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            throw new TimeoutException(
+                $"Duty control socket received no complete message within {(int)ControlSocketIdleReceiveTimeout.TotalMinutes} minutes; treating the engine as unresponsive.");
         }
 
         stream.Position = 0;
@@ -1162,10 +1324,14 @@ public class DutyPythonIpcService : IPythonIpcService
 
     private static bool IsControlSocketRecoverable(Exception ex)
     {
+        // TimeoutException from the idle receive guard counts as recoverable:
+        // the run gate must be released and the HTTP fallback given a chance
+        // instead of leaving schedule runs stuck on "busy" forever.
         return ex is WebSocketException ||
                ex is IOException ||
                ex is ObjectDisposedException ||
-               ex is InvalidOperationException;
+               ex is InvalidOperationException ||
+               ex is TimeoutException;
     }
 
     private void DisposeControlSocket()

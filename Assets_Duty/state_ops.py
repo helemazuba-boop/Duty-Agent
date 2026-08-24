@@ -53,6 +53,20 @@ _WINDOWS_ERROR_INVALID_PARAMETER = 87
 _WINDOWS_ERROR_NOT_FOUND = 1168
 _WINDOWS_PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
 
+# Tiered stale-lock policy:
+#   * writer dead            -> steal immediately (safe, no ambiguity)
+#   * age >= stale_after and
+#     PID unreadable         -> steal (nothing vouches for the holder)
+#   * age >= LOCK_HARD_STALE_SECONDS -> steal even if the PID looks alive,
+#     bounding the worst-case stall when a crashed writer's PID was reused by
+#     an unrelated long-lived process. Must far exceed any legitimate hold
+#     (real critical sections here last seconds).
+# Age-only theft below the hard cap is what used to let a waiter delete a
+# LIVE holder's lock after system sleep inflated the wall-clock age, and
+# ownership-unchecked release then cascaded into three writers inside the
+# critical section.
+LOCK_HARD_STALE_SECONDS = 900
+
 _KERNEL32 = None
 if os.name == "nt":
     _KERNEL32 = ctypes.WinDLL("kernel32", use_last_error=True)
@@ -494,8 +508,17 @@ def _clear_stale_lock_if_needed(lock_path: Path, stale_after_seconds: int) -> bo
             age_seconds = None
 
     pid_stale = pid is not None and not _is_process_alive(pid)
-    age_stale = age_seconds is not None and age_seconds >= max(1, stale_after_seconds)
-    if not pid_stale and not age_stale:
+    age = age_seconds if age_seconds is not None else 0.0
+    # Steal only on unambiguous evidence (dead writer / no readable owner) or
+    # once the hard cap proves even a live-looking holder is bogus. A merely
+    # old lock with a living PID stays untouched — the holder may simply be
+    # slow, and wall-clock age is inflated by system sleep.
+    should_steal = (
+        pid_stale
+        or (pid is None and age >= max(1, stale_after_seconds))
+        or age >= LOCK_HARD_STALE_SECONDS
+    )
+    if not should_steal:
         return False
 
     try:
@@ -534,21 +557,31 @@ def acquire_file_lock(
 
 
 def release_file_lock(lock_path: Path) -> None:
+    # Ownership-checked release: only unlink when the lock file still holds OUR
+    # pid. A stale-clear by another waiter may have handed the lock to someone
+    # else while we worked; deleting blindly then would remove THEIR lock and
+    # let a third writer in (mutual-exclusion cascade). In that case leave the
+    # current lock alone — it is not ours to release.
     # On Windows, concurrent waiters periodically open the lock file to inspect
-    # stale metadata (see _clear_stale_lock_if_needed). unlink can transiently
-    # fail with PermissionError (WinError 32) while such a read handle is open,
-    # which would orphan the lock and stall all other waiters until it goes
-    # stale. Retry briefly — mirrors the os.replace retry in save_json_atomic.
-    # This is safe: while our unlink keeps failing the file still holds our PID,
-    # so no waiter can re-acquire (O_EXCL) and steal it between our retries.
-    for attempt in range(4):
+    # stale metadata, so unlink can transiently fail with PermissionError
+    # (WinError 32). Retry briefly — mirrors the os.replace retry in
+    # save_json_atomic. While the file still holds our PID no waiter can
+    # re-acquire it (O_EXCL), so retrying is safe.
+    for attempt in range(6):
+        try:
+            owner_pid, _ = _read_lock_metadata(lock_path)
+        except OSError:
+            owner_pid = None
+        if owner_pid is not None and owner_pid != os.getpid():
+            # Lock was stolen or already replaced; nothing to release.
+            return
         try:
             lock_path.unlink()
             return
         except FileNotFoundError:
             return
         except PermissionError:
-            if attempt == 3:
+            if attempt == 5:
                 # The protected write already succeeded; leave any leftover lock
                 # to be reaped as stale rather than masking the success with an error.
                 return
@@ -866,7 +899,7 @@ def _normalize_host_config_version(value: object) -> int:
 
 def _normalize_persisted_host_config(config: dict | None) -> dict:
     source = dict(config) if isinstance(config, dict) else {}
-    return {
+    normalized = {
         "version": _normalize_host_config_version(source.get("version", DEFAULT_HOST_CONFIG_VERSION)),
         "python_path": str(source.get("python_path", DEFAULT_PYTHON_PATH) or DEFAULT_PYTHON_PATH).strip() or DEFAULT_PYTHON_PATH,
         "auto_run_mode": {
@@ -908,6 +941,16 @@ def _normalize_persisted_host_config(config: dict | None) -> dict:
         "client_auto_start": parse_bool(source.get("client_auto_start"), True),
         "client_close_action": _normalize_client_close_action(source.get("client_close_action", "ask")),
     }
+    # Preserve keys this version doesn't know (written by a newer build on
+    # either side of the C#↔Python boundary). Wholesale dropping turned every
+    # cross-version save into silent data loss and made the load-time
+    # "raw != normalized → rewrite" path churn forever under mixed binaries.
+    # The whitelist above remains authoritative for known keys; unknown keys
+    # pass through verbatim.
+    for extra_key, extra_value in source.items():
+        if extra_key not in normalized:
+            normalized[extra_key] = extra_value
+    return normalized
 
 
 def _load_persisted_host_config_unlocked(config_path: Path) -> tuple[dict, bool]:

@@ -17,6 +17,13 @@ except ImportError:
 
 router = APIRouter(prefix="/api/v1/notifications", tags=["Notifications"])
 
+# The stream used to block a default-executor thread per subscriber via
+# ``asyncio.to_thread(queue.get, True, 10.0)``; stale/half-open clients piled up
+# and could starve the pool that serves every other ``asyncio.to_thread`` call.
+# Polling the thread-safe queue from the event loop holds no threads at all.
+NOTIFICATION_STREAM_POLL_SECONDS = 0.25
+NOTIFICATION_STREAM_PING_INTERVAL_SECONDS = 15.0
+
 
 def _resolve_request_meta(request: Request, runtime) -> tuple[str, str]:
     trace_id = (request.headers.get("X-Duty-Trace-Id") or "").strip() or runtime.new_trace_id()
@@ -96,15 +103,23 @@ async def stream_notifications(request: Request):
     async def event_generator():
         try:
             yield _encode_sse("ready", {"status": "ready", "created_at": time.time()})
+            last_ping = time.monotonic()
             while True:
                 if await request.is_disconnected():
                     break
                 try:
-                    event = await asyncio.to_thread(queue.get, True, 10.0)
+                    event = queue.get_nowait()
                 except Empty:
+                    event = None
+                if event is not None:
+                    yield _encode_sse("notification", event)
+                    continue
+                now = time.monotonic()
+                if now - last_ping >= NOTIFICATION_STREAM_PING_INTERVAL_SECONDS:
+                    last_ping = now
                     yield _encode_sse("ping", {"created_at": time.time()})
                     continue
-                yield _encode_sse("notification", event)
+                await asyncio.sleep(NOTIFICATION_STREAM_POLL_SECONDS)
         finally:
             runtime.unsubscribe_notifications(queue)
             runtime.logger.info(

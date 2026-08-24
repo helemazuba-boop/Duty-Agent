@@ -9,6 +9,7 @@ public static class DutyBackendModeIds
     public const string Standard = "standard";
     public const string Agents = "agents";
     public const string IncrementalSmall = "incremental_small";
+    public const string Offline = "offline";
 }
 
 public sealed class DutyPlanPreset

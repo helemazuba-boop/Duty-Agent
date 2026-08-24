@@ -379,7 +379,7 @@ public sealed class IpcBridgeService : IIpcBridgeService
     {
         try
         {
-            var process = Process.GetProcessById(pid);
+            using var process = Process.GetProcessById(pid);
             return !process.HasExited;
         }
         catch
@@ -496,6 +496,10 @@ public sealed class IpcBridgeService : IIpcBridgeService
         finally
         {
             _activeRunClientChangeId = null;
+            // Release the backend single-owner claim as soon as this run ends;
+            // keeping the cached socket open would lock Web UI / host runs out
+            // of /api/v1/duty/live for the whole bridge uptime (4409 busy).
+            DisposeSocket();
         }
     }
 
@@ -734,8 +738,18 @@ public sealed class IpcBridgeService : IIpcBridgeService
         ApplyAuth(socket.Options);
 
         var uri = new Uri($"ws://127.0.0.1:{port}/api/v1/duty/live");
-        await socket.ConnectAsync(uri, cancellationToken);
-        _controlSocket = socket;
+        try
+        {
+            await socket.ConnectAsync(uri, cancellationToken);
+            _controlSocket = socket;
+        }
+        catch
+        {
+            // Don't leak the handle when the engine refuses/drops the connect:
+            // crash-restart cycles would accumulate one socket per failure.
+            socket.Dispose();
+            throw;
+        }
 
         // Handshake
         await SendSocketMessageAsync(socket, new
@@ -767,30 +781,45 @@ public sealed class IpcBridgeService : IIpcBridgeService
         await socket.SendAsync(new ArraySegment<byte>(buffer), WebSocketMessageType.Text, true, cancellationToken);
     }
 
+    // Idle guard mirroring the host side: a wedged engine that neither answers
+    // nor closes must not hang a schedule run (and its busy gate) forever.
+    private static readonly TimeSpan SocketIdleReceiveTimeout = TimeSpan.FromMinutes(15);
+
     private static async Task<JsonDocument> ReceiveSocketMessageAsync(
         ClientWebSocket socket,
         CancellationToken cancellationToken)
     {
         var buffer = new byte[8192];
         using var stream = new MemoryStream();
+        using var idleCts = System.Threading.CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        idleCts.CancelAfter(SocketIdleReceiveTimeout);
 
-        while (true)
+        try
         {
-            var result = await socket.ReceiveAsync(new ArraySegment<byte>(buffer), cancellationToken);
-            if (result.MessageType == WebSocketMessageType.Close)
+            while (true)
             {
-                throw new WebSocketException("WebSocket closed by server.");
-            }
+                var result = await socket.ReceiveAsync(new ArraySegment<byte>(buffer), idleCts.Token);
+                if (result.MessageType == WebSocketMessageType.Close)
+                {
+                    throw new WebSocketException("WebSocket closed by server.");
+                }
 
-            if (result.Count > 0)
-            {
-                stream.Write(buffer, 0, result.Count);
-            }
+                if (result.Count > 0)
+                {
+                    stream.Write(buffer, 0, result.Count);
+                    idleCts.CancelAfter(SocketIdleReceiveTimeout);
+                }
 
-            if (result.EndOfMessage)
-            {
-                break;
+                if (result.EndOfMessage)
+                {
+                    break;
+                }
             }
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            throw new TimeoutException(
+                $"Duty control socket received no complete message within {(int)SocketIdleReceiveTimeout.TotalMinutes} minutes; treating the engine as unresponsive.");
         }
 
         stream.Position = 0;

@@ -237,7 +237,7 @@ public sealed class BridgePaths : IBridgePaths
                 return false;
             }
 
-            var process = Process.GetProcessById(pid);
+            using var process = Process.GetProcessById(pid);
             return !process.HasExited;
         }
         catch

@@ -3036,7 +3036,7 @@ public partial class DutyMainSettingsPage : SettingsPageBase
         invalidLine = string.Empty;
 
         var rawText = text ?? string.Empty;
-        foreach (var rawLine in rawText.Split(['\r', '\n', ';', '\uFF1B'], StringSplitOptions.RemoveEmptyEntries))
+        foreach (var rawLine in rawText.Split((char[])['\r', '\n', ';', '\uFF1B'], StringSplitOptions.RemoveEmptyEntries))
         {
             var line = rawLine.Trim();
             if (line.Length == 0)
@@ -3065,7 +3065,7 @@ public partial class DutyMainSettingsPage : SettingsPageBase
             }
 
             var studentsText = line[(colonIndex + 1)..].Trim();
-            var students = studentsText.Split([',', '\uFF0C', '\u3001', '/', '|', ' ', '\t', '\u200B'], StringSplitOptions.RemoveEmptyEntries)
+            var students = studentsText.Split((char[])[',', '\uFF0C', '\u3001', '/', '|', ' ', '\t', '\u200B'], StringSplitOptions.RemoveEmptyEntries)
                 .Select(x => x.Trim())
                 .Where(x => x.Length > 0)
                 .Distinct(StringComparer.Ordinal)

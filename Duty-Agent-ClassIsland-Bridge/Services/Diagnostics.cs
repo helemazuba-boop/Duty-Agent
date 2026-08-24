@@ -14,6 +14,12 @@ public static class Diagnostics
     private static string _logDirectory;
     private static readonly object _writeLock = new();
     private const int MaxInMemoryEntries = 500;
+    // Unbounded per-day files grew for the lifetime of a long-running host.
+    // Rotate the active file at this size (one .1 generation kept) and prune
+    // daily files past the retention window on the first write of a new day.
+    private const long MaxLogFileBytes = 16 * 1024 * 1024;
+    private const int KeepDays = 14;
+    private static DateTime _lastPruneDate = DateTime.Now.Date;
 
     static Diagnostics()
     {
@@ -94,12 +100,70 @@ public static class Diagnostics
 
             lock (_writeLock)
             {
+                RotateIfNeeded(logPath);
+                PruneExpiredLogsIfNeeded();
                 File.AppendAllText(logPath, line);
             }
         }
         catch
         {
             // 静默忽略日志写入失败
+        }
+    }
+
+    private static void RotateIfNeeded(string logPath)
+    {
+        try
+        {
+            if (!File.Exists(logPath))
+            {
+                return;
+            }
+
+            var info = new FileInfo(logPath);
+            if (info.Length <= MaxLogFileBytes)
+            {
+                return;
+            }
+
+            var rotated = logPath + ".1";
+            try { File.Delete(rotated); } catch { }
+            File.Move(logPath, rotated);
+        }
+        catch
+        {
+            // Rotation is best-effort; keep appending if the rename is blocked.
+        }
+    }
+
+    private static void PruneExpiredLogsIfNeeded()
+    {
+        var today = DateTime.Now.Date;
+        if (today == _lastPruneDate)
+        {
+            return;
+        }
+
+        _lastPruneDate = today;
+        try
+        {
+            var cutoff = DateTime.Now.AddDays(-KeepDays);
+            foreach (var file in Directory.EnumerateFiles(_logDirectory, "bridge-*.log*"))
+            {
+                try
+                {
+                    if (new FileInfo(file).LastWriteTime < cutoff)
+                    {
+                        File.Delete(file);
+                    }
+                }
+                catch
+                {
+                }
+            }
+        }
+        catch
+        {
         }
     }
 

@@ -1048,7 +1048,7 @@ public class DutyScheduleOrchestrator : IDisposable
             foreach (var raw in rawTimes)
             {
                 var text = raw ?? string.Empty;
-                foreach (var token in text.Split([',', ';', '\r', '\n'], StringSplitOptions.RemoveEmptyEntries))
+                foreach (var token in text.Split((char[])[',', ';', '\r', '\n'], StringSplitOptions.RemoveEmptyEntries))
                 {
                     if (!TryNormalizeDutyReminderTime(token, out var normalized) || !seen.Add(normalized))
                     {

@@ -33,6 +33,21 @@ public sealed class HealthMonitorService : IHealthMonitorService
     private int _checkInFlight;
     private int _connectInFlight;
 
+    // Orphan-meta backoff: a crashed standalone app can leave a meta file whose
+    // PID is dead (or recycled). Without this guard we disconnect/raise-error
+    // (and under PID reuse, attempt doomed reconnects) every tick forever.
+    // After this many detections against an UNCHANGED meta file we pause until
+    // the file itself changes (new instance rewrites it) or disappears.
+    private const int StaleMetaDetectionLimit = 3;
+    private long _staleMetaSignature;
+    private int _staleMetaStreak;
+
+    // Throttle doomed reconnect attempts while the meta file is unchanged
+    // (covers PID-recycled cases where the process looks alive but the port
+    // is dead). A rewritten meta file resets the throttle automatically.
+    private long _connectFailureSignature;
+    private int _connectFailureCount;
+
     private const int DefaultIntervalMs = 5000;
 
     public bool IsRunning => _isRunning;
@@ -146,7 +161,20 @@ public sealed class HealthMonitorService : IHealthMonitorService
                 return;
             }
 
-            _lastMeta = meta;
+            // 进程恢复存活：清除孤儿-meta 计数，恢复正常重连节奏。
+            _staleMetaSignature = 0;
+            _staleMetaStreak = 0;
+            if (_lastMeta != null && _lastMeta.ProcessId == meta.ProcessId)
+            {
+                // Same PID alive again — keep failure counters; they reset on
+                // a successful heartbeat. A new PID means a fresh instance.
+                _lastMeta = meta;
+            }
+            else
+            {
+                ResetConnectFailures();
+                _lastMeta = meta;
+            }
 
             // 根据当前状态和元数据决定下一步动作
             OnMetaLoaded(meta);
@@ -166,7 +194,9 @@ public sealed class HealthMonitorService : IHealthMonitorService
         if (pid <= 0) return false;
         try
         {
-            var process = System.Diagnostics.Process.GetProcessById(pid);
+            // Dispose the probe handle: this runs every heartbeat tick, so
+            // leaked Process objects pile up finalizer pressure over weeks.
+            using var process = System.Diagnostics.Process.GetProcessById(pid);
             return !process.HasExited;
         }
         catch
@@ -177,6 +207,9 @@ public sealed class HealthMonitorService : IHealthMonitorService
 
     private void HandleMissingMeta()
     {
+        _staleMetaSignature = 0;
+        _staleMetaStreak = 0;
+        ResetConnectFailures();
         var currentState = _bridge.State;
         if (currentState == IpcBridgeState.Connected || currentState == IpcBridgeState.Connecting)
         {
@@ -192,9 +225,49 @@ public sealed class HealthMonitorService : IHealthMonitorService
 
     private void HandleProcessDied()
     {
-        Diagnostics.Warn("HealthMonitor", "Standalone process died.", new { pid = _lastMeta?.ProcessId });
-        _bridge.Disconnect();
-        BridgeStateRequested?.Invoke(this, IpcBridgeState.Error);
+        var signature = ComputeMetaSignature();
+        if (signature == _staleMetaSignature)
+        {
+            _staleMetaStreak++;
+        }
+        else
+        {
+            _staleMetaSignature = signature;
+            _staleMetaStreak = 1;
+        }
+
+        Diagnostics.Warn("HealthMonitor", "Standalone process died.", new { pid = _lastMeta?.ProcessId, streak = _staleMetaStreak });
+
+        // Only the first detections actively tear down and surface the error.
+        // Once the limit is hit against an unchanged meta file, stay quiet —
+        // the next instance will rewrite the meta file and reset this state.
+        if (_staleMetaStreak <= StaleMetaDetectionLimit)
+        {
+            _bridge.Disconnect();
+            BridgeStateRequested?.Invoke(this, IpcBridgeState.Error);
+        }
+    }
+
+    private long ComputeMetaSignature()
+    {
+        try
+        {
+            var metaPath = _paths.MetaFilePath;
+            var info = new FileInfo(metaPath);
+            if (!info.Exists)
+            {
+                return 0;
+            }
+
+            unchecked
+            {
+                return info.LastWriteTimeUtc.Ticks * 397L ^ info.Length ^ (_lastMeta?.ProcessId ?? 0);
+            }
+        }
+        catch
+        {
+            return 0;
+        }
     }
 
     private void OnMetaLoaded(StandaloneMeta meta)
@@ -239,9 +312,12 @@ public sealed class HealthMonitorService : IHealthMonitorService
                 break;
 
             case IpcBridgeState.Error:
-                // 出错后重试
-                BridgeStateRequested?.Invoke(this, IpcBridgeState.Checking);
-                _ = ConnectBridgeAsync();
+                // 出错后重试（同一份 meta 反复失败时按上限节流）
+                if (_connectFailureCount < StaleMetaDetectionLimit)
+                {
+                    BridgeStateRequested?.Invoke(this, IpcBridgeState.Checking);
+                    _ = ConnectBridgeAsync();
+                }
                 break;
         }
     }
@@ -262,6 +338,7 @@ public sealed class HealthMonitorService : IHealthMonitorService
         catch (Exception ex)
         {
             Diagnostics.Error("HealthMonitor", "Failed to connect bridge.", ex);
+            NoteConnectFailure();
         }
         finally
         {
@@ -269,18 +346,47 @@ public sealed class HealthMonitorService : IHealthMonitorService
         }
     }
 
+    private void NoteConnectFailure()
+    {
+        var signature = ComputeMetaSignature();
+        if (signature == _connectFailureSignature)
+        {
+            _connectFailureCount++;
+        }
+        else
+        {
+            _connectFailureSignature = signature;
+            _connectFailureCount = 1;
+        }
+    }
+
+    private void ResetConnectFailures()
+    {
+        _connectFailureSignature = 0;
+        _connectFailureCount = 0;
+    }
+
     private async Task SendHeartbeatAsync()
     {
         try
         {
             await _bridge.SendHeartbeatAsync();
+            ResetConnectFailures();
         }
         catch (Exception ex)
         {
             Diagnostics.Error("HealthMonitor", "Bridge heartbeat failed.", ex);
             _bridge.Disconnect();
             BridgeStateRequested?.Invoke(this, IpcBridgeState.Error);
-            _ = ConnectBridgeAsync();
+            NoteConnectFailure();
+
+            // Stale-meta guard: if the meta file has already been flagged as
+            // orphaned and has not changed since, do not schedule another
+            // doomed reconnect every heartbeat tick.
+            if (_staleMetaStreak < StaleMetaDetectionLimit && _connectFailureCount < StaleMetaDetectionLimit)
+            {
+                _ = ConnectBridgeAsync();
+            }
         }
     }
 

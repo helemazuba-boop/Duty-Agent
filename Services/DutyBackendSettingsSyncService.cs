@@ -20,6 +20,13 @@ public sealed class DutyBackendSettingsSyncService : IDisposable
     private bool _disposed;
     private bool _workerRunning;
     private int _pendingVersion;
+    // Consecutive-failure backoff: without it, a Faulted engine (or any
+    // persistent sync error) turns this worker into an unbounded 5s retry
+    // storm — thousands of log lines, trace writes and StatusChanged events
+    // per day until someone intervenes. Doubles 5s → 160s, resets on success
+    // or when the pending target changes (a new user edit deserves an
+    // immediate attempt).
+    private int _consecutiveSyncFailures;
     private DutyBackendSyncStatusSnapshot _status = new();
 
     public DutyBackendSettingsSyncService(
@@ -93,6 +100,9 @@ public sealed class DutyBackendSettingsSyncService : IDisposable
             if (version > _pendingVersion)
             {
                 _pendingVersion = version;
+                // A fresh user edit deserves an immediate sync attempt even if
+                // the previous target failed repeatedly.
+                _consecutiveSyncFailures = 0;
             }
 
             if (_status.State == DutyBackendSyncState.Idle || _status.State == DutyBackendSyncState.Synced)
@@ -168,6 +178,7 @@ public sealed class DutyBackendSettingsSyncService : IDisposable
                 var success = await TrySyncLatestAsync(targetVersion, cancellationToken).ConfigureAwait(false);
                 if (success)
                 {
+                    _consecutiveSyncFailures = 0;
                     lock (_gate)
                     {
                         if (_pendingVersion == targetVersion)
@@ -178,9 +189,11 @@ public sealed class DutyBackendSettingsSyncService : IDisposable
                     continue;
                 }
 
+                _consecutiveSyncFailures++;
+                var backoffSeconds = Math.Min(5 << Math.Min(_consecutiveSyncFailures - 1, 5), 160);
                 try
                 {
-                    await Task.Delay(TimeSpan.FromSeconds(5), cancellationToken).ConfigureAwait(false);
+                    await Task.Delay(TimeSpan.FromSeconds(backoffSeconds), cancellationToken).ConfigureAwait(false);
                 }
                 catch (OperationCanceledException)
                 {
@@ -391,7 +404,8 @@ public sealed class DutyBackendSettingsSyncService : IDisposable
             [
                 CreateDefaultPlanPreset(DutyBackendModeIds.Standard),
                 CreateDefaultPlanPreset(DutyBackendModeIds.Agents),
-                CreateDefaultPlanPreset(DutyBackendModeIds.IncrementalSmall)
+                CreateDefaultPlanPreset(DutyBackendModeIds.IncrementalSmall),
+                CreateDefaultPlanPreset(DutyBackendModeIds.Offline)
             ];
         }
 
@@ -409,6 +423,15 @@ public sealed class DutyBackendSettingsSyncService : IDisposable
             preset.MultiAgentExecutionMode = string.Equals(preset.ModeId, DutyBackendModeIds.Agents, StringComparison.Ordinal)
                 ? NormalizeMultiAgentExecutionMode(preset.MultiAgentExecutionMode)
                 : "auto";
+        }
+
+        // Mirror the Python-side normalization (state_ops._normalize_plan_presets):
+        // the offline (model-free) preset is always ensured, including for
+        // configs saved before offline mode existed. Without this, BackendMatches
+        // could never converge against a backend that injected the preset.
+        if (!presets.Any(x => string.Equals(x.ModeId, DutyBackendModeIds.Offline, StringComparison.Ordinal)))
+        {
+            presets.Add(CreateDefaultPlanPreset(DutyBackendModeIds.Offline));
         }
 
         var selectedPlanId = (backend.SelectedPlanId ?? string.Empty).Trim();
@@ -434,6 +457,7 @@ public sealed class DutyBackendSettingsSyncService : IDisposable
             {
                 DutyBackendModeIds.Agents => "Agents",
                 DutyBackendModeIds.IncrementalSmall => "增量小模型",
+                DutyBackendModeIds.Offline => "离线算法",
                 _ => "标准"
             },
             ModeId = modeId,
@@ -453,6 +477,10 @@ public sealed class DutyBackendSettingsSyncService : IDisposable
             DutyBackendModeIds.IncrementalSmall => DutyBackendModeIds.IncrementalSmall,
             "incremental" => DutyBackendModeIds.IncrementalSmall,
             "small_incremental" => DutyBackendModeIds.IncrementalSmall,
+            DutyBackendModeIds.Offline => DutyBackendModeIds.Offline,
+            "algorithm" => DutyBackendModeIds.Offline,
+            "local" => DutyBackendModeIds.Offline,
+            "deterministic" => DutyBackendModeIds.Offline,
             _ => DutyBackendModeIds.Standard
         };
     }

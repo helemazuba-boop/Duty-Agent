@@ -53,7 +53,7 @@ internal sealed class DutyMainSettingsHostModule
             foreach (var raw in values)
             {
                 var text = raw ?? string.Empty;
-                foreach (var token in text.Split([',', ';', '\r', '\n'], StringSplitOptions.RemoveEmptyEntries))
+                foreach (var token in text.Split((char[])[',', ';', '\r', '\n'], StringSplitOptions.RemoveEmptyEntries))
                 {
                     if (!TryNormalizeDutyReminderTime(token, out var normalized) || !seen.Add(normalized))
                     {

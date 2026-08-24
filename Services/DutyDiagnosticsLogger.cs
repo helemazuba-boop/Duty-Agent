@@ -19,6 +19,10 @@ internal static class DutyDiagnosticsLogger
     private static string? _configuredLogDirectory;
     private static string _currentLogPath = BuildDefaultLogPath();
     private static bool _initialized;
+    // Long-running hosts only pruned at startup, so old daily files piled up
+    // forever. Prune on the first write of each new day instead (mirrors the
+    // Python backend's diagnostics policy).
+    private static DateTime _lastPruneDate = DateTime.Now.Date;
 
     public static string CurrentLogPath
     {
@@ -38,6 +42,7 @@ internal static class DutyDiagnosticsLogger
         {
             _configuredLogDirectory = string.IsNullOrWhiteSpace(logDirectory) ? null : logDirectory;
             _initialized = false;
+            _lastPruneDate = default; // force a prune against the new directory on next write
             _currentLogPath = BuildDefaultLogPath();
         }
     }
@@ -88,6 +93,13 @@ internal static class DutyDiagnosticsLogger
                 EnsureInitialized();
                 RotateIfNeeded();
 
+                var today = DateTime.Now.Date;
+                if (today != _lastPruneDate)
+                {
+                    _lastPruneDate = today;
+                    PruneExpiredLogs();
+                }
+
                 var payloadText = SerializePayload(data);
                 var exText = ex is null ? string.Empty : $" ex=\"{Sanitize(ex.GetType().Name)}:{Sanitize(ex.Message)}\"";
                 var line = $"{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff} [{level}] [sid:{SessionId}] [pid:{Environment.ProcessId}] [tid:{Environment.CurrentManagedThreadId}] [{Sanitize(scope)}] {Sanitize(message)}{payloadText}{exText}";
@@ -110,6 +122,7 @@ internal static class DutyDiagnosticsLogger
 
         Directory.CreateDirectory(ResolveLogDirectory());
         PruneExpiredLogs();
+        _lastPruneDate = DateTime.Now.Date;
         _currentLogPath = BuildDefaultLogPath();
         _initialized = true;
     }

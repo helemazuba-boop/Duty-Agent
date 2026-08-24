@@ -17,8 +17,10 @@ namespace DutyAgentBridge.Services;
 public sealed class DutyNotificationProvider : NotificationProviderBase
 {
     private readonly IIpcBridgeService _bridge;
+    private readonly object _streamGate = new();
     private CancellationTokenSource? _streamCts;
     private Task? _streamTask;
+    private int _streamGeneration;
 
     public DutyNotificationProvider(IIpcBridgeService bridge)
     {
@@ -53,52 +55,97 @@ public sealed class DutyNotificationProvider : NotificationProviderBase
 
     private void StartNotificationStream()
     {
-        if (_streamTask is { IsCompleted: false })
+        Task? previous;
+        int observedGeneration;
+        lock (_streamGate)
         {
-            return;
-        }
-
-        StopNotificationStream();
-        _streamCts = new CancellationTokenSource();
-        var token = _streamCts.Token;
-        _streamTask = Task.Run(async () =>
-        {
-            while (!token.IsCancellationRequested && _bridge.State == IpcBridgeState.Connected)
+            previous = _streamTask;
+            if (previous is { IsCompleted: false })
             {
+                // Fast disconnect→connect flip: the previous stream task is
+                // still draining after its stop. Chain the restart onto it —
+                // returning here used to leave the provider with NO stream
+                // after the old task finished (notifications dead until the
+                // next state flip). The generation check drops stale chains
+                // from tasks superseded by an even newer start request.
+                observedGeneration = ++_streamGeneration;
+                previous.ContinueWith(
+                    _ =>
+                    {
+                        bool shouldStart;
+                        lock (_streamGate)
+                        {
+                            shouldStart = _streamGeneration == observedGeneration &&
+                                          (_streamTask == null || _streamTask.IsCompleted);
+                        }
+                        if (shouldStart)
+                        {
+                            StartNotificationStream();
+                        }
+                    },
+                    CancellationToken.None,
+                    TaskContinuationOptions.ExecuteSynchronously,
+                    TaskScheduler.Default);
+                return;
+            }
+
+            // Cancel the previous stream's token without disposing it here:
+            // disposal is owned by the task's finally, so we never dispose a
+            // token the task may still be registering on.
+            try { _streamCts?.Cancel(); } catch { }
+            var cts = new CancellationTokenSource();
+            _streamCts = cts;
+            observedGeneration = ++_streamGeneration;
+            var token = cts.Token;
+            _streamTask = Task.Run(async () =>
+            {
+                // The task owns its CTS disposal and must never end in a
+                // silent fault: an ObjectDisposedException racing a stop used
+                // to kill the loop invisibly.
                 try
                 {
-                    await _bridge.ListenNotificationsAsync(HandleNotificationAsync, token);
-                }
-                catch (OperationCanceledException) when (token.IsCancellationRequested)
-                {
-                    return;
-                }
-                catch (Exception ex)
-                {
-                    Diagnostics.Error("DutyNotificationProvider", "Notification stream failed.", ex);
-                    try
+                    while (!token.IsCancellationRequested && _bridge.State == IpcBridgeState.Connected)
                     {
-                        await Task.Delay(TimeSpan.FromSeconds(5), token);
-                    }
-                    catch (OperationCanceledException)
-                    {
-                        return;
+                        try
+                        {
+                            await _bridge.ListenNotificationsAsync(HandleNotificationAsync, token);
+                        }
+                        catch (OperationCanceledException) when (token.IsCancellationRequested)
+                        {
+                            return;
+                        }
+                        catch (Exception ex)
+                        {
+                            Diagnostics.Error("DutyNotificationProvider", "Notification stream failed.", ex);
+                            await Task.Delay(TimeSpan.FromSeconds(5), token);
+                        }
                     }
                 }
-            }
-        }, token);
+                catch (OperationCanceledException)
+                {
+                    // Shutdown while delayed/listening: expected during stop.
+                }
+                finally
+                {
+                    cts.Dispose();
+                }
+            }, CancellationToken.None);
+        }
     }
 
     private void StopNotificationStream()
     {
-        try
+        lock (_streamGate)
         {
-            _streamCts?.Cancel();
-            _streamCts?.Dispose();
-            _streamCts = null;
-        }
-        catch
-        {
+            // Cancel only; the running task disposes the CTS in its finally so
+            // we never dispose a token the task is still registering on.
+            try
+            {
+                _streamCts?.Cancel();
+            }
+            catch
+            {
+            }
         }
     }
 

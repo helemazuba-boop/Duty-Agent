@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import threading
+import uuid
 
 from fastapi import APIRouter, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import StreamingResponse
@@ -263,7 +264,14 @@ async def duty_live(websocket: WebSocket):
             message_type = str((message or {}).get("type") or "").strip().lower()
             msg_trace_id = str((message or {}).get("trace_id") or "").strip() or trace_id
             msg_request_source = str((message or {}).get("request_source") or "").strip() or request_source
-            client_change_id = str((message or {}).get("client_change_id") or "").strip()
+            # An empty client_change_id would make every run share the "" key,
+            # so a later run's registration overwrites the earlier task/stop
+            # references and schedule_cancel can no longer reach them. Synthesize
+            # a unique id instead — cancellation semantics stay per-run.
+            raw_client_change_id = str((message or {}).get("client_change_id") or "").strip()
+            if message_type == "schedule_run" and not raw_client_change_id:
+                raw_client_change_id = f"auto-{uuid.uuid4().hex[:12]}"
+            client_change_id = raw_client_change_id
 
             if message_type == "hello":
                 await _enqueue_send(send_queue, {

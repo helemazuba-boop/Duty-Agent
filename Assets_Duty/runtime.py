@@ -40,6 +40,21 @@ AUTO_RUN_REQUEST_SOURCE = "automation"
 AUTO_RUN_CATCHUP_MAX_LOOKBACK_DAYS = 31
 
 
+def _safe_int(value: Any, default: int, *, lo: int = 0) -> int:
+    """Tolerant int parse for hand-edited host-config fields.
+
+    A dirty value (e.g. "3次") must not raise every poller tick — that would
+    spam one ERROR line per minute and stall the whole check_auto_run body.
+    """
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return default
+    try:
+        parsed = int(str(value).strip())
+    except (TypeError, ValueError):
+        return default
+    return max(lo, parsed)
+
+
 class DutyRuntime:
     def __init__(self, data_dir: Path, disable_mcp_runtime: bool = False):
         self.data_dir = data_dir.resolve()
@@ -154,6 +169,12 @@ class DutyRuntime:
         }
 
     def reload_host_config(self) -> dict:
+        # Force a fresh read: the mtime cache can serve a stale snapshot right
+        # after our own persist on filesystems with coarse timestamp granularity
+        # (two writes within one kernel timekeeping tick share st_mtime_ns).
+        with self._host_config_cache_lock:
+            self._host_config_cache = None
+            self._host_config_cache_mtime = None
         self.host_config = self._load_host_config()
         return self.host_config
 
@@ -198,7 +219,13 @@ class DutyRuntime:
             try:
                 self.check_auto_run()
             except Exception as ex:
-                self.logger.error("AutoRun", "tick failed.", exc=ex)
+                # The handler itself must never raise: an exception here would
+                # kill this daemon thread permanently (start_* guards prevent
+                # recreation) and silently disable auto-run for the process.
+                try:
+                    self.logger.error("AutoRun", "tick failed.", exc=ex)
+                except Exception:
+                    pass
             self.auto_run_stop.wait(AUTO_RUN_POLL_SECONDS)
 
     def check_auto_run(self) -> None:
@@ -221,8 +248,8 @@ class DutyRuntime:
         now = datetime.now()
         today = now.strftime("%Y-%m-%d")
         last = str(cfg.get("last_auto_run_date", "") or "")
-        retry_times = int(cfg.get("auto_run_retry_times", 3) or 0)
-        failures = int(cfg.get("ai_consecutive_failures", 0) or 0)
+        retry_times = _safe_int(cfg.get("auto_run_retry_times"), 3, lo=0)
+        failures = _safe_int(cfg.get("ai_consecutive_failures"), 0, lo=0)
         # The retry budget is per-day: a counter stamped on another (or no) day
         # is stale and must not eat into today's attempts.
         if str(cfg.get("ai_failures_date", "") or "") != today:
@@ -358,14 +385,18 @@ class DutyRuntime:
             self.notification_history = self.notification_history[-50:]
 
         for queue in subscribers:
-            try:
-                queue.put_nowait(event)
-            except Exception:
+            # Drop-oldest on a full queue, with one retry: between our
+            # get_nowait and put_nowait another publisher may refill the
+            # queue; without the retry the event would be lost entirely.
+            for _ in range(2):
                 try:
-                    queue.get_nowait()
                     queue.put_nowait(event)
+                    break
                 except Exception:
-                    pass
+                    try:
+                        queue.get_nowait()
+                    except Exception:
+                        pass
 
         self.logger.info(
             "NotificationBus",
@@ -403,7 +434,11 @@ class DutyRuntime:
             try:
                 self.check_due_duty_reminders()
             except Exception as ex:
-                self.logger.error("NotificationReminder", "Duty reminder check failed.", exc=ex)
+                # Never let the handler raise: see _auto_run_loop.
+                try:
+                    self.logger.error("NotificationReminder", "Duty reminder check failed.", exc=ex)
+                except Exception:
+                    pass
             self.notification_reminder_stop.wait(NOTIFICATION_REMINDER_POLL_SECONDS)
 
     def check_due_duty_reminders(self) -> None:
@@ -439,7 +474,6 @@ class DutyRuntime:
             with self.notification_reminder_sent_lock:
                 if key in self.notification_reminder_sent_keys:
                     continue
-                self.notification_reminder_sent_keys.add(key)
                 today_prefix = f"{today_text}|"
                 self.notification_reminder_sent_keys = {
                     sent_key for sent_key in self.notification_reminder_sent_keys if sent_key.startswith(today_prefix)
@@ -457,6 +491,12 @@ class DutyRuntime:
                 targets=targets,
                 data={"time": minute_text, "date": today_text, "schedule": today_item or {}},
             )
+            # Mark as sent only after a successful publish: if publishing
+            # throws, the next tick can still retry within the catch-up window
+            # instead of silently dropping the reminder for the whole day.
+            # (Single-threaded loop, so no double-fire race.)
+            with self.notification_reminder_sent_lock:
+                self.notification_reminder_sent_keys.add(key)
 
     def _get_today_schedule_item(self, today: str) -> dict | None:
         try:

@@ -787,8 +787,20 @@ public sealed partial class DutySettingsRepository : IDutySettingsRepository
     private void WriteCompatibilityHostConfig(DutyLocalSettingsDocument settings, DutyHostRuntimeState runtimeState)
     {
         var projected = CreateProjectedHostConfig(settings.Host, runtimeState);
-        projected.Version = Math.Max(1, settings.Version);
-        WriteJsonAtomicallyTracked(_pluginPaths.HostConfigPath, projected, "host_config_projection", new
+        // host-config.json is shared with the Python backend (and the standalone
+        // client), which manage fields this plugin's typed projection does not
+        // model (notification_entry, client_auto_start, client_close_action,
+        // ai_failures_date, ...). Serializing the bare projection used to wipe
+        // those keys on every host-side save; the backend then normalized them
+        // back to defaults — silent config resets. Merge instead: our known
+        // fields win, everything else already in the file is preserved.
+        var merged = MergeProjectedHostConfigWithFile(_pluginPaths.HostConfigPath, projected);
+        // Version must stay monotonic ACROSS writers: the Python side increments
+        // the same field per patch. Seeding from our local settings document
+        // alone could move the file version backwards and break optimistic
+        // concurrency for in-flight patches.
+        merged["version"] = Math.Max(Math.Max(1, settings.Version), ReadHostConfigFileVersion(_pluginPaths.HostConfigPath) + 1);
+        WriteJsonAtomicallyTracked(_pluginPaths.HostConfigPath, merged, "host_config_projection", new
         {
             settings_version = settings.Version,
             auto_run_mode = projected.AutoRunMode,
@@ -796,6 +808,57 @@ public sealed partial class DutySettingsRepository : IDutySettingsRepository
             enable_mcp = projected.EnableMcp,
             static_access_token_configured = HasStaticAccessTokenConfigured(settings.Host)
         });
+    }
+
+    private static Dictionary<string, object?> MergeProjectedHostConfigWithFile(string path, DutyConfig projected)
+    {
+        var merged = new Dictionary<string, object?>();
+        try
+        {
+            if (File.Exists(path))
+            {
+                using var document = JsonDocument.Parse(File.ReadAllText(path));
+                foreach (var property in document.RootElement.EnumerateObject())
+                {
+                    merged[property.Name] = JsonSerializer.Deserialize<object?>(property.Value.GetRawText());
+                }
+            }
+        }
+        catch (Exception)
+        {
+            // Unreadable/corrupt existing file: fall back to a clean projection
+            // rather than failing the save.
+            merged.Clear();
+        }
+
+        // Projected (plugin-owned) fields overwrite; unknown keys survive.
+        var serialized = JsonSerializer.SerializeToElement(projected);
+        foreach (var property in serialized.EnumerateObject())
+        {
+            merged[property.Name] = JsonSerializer.Deserialize<object?>(property.Value.GetRawText());
+        }
+        return merged;
+    }
+
+    private static int ReadHostConfigFileVersion(string path)
+    {
+        try
+        {
+            if (!File.Exists(path))
+            {
+                return 0;
+            }
+            using var document = JsonDocument.Parse(File.ReadAllText(path));
+            return document.RootElement.ValueKind == JsonValueKind.Object &&
+                   document.RootElement.TryGetProperty("version", out var versionElement) &&
+                   versionElement.TryGetInt32(out var version)
+                ? Math.Max(0, version)
+                : 0;
+        }
+        catch (Exception)
+        {
+            return 0;
+        }
     }
 
     private DutySettingsChangedEventArgs CreateChangedEventArgs(
@@ -1095,7 +1158,7 @@ public sealed partial class DutySettingsRepository : IDutySettingsRepository
             foreach (var raw in values)
             {
                 var text = raw ?? string.Empty;
-                foreach (var token in text.Split([',', ';', '\r', '\n'], StringSplitOptions.RemoveEmptyEntries))
+                foreach (var token in text.Split((char[])[',', ';', '\r', '\n'], StringSplitOptions.RemoveEmptyEntries))
                 {
                     if (!TimeSpan.TryParse(token.Trim(), out var parsed))
                     {
