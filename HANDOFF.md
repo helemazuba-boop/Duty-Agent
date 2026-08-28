@@ -310,3 +310,118 @@ usage error 全部走 `_JsonErrorParser` 输出 JSON+exit 2；15 个子命令 --
 5. Bridge 工程自始至终构建为绿。
 
 附带收益（防御性）：若未来把根工程纳入发布链，本批的 AvaloniaXaml 排除 + `(char[])` 显式转换均不依赖特定 Roslyn 版本，任何 SDK 8.0.x 下均可编译。CI 实际运行验证仍需推送 tag 后在 GitHub Actions 观察（本机 GitHub 网络不通，无法代跑）。
+
+## 16. CLI 修复记录（2026-08-24，与 §14 编号对应）
+
+> 验证：`test_cli.py` 由 17 例扩至 **26 例 +1 平台跳过**，连同全量 `test_*.py` **20/20 文件通过**。未提交，待实机复核。
+
+| 编号 | 修复内容 |
+|---|---|
+| H1 | doctor 未就绪退出码改为 **3**（0=ready / 3=命令正常但系统需修 / 1=传输错误），describe 已声明语义 |
+| H2 | `request()` 补捕 `httpx.InvalidURL`；main 增加兜底 `except Exception` → 恒一 JSON 输出，任何未知异常不再裸 traceback 泄内部路径 |
+| H3 | serve 在 Popen 成功后**立即**写 pid 文件；健康等待失败路径终止进程并删除 pid——Ctrl+C/断电不再留下无 pid 的孤儿分离进程 |
+| M1 | 新增 `_pid_image_is_python()`：taskkill 前用 QueryFullProcessImageNameW 校验映像名以 python 开头，非匹配/不可判定一律拒绝动手（防 PID 复用误杀无关进程树）；`_stop_managed` 同样受保护 |
+| M2 | stdin 对称 reconfigure 为 UTF-8(errors=replace)——管道输入的 UTF-8 中文不再按 cp936 静默乱码 |
+| M3 | doctor 解析出非 loopback 目标且不可达时直接报错返回，不再本机 spawn 后又杀掉、误导性指向远端地址 |
+| M4 | main 捕获 KeyboardInterrupt → emit_error 退出码 130，SSE 长跑 Ctrl+C 不再产生协议外输出 |
+| M5 | serve 健康检查通过后校验 `proc.poll() is None`：并发竞争输家（端口 bind 失败已死）不再把自己的死 pid 覆盖到赢家的注册上 |
+| M6 | `--timeout` 自定义 type：非有限值/≤0/>3600 一律 usage error（JSON+exit 2） |
+| L1 | SSE 解析改规范语义：空行分发事件、多行 `data:` 聚合后解析，解析失败打 stderr 警告而非静默丢弃 |
+| L2 | 新增 `_read_text_bom_safe()`：UTF-16 等解码失败给出"文件可能是 UTF-16，请另存为 UTF-8"的可操作提示（@file 与 --*-file 两路径统一） |
+| L3 | emit/_log 判 `sys.stdout/stderr is None`：pythonw 下优雅降级到 --out 文件，不再 AttributeError 裸崩 |
+| L4 | `.dev-token` 三处读取统一 `utf-8-sig`，BOM 不再混入 Bearer token 造成深层协议错误 |
+| L5 | `_JsonErrorParser.error`：invalid choice 时对已知子命令做 difflib 近似匹配追加 "Did you mean"；unrecognized arguments 提示全局旗标必须前置 |
+| L6 | `-`（stdin）读到空数据即抛 ValueError("stdin provided no data")，不再把空指令发往后端 |
+| L7 | redaction 键集合扩为 {api_key, apikey} 且大小写不敏感 |
+
+新增回归测试（TestCliHardening）：doctor exit 3/0、非 loopback 不 bootstrap、timeout 边界×5、InvalidURL→RuntimeError、typo 建议、空 stdin 报错、UTF-16 指引、redaction 变体键、Windows 映像守卫拒绝杀进程。
+
+## 17. 自动排班（非 AI 链路）审查记录（2026-08-24）
+
+> 范围：`offline_scheduler.py` 全文 + 结算侧 `postprocess.estimate_pointer_progress` / `single_pass_executor.apply_single_pass_completion` / `llm_transport._parse_areas_section/_resolve_mmdd` / `engine.py` 路由。生成器与结算共享单点：离线跑只产出 `[areas]+[schedule]`，指针/销账完全由结算侧推导——因此两边语义对齐是本链路的正确性核心。
+> 已核查无问题的方面：`offline_schedule_days` 归一化钳制 1..60（state_ops:380）；MM-DD 跨年由 `_resolve_mmdd` 按 previous_date 单调滚年正确；`build_target_dates` 迭代上界充足；debt/credit 均先经 clone+active 过滤；纯 debtor 日指针不动与结算一致；`[areas]` 别名 A0..An 合法；engine.py offline 路由正确；空花名册有明确中文报错。
+
+### 17.1 发现
+
+- **OF-1（高）重复区域名静默吞学生 —— 已修**
+  `learn_area_structure` 只折叠空白不去重：历史池里若同时存在 `"教室"` 与 `"教 室"`（AI 生成/手工编辑残留），生成器会发出两个别名映射到同一名字。结算侧 `normalize_multi_area_schedule_ids` 的动态键循环遇到同名第二个区域直接 `continue` 跳过（postprocess.py:201-210）→ **该区域学生每天被静默丢弃**，长期表现为该区域持续缺员且无任何报错。
+- **OF-2（撤销，降级为结论记录）兜底日"指针漂移"经深挖不成立**
+  初判认为 fallback 不推进 cursor 会造成与 `estimate_pointer_progress` 的指针分歧并累计漂移。逐行追账后证伪：**生成器的 cursor 是临时的**——每次运行都从 `state.last_pointer` 重建 rotation，持久化指针完全由结算侧 estimate 决定；两种兜底变体产出的排班人员、顺序及最终写回的 `last_pointer` 完全一致（差异仅存在于运行期即弃的局部变量里）。不存在累计漂移，原描述有误，未做任何行为改动。真正共享的语义细节一并记录：estimate 在环上遇到 credit 持有者每次运行至多销账一次（postprocess.py:108-109 去重），多圈重复经过不叠加——AI 链路同语义。
+- **OF-3（低，仅记录）被排班的 credit 持有者不销账**
+  postprocess.py:103-107 匹配为 target 后 `continue`，不再进入 credit 消费分支——兜底上岗的 credit 人员服务了但不扣 credit。此为 AI 链路共享语义，改动需产品决策，本轮不动。
+- **OF-4（低，设计如此）结构学习取最新池条目**：可能是未来的手工占位条目或部分编辑条目导致结构漂移；文档已声明"structure is learned, not configured"，仅记录。
+- **OF-5（低，优雅降级）slots_per_day > 在岗人数**：当天缺员区域整段省略，不报错。可接受，记录在案。
+
+### 17.2 修复
+
+- OF-1：`learn_area_structure` 折叠名合并计数（同名区域视为同一区域、headcount 相加），从源头消除别名重名 → 结算不再静默丢人。
+- 新增回归测试：重名合并（前导/尾随空白变体归一）。
+- OF-2 撤销说明见上；其余为记录项。
+
+### 17.3 附带发现与加固
+
+- **test_cli 一次未复现的偶发失败**（`--token: expected one argument`，v5 扫描中出现 1 次；随后直接跑×5、隔离跑、插桩跑全部通过）。防御性加固：`Connection` 的 token 统一经 `_sanitize_token()`——空值/选项样值（`-` 开头）/含空白一律视为无 token，杜绝此类瞬态垃圾值在 argparse 层产生远离根因的报错。
+- 已知路径遮蔽陷阱（记录，未改）：以 `python3 -m unittest Assets_Duty.test_cli` 方式运行时，CWD 先于 Assets_Duty 入 path，仓库根的 `orchestrator.py` 会遮蔽 `Assets_Duty/orchestrator/` 包导致 `ModuleNotFoundError`。直接脚本方式（现有测试约定）不受影响。
+
+## 18. 状态管理全面审查记录（2026-08-24）
+
+> 范围：`state_ops.py` 的 state/config/host-config 三文件生命周期（load/update/save/rollback/.prev 备份）、账本映射层（normalize/clone/increment/decrement/conflict-resolution）、C# `DutyStateManager` 读取路径。
+> 核查无问题的方面：账本键 int 归一完备（JSON 字符串键在所有入口经 normalize_count_map 转换）；decrement 地板为 0 不出负数；resolve_debt_credit_conflicts 债务优先；update_state 的锁内 load-modify-write 与 os.replace 原子性组合正确（读方永远看到完整旧或新）；未知字段透传前向兼容；last_pointer 钳制；rollback 单代消费语义与 §4 记录一致（维持产品决策不动）。
+
+### 18.1 发现
+
+- **ST-1（高）state.json 损坏时不回退 `.prev`，双侧皆然**
+  Python：`load_state` 的 `json.load` 对损坏主文件直接抛异常 → 所有排班运行/更新失败，而 `.prev` 明明就在旁边。C#：`ReadStateFileUnsafe` 重试耗尽后**静默返回空 DutyState**——UI 上花名册账本/排班无声消失，无任何痕迹。损坏虽因原子写而罕见（外因：磁盘坏块/手工编辑/断电叠加），但长期运行是必然事件，且后果是核心功能瘫痪/数据不可见。
+- **ST-2（高）config.json / host-config.json 损坏零恢复路径**
+  两个配置加载器对 JSONDecodeError/OSError 均直接抛出。config 是启动关键（load_config 失败 → 引擎全挂）；host-config 损坏 → 15s/60s 两个 poller 每个 tick 永久失败。唯一解法是人肉删文件——且删除即丢 API key/方案配置。无人值守场景下这是永久性瘫痪。
+- **ST-3（中）`.prev` 备份非原子复制**
+  `shutil.copy2` 直写目标：复制中途断电留下半截 `.prev`；若随后主文件再损坏，rollback 会加载到垃圾（LR-23 的收窄版——原条目只提 fsync，实际更大的问题是非原子替换窗口）。
+- **ST-4（中）update/save 在主文件已损坏时仍会用坏文件覆盖 `.prev`**
+  与 ST-1 回退联动后的新风险面：load_state 从 .prev 救回数据后，备份步骤把**损坏的主文件**复制覆盖掉最后一份完好的 .prev——自愈机制自我拆台。
+- ST-5（低，随 ST-2 记录）：隔离损坏配置时无法走 ctx 日志管道（unlocked 纯函数），降级用单行 stderr 输出 + `.bad-<时间戳>` 隔离文件本身作为现场保留。
+
+### 18.2 修复
+
+1. ST-1(Python)：新增 `_read_state_json(path)`（解析+归一化，失败抛出）；`load_state` 主文件失败时自动尝试 `.prev` 同路读取，双败才抛。
+2. ST-1(C#)：`ReadStateFileUnsafe` 在返回空对象前尝试读 `state.prev.json`（同样容错），并 Debug.WriteLine 告警。
+3. ST-2：两个配置解锁加载器捕获解析错误 → 将坏文件 `os.replace` 隔离为 `<name>.bad-<epoch>`（现场可查可人工抢救）→ 返回默认值（changed=True 触发重写）。stderr 单行告警。
+4. ST-3：新增 `_backup_previous_atomic(path)`：copy 到 `.tmp` 后 `os.replace`，消除半截备份窗口；update_state/save_state 统一改用。
+5. ST-4：备份前校验主文件可解析（`_state_file_is_readable`），不可解析则**跳过备份覆盖**（保住最后一份完好 .prev）。
+6. 新增 `Assets_Duty/test_state_recovery.py`：损坏主文件回退 .prev、损坏时不覆盖好备份、config/host-config 隔离重建、rollback 对损坏 .prev 的明确报错。
+
+### 18.3 实施与验证
+
+- 全部 5 项已落地（Python 4 处 + C# 1 处）；实现中发现并修正一个自引入缺陷：嵌套 except 的裸 `raise` 会把"备份缺失"的 FileNotFoundError 顶替原始损坏异常，改为 `raise main_error from None`。
+- 行为注记：主文件**缺失**（非损坏）时即使存在 `.prev` 也返回全新空态——新装环境不得复活旧数据（有测试锁定）。
+- C# 构建双工程 0W0E；`test_state_recovery.py` 9/9；Python 全量 **21/21 文件通过**。
+- 未提交，待实机复核。
+
+- 全部 5 项已落地（Python 4 处 + C# 1 处）；实现中发现并修正一个自引入缺陷：嵌套 except 的裸 `raise` 会把"备份缺失"的 FileNotFoundError 顶替原始损坏异常，改为 `raise main_error from None`。
+- 行为注记：主文件**缺失**（非损坏）时即使存在 `.prev` 也返回全新空态——新装环境不得复活旧数据（有测试锁定）。
+- C# 构建双工程 0W0E；`test_state_recovery.py` 9/9；Python 全量 **21/21 文件通过**。
+- 未提交，待实机复核。
+
+## 19. CI 集成问题审查——按 ClassIsland 插件集成视角（2026-08-24）
+
+> 范围：`.github/workflows/release.yml` → `build_client.bat` → `scripts/New-DutyAgentClientRelease.ps1` 全链路 + ClassIsland 插件清单（manifest.yml）+ UI 构建链（npm ci/vite）+ 相关 .gitignore 交互。
+> 先核查排除的嫌疑：python-embed 已入库（1615 文件，含 python.exe）→ CI checkout 有内嵌 Python；package-lock.json 存在 → `npm ci` 合法；README-client.txt / duty-cli.bat 均已跟踪；WebView2 `lib_manual` 引用路径经本地构建证实有效；powershell.exe 5.1 兼容性已被脚本刻意 ASCII 化处理；bat 退出码透传正确。
+
+### 19.1 发现
+
+- **CI-A（高）版本戳永久硬编码 0.50.0**
+  `manifest.yml version: 0.50.0` 与两个 csproj `Version=0.50.0` 全部写死；发布脚本/workflow 均不注入版本。后果：无论打什么 tag，ClassIsland 看到的插件版本永远不变——**插件升级检测失效**（同版本号不触发更新提示），用户与 CI 产物也无法区分是哪个发布。这是按 ClassIsland 插件机制最直接的集成缺陷。
+- **CI-B（中）Release 资产收集依赖 LastWriteTime 启发式**
+  workflow 用"最新的两个 zip"凑主包+后端包。一旦未来新增第三种包、或文件系统时间戳精度异常，就会拿错资产且无告警。
+- **CI-C（高，较初审升级）全局 `*.html` 忽略连 UI 构建入口一并挡掉 → release 工作流从未可能绿**
+  初查只发现 `Assets_Duty/web/index.html` 缺失；本地真实执行 `npm ci && npm run build` 后暴露更深一层：**Vite 的入口 `duty-agent-ui/index.html` 同样被 `*.html` 规则挡在库外**（全新 checkout 无此文件），vite 直接 `UNRESOLVED_ENTRY` 失败。即 14b8307 引入的 release 工作流在全新环境上**第一步 npm build 就必炸**——这回答了 §10/§15 悬置的"CI 是否红着"：是，且从未绿过。次要后果才是 SkipWebBuild / 克隆即 publish 场景缺 web 回退。
+- **CI-D（低）workflow 无 concurrency 控制**：tag 触发与手动 dispatch 并发时会互相竞争创建 GitHub Release。
+- CI-E（信息）：Compress-Archive 的 2GB 上限对当前体量（自包含客户端 + python-embed）仍有余量；`vue-tsc -b && vite build` 在 CI 做全量类型检查属合理成本，保留。
+
+### 19.2 修复实施
+
+1. ✅ CI-A：workflow 新增 Compute release version 步骤（仅 tag 触发剥离 `v` 前缀并校验格式，dispatch 保持默认）；经 bat `%*` 透传 `-ReleaseVersion`；ps1 双 publish 追加 `/p:Version=`，staging 版 manifest.yml `version:` 行同版改写（源文件不动）。
+2. ✅ CI-B：collect 改显式角色匹配——`*-backend.zip` 为后端包、其余最新为主包，缺失即 throw。
+3. ✅ CI-C：`.gitignore` 增加两条 `!` 白名单；新建标准 Vite 入口 `duty-agent-ui/index.html`（root=./、base='./'、#app 挂载点均与 vite.config/src/main.ts 核对）；本地 `npm ci`(256 包) + `npm run build` 真实跑通产出 dist，`dist/index.html` 同步入库为 `Assets_Duty/web/index.html` 回退基线。
+4. ✅ CI-D：`concurrency: release-${{ github.ref }}` + cancel-in-progress。
+
+验证边界（如实声明）：本机无 pwsh，ps1/workflow 改动为静态审读级验证（语法保守写法、PS5.1 兼容）；UI 链路与两入口文件为本机 node22 实测通过。端到端以推送 tag 后的 Actions 运行为准。

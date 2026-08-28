@@ -25,6 +25,11 @@ Thumbs.db
 .gitnexus
 .claude/
 *.html
+# Vite entry points and the synced web fallback are build inputs/outputs we
+# MUST track — the blanket *.html above silently removed them from git, which
+# made `vite build` impossible on any fresh checkout (CI release never green).
+!duty-agent-ui/index.html
+!Assets_Duty/web/index.html
 
 # Useless Tracking Files
 .dotnet/
