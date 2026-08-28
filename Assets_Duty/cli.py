@@ -30,7 +30,9 @@ Dependencies: Python stdlib + httpx (both bundled with python-embed).
 from __future__ import annotations
 
 import argparse
+import difflib
 import json
+import math
 import os
 import subprocess
 import sys
@@ -55,14 +57,21 @@ SERVE_HEALTH_TIMEOUT_SECONDS = 30.0
 # Output helpers
 # --------------------------------------------------------------------------- #
 def _log(message: str) -> None:
+    if sys.stderr is None:
+        return
     print(message, file=sys.stderr, flush=True)
 
 
+# Keys whose values must never reach output unless --show-secrets is set.
+# Matched case-insensitively so backend key-name variants don't leak.
+_REDACTED_KEYS = {"api_key", "apikey"}
+
+
 def _redact_api_keys(value: Any) -> Any:
-    """Mirror mcp_loopback._redact_api_keys: blank any ``api_key`` field."""
+    """Blank any ``api_key``/``apikey`` field (case-insensitive)."""
     if isinstance(value, dict):
         return {
-            key: ("" if str(key) == "api_key" else _redact_api_keys(item))
+            key: ("" if str(key).strip().lower() in _REDACTED_KEYS else _redact_api_keys(item))
             for key, item in value.items()
         }
     if isinstance(value, list):
@@ -76,7 +85,6 @@ def emit(payload: Any, *, pretty: bool, show_secrets: bool, exit_code: int = 0, 
         text = json.dumps(body, ensure_ascii=False, indent=2)
     else:
         text = json.dumps(body, ensure_ascii=False)
-    print(text, flush=True)
     if out_path:
         # Write a UTF-8 (no-BOM) copy so downstream file readers are not tripped
         # up by PowerShell's '>' redirect, which writes UTF-16 and breaks tools
@@ -85,26 +93,48 @@ def emit(payload: Any, *, pretty: bool, show_secrets: bool, exit_code: int = 0, 
             Path(out_path).expanduser().write_text(text, encoding="utf-8")
         except OSError as ex:
             _log(f"[cli] warning: could not write --out {out_path}: {ex}")
+    if sys.stdout is None:
+        # pythonw.exe & friends: nowhere to print. The contract degrades to
+        # the --out file only; crashing here would lose both.
+        return exit_code
+    print(text, flush=True)
     return exit_code
 
 
-def emit_error(message: str, *, pretty: bool, show_secrets: bool, extra: Optional[dict] = None, out_path: str = "") -> int:
+def emit_error(message: str, *, pretty: bool, show_secrets: bool, extra: Optional[dict] = None, out_path: str = "", exit_code: int = 1) -> int:
     payload = {"status": "error", "message": str(message)}
     if extra:
         payload.update(extra)
-    return emit(payload, pretty=pretty, show_secrets=show_secrets, exit_code=1, out_path=out_path)
+    return emit(payload, pretty=pretty, show_secrets=show_secrets, exit_code=exit_code, out_path=out_path)
 
 
 # --------------------------------------------------------------------------- #
 # Value loading (@file / - stdin / literal)
 # --------------------------------------------------------------------------- #
+def _read_text_bom_safe(path: Path) -> str:
+    """Read a text file BOM-safely with an actionable error for the classic
+    'PowerShell wrote UTF-16' failure instead of a bare codec traceback."""
+    try:
+        return path.read_text(encoding="utf-8-sig")
+    except UnicodeDecodeError as ex:
+        raise ValueError(
+            f"{path}: not valid UTF-8 ({ex}). The file was probably written as "
+            "UTF-16 (e.g. PowerShell 'Out-File'/'>' redirect); re-save it as UTF-8."
+        ) from ex
+
+
 def read_value(raw: Optional[str]) -> str:
     if raw is None:
         return ""
     if raw == "-":
-        return sys.stdin.read()
+        data = sys.stdin.read() if sys.stdin is not None else ""
+        # An empty stdin used to be forwarded silently and fail far away from
+        # the root cause; surface it here instead.
+        if not data.strip():
+            raise ValueError("stdin provided no data ('-' requires piped input)")
+        return data
     if raw.startswith("@"):
-        return Path(raw[1:]).expanduser().read_text(encoding="utf-8-sig")
+        return _read_text_bom_safe(Path(raw[1:]).expanduser())
     return raw
 
 
@@ -117,7 +147,7 @@ def _value_from(args: argparse.Namespace, base: str) -> str:
     path (no ``@``) and reads it BOM-safely, sidestepping that collision."""
     file_arg = str(getattr(args, f"{base}_file", "") or "").strip()
     if file_arg:
-        return Path(file_arg).expanduser().read_text(encoding="utf-8-sig")
+        return _read_text_bom_safe(Path(file_arg).expanduser())
     return read_value(getattr(args, base, None))
 
 
@@ -135,13 +165,26 @@ def read_json_value(raw: Optional[str], *, field: str) -> Any:
     return _parse_json_text(read_value(raw), field=field)
 
 
+def _sanitize_token(value: Any) -> Optional[str]:
+    """Reject option-like/garbage bearer values explicitly.
+
+    A transient empty/whitespace/'-'-leading token used to slip into argv-style
+    handling and die as a baffling argparse 'expected one argument' far from
+    the root cause; here it simply means 'no token'.
+    """
+    text = str(value or "").strip()
+    if not text or text.startswith("-") or any(ch.isspace() for ch in text):
+        return None
+    return text
+
+
 # --------------------------------------------------------------------------- #
 # Connection resolution
 # --------------------------------------------------------------------------- #
 class Connection:
     def __init__(self, base_url: str, token: Optional[str], source: str):
         self.base_url = base_url.rstrip("/")
-        self.token = (token or "").strip() or None
+        self.token = _sanitize_token(token)
         self.source = source
 
     def headers(self, trace_id: Optional[str]) -> dict:
@@ -219,10 +262,13 @@ def resolve_connection(args: argparse.Namespace) -> Connection:
     if not token:
         data_dir = getattr(args, "data_dir", None)
         data_path = Path(data_dir).expanduser() if data_dir else _default_data_dir()
-        token_file = data_path / ".dev-token"
+        token_file = data_path / DEV_TOKEN_NAME
         try:
             if token_file.is_file():
-                token = token_file.read_text(encoding="utf-8").strip()
+                # utf-8-sig: an editor that saves the BOM would otherwise ship
+                # U+FEFF inside the bearer token and fail as a cryptic
+                # protocol error deep inside httpx.
+                token = token_file.read_text(encoding="utf-8-sig").strip()
         except OSError:
             token = ""
 
@@ -266,7 +312,10 @@ def request(
             timeout=timeout,
             trust_env=False,
         )
-    except httpx.HTTPError as ex:
+    except (httpx.HTTPError, httpx.InvalidURL) as ex:
+        # InvalidURL is NOT an HTTPError subclass in httpx 0.28.x; without this
+        # a bad --port/--base-url produced a bare traceback that leaked the
+        # script's absolute path and broke the one-JSON-object contract.
         raise RuntimeError(f"Request to {url} failed: {ex}") from ex
 
     if response.status_code >= 400:
@@ -408,24 +457,34 @@ def cmd_run(conn: Connection, args: argparse.Namespace) -> Any:
                 resp.read()
                 raise RuntimeError(f"POST /api/v1/duty/schedule -> HTTP {resp.status_code}: {_extract_detail(resp)}")
             event = None
+            data_lines: list[str] = []
             for line in resp.iter_lines():
                 if not line:
+                    # Blank line = end of one SSE event: flush accumulated
+                    # multi-line ``data:`` payloads. Some proxies re-frame a
+                    # large JSON into several data: lines; joining them is the
+                    # spec-compliant read.
+                    if data_lines:
+                        raw = "\n".join(data_lines)
+                        data_lines.clear()
+                        try:
+                            parsed = json.loads(raw)
+                        except ValueError:
+                            _log(f"[cli] warning: dropped unparseable SSE data ({len(raw)} chars)")
+                            parsed = None
+                        if isinstance(parsed, dict):
+                            last_data = parsed
+                            phase = parsed.get("phase") or parsed.get("message")
+                            if phase:
+                                _log(f"[cli] progress: {phase}")
+                        if event == "complete":
+                            final = parsed if isinstance(parsed, dict) else final
+                        event = None
                     continue
                 if line.startswith("event:"):
                     event = line[len("event:"):].strip()
                 elif line.startswith("data:"):
-                    raw = line[len("data:"):].strip()
-                    try:
-                        parsed = json.loads(raw)
-                    except ValueError:
-                        continue
-                    if isinstance(parsed, dict):
-                        last_data = parsed
-                        phase = parsed.get("phase") or parsed.get("message")
-                        if phase:
-                            _log(f"[cli] progress: {phase}")
-                    if event == "complete":
-                        final = parsed if isinstance(parsed, dict) else final
+                    data_lines.append(line[len("data:"):].strip())
     except httpx.HTTPError as ex:
         raise RuntimeError(f"Request to {url} failed: {ex}") from ex
     result = final if final is not None else last_data
@@ -496,9 +555,41 @@ def _pid_alive(pid: Optional[int]) -> bool:
     return True
 
 
+def _pid_image_is_python(pid: int) -> Optional[bool]:
+    """Windows-only identity check: does the image name look like our managed
+    python? True = match, None = undeterminable, False = definitely NOT ours.
+    Guards against stale pid files whose pid the OS reused for an unrelated
+    process — taskkill /T /F on that would kill an arbitrary process tree."""
+    if os.name != "nt":
+        return True  # non-Windows kill is a single targeted signal
+    try:
+        import ctypes
+
+        PROCESS_QUERY_LIMITED = 0x1000
+        kernel32 = ctypes.windll.kernel32
+        handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED, False, int(pid))
+        if not handle:
+            return None
+        try:
+            size = ctypes.c_ulong(1024)
+            buf = ctypes.create_unicode_buffer(1024)
+            if kernel32.QueryFullProcessImageNameW(handle, 0, buf, ctypes.byref(size)):
+                return Path(str(buf.value)).name.lower().startswith("python")
+            return None
+        finally:
+            kernel32.CloseHandle(handle)
+    except Exception:
+        return None
+
+
 def _terminate_pid(pid: int, timeout: float = 5.0) -> bool:
     """Best-effort terminate a managed backend by pid. Returns True if the
     process is gone afterwards (polls until exit or timeout)."""
+    image_ok = _pid_image_is_python(pid)
+    if image_ok is False:
+        # PID reuse: this is not our python anymore — refuse to touch it.
+        _log(f"[cli] refusing to terminate pid {pid}: image name does not look like python (stale/reused pid?)")
+        return False
     if os.name == "nt":
         try:
             subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], capture_output=True, timeout=timeout)
@@ -639,20 +730,37 @@ def cmd_serve(conn: Connection, args: argparse.Namespace) -> Any:
     finally:
         log_handle.close()
 
+    # Register the pid IMMEDIATELY: the health wait below can take up to 30s,
+    # and a Ctrl+C / power loss inside that window used to leave a detached
+    # backend running with no pid file — unmanageable via 'serve --stop'.
+    pid_path = _pid_file_for(data_dir)
+    _write_pid(pid_path, proc.pid)
+
     timeout = float(getattr(args, "timeout", 0) or SERVE_HEALTH_TIMEOUT_SECONDS)
     if not _wait_health(base_url, source, timeout):
         _terminate_pid(proc.pid)
+        _remove_pid_file(pid_path)
         raise RuntimeError(
             f"Backend did not become healthy at {base_url} within {timeout:.0f}s. See log: {log_path}"
         )
 
-    _write_pid(_pid_file_for(data_dir), proc.pid)
+    if proc.poll() is not None:
+        # The healthy backend answering at base_url is NOT our child (another
+        # concurrent serve won the port and ours died on bind). Do not let our
+        # dead pid overwrite the winner's registration.
+        _remove_pid_file(pid_path)
+        return {
+            "status": "success",
+            "already_running": True,
+            "note": f"this serve attempt exited during startup; an existing backend answered at {base_url}",
+            "base_url": base_url,
+        }
 
     token = ""
     token_file = data_dir / DEV_TOKEN_NAME
     try:
         if token_file.is_file():
-            token = token_file.read_text(encoding="utf-8").strip()
+            token = token_file.read_text(encoding="utf-8-sig").strip()
     except OSError:
         token = ""
 
@@ -689,7 +797,7 @@ def cmd_status(conn: Connection, args: argparse.Namespace) -> Any:
     token_file = data_dir / DEV_TOKEN_NAME
     try:
         if token_file.is_file():
-            token = token_file.read_text(encoding="utf-8").strip()
+            token = token_file.read_text(encoding="utf-8-sig").strip()
     except OSError:
         token = ""
 
@@ -714,6 +822,20 @@ def cmd_status(conn: Connection, args: argparse.Namespace) -> Any:
     return result
 
 
+def _base_url_is_loopback(base_url: str) -> bool:
+    """True when the URL points at this machine (127.x/localhost/[::1]).
+    Used by doctor to decide whether spawning a local backend can help."""
+    try:
+        from urllib.parse import urlparse
+
+        host = (urlparse(base_url).hostname or "").strip().lower().strip("[]")
+    except ValueError:
+        return False
+    if host in {"localhost", "::1"}:
+        return True
+    return host.startswith("127.")
+
+
 def cmd_doctor(conn: Connection, args: argparse.Namespace) -> Any:
     """First-run health check: ensure the backend is up (bootstrapping it if
     needed), then return the readiness report with a real model probe. One
@@ -723,6 +845,16 @@ def cmd_doctor(conn: Connection, args: argparse.Namespace) -> Any:
     source = str(getattr(args, "request_source", "") or "").strip() or DEFAULT_REQUEST_SOURCE
     started_info = None
     if not _health_ok(Connection(base_url, None, source), 2.0):
+        if not _base_url_is_loopback(base_url):
+            # Spawning a LOCAL backend cannot fix an unreachable REMOTE target;
+            # doing so used to leave a stray local process and a misleading
+            # error pointing at the remote address.
+            return {
+                "status": "error",
+                "message": f"Backend at {base_url} is not reachable and doctor does not "
+                           "bootstrap non-local targets. Start the backend there, or point "
+                           "--base-url/--port at this machine.",
+            }
         started_info = cmd_serve(conn, args)
         if isinstance(started_info, dict) and started_info.get("status") == "error":
             return started_info
@@ -880,6 +1012,7 @@ COMMAND_SPECS: list[dict] = [
             "--data-dir": "Data directory for backend files.",
         },
         "returns": "{ready, checks:[{id,ok,detail,fix}], next_steps, backend_started?}",
+        "notes": "Exit codes: 0 = ready; 3 = command ran but the system is NOT ready (see checks[].fix); 1 = transport/other error. Non-local --base-url targets are never bootstrapped.",
     },
     {
         "name": "describe",
@@ -963,16 +1096,40 @@ class _JsonErrorParser(argparse.ArgumentParser):
     """
 
     def error(self, message: str):  # noqa: D401 - argparse hook
+        hint = (
+            "Run 'duty-cli describe' for the machine-readable command catalog "
+            "(JSON, no network), or 'duty-cli --help' for human-readable usage."
+        )
+        if "unrecognized arguments" in message:
+            hint += " Note: global flags (--port/--data-dir/...) must precede the subcommand."
+        if "invalid choice" in message:
+            try:
+                candidates = [spec["name"] for spec in COMMAND_SPECS]
+                typed = str(message.split("'")[1] if "'" in message else "")
+            except Exception:
+                candidates, typed = [], ""
+            close = difflib.get_close_matches(typed, candidates, n=1, cutoff=0.6)
+            if close:
+                hint += f" Did you mean '{close[0]}'?"
         payload = {
             "status": "error",
             "message": f"{self.prog}: {message}",
-            "hint": (
-                "Run 'duty-cli describe' for the machine-readable command catalog "
-                "(JSON, no network), or 'duty-cli --help' for human-readable usage."
-            ),
+            "hint": hint,
         }
         print(json.dumps(payload, ensure_ascii=False), flush=True)
         raise SystemExit(2)
+
+
+def _timeout_type(text: str) -> float:
+    try:
+        value = float(text)
+    except (TypeError, ValueError):
+        raise argparse.ArgumentTypeError(f"invalid timeout value: {text!r}") from None
+    # 'inf'/'nan' used to pass straight through to httpx and hang a CI job
+    # until an external job timeout killed it.
+    if not math.isfinite(value) or value <= 0 or value > 3600:
+        raise argparse.ArgumentTypeError("--timeout must be within (0, 3600] seconds")
+    return value
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -992,7 +1149,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--meta-file", default="", help="Explicit path to .duty-agent-meta.json.")
     parser.add_argument("--trace-id", default="", help="Optional X-Duty-Trace-Id header value.")
     parser.add_argument("--request-source", default=DEFAULT_REQUEST_SOURCE, help="X-Duty-Request-Source header value.")
-    parser.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT_SECONDS, help="HTTP timeout in seconds.")
+    parser.add_argument("--timeout", type=_timeout_type, default=DEFAULT_TIMEOUT_SECONDS, help="HTTP timeout in seconds (0 < t <= 3600).")
     parser.add_argument("--pretty", action="store_true", help="Pretty-print stdout JSON.")
     parser.add_argument("--show-secrets", action="store_true", help="Do not redact api_key fields.")
     parser.add_argument("--out", default="", help="Also write the stdout JSON to this path as UTF-8 (avoids PowerShell '>' UTF-16).")
@@ -1072,6 +1229,13 @@ def main(argv: Optional[list[str]] = None) -> int:
             stream.reconfigure(encoding="utf-8")
         except Exception:
             pass
+    # Symmetric stdin fix: a piped file is decoded with the ANSI code page
+    # (cp936) by default even when the console is chcp 65001 — UTF-8 Chinese
+    # instructions fed via '-' were silently mojibake'd into the pipeline.
+    try:
+        sys.stdin.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
     parser = build_parser()
     args = parser.parse_args(argv)
     pretty = bool(getattr(args, "pretty", False))
@@ -1091,7 +1255,14 @@ def main(argv: Optional[list[str]] = None) -> int:
         return emit(cmd_describe(None, args), pretty=pretty, show_secrets=show_secrets, out_path=out_path)
 
     if handler is None:
-        return emit_error(f"Unknown command: {args.command}", pretty=pretty, show_secrets=show_secrets, out_path=out_path)
+        close = difflib.get_close_matches(str(args.command), list(HANDLERS.keys()), n=1, cutoff=0.6)
+        hint = f"Did you mean '{close[0]}'?" if close else "Run 'duty-cli describe' for valid commands."
+        return emit_error(
+            f"Unknown command: {args.command} ({hint})",
+            pretty=pretty,
+            show_secrets=show_secrets,
+            out_path=out_path,
+        )
 
     # describe needs no connection.
     if args.command == "describe":
@@ -1100,12 +1271,34 @@ def main(argv: Optional[list[str]] = None) -> int:
     try:
         conn = resolve_connection(args)
         result = handler(conn, args)
+    except KeyboardInterrupt:
+        # Ctrl+C mid-SSE used to escape as a raw traceback + a Windows-only
+        # abnormal exit code, breaking the one-JSON-object contract for the
+        # calling AI/tooling.
+        return emit_error(
+            "interrupted by user (Ctrl+C)",
+            pretty=pretty,
+            show_secrets=show_secrets,
+            out_path=out_path,
+            exit_code=130,
+        )
     except (ValueError, RuntimeError, OSError) as ex:
         return emit_error(str(ex), pretty=pretty, show_secrets=show_secrets, out_path=out_path)
+    except Exception as ex:  # noqa: BLE001 - contract: stdout is always one JSON object
+        return emit_error(
+            f"{type(ex).__name__}: {ex}",
+            pretty=pretty,
+            show_secrets=show_secrets,
+            out_path=out_path,
+        )
 
-    # Surface backend-declared errors as non-zero exit codes.
-    exit_code = 1 if isinstance(result, dict) and result.get("status") == "error" else 0
-    return emit(result, pretty=pretty, show_secrets=show_secrets, exit_code=exit_code, out_path=out_path)
+    if isinstance(result, dict) and result.get("status") == "error":
+        return emit(result, pretty=pretty, show_secrets=show_secrets, exit_code=1, out_path=out_path)
+    if args.command == "doctor" and isinstance(result, dict) and result.get("ready") is False:
+        # Not-ready is not a transport failure but CI must still be able to
+        # tell it apart from success; 3 = ran fine, system needs fixing.
+        return emit(result, pretty=pretty, show_secrets=show_secrets, exit_code=3, out_path=out_path)
+    return emit(result, pretty=pretty, show_secrets=show_secrets, exit_code=0, out_path=out_path)
 
 
 if __name__ == "__main__":

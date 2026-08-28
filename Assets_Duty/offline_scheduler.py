@@ -92,6 +92,7 @@ def learn_area_structure(schedule_pool: Sequence[dict]) -> List[Tuple[str, int]]
             latest = entry
 
     structure: List[Tuple[str, int]] = []
+    structure_by_name: Dict[str, int] = {}
     if isinstance(latest, dict):
         assignments = latest.get("area_assignments")
         if isinstance(assignments, dict):
@@ -103,8 +104,14 @@ def learn_area_structure(schedule_pool: Sequence[dict]) -> List[Tuple[str, int]]
                     continue
                 count = len(students) if isinstance(students, list) else 0
                 if count > 0:
-                    structure.append((name, count))
+                    # Merge same-name areas: two aliases mapping to one area
+                    # name made the settle side silently DROP the second
+                    # area's students (its dynamic-key loop skips an already
+                    # present name), i.e. chronic under-staffing with no
+                    # error anywhere.
+                    structure_by_name[name] = structure_by_name.get(name, 0) + count
 
+    structure = [(name, count) for name, count in structure_by_name.items()]
     if not structure:
         structure = [(DEFAULT_SINGLE_AREA_NAME, DEFAULT_ASSIGNMENTS_PER_AREA)]
     return structure
@@ -179,6 +186,11 @@ def plan_daily_assignments(
             used.add(person_id)
 
         # 3) Fallback: too few non-credit people -> staff with whoever remains.
+        # NOTE: this scan deliberately mirrors step 2's ring order from the
+        # cursor. The generator's cursor is ephemeral (recomputed from
+        # state.last_pointer every run); the persisted pointer is decided
+        # solely by estimate_pointer_progress on the settle side, so no
+        # bookkeeping is needed here.
         if len(picks) < slots_per_day:
             for offset in range(ring_len):
                 if len(picks) >= slots_per_day:

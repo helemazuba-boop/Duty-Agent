@@ -6,6 +6,7 @@ import json
 import os
 import re
 import shutil
+import sys
 import time
 from datetime import date, datetime
 from ctypes import wintypes
@@ -601,6 +602,91 @@ def release_state_file_lock(lock_path: Path) -> None:
     release_file_lock(lock_path)
 
 
+def _read_state_json(path: Path) -> dict:
+    """Parse + normalize one state file. Raises on missing/corrupt content."""
+    with open(path, "r", encoding="utf-8-sig") as file:
+        data = json.load(file)
+    if not isinstance(data, dict):
+        raise ValueError(f"state root is not an object: {path}")
+    if "schedule_pool" not in data or not isinstance(data["schedule_pool"], list):
+        data["schedule_pool"] = []
+    if "next_run_note" not in data or not isinstance(data["next_run_note"], str):
+        data["next_run_note"] = ""
+    data["debt_counts"] = normalize_count_map(data.get("debt_counts", data.get("debt_list", [])))
+    data["credit_counts"] = normalize_count_map(data.get("credit_counts", data.get("credit_list", [])))
+    data["debt_counts"], data["credit_counts"] = resolve_debt_credit_conflicts(
+        data["debt_counts"],
+        data["credit_counts"],
+    )
+    data.pop("debt_list", None)
+    data.pop("credit_list", None)
+    data["last_pointer"] = parse_int(data.get("last_pointer"), 0, 0, 1_000_000_000)
+    return data
+
+
+def load_state(path: Path) -> dict:
+    prev_path = path.with_suffix(".prev" + path.suffix)
+    if not path.exists():
+        return {
+            "schedule_pool": [],
+            "next_run_note": "",
+            "debt_counts": {},
+            "credit_counts": {},
+            "last_pointer": 0,
+        }
+    try:
+        return _read_state_json(path)
+    except (OSError, ValueError) as main_error:
+        # Corrupt main file (bad disk block / manual edit / power-loss edge).
+        # .prev holds the previous generation thanks to the atomic backup in
+        # update_state/save_state — recover from it instead of failing every
+        # schedule run until a human notices.
+        try:
+            recovered = _read_state_json(prev_path)
+            print(
+                f"state_ops: main state unreadable, recovered from {prev_path.name}",
+                file=sys.stderr,
+                flush=True,
+            )
+            return recovered
+        except (OSError, ValueError):
+            # No usable backup: surface the ORIGINAL corruption, not the
+            # missing-backup FileNotFoundError.
+            raise main_error from None
+
+
+def _state_file_is_readable(path: Path) -> bool:
+    if not path.exists():
+        return False
+    try:
+        _read_state_json(path)
+        return True
+    except (OSError, ValueError):
+        return False
+
+
+def _backup_previous_atomic(path: Path) -> None:
+    """Refresh <name>.prev.json from path, atomically.
+
+    copy2 straight onto the backup used to leave a truncated .prev when power
+    was lost mid-copy; tmp+os.replace makes the backup generation atomic.
+    Skips the refresh when the source itself is unparseable so a corrupt main
+    file cannot destroy the last known-good backup."""
+    if not path.exists():
+        return
+    prev_path = path.with_suffix(".prev" + path.suffix)
+    if not _state_file_is_readable(path):
+        print(
+            f"state_ops: skipping {prev_path.name} refresh; current state is corrupt (preserving last good backup)",
+            file=sys.stderr,
+            flush=True,
+        )
+        return
+    tmp_path = path.with_suffix(".prev.tmp" + path.suffix)
+    shutil.copy2(str(path), str(tmp_path))
+    os.replace(str(tmp_path), str(prev_path))
+
+
 def update_state(
     path: Path,
     updater: Callable[[dict], dict | None],
@@ -614,9 +700,7 @@ def update_state(
         current = load_state(path)
         updated = updater(current)
         next_state = updated if isinstance(updated, dict) else current
-        if path.exists():
-            prev_path = path.with_suffix(".prev" + path.suffix)
-            shutil.copy2(str(path), str(prev_path))
+        _backup_previous_atomic(path)
         save_json_atomic(path, next_state)
         return next_state
     finally:
@@ -632,9 +716,7 @@ def save_state(ctx: Context, state: dict) -> dict:
     lock_path = path.with_suffix(path.suffix + ".lock")
     acquire_state_file_lock(lock_path, timeout_seconds=STATE_LOCK_TIMEOUT_SECONDS)
     try:
-        if path.exists():
-            prev_path = path.with_suffix(".prev" + path.suffix)
-            shutil.copy2(str(path), str(prev_path))
+        _backup_previous_atomic(path)
         save_json_atomic(path, state)
         return state
     finally:
@@ -666,12 +748,33 @@ def rollback_state(
         release_state_file_lock(lock_path)
 
 
+def _quarantine_corrupt_file(path: Path, ex: Exception) -> None:
+    """Move an unparseable config aside as <name>.bad-<epoch> so the caller can
+    regenerate defaults. Without this, one corrupt config file kept the whole
+    backend (or every host-config poller tick) permanently broken until a
+    human deleted the file by hand."""
+    bad_path = path.with_suffix(path.suffix + f".bad-{int(time.time())}")
+    try:
+        os.replace(str(path), str(bad_path))
+        print(
+            f"state_ops: {path.name} was corrupt ({type(ex).__name__}); quarantined to {bad_path.name}, regenerating defaults",
+            file=sys.stderr,
+            flush=True,
+        )
+    except OSError:
+        pass
+
+
 def _load_persisted_config_unlocked(config_path: Path) -> tuple[dict, bool]:
     if not config_path.exists():
         return _create_default_persisted_config(), True
 
-    with open(config_path, "r", encoding="utf-8-sig") as file:
-        raw = json.load(file)
+    try:
+        with open(config_path, "r", encoding="utf-8-sig") as file:
+            raw = json.load(file)
+    except (OSError, ValueError) as ex:
+        _quarantine_corrupt_file(config_path, ex)
+        return _create_default_persisted_config(), True
 
     normalized = _normalize_persisted_config(raw)
     return normalized, raw != normalized
@@ -957,8 +1060,12 @@ def _load_persisted_host_config_unlocked(config_path: Path) -> tuple[dict, bool]
     if not config_path.exists():
         return _create_default_persisted_host_config(), True
 
-    with open(config_path, "r", encoding="utf-8-sig") as file:
-        raw = json.load(file)
+    try:
+        with open(config_path, "r", encoding="utf-8-sig") as file:
+            raw = json.load(file)
+    except (OSError, ValueError) as ex:
+        _quarantine_corrupt_file(config_path, ex)
+        return _create_default_persisted_host_config(), True
 
     normalized = _normalize_persisted_host_config(raw)
     return normalized, raw != normalized
@@ -1457,33 +1564,6 @@ def resolve_debt_credit_conflicts(debt_counts: object, credit_counts: object) ->
         if debt.get(person_id, 0) > 0:
             credit.pop(person_id, None)
     return debt, credit
-
-
-def load_state(path: Path) -> dict:
-    if not path.exists():
-        return {
-            "schedule_pool": [],
-            "next_run_note": "",
-            "debt_counts": {},
-            "credit_counts": {},
-            "last_pointer": 0,
-        }
-    with open(path, "r", encoding="utf-8-sig") as file:
-        data = json.load(file)
-    if "schedule_pool" not in data or not isinstance(data["schedule_pool"], list):
-        data["schedule_pool"] = []
-    if "next_run_note" not in data or not isinstance(data["next_run_note"], str):
-        data["next_run_note"] = ""
-    data["debt_counts"] = normalize_count_map(data.get("debt_counts", data.get("debt_list", [])))
-    data["credit_counts"] = normalize_count_map(data.get("credit_counts", data.get("credit_list", [])))
-    data["debt_counts"], data["credit_counts"] = resolve_debt_credit_conflicts(
-        data["debt_counts"],
-        data["credit_counts"],
-    )
-    data.pop("debt_list", None)
-    data.pop("credit_list", None)
-    data["last_pointer"] = parse_int(data.get("last_pointer"), 0, 0, 1_000_000_000)
-    return data
 
 
 def _normalize_schedule_entry_day(value: object, parsed_date: date) -> str:

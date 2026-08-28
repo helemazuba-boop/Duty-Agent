@@ -367,5 +367,96 @@ class TestBuildApplyEquivalence(unittest.TestCase):
         self.assertEqual(state_a.get("last_pointer"), state_b.get("last_pointer"))
 
 
+class TestCliHardening(unittest.TestCase):
+    """Edge-case hardening added after the §14 CLI audit (HANDOFF.md)."""
+
+    # ---- H1: doctor exit codes ------------------------------------------------
+    def test_doctor_not_ready_exits_3(self):
+        with mock.patch.object(cli, "_health_ok", return_value=True), \
+                mock.patch.object(cli, "request", return_value={"ready": False, "checks": [], "next_steps": []}):
+            exit_code, payload = _run_cli(["doctor"])
+        self.assertEqual(exit_code, 3)
+        self.assertIs(payload["ready"], False)
+
+    def test_doctor_ready_exits_0(self):
+        with mock.patch.object(cli, "_health_ok", return_value=True), \
+                mock.patch.object(cli, "request", return_value={"ready": True, "checks": [], "next_steps": []}):
+            exit_code, payload = _run_cli(["doctor"])
+        self.assertEqual(exit_code, 0)
+        self.assertIs(payload["ready"], True)
+
+    def test_doctor_non_loopback_unreachable_does_not_bootstrap(self):
+        with mock.patch.object(cli, "_health_ok", return_value=False), \
+                mock.patch.object(cli, "cmd_serve") as serve:
+            exit_code, payload = _run_cli(["--base-url", "http://192.0.2.10:8765", "doctor"])
+        serve.assert_not_called()
+        self.assertEqual(exit_code, 1)
+        self.assertEqual(payload["status"], "error")
+
+    # ---- M6: timeout bounds ----------------------------------------------------
+    def test_timeout_bounds_rejected_via_json_usage_error(self):
+        for bad in ("inf", "nan", "0", "-5", "3601"):
+            buffer = io.StringIO()
+            with contextlib.redirect_stdout(buffer):
+                with self.assertRaises(SystemExit) as ctx:
+                    cli.main(["--timeout", bad, "health"])
+            self.assertEqual(ctx.exception.code, 2)
+            payload = json.loads(buffer.getvalue().strip())
+            self.assertEqual(payload["status"], "error")
+
+    # ---- H2: invalid URL surfaces as JSON error ---------------------------------
+    def test_invalid_url_raises_runtime_error_not_traceback(self):
+        conn = cli.Connection("http://127.0.0.1:70000", None, "cli")
+        with self.assertRaises(RuntimeError):
+            cli.request(conn, "GET", "/health", trace_id=None)
+
+    # ---- L5: typo suggestion -----------------------------------------------------
+    def test_typo_command_hint_suggests_closest(self):
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            with self.assertRaises(SystemExit) as ctx:
+                cli.main(["plan-pormpt"])
+        self.assertEqual(ctx.exception.code, 2)
+        payload = json.loads(buffer.getvalue().strip())
+        self.assertIn("plan-prompt", payload["hint"])
+
+    # ---- L6/L2: stdin + file value loading ----------------------------------------
+    def test_stdin_dash_empty_raises_actionable_error(self):
+        empty = io.StringIO("")
+        with mock.patch.object(cli.sys, "stdin", empty):
+            with self.assertRaises(ValueError) as ctx:
+                cli.read_value("-")
+        self.assertIn("stdin provided no data", str(ctx.exception))
+
+    def test_utf16_file_gets_actionable_guidance(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "instr.txt"
+            path.write_bytes(b"\xff\xfeh\x00i\x00")  # UTF-16 LE BOM + "hi"
+            with self.assertRaises(ValueError) as ctx:
+                cli._read_text_bom_safe(path)
+        self.assertIn("UTF-16", str(ctx.exception))
+
+    # ---- L7: redaction variants ------------------------------------------------------
+    def test_redaction_covers_case_and_variant_keys(self):
+        payload = {"APIKEY": "a", "api_key": "b", "ApiKey": "c", "model": "m"}
+        cleaned = cli._redact_api_keys(payload)
+        self.assertEqual(cleaned["APIKEY"], "")
+        self.assertEqual(cleaned["api_key"], "")
+        self.assertEqual(cleaned["ApiKey"], "")
+        self.assertEqual(cleaned["model"], "m")
+
+    # ---- M1: pid identity guard ---------------------------------------------------
+    def test_terminate_refuses_non_python_image(self):
+        # On Windows the guard consults the image name; on POSIX the helper is a
+        # passthrough (single targeted signal). Only assertable meaningfully on nt.
+        if os.name != "nt":
+            self.skipTest("image-name guard is Windows-only")
+        with mock.patch.object(cli, "_pid_image_is_python", return_value=False), \
+                mock.patch.object(cli.subprocess, "run") as run:
+            gone = cli._terminate_pid(123456)
+        run.assert_not_called()
+        self.assertFalse(gone)
+
+
 if __name__ == "__main__":
     unittest.main()

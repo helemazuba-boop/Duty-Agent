@@ -70,6 +70,18 @@ class TestLearnStructure(unittest.TestCase):
         pool = [{"date": "2026-04-21", "area_assignments": {"空": [], "教室": ["A"]}}]
         self.assertEqual(learn_area_structure(pool), [("教室", 1)])
 
+    def test_duplicate_collapsed_names_merge_counts(self):
+        # Leading/trailing whitespace variants collapse to one name; historically
+        # two aliases mapping to one name made the settle side silently drop the
+        # second area's students. They must merge with summed headcount.
+        pool = [
+            {
+                "date": "2026-04-21",
+                "area_assignments": {"教室": ["A", "B"], "  教室  ": ["C"], "走廊": ["D"]},
+            }
+        ]
+        self.assertEqual(learn_area_structure(pool), [("教室", 3), ("走廊", 1)])
+
 
 class TestRotationAndAssignment(unittest.TestCase):
     def test_rotation_starts_at_pointer_and_skips_inactive(self):
