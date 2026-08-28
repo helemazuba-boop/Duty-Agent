@@ -313,7 +313,45 @@ public class DutyStateManager : IStateAndRosterManager, IDisposable
             }
         }
 
+        // Main file unreadable after retries (corrupt content or persistent IO).
+        // Fall back to the Python-side generation backup before showing an
+        // EMPTY state — a silent blank used to look exactly like "all duty
+        // data vanished".
+        var prevStatePath = ResolvePrevStatePath();
+        if (prevStatePath != null && File.Exists(prevStatePath))
+        {
+            try
+            {
+                var prevJson = File.ReadAllText(prevStatePath);
+                var recovered = JsonSerializer.Deserialize<DutyState>(prevJson);
+                if (recovered != null)
+                {
+                    Debug.WriteLine($"State file unreadable; recovered previous generation from {prevStatePath}");
+                    return recovered;
+                }
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine($"Previous state backup also unreadable: {ex.Message}");
+            }
+        }
+
         return new DutyState();
+    }
+
+    private string? ResolvePrevStatePath()
+    {
+        try
+        {
+            var dir = Path.GetDirectoryName(_statePath);
+            var fileName = Path.GetFileNameWithoutExtension(_statePath);
+            var ext = Path.GetExtension(_statePath);
+            return string.IsNullOrEmpty(dir) ? null : Path.Combine(dir, $"{fileName}.prev{ext}");
+        }
+        catch (Exception)
+        {
+            return null;
+        }
     }
 
     private bool IsStatePath(string? path)
