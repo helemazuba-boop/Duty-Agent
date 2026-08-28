@@ -2,6 +2,12 @@
 param(
     [string]$OutputRoot = "",
     [string]$Configuration = "Release",
+    # Optional explicit version (e.g. 1.2.3, tag prefix already stripped).
+    # When set: stamps both published assemblies (/p:Version=) and rewrites the
+    # bridge manifest.yml version in the STAGING copy only. Without it the
+    # csproj/manifest defaults apply — which used to mean every release shipped
+    # as 0.50.0 forever and ClassIsland's plugin update check never fired.
+    [string]$ReleaseVersion = "",
     [string]$SshHost = "aliyun",
     [string]$RemoteRoot = "/www/wwwroot/alist_storage/Duty-Agent",
     [switch]$SkipWebBuild,
@@ -13,6 +19,12 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+
+if (-not [string]::IsNullOrWhiteSpace($ReleaseVersion)) {
+    if ($ReleaseVersion -notmatch '^\d+\.\d+\.\d+(\.\d+)?$') {
+        throw "ReleaseVersion '$ReleaseVersion' is not a valid x.y.z[.w] version."
+    }
+}
 
 function Get-NormalizedFullPath {
     param([Parameter(Mandatory = $true)][string]$Path)
@@ -203,22 +215,23 @@ $clientMsbuildBinDir = Join-Path $msbuildDir "client-bin\"
 $bridgeMsbuildBinDir = Join-Path $msbuildDir "bridge-bin\"
 
 Write-Host "[4/7] Publishing Windows client..."
-Invoke-Tool `
-    -FilePath "dotnet" `
-    -Arguments @(
-        "publish",
-        $clientProject,
-        "-c",
-        $Configuration,
-        "-o",
-        $clientReleaseDir,
-        "--self-contained",
-        "-r",
-        "win-x64",
-        "/p:AssemblyName=duty-agent",
-        "/p:BaseOutputPath=$clientMsbuildBinDir"
-    ) `
-    -WorkingDirectory $root
+$clientPublishArgs = @(
+    "publish",
+    $clientProject,
+    "-c",
+    $Configuration,
+    "-o",
+    $clientReleaseDir,
+    "--self-contained",
+    "-r",
+    "win-x64",
+    "/p:AssemblyName=duty-agent",
+    "/p:BaseOutputPath=$clientMsbuildBinDir"
+)
+if (-not [string]::IsNullOrWhiteSpace($ReleaseVersion)) {
+    $clientPublishArgs += "/p:Version=$ReleaseVersion"
+}
+Invoke-Tool -FilePath "dotnet" -Arguments $clientPublishArgs -WorkingDirectory $root
 
 $mainExe = Join-Path $clientReleaseDir "duty-agent.exe"
 $legacyExe = Join-Path $clientReleaseDir "DutyAgent.Client.exe"
@@ -256,21 +269,43 @@ if (-not (Test-Path -LiteralPath (Join-Path $releaseAssetsDir "web\index.html"))
 }
 
 Write-Host "[6/7] Publishing ClassIsland bridge..."
-Invoke-Tool `
-    -FilePath "dotnet" `
-    -Arguments @(
-        "publish",
-        $bridgeProject,
-        "-c",
-        $Configuration,
-        "-o",
-        $bridgeReleaseDir,
-        "--no-self-contained",
-        "/p:BaseOutputPath=$bridgeMsbuildBinDir"
-    ) `
-    -WorkingDirectory $root
+$bridgePublishArgs = @(
+    "publish",
+    $bridgeProject,
+    "-c",
+    $Configuration,
+    "-o",
+    $bridgeReleaseDir,
+    "--no-self-contained",
+    "/p:BaseOutputPath=$bridgeMsbuildBinDir"
+)
+if (-not [string]::IsNullOrWhiteSpace($ReleaseVersion)) {
+    $bridgePublishArgs += "/p:Version=$ReleaseVersion"
+}
+Invoke-Tool -FilePath "dotnet" -Arguments $bridgePublishArgs -WorkingDirectory $root
 
 Copy-Item -LiteralPath $bridgeManifest -Destination (Join-Path $bridgeReleaseDir "manifest.yml") -Force
+
+if (-not [string]::IsNullOrWhiteSpace($ReleaseVersion)) {
+    # Stamp the STAGING manifest only (source stays untouched): ClassIsland's
+    # plugin update check keys off manifest version, so shipping every release
+    # as the hardcoded 0.50.0 silently disabled upgrade detection.
+    $stagedManifest = Join-Path $bridgeReleaseDir "manifest.yml"
+    $manifestLines = Get-Content -LiteralPath $stagedManifest
+    $matched = $false
+    $patched = foreach ($line in $manifestLines) {
+        if ($line -match '^(version:)') {
+            $matched = $true
+            "$($Matches[1]) $ReleaseVersion"
+        } else {
+            $line
+        }
+    }
+    if (-not $matched) {
+        throw "manifest.yml has no 'version:' line to stamp."
+    }
+    Set-Content -LiteralPath $stagedManifest -Value $patched -Encoding UTF8
+}
 
 if (-not (Test-Path -LiteralPath (Join-Path $bridgeReleaseDir "DutyAgentBridge.dll"))) {
     throw "Bridge release is missing DutyAgentBridge.dll"

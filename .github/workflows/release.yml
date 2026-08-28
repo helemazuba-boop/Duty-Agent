@@ -9,12 +9,34 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build-windows:
     runs-on: windows-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Compute release version
+        id: ver
+        shell: bash
+        run: |
+          # Tag pushes drive stamped releases (v1.2.3 -> 1.2.3); manual runs on
+          # a branch keep the csproj/manifest defaults instead of shipping a
+          # branch name as a version.
+          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+            v="${GITHUB_REF_NAME#v}"
+            if [[ ! "$v" =~ ^[0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?$ ]]; then
+              echo "::error::Tag ${GITHUB_REF_NAME} must look like v1.2.3[.4]"
+              exit 1
+            fi
+            echo "version=$v" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Setup .NET
         uses: actions/setup-dotnet@v4
@@ -32,7 +54,12 @@ jobs:
 
       - name: Build release (client + bridge + backend, self-contained, zipped)
         shell: pwsh
-        run: ./build_client.bat
+        env:
+          RELEASE_VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          $args = @()
+          if ($env:RELEASE_VERSION) { $args += @('-ReleaseVersion', $env:RELEASE_VERSION) }
+          ./build_client.bat @args
 
       - name: Collect release artifacts
         id: collect
@@ -41,13 +68,18 @@ jobs:
           $zips = Get-ChildItem -Path .release -Filter *.zip -File |
             Sort-Object LastWriteTime -Descending
           if ($zips.Count -eq 0) { throw "No release zip produced under .release" }
+          # Explicit roles instead of "two newest": the backend bundle always
+          # carries the -backend suffix; the main package is the newest zip
+          # that is NOT the backend bundle.
+          $backendZip = $zips | Where-Object { $_.Name -like '*-backend.zip' } | Select-Object -First 1
+          $mainZip = $zips | Where-Object { $_.Name -notlike '*-backend.zip' } | Select-Object -First 1
+          if (-not $mainZip) { throw "No main release zip produced under .release" }
           $staging = Join-Path $env:RUNNER_TEMP "release-assets"
           New-Item -ItemType Directory -Force -Path $staging | Out-Null
-          # The two most recent zips are the full package and the -backend package.
-          foreach ($zip in $zips | Select-Object -First 2) {
+          foreach ($zip in @($mainZip, $backendZip) | Where-Object { $_ }) {
             Copy-Item $zip.FullName -Destination $staging -Force
           }
-          echo "assets_dir=$staging" >> $env:GITHUB_OUTPUT
+          echo "assets_dir=$staging" >> "$env:GITHUB_OUTPUT"
 
       - name: Upload workflow artifacts
         uses: actions/upload-artifact@v4
