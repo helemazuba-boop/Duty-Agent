@@ -31,9 +31,13 @@ function getScheduleApiUrl(baseUrl: string): string {
   return baseUrl ? `${baseUrl}/api/v1/duty/schedule` : apiUrl('/api/v1/duty/schedule');
 }
 
-function getScheduleWsUrl(baseUrl: string): string {
+function getScheduleWsUrl(baseUrl: string, token?: string): string {
   if (baseUrl) {
-    return baseUrl.replace(/^http/, 'ws') + '/api/v1/duty/live';
+    const url = baseUrl.replace(/^http/, 'ws') + '/api/v1/duty/live';
+    if (token) {
+      return `${url}?token=${encodeURIComponent(token)}`;
+    }
+    return url;
   }
 
   return wsUrl('/api/v1/duty/live');
@@ -78,7 +82,6 @@ async function runScheduleSSE(
       for (const line of lines) {
         const trimmed = line.trim();
         if (!trimmed) {
-          // Empty line = end of event
           if (currentEvent === 'complete') {
             if (dataBuffer) {
               try {
@@ -140,8 +143,7 @@ export function useScheduleWebSocket() {
     }
 
     try {
-      // --- WebSocket primary path ---
-      const scheduleWsUrl = getScheduleWsUrl(baseUrl);
+      const scheduleWsUrl = getScheduleWsUrl(baseUrl, token);
       const clientChangeId = crypto.randomUUID().replace(/-/g, '');
       const traceId = `fe-${Date.now()}`;
 
@@ -152,7 +154,6 @@ export function useScheduleWebSocket() {
         ws = new WebSocket(scheduleWsUrl);
 
         ws.onopen = () => {
-          // Send hello handshake
           ws!.send(JSON.stringify({
             type: 'hello',
             trace_id: traceId,
@@ -166,7 +167,6 @@ export function useScheduleWebSocket() {
 
             switch ((msg.type || '').trim().toLowerCase()) {
               case 'hello': {
-                // Handshake complete — send schedule_run
                 ws!.send(JSON.stringify({
                   type: 'schedule_run',
                   client_change_id: clientChangeId,
@@ -177,7 +177,6 @@ export function useScheduleWebSocket() {
                 break;
               }
               case 'accepted': {
-                // Scheduling accepted, waiting for progress
                 break;
               }
               case 'schedule_progress': {
@@ -212,7 +211,6 @@ export function useScheduleWebSocket() {
                 break;
               }
               default: {
-                // Ignore other message types
                 break;
               }
             }
@@ -235,7 +233,6 @@ export function useScheduleWebSocket() {
           }
         };
 
-        // Timeout: if not connected within 5s, fall back to SSE
         setTimeout(() => {
           if (!wsDone && ws && ws.readyState !== WebSocket.OPEN) {
             try { ws.close(); } catch { /* ignore */ }
@@ -248,7 +245,6 @@ export function useScheduleWebSocket() {
     } catch (wsErr: unknown) {
       const wsErrMsg = wsErr instanceof Error ? wsErr.message : String(wsErr);
 
-      // Fall back to SSE if WebSocket failed
       if (wsErrMsg === 'WS_TIMEOUT' || wsErrMsg.includes('WebSocket') || wsErrMsg.includes('connection')) {
         try {
           const sseResult = await runScheduleSSE(

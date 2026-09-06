@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue';
-import { Card, Table, Tag, Button, Space, Modal, Input, message } from 'ant-design-vue';
+import { Table, Tag, Button, Space, Modal, Input, message } from 'ant-design-vue';
 import { useAiToolsStore } from '@/stores/aiToolsStore';
 import type { McpToolInfo } from '@/types/ai-tools';
+import Panel from '@/components/ui/Panel.vue';
 
 const store = useAiToolsStore();
 const testModalOpen = ref(false);
@@ -50,7 +51,7 @@ const handleTest = async () => {
 </script>
 
 <template>
-  <Card title="可用工具预览">
+  <Panel title="可用工具" :padded="false" :subtitle="store.connectedTools.length ? `${store.connectedTools.length} 个已连接工具` : undefined">
     <Table
       v-if="store.connectedTools.length > 0"
       :columns="columns"
@@ -62,8 +63,8 @@ const handleTest = async () => {
       <template #bodyCell="{ column, record }">
         <template v-if="column.key === 'name'">
           <Space direction="vertical" :size="0">
-            <Tag color="blue">{{ record.name }}</Tag>
-            <span style="font-size: 12px; color: #666">{{ serverMap[record.serverId as string] }}</span>
+            <Tag color="purple">{{ record.name }}</Tag>
+            <span class="tool-server">{{ serverMap[record.serverId as string] }}</span>
           </Space>
         </template>
         <template v-else-if="column.key === 'params'">
@@ -71,12 +72,12 @@ const handleTest = async () => {
             <span
               v-for="(schema, key) in record.inputSchema.properties"
               :key="key"
-              style="font-size: 12px"
+              class="tool-param"
             >
-              <Tag size="small" :color="record.inputSchema.required?.includes(key as string) ? 'red' : 'default'">
+              <Tag :color="record.inputSchema.required?.includes(key as string) ? 'red' : 'default'" class="tool-param__tag">
                 {{ key }}
               </Tag>
-              <span style="color: #888">({{ (schema as any).type }})</span>
+              <span class="tool-param__type">({{ (schema as any).type }})</span>
             </span>
           </Space>
         </template>
@@ -86,10 +87,8 @@ const handleTest = async () => {
       </template>
     </Table>
 
-    <div v-else style="text-align: center; color: #999; padding: 24px">
-      暂无已连接的工具服务器。请先添加并连接服务器。
-    </div>
-  </Card>
+    <div v-else class="tool-empty">暂无已连接的工具服务器,请先在上方添加并连接。</div>
+  </Panel>
 
   <Modal
     :open="testModalOpen"
@@ -136,3 +135,31 @@ const handleTest = async () => {
     </div>
   </Modal>
 </template>
+
+<style scoped>
+.tool-server {
+  font-size: 12px;
+  color: var(--dt-text-2);
+}
+
+.tool-param {
+  font-size: 12px;
+}
+
+.tool-param__tag {
+  margin: 0;
+  font-size: 11px;
+  line-height: 16px;
+}
+
+.tool-param__type {
+  color: var(--dt-text-3);
+}
+
+.tool-empty {
+  padding: 24px;
+  text-align: center;
+  font-size: 13px;
+  color: var(--dt-text-2);
+}
+</style>

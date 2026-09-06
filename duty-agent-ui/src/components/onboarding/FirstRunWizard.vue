@@ -154,10 +154,10 @@ const finish = () => {
     title="首次使用向导"
     :footer="null"
     :mask-closable="false"
-    width="640px"
+    width="560px"
     @update:open="(v: boolean) => emit('update:open', v)"
   >
-    <Steps :current="current" size="small" style="margin-bottom: 20px">
+    <Steps :current="current" size="small" class="wizard-steps">
       <Step title="导入名单" />
       <Step title="选择模型" />
       <Step title="试跑一次" />
@@ -232,25 +232,30 @@ const finish = () => {
 </template>
 
 <style scoped>
+.wizard-steps {
+  margin-bottom: 24px;
+}
+
 .wizard-hint {
   font-size: 13px;
-  color: var(--da-text-secondary);
+  color: var(--dt-text-2);
   margin-bottom: 12px;
 }
 
 .wizard-field {
-  margin-bottom: 12px;
+  margin-bottom: 14px;
 }
 
 .wizard-field label {
   display: block;
   font-size: 13px;
   font-weight: 600;
-  margin-bottom: 4px;
+  color: var(--dt-text);
+  margin-bottom: 6px;
 }
 
 .wizard-actions {
-  margin-top: 16px;
+  margin-top: 20px;
   text-align: right;
 }
 </style>

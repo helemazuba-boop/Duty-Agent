@@ -3,10 +3,11 @@ import { computed, ref, onMounted } from 'vue';
 import {
   Input, Button, Space, Divider, Alert, message, Select, Switch, Slider, Tag, InputNumber,
 } from 'ant-design-vue';
-import {
-  SaveOutlined, InfoCircleOutlined, ThunderboltOutlined,
-} from '@ant-design/icons-vue';
+import { SaveOutlined, ThunderboltOutlined } from '@ant-design/icons-vue';
 import AiToolsPanel from '@/components/ai-tools/AiToolsPanel.vue';
+import PageHeader from '@/components/ui/PageHeader.vue';
+import Panel from '@/components/ui/Panel.vue';
+import StatusDot from '@/components/ui/StatusDot.vue';
 import { api, type NotificationSettings } from '@/api/http';
 
 const activeTab = ref('ai-schedule');
@@ -45,7 +46,7 @@ const checkConnections = async () => {
   await Promise.allSettled([checkBackend(), checkBridge()]);
 };
 
-// ======== 后端配置（方案 / 规则） ========
+// ======== 后端配置(方案 / 规则) ========
 const dutyRule = ref('');
 const dutyRuleSaved = ref(true);
 const dutyRuleLoading = ref(false);
@@ -63,7 +64,7 @@ const planDirty = ref(false);
 const planSaving = ref(false);
 const planProbing = ref(false);
 
-// 后端 preset id 为 'incremental-small'（连字符）；labels 仅作 name 缺失时的回退。
+// 后端 preset id 为 'incremental-small'(连字符);labels 仅作 name 缺失时的回退。
 const planLabels: Record<string, string> = {
   standard: '标准',
   agents: 'Agents',
@@ -75,7 +76,7 @@ const planLabels: Record<string, string> = {
 const modeLabels: Record<string, string> = {
   single_pass: '单轮执行',
   multi_agent: '多 Agent',
-  offline: '离线算法（无需模型）',
+  offline: '离线算法(无需模型)',
 };
 
 const agentOrderLabels: Record<string, string> = {
@@ -156,7 +157,7 @@ const savePlanConfig = async () => {
     if (e?.response?.status === 409) {
       await loadConfig();
       planDirty.value = false;
-      message.warning('方案已被其他入口更新，已重新加载，请确认后再保存');
+      message.warning('方案已被其他入口更新,已重新加载,请确认后再保存');
     } else {
       message.error('方案保存失败');
     }
@@ -189,7 +190,7 @@ const saveDutyRule = async () => {
     const config = await api.updateConfig({ duty_rule: dutyRule.value });
     applyConfig(config);
     message.success('长期规则已保存');
-  } catch (e) {
+  } catch {
     message.error('保存失败');
   } finally {
     dutyRuleLoading.value = false;
@@ -211,14 +212,14 @@ const systemNotificationsEnabled = ref(true);
 const scheduleCompletionNotificationEnabled = ref(true);
 const notificationSettingsLoading = ref(false);
 
-// ======== 系统与自启（独立客户端生命周期） ========
+// ======== 系统与自启 ========
 const clientAutoStart = ref(true);
 const clientCloseAction = ref<'ask' | 'tray' | 'exit'>('ask');
 const systemSettingsSaving = ref(false);
 
 const CLOSE_ACTION_OPTIONS = [
   { value: 'ask', label: '每次询问' },
-  { value: 'tray', label: '驻留后台（托盘）' },
+  { value: 'tray', label: '驻留后台(托盘)' },
   { value: 'exit', label: '退出程序' },
 ];
 
@@ -232,7 +233,7 @@ const notificationEntryOptions = [
 const TIME_PATTERN = /^([01]?\d|2[0-3]):[0-5]\d$/;
 
 const normalizeReminderTimes = () => reminderTimes.value
-  .split(/[,;，；\r\n]+/)
+  .split(/[,;\r\n]+/)
   .map((item) => item.trim())
   .filter(Boolean);
 
@@ -318,7 +319,7 @@ const saveNotificationSettings = async () => {
   const times = normalizeReminderTimes();
   const invalid = times.filter((t) => !TIME_PATTERN.test(t));
   if (invalid.length > 0) {
-    message.error(`提醒时间格式不正确（应为 HH:MM）：${invalid.join('、')}`);
+    message.error(`提醒时间格式不正确(应为 HH:MM):${invalid.join('、')}`);
     return;
   }
   notificationSettingsLoading.value = true;
@@ -338,7 +339,7 @@ const saveNotificationSettings = async () => {
   } catch (e: any) {
     if (e?.response?.status === 409) {
       await loadNotificationSettings();
-      message.warning('通知设置已被其他入口更新，请确认后再保存');
+      message.warning('通知设置已被其他入口更新,请确认后再保存');
     } else {
       message.error('通知设置保存失败');
     }
@@ -350,7 +351,7 @@ const saveNotificationSettings = async () => {
 const saveAutoRunSettings = async () => {
   const time = autoRunTime.value.trim();
   if (!TIME_PATTERN.test(time)) {
-    message.error('执行时间格式不正确，应为 HH:MM，例如 08:00');
+    message.error('执行时间格式不正确,应为 HH:MM,例如 08:00');
     return;
   }
   autoRunSaving.value = true;
@@ -367,7 +368,7 @@ const saveAutoRunSettings = async () => {
   } catch (e: any) {
     if (e?.response?.status === 409) {
       await loadNotificationSettings();
-      message.warning('设置已被其他入口更新，请确认后再保存');
+      message.warning('设置已被其他入口更新,请确认后再保存');
     } else {
       message.error('自动排班设置保存失败');
     }
@@ -394,11 +395,11 @@ const saveSystemSettings = async () => {
       client_close_action: clientCloseAction.value,
     });
     applyNotificationSettings(settings);
-    message.success('系统设置已保存，客户端将自动同步');
+    message.success('系统设置已保存,客户端将自动同步');
   } catch (e: any) {
     if (e?.response?.status === 409) {
       await loadNotificationSettings();
-      message.warning('设置已被其他入口更新，请确认后再保存');
+      message.warning('设置已被其他入口更新,请确认后再保存');
     } else {
       message.error('系统设置保存失败');
     }
@@ -415,55 +416,40 @@ onMounted(async () => {
 
 <template>
   <div class="page-container animate-fade-in">
-    <!-- Page header -->
-    <div class="page-header">
-      <div>
-        <h1 class="page-title">设置</h1>
-        <p class="page-subtitle">配置 AI 工具、排班规则和其他选项</p>
-      </div>
-    </div>
+    <PageHeader title="设置" subtitle="连接、方案、通知与系统行为" />
 
-    <a-tabs v-model:activeKey="activeTab">
+    <a-tabs v-model:activeKey="activeTab" class="settings-tabs">
 
       <!-- ======== AI 排班 ======== -->
       <a-tab-pane key="ai-schedule" tab="AI 排班">
         <div class="tab-content">
-
           <!-- 连接状态 -->
-          <a-card class="mb-16">
-            <div class="connection-status-row">
-              <div class="connection-status-list">
-                <div class="connection-status-item">
-                  <Tag :color="backendConnected ? 'green' : 'red'" style="border-radius: 12px; margin: 0">
-                    {{ backendConnected ? '● 后端已启动' : '○ 后端未连接' }}
-                  </Tag>
-                  <span v-if="backendConnected" class="status-hint">令牌由独立客户端注入</span>
-                  <span v-else class="status-hint">请先启动 Duty-Agent 独立客户端</span>
-                </div>
-                <div class="connection-status-item">
-                  <Tag :color="bridgeConnected ? 'green' : 'default'" style="border-radius: 12px; margin: 0">
-                    {{ bridgeConnected ? '● ClassIsland 已连接' : '○ ClassIsland 未连接' }}
-                  </Tag>
-                  <span v-if="bridgeConnected" class="status-hint">Duty-Agent-ClassIsland-Bridge 正在同步</span>
-                  <span v-else class="status-hint">未检测到 ClassIsland Bridge，ClassIsland 未启动或桥接插件未连接</span>
-                </div>
+          <Panel title="连接" :padded="false" class="mb-16">
+            <div class="conn-list">
+              <div class="conn-row">
+                <StatusDot :status="backendConnected ? 'ok' : 'error'" :label="backendConnected ? '后端已启动' : '后端未连接'" />
+                <span class="conn-hint">
+                  {{ backendConnected ? '令牌由独立客户端注入' : '请先启动 Duty-Agent 独立客户端' }}
+                </span>
               </div>
+              <div class="conn-row">
+                <StatusDot :status="bridgeConnected ? 'ok' : 'idle'" :label="bridgeConnected ? 'ClassIsland 已连接' : 'ClassIsland 未连接'" />
+                <span class="conn-hint">
+                  {{ bridgeConnected ? 'Bridge 正在同步' : '未检测到 ClassIsland Bridge(不影响排班功能)' }}
+                </span>
+              </div>
+            </div>
+            <div class="conn-foot">
               <Button size="small" :loading="backendLoading || bridgeLoading" @click="checkConnections">
                 <template #icon><ThunderboltOutlined /></template>
                 检测连接
               </Button>
             </div>
-          </a-card>
+          </Panel>
 
           <!-- AI 长期规则 -->
-          <a-card class="mb-16">
-            <template #title>
-              <div class="card-title-row">
-                <span>📋 AI 长期规则</span>
-                <Tag color="blue" size="small">全局</Tag>
-              </div>
-            </template>
-            <template #extra>
+          <Panel class="mb-16" title="AI 长期规则" subtitle="作为固定要求附加到每次排班请求,无需每次手动填写">
+            <template #actions>
               <Button
                 type="primary"
                 size="small"
@@ -475,43 +461,25 @@ onMounted(async () => {
                 {{ dutyRuleSaved ? '已保存' : '保存规则' }}
               </Button>
             </template>
-
-            <div class="duty-rule-hint">
-              <InfoCircleOutlined style="color: #1890ff; margin-right: 6px" />
-              作为固定要求附加到每次排班请求，无需每次手动填写
-            </div>
-
             <Input.TextArea
               v-model:value="dutyRule"
               :rows="5"
               :maxlength="2000"
               show-count
-              placeholder="示例：
-每天排班 2 人，跳过周末
-区域：教室、清洁区
-教室每天 2 人，清洁区每天 2 人
-排班周期：7 天"
+              placeholder="示例:
+每天排班 2 人,跳过周末
+区域:教室、清洁区
+教室每天 2 人,清洁区每天 2 人
+排班周期:7 天"
               @input="handleDutyRuleChange"
-              style="font-family: 'Courier New', monospace; font-size: 13px"
             />
-          </a-card>
+          </Panel>
 
           <!-- 方案与模型 -->
-          <a-card class="mb-16">
-            <template #title>
-              <div class="card-title-row">
-                <span>🧠 方案与模型</span>
-              </div>
-            </template>
-            <template #extra>
+          <Panel class="mb-16" title="方案与模型" subtitle="切换后端使用的执行方案与模型服务">
+            <template #actions>
               <Space>
-                <Button
-                  size="small"
-                  :loading="planProbing"
-                  @click="testPlanConnection"
-                >
-                  测试连接
-                </Button>
+                <Button size="small" :loading="planProbing" @click="testPlanConnection">测试连接</Button>
                 <Button
                   type="primary"
                   size="small"
@@ -539,9 +507,9 @@ onMounted(async () => {
 
               <div class="config-item">
                 <div class="config-label">当前执行画像</div>
-                <div class="config-desc">由所选方案自动派生，只读</div>
+                <div class="config-desc">由所选方案自动派生,只读</div>
                 <div class="status-tags">
-                  <Tag color="blue">{{ currentPlanLabel }}</Tag>
+                  <Tag color="purple">{{ currentPlanLabel }}</Tag>
                   <Tag>{{ currentModeLabel }}</Tag>
                   <Tag>{{ currentModelProfileLabel }}</Tag>
                   <Tag v-if="orchestrationMode === 'multi_agent'">{{ currentAgentOrderLabel }}</Tag>
@@ -556,7 +524,7 @@ onMounted(async () => {
               <div v-if="!isOfflinePreset" class="form-grid">
                 <div class="config-item full-row">
                   <div class="config-label">模型服务地址 (base_url)</div>
-                  <div class="config-desc">OpenAI 兼容端点，例如 https://api.example.com/v1 或本地 http://localhost:1234/v1</div>
+                  <div class="config-desc">OpenAI 兼容端点,例如 https://api.example.com/v1 或本地 http://localhost:1234/v1</div>
                   <Input
                     v-model:value="currentPreset.base_url"
                     placeholder="https://integrate.api.nvidia.com/v1"
@@ -612,13 +580,13 @@ onMounted(async () => {
                   <Alert
                     type="info"
                     show-icon
-                    message="离线算法模式：无需模型服务"
-                    description="不调用任何大模型，按花名册轮转 + 欠账/存欠公平规则本地生成排班。适合无模型或希望长期零依赖运行的场景。"
+                    message="离线算法模式:无需模型服务"
+                    description="不调用任何大模型,按花名册轮转 + 欠账/存欠公平规则本地生成排班。适合无模型或希望长期零依赖运行的场景。"
                   />
                 </div>
                 <div class="config-item">
                   <div class="config-label">排班天数</div>
-                  <div class="config-desc">每次生成未来多少天（1–60）</div>
+                  <div class="config-desc">每次生成未来多少天(1–60)</div>
                   <InputNumber
                     v-model:value="offlineScheduleDays"
                     :min="1"
@@ -629,7 +597,7 @@ onMounted(async () => {
                 </div>
                 <div class="config-item">
                   <div class="config-label">跳过周末</div>
-                  <div class="config-desc">仅安排工作日（周一至周五）</div>
+                  <div class="config-desc">仅安排工作日(周一至周五)</div>
                   <Switch v-model:checked="offlineSkipWeekends" @change="markPlanDirty" />
                 </div>
               </div>
@@ -641,31 +609,16 @@ onMounted(async () => {
               type="warning"
               show-icon
             />
-          </a-card>
+          </Panel>
 
           <!-- 自动排班 -->
-          <a-card>
-            <template #title>
-              <div class="card-title-row">
-                <span>⏰ 自动排班</span>
-              </div>
-            </template>
-            <template #extra>
-              <Button
-                type="primary"
-                size="small"
-                :loading="autoRunSaving"
-                @click="saveAutoRunSettings"
-              >
+          <Panel title="自动排班" subtitle="到达设定周期与时间后自动执行一次;错过(关机/睡眠)会在下次启动时补跑">
+            <template #actions>
+              <Button type="primary" size="small" :loading="autoRunSaving" @click="saveAutoRunSettings">
                 <template #icon><SaveOutlined /></template>
                 保存
               </Button>
             </template>
-
-            <div class="duty-rule-hint">
-              <InfoCircleOutlined style="color: #1890ff; margin-right: 6px" />
-              到达设定周期与时间后自动执行一次排班；错过（关机/睡眠）会在下次启动时自动补跑
-            </div>
 
             <div class="form-grid">
               <div class="config-item">
@@ -695,17 +648,17 @@ onMounted(async () => {
 
               <div v-if="autoRunMode !== 'Off'" class="config-item">
                 <div class="config-label">执行时间</div>
-                <div class="config-desc">24 小时制 HH:MM，到点后 1 分钟内触发</div>
-                <Input v-model:value="autoRunTime" placeholder="08:00" class="config-control" style="max-width: 120px" />
+                <div class="config-desc">24 小时制 HH:MM,到点后 1 分钟内触发</div>
+                <Input v-model:value="autoRunTime" placeholder="08:00" class="config-control config-control--narrow" />
               </div>
 
               <div v-if="autoRunMode !== 'Off'" class="config-item">
                 <div class="config-label">失败重试次数</div>
-                <div class="config-desc">当天连续失败达到次数后放弃，次日重新计数</div>
+                <div class="config-desc">当天连续失败达到次数后放弃,次日重新计数</div>
                 <InputNumber v-model:value="autoRunRetry" :min="0" :max="20" class="config-control" />
               </div>
             </div>
-          </a-card>
+          </Panel>
         </div>
       </a-tab-pane>
 
@@ -715,14 +668,11 @@ onMounted(async () => {
       </a-tab-pane>
 
       <!-- ======== 通知设置 ======== -->
-      <a-tab-pane key="notification" tab="通知设置">
-        <a-card class="mb-16">
-          <template #title>通知入口</template>
-          <template #extra>
+      <a-tab-pane key="notification" tab="通知">
+        <Panel class="mb-16" title="通知入口" subtitle="选择 Duty-Agent 通知投递到哪里">
+          <template #actions>
             <Space>
-              <Button size="small" @click="sendTestNotification">
-                测试通知
-              </Button>
+              <Button size="small" @click="sendTestNotification">测试通知</Button>
               <Button
                 type="primary"
                 size="small"
@@ -735,59 +685,63 @@ onMounted(async () => {
             </Space>
           </template>
 
-          <div class="config-grid">
+          <div class="form-grid">
             <div class="config-item">
               <div class="config-label">通知入口</div>
-              <div class="config-desc">选择 Duty-Agent 通知投递到哪里</div>
+              <div class="config-desc">系统通知 / ClassIsland / 两者 / 关闭</div>
               <Select
                 v-model:value="notificationEntry"
                 :options="notificationEntryOptions"
-                style="width: 180px; margin-top: 6px"
-                size="small"
+                class="config-control"
               />
             </div>
 
             <div class="config-item">
               <div class="config-label">系统通知</div>
               <div class="config-desc">由独立客户端发送 Windows 通知</div>
-              <Switch
-                v-model:checked="systemNotificationsEnabled"
-                :disabled="notificationEntry === 'classisland' || notificationEntry === 'off'"
-                style="margin-top: 6px"
-              />
+              <div class="config-switch">
+                <Switch
+                  v-model:checked="systemNotificationsEnabled"
+                  :disabled="notificationEntry === 'classisland' || notificationEntry === 'off'"
+                />
+              </div>
             </div>
           </div>
-        </a-card>
+        </Panel>
 
-        <a-card>
-          <template #title>通知内容</template>
-          <div class="auto-run-grid">
+        <Panel title="通知内容">
+          <div class="form-grid">
             <div class="config-item">
               <div class="config-label">排班完成通知</div>
               <div class="config-desc">AI 排班成功或失败后发送通知</div>
-              <Switch v-model:checked="scheduleCompletionNotificationEnabled" style="margin-top: 6px" />
+              <div class="config-switch">
+                <Switch v-model:checked="scheduleCompletionNotificationEnabled" />
+              </div>
             </div>
 
             <div class="config-item">
               <div class="config-label">自动排班启动通知</div>
               <div class="config-desc">自动排班任务触发时发送通知</div>
-              <Switch v-model:checked="triggerNotification" style="margin-top: 6px" />
+              <div class="config-switch">
+                <Switch v-model:checked="triggerNotification" />
+              </div>
             </div>
 
             <div class="config-item">
               <div class="config-label">定时值日提醒</div>
               <div class="config-desc">按设定时间提醒今天的值日安排</div>
-              <Switch v-model:checked="reminderEnabled" style="margin-top: 6px" />
+              <div class="config-switch">
+                <Switch v-model:checked="reminderEnabled" />
+              </div>
             </div>
 
             <div class="config-item full-row">
               <div class="config-label">提醒时间</div>
-              <div class="config-desc">多个时间用逗号分隔，例如 07:40, 12:10, 16:30</div>
+              <div class="config-desc">多个时间用逗号分隔,例如 07:40, 12:10, 16:30</div>
               <Input
                 v-model:value="reminderTimes"
                 placeholder="07:40, 12:10"
-                style="max-width: 360px; margin-top: 6px"
-                size="small"
+                class="config-control"
               />
             </div>
 
@@ -802,63 +756,56 @@ onMounted(async () => {
                   :marks="{ 3: '3 秒', 8: '8 秒', 15: '15 秒' }"
                   class="duration-slider"
                 />
-                <Tag color="blue" size="small">{{ notificationDuration }} 秒</Tag>
+                <Tag color="purple" class="da-tnum">{{ notificationDuration }} 秒</Tag>
               </div>
             </div>
           </div>
-        </a-card>
+        </Panel>
       </a-tab-pane>
 
       <!-- ======== 系统与自启 ======== -->
-      <a-tab-pane key="system" tab="系统与自启">
-        <div class="tab-content">
-          <a-card>
-            <template #title>
-              <div class="card-title-row"><span>🖥️ 后台驻留与开机自启</span></div>
-            </template>
-            <template #extra>
-              <Button
-                type="primary"
-                size="small"
-                :loading="systemSettingsSaving"
-                @click="saveSystemSettings"
-              >
-                <template #icon><SaveOutlined /></template>
-                保存
-              </Button>
-            </template>
+      <a-tab-pane key="system" tab="系统">
+        <Panel
+          title="后台驻留与开机自启"
+          subtitle="驻留后台时后端持续运行,自动排班、提醒与补跑才能长期生效;本页开关仅对独立客户端生效"
+        >
+          <template #actions>
+            <Button type="primary" size="small" :loading="systemSettingsSaving" @click="saveSystemSettings">
+              <template #icon><SaveOutlined /></template>
+              保存
+            </Button>
+          </template>
 
-            <div class="duty-rule-hint">
-              <InfoCircleOutlined style="color: #1890ff; margin-right: 6px" />
-              驻留后台时后端持续运行，自动排班、值日提醒、错过补跑与离线兜底才能长期生效；本页开关仅对独立客户端生效（ClassIsland 插件模式由宿主管理生命周期）
-            </div>
-
-            <div class="form-grid">
-              <div class="config-item">
-                <div class="config-label">开机自启</div>
-                <div class="config-desc">登录 Windows 后静默启动并驻留托盘（无需管理员权限）</div>
-                <div style="margin-top: 6px"><Switch v-model:checked="clientAutoStart" /></div>
-              </div>
-
-              <div class="config-item">
-                <div class="config-label">关闭主窗口时</div>
-                <div class="config-desc">选“驻留后台”后点 X 不再退出程序，仅隐藏到托盘</div>
-                <Select
-                  v-model:value="clientCloseAction"
-                  :options="CLOSE_ACTION_OPTIONS"
-                  class="config-control"
-                />
+          <div class="form-grid">
+            <div class="config-item">
+              <div class="config-label">开机自启</div>
+              <div class="config-desc">登录 Windows 后静默启动并驻留托盘(无需管理员权限)</div>
+              <div class="config-switch">
+                <Switch v-model:checked="clientAutoStart" />
               </div>
             </div>
-          </a-card>
-        </div>
+
+            <div class="config-item">
+              <div class="config-label">关闭主窗口时</div>
+              <div class="config-desc">选“驻留后台”后点 X 不再退出程序,仅隐藏到托盘</div>
+              <Select
+                v-model:value="clientCloseAction"
+                :options="CLOSE_ACTION_OPTIONS"
+                class="config-control"
+              />
+            </div>
+          </div>
+        </Panel>
       </a-tab-pane>
-
     </a-tabs>
   </div>
 </template>
 
 <style scoped>
+.settings-tabs :deep(.ant-tabs-tab) {
+  padding: 10px 2px;
+}
+
 .tab-content {
   display: flex;
   flex-direction: column;
@@ -875,64 +822,33 @@ onMounted(async () => {
   margin-bottom: 16px;
 }
 
-/* Connection status */
-.connection-status-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  flex-wrap: wrap;
-}
-
-.connection-status-list {
-  flex: 1;
+/* 连接 */
+.conn-list {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  min-width: 0;
+  padding: 16px 20px 0;
 }
 
-.connection-status-item {
+.conn-row {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 12px;
   flex-wrap: wrap;
 }
 
-.status-hint {
-  font-size: 13px;
-  color: var(--da-text-secondary);
-}
-
-/* Duty rule */
-.duty-rule-hint {
+.conn-hint {
   font-size: 12px;
-  color: var(--da-text-secondary);
-  background: #e6f7ff;
-  border: 1px solid #91d5ff;
-  border-radius: 6px;
-  padding: 8px 12px;
-  margin-bottom: 12px;
-  line-height: 1.5;
+  color: var(--dt-text-2);
 }
 
-/* Card title row */
-.card-title-row {
+.conn-foot {
   display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 14px;
-  font-weight: 600;
+  justify-content: flex-end;
+  padding: 12px 20px 16px;
 }
 
-/* Config grid (vertical stack) */
-.config-grid {
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-}
-
-/* Form grid (responsive two-column) */
+/* 配置网格 */
 .form-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
@@ -960,15 +876,23 @@ onMounted(async () => {
   width: 100%;
 }
 
+.config-item .config-control--narrow {
+  max-width: 120px;
+}
+
 .config-label {
   font-size: 13px;
   font-weight: 600;
-  color: var(--da-text-primary);
+  color: var(--dt-text);
 }
 
 .config-desc {
   font-size: 12px;
-  color: var(--da-text-secondary);
+  color: var(--dt-text-2);
+}
+
+.config-switch {
+  margin-top: 8px;
 }
 
 .status-tags {
@@ -978,19 +902,6 @@ onMounted(async () => {
   margin-top: 6px;
 }
 
-/* Auto run grid (notification content) */
-.auto-run-grid {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 20px;
-}
-
-.auto-run-grid > * {
-  min-width: 0;
-}
-
-/* Slider row: flexible width instead of fixed 200px, so narrow WebView
-   embeds don't overflow. */
 .slider-row {
   display: flex;
   align-items: center;
@@ -1006,7 +917,7 @@ onMounted(async () => {
 }
 
 @media (max-width: 720px) {
-  .auto-run-grid {
+  .form-grid {
     grid-template-columns: 1fr;
   }
 }

@@ -1,0 +1,31 @@
+/* =============================================================
+   Duty-Agent UI — Tailwind 桥接层
+   仅负责把 CSS 变量暴露成 Tailwind 工具类。
+   变量本体在 tokens.generated.css(由 tokens.json 生成),不要在这里定义值。
+   注意:@theme inline 不会产出 --color-* 变量到 :root,工具类编译时直接内联 var() 引用。
+   命名映射:TS text2 ↔ CSS --dt-text-2 ↔ Tailwind ink-2 ↔ AntD colorTextSecondary
+   ============================================================= */
+@theme inline {
+  --color-primary: var(--dt-primary);
+  --color-primary-soft: var(--dt-primary-soft);
+  --color-live: var(--dt-live);
+  --color-live-soft: var(--dt-live-soft);
+  --color-page: var(--dt-bg);
+  --color-surface: var(--dt-surface);
+  --color-surface-2: var(--dt-surface-2);
+  --color-overlay: var(--dt-overlay);
+  --color-line: var(--dt-border);
+  --color-line-strong: var(--dt-border-strong);
+  --color-hover: var(--dt-hover);
+  --color-ink: var(--dt-text);
+  --color-ink-2: var(--dt-text-2);
+  --color-ink-3: var(--dt-text-3);
+  --color-ok: var(--dt-success);
+  --color-warn: var(--dt-warning);
+  --color-bad: var(--dt-danger);
+  --radius-control: var(--dt-radius);
+  --radius-panel: var(--dt-radius-lg);
+  --radius-overlay: var(--dt-radius-xl);
+  --shadow-overlay: var(--dt-shadow-overlay);
+  --font-sans: var(--dt-font-sans);
+}

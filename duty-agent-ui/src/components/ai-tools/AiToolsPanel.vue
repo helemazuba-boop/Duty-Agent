@@ -1,29 +1,25 @@
 <script setup lang="ts">
 import { ref } from 'vue';
-import { Card, Switch, Table, Button, Space, Tag, Tooltip, message } from 'ant-design-vue';
-import { DeleteOutlined, CheckCircleOutlined, CloseCircleOutlined, PlusOutlined } from '@ant-design/icons-vue';
+import { Switch, Button, Tag, Tooltip, InputNumber, Empty, message } from 'ant-design-vue';
+import { DeleteOutlined, PlusOutlined } from '@ant-design/icons-vue';
 import { useAiToolsStore } from '@/stores/aiToolsStore';
 import ToolServerForm from './ToolServerForm.vue';
 import ToolPreview from './ToolPreview.vue';
+import Panel from '@/components/ui/Panel.vue';
+import StatusDot from '@/components/ui/StatusDot.vue';
 
 const store = useAiToolsStore();
 const formOpen = ref(false);
 const editingId = ref<string | null>(null);
 
-const statusMap: Record<string, { color: string; text: string }> = {
-  connected: { color: '#52c41a', text: '已连接' },
-  disconnected: { color: '#d9d9d9', text: '未连接' },
-  connecting: { color: '#faad14', text: '连接中...' },
-  error: { color: '#ff4d4f', text: '错误' },
+const statusOf = (status: string): 'ok' | 'error' | 'pending' | 'idle' => {
+  if (status === 'connected') return 'ok';
+  if (status === 'error') return 'error';
+  if (status === 'connecting') return 'pending';
+  return 'idle';
 };
 
-const columns = [
-  { title: '类型', dataIndex: 'type', width: 80 },
-  { title: '名称', dataIndex: 'name' },
-  { title: '地址', dataIndex: 'url', ellipsis: true },
-  { title: '状态', dataIndex: 'status', width: 100 },
-  { title: '操作', width: 160, key: 'action' },
-];
+const urlOf = (s: any) => s.url || s.httpUrl || (s.type === 'python' ? `python://${s.functionName ?? ''}` : '');
 
 const handleConnect = async (id: string) => {
   try {
@@ -33,132 +29,101 @@ const handleConnect = async (id: string) => {
     message.error('连接失败');
   }
 };
+
+const openCreate = () => {
+  editingId.value = null;
+  formOpen.value = true;
+};
 </script>
 
 <template>
   <div class="ai-tools-panel">
     <!-- 启用开关 -->
-    <Card size="small" style="margin-bottom: 16px">
-      <Space>
+    <Panel class="mb-16">
+      <div class="enable-row">
         <Switch v-model:checked="store.config.enabled" />
-        <span style="font-weight: 500">启用 AI 工具调用</span>
-        <Tag :color="store.config.enabled ? 'green' : 'default'">
+        <span class="enable-row__label">启用 AI 工具调用</span>
+        <Tag :color="store.config.enabled ? 'purple' : 'default'" class="enable-row__tag">
           {{ store.config.enabled ? '已启用' : '已禁用' }}
         </Tag>
-      </Space>
-    </Card>
+      </div>
+    </Panel>
 
-    <!-- 工具服务器列表 -->
-    <Card style="margin-bottom: 16px">
-      <template #title>工具服务器</template>
-      <template #extra>
-        <Button type="primary" @click="formOpen = true">
+    <!-- 工具服务器:卡片列表 -->
+    <Panel class="mb-16" title="工具服务器" :padded="false">
+      <template #actions>
+        <Button type="primary" size="small" @click="openCreate">
           <template #icon><PlusOutlined /></template>
           添加服务器
         </Button>
       </template>
 
-      <Table
-        :columns="columns"
-        :data-source="store.config.toolServers"
-        :pagination="false"
-        :scroll="{ x: 720 }"
-        row-key="id"
-      >
-        <template #bodyCell="{ column, record }">
-          <template v-if="column.dataIndex === 'type'">
-            <Tag :color="record.type === 'mcp' ? 'blue' : record.type === 'http' ? 'green' : 'orange'">
-              {{ record.type.toUpperCase() }}
-            </Tag>
-          </template>
-          <template v-else-if="column.dataIndex === 'name'">
-            <Space>
-              {{ record.name }}
-              <CheckCircleOutlined v-if="record.status === 'connected'" style="color: #52c41a" />
-            </Space>
-          </template>
-          <template v-else-if="column.dataIndex === 'url'">
-            <Tooltip :title="record.url || record.httpUrl">
-              <span>{{ record.url || record.httpUrl || '-' }}</span>
-            </Tooltip>
-          </template>
-          <template v-else-if="column.dataIndex === 'status'">
-            <Space>
-              <span :style="{ color: statusMap[record.status]?.color }">
-                {{ statusMap[record.status]?.text }}
-              </span>
-              <Tooltip v-if="record.status === 'error' && record.errorMessage" :title="record.errorMessage">
-                <CloseCircleOutlined style="color: #ff4d4f" />
+      <div v-if="store.config.toolServers.length" class="server-list">
+        <div v-for="server in store.config.toolServers" :key="server.id" class="server-card">
+          <div class="server-card__main">
+            <div class="server-card__title-row">
+              <StatusDot :status="statusOf(server.status)" />
+              <span class="server-card__name">{{ server.name }}</span>
+              <Tag class="server-card__type">{{ server.type.toUpperCase() }}</Tag>
+              <Tooltip v-if="server.status === 'error' && server.errorMessage" :title="server.errorMessage">
+                <span class="server-card__err">!</span>
               </Tooltip>
-            </Space>
-          </template>
-          <template v-else-if="column.key === 'action'">
-            <Space size="small">
-              <template v-if="record.type === 'mcp'">
-                <Button
-                  v-if="record.status === 'connected'"
-                  size="small"
-                  @click="store.disconnectServer(record.id)"
-                >
-                  断开
-                </Button>
-                <Button
-                  v-else
-                  size="small"
-                  type="primary"
-                  @click="handleConnect(record.id)"
-                >
-                  连接
-                </Button>
-              </template>
+            </div>
+            <div class="server-card__url">{{ urlOf(server) || '—' }}</div>
+          </div>
+          <div class="server-card__actions">
+            <template v-if="server.type === 'mcp'">
               <Button
+                v-if="server.status === 'connected'"
                 size="small"
-                danger
-                @click="store.removeServer(record.id)"
+                @click="store.disconnectServer(server.id)"
               >
-                <template #icon><DeleteOutlined /></template>
+                断开
               </Button>
-            </Space>
-          </template>
-        </template>
-      </Table>
-
-      <div
-        v-if="!store.config.toolServers.length"
-        style="text-align: center; color: #999; padding: 24px"
-      >
-        暂无服务器，请点击右上角添加
+              <Button v-else size="small" type="primary" @click="handleConnect(server.id)">
+                连接
+              </Button>
+            </template>
+            <Button size="small" danger @click="store.removeServer(server.id)">
+              <template #icon><DeleteOutlined /></template>
+            </Button>
+          </div>
+        </div>
       </div>
-    </Card>
+
+      <div v-else class="server-empty">
+        <Empty description="暂无工具服务器" :image="Empty.PRESENTED_IMAGE_SIMPLE" />
+      </div>
+    </Panel>
 
     <!-- 可用工具预览 -->
-    <div style="margin-bottom: 16px">
+    <div class="mb-16">
       <ToolPreview />
     </div>
 
     <!-- 调用设置 -->
-    <Card title="调用设置" size="small">
-      <Space size="large">
-        <Space>
-          <span>每轮最大调用次数：</span>
-          <a-input-number
+    <Panel title="调用设置">
+      <div class="call-settings">
+        <div class="call-settings__item">
+          <span class="call-settings__label">每轮最大调用次数</span>
+          <InputNumber
             :min="1"
             :max="50"
             v-model:value="store.config.maxToolCallsPerTurn"
-            style="width: 60px"
+            style="width: 80px"
           />
-        </Space>
-        <Space>
-          <span>超时时间（秒）：</span>
-          <a-input-number
+        </div>
+        <div class="call-settings__item">
+          <span class="call-settings__label">超时时间(秒)</span>
+          <InputNumber
             :min="5"
             :max="120"
             v-model:value="store.config.toolCallTimeoutSeconds"
-            style="width: 60px"
+            style="width: 80px"
           />
-        </Space>
-      </Space>
-    </Card>
+        </div>
+      </div>
+    </Panel>
 
     <!-- 添加/编辑服务器表单 -->
     <ToolServerForm
@@ -174,12 +139,123 @@ const handleConnect = async (id: string) => {
   min-width: 0;
 }
 
-.server-url {
-  display: inline-block;
-  max-width: 100%;
+.mb-16 {
+  margin-bottom: 16px;
+}
+
+.enable-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.enable-row__label {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--dt-text);
+}
+
+.enable-row__tag {
+  margin: 0;
+}
+
+/* ---- 服务器卡片列表 ---- */
+.server-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.server-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 12px 20px;
+  border-bottom: 1px solid var(--dt-border-2);
+  transition: background 0.15s ease;
+}
+
+.server-card:last-child {
+  border-bottom: 0;
+}
+
+.server-card:hover {
+  background: var(--dt-surface-2);
+}
+
+.server-card__main {
+  min-width: 0;
+}
+
+.server-card__title-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.server-card__name {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--dt-text);
+}
+
+.server-card__type {
+  margin: 0;
+  font-size: 10px;
+  line-height: 16px;
+  padding: 0 6px;
+  color: var(--dt-text-2);
+}
+
+.server-card__err {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--dt-danger) 14%, transparent);
+  color: var(--dt-danger);
+  font-size: 11px;
+  font-weight: 700;
+  cursor: help;
+}
+
+.server-card__url {
+  margin-top: 2px;
+  font-size: 12px;
+  color: var(--dt-text-2);
   overflow: hidden;
   text-overflow: ellipsis;
-  vertical-align: bottom;
   white-space: nowrap;
+}
+
+.server-card__actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.server-empty {
+  padding: 8px;
+}
+
+/* ---- 调用设置 ---- */
+.call-settings {
+  display: flex;
+  gap: 32px;
+  flex-wrap: wrap;
+}
+
+.call-settings__item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.call-settings__label {
+  font-size: 13px;
+  color: var(--dt-text-2);
 }
 </style>

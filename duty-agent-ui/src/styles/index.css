@@ -1,0 +1,14 @@
+/* =============================================================
+   Duty-Agent UI — 样式唯一入口(main.ts 只 import 这一个)
+   层级约定:
+   - tailwindcss 自己进 @layer theme/base/components/utilities
+   - tokens.generated.css / tokens.css 保持未分层(变量定义与 @theme)
+   - base.css 进 layer(components):AntD 的未分层运行时样式天然压过它,
+     但 Tailwind utility 可以覆盖 base 里的过渡类
+   旧 --da-* 别名已删除:业务代码引用数为零(2026-09-05),
+   若 git 历史外还有分支引用,恢复 pages/~40 行别名块即可。
+   ============================================================= */
+@import 'tailwindcss';
+@import './tokens.generated.css';
+@import './tokens.css';
+@import './base.css' layer(components);

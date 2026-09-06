@@ -5,6 +5,16 @@
     <link rel="icon" type="image/svg+xml" href="./favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Duty-Agent</title>
+    <script>
+      // 主题预置:在 CSS/JS 加载前写 data-theme,避免深色用户看到一帧白
+      (function () {
+        try {
+          var m = localStorage.getItem('duty_theme_mode') || 'auto';
+          var d = m === 'dark' || (m === 'auto' && matchMedia('(prefers-color-scheme: dark)').matches);
+          document.documentElement.dataset.theme = d ? 'dark' : 'light';
+        } catch (e) {}
+      })();
+    </script>
   </head>
   <body>
     <div id="app"></div>

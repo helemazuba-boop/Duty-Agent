@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { computed } from 'vue';
-import { Tag } from 'ant-design-vue';
+import { Table } from 'ant-design-vue';
 import { EditOutlined } from '@ant-design/icons-vue';
 import type { ScheduleEntry } from '@/types';
+import PersonChip from '@/components/ui/PersonChip.vue';
 
 interface Props {
   schedulePool?: ScheduleEntry[];
@@ -15,47 +16,63 @@ interface Emits {
 const props = defineProps<Props>();
 const emit = defineEmits<Emits>();
 
+const todayIso = (() => {
+  const n = new Date();
+  return `${n.getFullYear()}-${String(n.getMonth() + 1).padStart(2, '0')}-${String(n.getDate()).padStart(2, '0')}`;
+})();
+
 const columns = [
-  {
-    title: '日期',
-    dataIndex: 'date',
-    width: 140,
-    sorter: (a: ScheduleEntry, b: ScheduleEntry) => new Date(a.date).getTime() - new Date(b.date).getTime(),
-  },
-  {
-    title: '星期',
-    dataIndex: 'weekday',
-    width: 80,
-    align: 'center' as const,
-  },
-  { title: '安排', key: 'assignments' },
+  { title: '日期', dataIndex: 'date', width: 150, key: 'date', sorter: (a: Row, b: Row) => a.date.localeCompare(b.date) },
+  { title: '值班人', key: 'persons', minWidth: 180 },
+  { title: '区域安排', key: 'areas', minWidth: 220 },
   { title: '备注', dataIndex: 'note', ellipsis: true },
-  {
-    title: '操作',
-    width: 80,
-    align: 'center' as const,
-    key: 'action',
-  },
+  { title: '操作', width: 64, align: 'center' as const, key: 'action' },
 ];
 
-const today = new Date().toISOString().split('T')[0];
+interface Row extends ScheduleEntry {
+  key: string;
+  weekday: string;
+  weekKey: string;
+  persons: string[];
+  areas: [string, string[]][];
+}
 
-const dataSource = computed(() =>
+const weekKeyOf = (iso: string): string => {
+  const d = new Date(`${iso}T00:00:00`);
+  // 以周一作为一周的 key
+  const monday = new Date(d);
+  monday.setDate(d.getDate() - ((d.getDay() + 6) % 7));
+  return `${monday.getFullYear()}-${String(monday.getMonth() + 1).padStart(2, '0')}-${String(monday.getDate()).padStart(2, '0')}`;
+};
+
+const dataSource = computed<Row[]>(() =>
   (props.schedulePool || [])
-    .map((entry) => ({
-      ...entry,
-      key: entry.date,
-      weekday: new Date(entry.date + 'T00:00:00').toLocaleDateString('zh-CN', {
-        weekday: 'short',
-      }),
-    }))
-    .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime()),
+    .map((entry) => {
+      const areas = Object.entries(entry.area_assignments ?? {}) as [string, string[]][];
+      return {
+        ...entry,
+        key: entry.date,
+        weekday: new Date(`${entry.date}T00:00:00`).toLocaleDateString('zh-CN', { weekday: 'short' }),
+        weekKey: weekKeyOf(entry.date),
+        persons: [...new Set(areas.flatMap(([, list]) => list))],
+        areas,
+      };
+    })
+    .sort((a, b) => a.date.localeCompare(b.date)),
 );
+
+/** 每周第一行加周分隔线 */
+const rowClassName = (record: Row, index: number) => {
+  if (index > 0 && record.weekKey !== dataSource.value[index - 1]?.weekKey) {
+    return 'da-row-week-start';
+  }
+  return '';
+};
 </script>
 
 <template>
-  <div class="table-wrapper">
-    <a-table
+  <div class="stable">
+    <Table
       :columns="columns"
       :data-source="dataSource"
       :pagination="{
@@ -66,106 +83,102 @@ const dataSource = computed(() =>
       }"
       size="middle"
       row-key="date"
+      :row-class-name="rowClassName as any"
     >
       <template #bodyCell="{ column, record }">
-        <template v-if="column.dataIndex === 'date'">
-          <div
-            class="date-cell"
-            :class="{ 'date-cell--past': record.date < today }"
-          >
+        <template v-if="column.key === 'date'">
+          <div class="stable__date da-tnum" :class="{ 'stable__date--past': record.date < todayIso }">
             {{ record.date }}
           </div>
-          <div class="weekday-cell">{{ record.weekday }}</div>
+          <div class="stable__weekday">{{ record.weekday }}</div>
         </template>
-        <template v-else-if="column.key === 'assignments'">
-          <div v-if="Object.keys(record.area_assignments || {}).length > 0" class="assignments-wrap">
-            <Tag
-              v-for="(persons, area) in record.area_assignments"
-              :key="area"
-              color="blue"
-              class="area-tag"
-            >
-              <span class="area-name">{{ area }}</span>
-              <span class="area-persons">{{ (persons as string[]).join('、') }}</span>
-            </Tag>
+
+        <template v-else-if="column.key === 'persons'">
+          <div class="stable__chips">
+            <PersonChip v-for="name in record.persons" :key="name" :name="name" avatar />
           </div>
-          <span v-else class="no-assignment">暂无安排</span>
         </template>
+
+        <template v-else-if="column.key === 'areas'">
+          <div v-if="record.areas.length" class="stable__areas">
+            <div v-for="[area, persons] in record.areas" :key="area" class="stable__area">
+              <span class="stable__area-name">{{ area }}</span>
+              <span class="stable__area-persons">{{ persons.join('、') }}</span>
+            </div>
+          </div>
+          <span v-else class="stable__none">暂无安排</span>
+        </template>
+
         <template v-else-if="column.key === 'action'">
-          <Tooltip title="编辑">
-            <a-button
-              size="small"
-              type="text"
-              @click="emit('rowEdit', record.date)"
-            >
-              <template #icon><EditOutlined /></template>
-            </a-button>
-          </Tooltip>
+          <a-button size="small" type="text" @click="emit('rowEdit', record.date)">
+            <template #icon><EditOutlined /></template>
+          </a-button>
         </template>
       </template>
-    </a-table>
+    </Table>
 
-    <div
-      v-if="!props.schedulePool?.length"
-      class="empty-state"
-    >
-      <div class="empty-state-icon">📋</div>
+    <div v-if="!props.schedulePool?.length" class="empty-state">
       <div class="empty-state-title">暂无排班数据</div>
-      <div class="empty-state-desc">点击顶部「新建排班」添加</div>
+      <div class="empty-state-desc">点击右上角「新建排班」添加</div>
     </div>
   </div>
 </template>
 
 <style scoped>
-.table-wrapper {
-  width: 100%;
+.stable :deep(.da-row-week-start > td) {
+  border-top: 2px solid var(--dt-border);
 }
 
-:deep(.date-cell) {
+.stable__date {
   font-weight: 600;
   font-size: 13px;
-  color: var(--da-text-primary);
+  color: var(--dt-text);
 }
 
-:deep(.date-cell--past) {
-  color: var(--da-text-muted);
+.stable__date--past {
+  color: var(--dt-text-3);
+  font-weight: 500;
 }
 
-:deep(.weekday-cell) {
+.stable__weekday {
   font-size: 11px;
-  color: var(--da-text-secondary);
-  margin-top: 2px;
+  color: var(--dt-text-2);
+  margin-top: 1px;
 }
 
-.assignments-wrap {
+.stable__chips {
   display: flex;
   flex-wrap: wrap;
   gap: 4px;
 }
 
-.area-tag {
-  border-radius: 4px;
-  line-height: 1.4;
-  display: inline-flex;
+.stable__areas {
+  display: flex;
   flex-direction: column;
-  align-items: flex-start;
-  padding: 2px 8px !important;
-  min-width: 80px;
+  gap: 2px;
 }
 
-.area-name {
-  font-size: 11px;
+.stable__area {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+
+.stable__area-name {
+  font-size: 12px;
   font-weight: 600;
-  color: inherit;
+  color: var(--dt-text-2);
+  flex-shrink: 0;
 }
 
-.area-persons {
-  font-size: 11px;
-  opacity: 0.8;
+.stable__area-persons {
+  font-size: 13px;
+  color: var(--dt-text);
 }
 
-.no-assignment {
-  color: var(--da-text-muted);
+.stable__none {
+  color: var(--dt-text-3);
   font-size: 12px;
 }
 </style>

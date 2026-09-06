@@ -2,14 +2,16 @@ import axios, { type AxiosInstance } from 'axios';
 import { message } from 'ant-design-vue';
 import type { Workspace, ScheduleEntry, RosterPerson } from '@/types';
 import { API_BASE_URL } from './baseUrl';
+import { getToken as getStoredToken, setToken as setStoredToken } from '../tokenStore';
 
 function getAccessToken(): string {
-  return (window as any).__DEV_TOKEN__ ?? localStorage.getItem('duty_access_token') ?? '';
+  const devToken = (window as any).__DEV_TOKEN__;
+  if (devToken) return devToken;
+  return getStoredToken() ?? '';
 }
 
-// Token is injected by main.ts interceptor; expose getToken/setToken for WebSocket composables
 export function setToken(t: string) {
-  localStorage.setItem('duty_access_token', t);
+  setStoredToken(t);
 }
 export function getToken() {
   return getAccessToken();
@@ -162,7 +164,6 @@ export const api = {
   },
 
   async saveScheduleEntry(entry: ScheduleEntry) {
-    // Handle Dayjs/Day object (from DatePicker) and ensure date is string YYYY-MM-DD
     const fmtDate = (d: any): string => {
       if (!d) return '';
       if (typeof d === 'string') return d.slice(0, 10);

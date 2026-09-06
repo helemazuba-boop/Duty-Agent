@@ -1,4 +1,4 @@
-﻿const tokenStorageKey = 'duty_access_token';
+﻿import { setToken } from './tokenStore';
 
 function getHashToken(hash: string): string | null {
   const rawHash = hash.startsWith('#') ? hash.slice(1) : hash;
@@ -46,11 +46,10 @@ const devToken = (window as any).__DEV_TOKEN__;
 const activeToken = devToken ?? urlToken;
 
 if (activeToken) {
-  localStorage.setItem(tokenStorageKey, activeToken);
+  setToken(activeToken);
 }
 
 if (urlToken) {
   const nextUrl = `${window.location.pathname}${stripAccessTokenFromSearch(window.location.search)}${stripAccessTokenFromHash(window.location.hash)}`;
   window.history.replaceState(null, '', nextUrl);
 }
-
