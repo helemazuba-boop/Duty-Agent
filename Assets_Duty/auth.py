@@ -28,6 +28,13 @@ _PUBLIC_HTTP_EXACT_PATHS = frozenset({
     "/app",
     "/health",
     "/engine/info",
+    "/docs",
+    "/redoc",
+    "/openapi.json",
+    # Browsers/WebView2 probe these at the host root regardless of the app
+    # base path; under the default-deny middleware they would otherwise 401.
+    "/favicon.svg",
+    "/favicon.ico",
 })
 _PUBLIC_HTTP_PREFIXES = ("/app/",)
 _PROTECTED_HTTP_EXACT_PATHS = frozenset({
@@ -50,6 +57,18 @@ def extract_bearer_token(headers: Mapping[str, str]) -> str | None:
 
     normalized_token = token.strip()
     return normalized_token or None
+
+
+def extract_bearer_token_from_query(query_params: Mapping[str, str] | None) -> str | None:
+    if not query_params:
+        return None
+
+    raw = query_params.get("token") or query_params.get("access_token")
+    if not raw:
+        return None
+
+    normalized = str(raw).strip()
+    return normalized or None
 
 
 def get_current_request_bearer_token() -> str | None:
@@ -154,4 +173,7 @@ def is_request_authorized(request: Request, runtime) -> bool:
 
 
 def is_websocket_authorized(websocket: WebSocket, runtime) -> bool:
-    return runtime is not None and runtime.is_authorized(extract_bearer_token(websocket.headers))
+    token = extract_bearer_token(websocket.headers)
+    if token is None:
+        token = extract_bearer_token_from_query(websocket.query_params)
+    return runtime is not None and runtime.is_authorized(token)

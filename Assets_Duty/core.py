@@ -14,7 +14,11 @@ from contextlib import asynccontextmanager
 
 SKIP_AUTH_BYPASS = os.getenv("SKIP_AUTH_BYPASS", "").strip().lower() in ("1", "true", "yes")
 
-# Add current directory to path for local module imports
+if SKIP_AUTH_BYPASS:
+    print("[WARNING] SKIP_AUTH_BYPASS is ENABLED — token verification is bypassed!", file=sys.stderr, flush=True)
+    print("[WARNING] Starting in 5 seconds...", file=sys.stderr, flush=True)
+    time.sleep(5)
+
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from fastapi import FastAPI, BackgroundTasks, Request
@@ -25,6 +29,7 @@ from fastapi.staticfiles import StaticFiles
 from auth import (
     build_http_unauthorized_response,
     extract_bearer_token,
+    extract_bearer_token_from_query,
     is_mcp_path,
     is_protected_http_path,
     is_public_http_path,
@@ -41,7 +46,6 @@ WEB_DIRECTORY = Path(__file__).resolve().parent / "web"
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup logic
     print(f"[Lifespan] Engine starting in {os.getcwd()}", flush=True)
     app.state.mcp_http_app = build_mcp_http_app(app)
     async with app.state.mcp_http_app.router.lifespan_context(app.state.mcp_http_app):
@@ -51,15 +55,18 @@ async def lifespan(app: FastAPI):
     if runtime is not None:
         runtime.stop_notification_workers()
         runtime.stop_auto_run_worker()
-    # Shutdown logic
     print("[Lifespan] Engine shutting down", flush=True)
 
 app = FastAPI(title="Duty-Agent IPC Engine", version="0.50.0", lifespan=lifespan)
 
-# Enable CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+        "http://localhost",
+        "http://127.0.0.1",
+    ],
     allow_methods=["*"],
     allow_headers=["*"],
     expose_headers=["Mcp-Session-Id"],
@@ -89,6 +96,8 @@ async def require_bearer_for_protected_routes(request: Request, call_next):
         if runtime is None or not getattr(runtime, "enable_mcp", False):
             return JSONResponse(status_code=404, content={"detail": "Not Found"})
         candidate_token = extract_bearer_token(request.headers)
+        if candidate_token is None:
+            candidate_token = extract_bearer_token_from_query(request.query_params)
         if not SKIP_AUTH_BYPASS:
             if not runtime.is_authorized(candidate_token):
                 return build_http_unauthorized_response()
@@ -105,8 +114,10 @@ async def require_bearer_for_protected_routes(request: Request, call_next):
                 return JSONResponse(status_code=503, content={"detail": "Runtime is not initialized."})
             if not is_request_authorized(request, runtime):
                 return build_http_unauthorized_response()
+        return await call_next(request)
 
-    return await call_next(request)
+    return build_http_unauthorized_response()
+
 
 @app.get("/app")
 async def web_app_root():
@@ -115,13 +126,13 @@ async def web_app_root():
 if WEB_DIRECTORY.is_dir():
     app.mount("/app", StaticFiles(directory=str(WEB_DIRECTORY), html=True), name="web_app")
 
-# Register modular routers
 app.include_router(duty.router)
 app.include_router(bridge.router)
 app.include_router(notifications.router)
 app.include_router(config.router)
 app.include_router(roster.router)
 app.include_router(readiness.router)
+
 
 @app.get("/")
 async def root(request: Request):
@@ -132,12 +143,14 @@ async def root(request: Request):
     payload["engine"] = "Duty-Agent FastAPI"
     return payload
 
+
 @app.get("/health")
 async def health(request: Request):
     runtime = getattr(request.app.state, "runtime", None)
     if runtime is None:
         return {"status": "ok", "version": "0.50.0"}
     return runtime.query_service.health()
+
 
 @app.get("/engine/info")
 async def engine_info(request: Request):
@@ -146,22 +159,19 @@ async def engine_info(request: Request):
         return {"engine": "Duty-Agent Unified Scheduling Engine", "version": "0.50.0"}
     return runtime.query_service.engine_info()
 
+
 @app.post("/shutdown")
 async def shutdown(background_tasks: BackgroundTasks):
     def exit_process():
-        # Give some time for the response to be sent
         time.sleep(0.5)
         print("[Server] Manual shutdown triggered. Exiting...", flush=True)
         os.kill(os.getpid(), signal.SIGTERM)
-    
+
     background_tasks.add_task(exit_process)
     return {"status": "shutting down"}
 
+
 def monitor_parent_process():
-    """
-    Monitor if the parent process still exists.
-    Uses Win32 API on Windows for robustness (immune to PID reuse).
-    """
     parent_pid = os.getppid()
     if parent_pid <= 1:
         return
@@ -169,7 +179,7 @@ def monitor_parent_process():
     if os.name == 'nt':
         import ctypes
         import ctypes.wintypes
-        
+
         SYNCHRONIZE = 0x00100000
         WAIT_OBJECT_0 = 0x00000000
         INFINITE = 0xFFFFFFFF
@@ -179,7 +189,7 @@ def monitor_parent_process():
         if not handle:
             print(f"[Lifecycle] Cannot open parent PID {parent_pid}, exiting.", flush=True)
             os._exit(1)
-        
+
         print(f"[Lifecycle] Windows SuicideWatch active (Kernel Handle) for parent PID: {parent_pid}", flush=True)
         try:
             result = kernel32.WaitForSingleObject(ctypes.wintypes.HANDLE(handle), INFINITE)
@@ -189,11 +199,6 @@ def monitor_parent_process():
         finally:
             kernel32.CloseHandle(handle)
     else:
-        # Fallback for Posix (os.getppid() monitor). ``os.kill(pid, 0)`` alone is
-        # PID-reuse unsafe: once the parent dies and the PID is recycled, the
-        # probe keeps succeeding and the backend outlives its host forever.
-        # ``getppid()`` changing (reparent to init/subreaper) is the reliable
-        # death signal, so check it first and keep the kill-probe as backup.
         print(f"[Lifecycle] Posix SuicideWatch active for parent PID: {parent_pid}", flush=True)
         while True:
             if os.getppid() != parent_pid:
@@ -206,6 +211,7 @@ def monitor_parent_process():
                 os._exit(0)
             time.sleep(2)
 
+
 def main():
     parser = argparse.ArgumentParser(description="Duty-Agent Core Entry")
     parser.add_argument("--data-dir", type=str, default="data")
@@ -217,11 +223,10 @@ def main():
 
     data_dir = Path(args.data_dir).resolve()
     data_dir.mkdir(parents=True, exist_ok=True)
-    
+
     if args.server:
         app.state.runtime = create_runtime(data_dir, disable_mcp_runtime=args.disable_mcp_runtime)
-        
-        # Determine actual port
+
         import socket
         actual_port = args.port
         if actual_port == 0:
@@ -229,23 +234,20 @@ def main():
             temp_sock.bind(('127.0.0.1', 0))
             actual_port = temp_sock.getsockname()[1]
             temp_sock.close()
-        
+
         print(f"__DUTY_SERVER_PORT__:{actual_port}", flush=True)
         print(f"__DUTY_SERVER_TOKEN_MODE__:{app.state.runtime.access_token_mode}", flush=True)
         if app.state.runtime.access_token_mode == "dynamic":
             print(f"__DUTY_SERVER_TOKEN__:{app.state.runtime.access_token}", flush=True)
-            # Write token to file so run_dev.bat can capture it
             try:
                 token_file = data_dir / ".dev-token"
                 token_file.write_text(app.state.runtime.access_token, encoding="utf-8")
             except Exception:
                 pass
-        
-        # Start suicide watch thread (skipped when an external lifecycle
-        # manager such as ``duty-cli serve`` owns this process via a pid file).
+
         if not args.no_parent_watch:
             watch_thread = threading.Thread(
-                target=monitor_parent_process, 
+                target=monitor_parent_process,
                 daemon=True,
                 name="SuicideWatch"
             )
@@ -255,7 +257,6 @@ def main():
 
         uvicorn.run(app, host="127.0.0.1", port=actual_port, log_level="warning")
     else:
-        # CLI fallback mode (e.g. for debug or isolated run)
         from engine import run_schedule
         from state_ops import Context, save_json_atomic
         ctx = Context(data_dir)
@@ -265,14 +266,15 @@ def main():
                 with open(ctx.paths["input"], "r", encoding="utf-8-sig") as f:
                     input_data = json.load(f)
             except: pass
-                
+
         result = run_schedule(ctx, input_data)
-        
+
         payload = {"status": result.get("status", "error")}
         if "message" in result: payload["message"] = result["message"]
         if "ai_response" in result: payload["ai_response"] = result["ai_response"]
-        
+
         save_json_atomic(ctx.paths["result"], payload)
+
 
 def audit_environment():
     print("--- Start-up Audit ---", flush=True)
@@ -289,6 +291,7 @@ def audit_environment():
     if SKIP_AUTH_BYPASS:
         print("[WARNING] SKIP_AUTH_BYPASS is ENABLED — token verification is bypassed!", flush=True)
     print("---------------------", flush=True)
+
 
 if __name__ == "__main__":
     try:

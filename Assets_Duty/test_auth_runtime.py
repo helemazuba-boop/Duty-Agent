@@ -8,13 +8,27 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from auth import create_pbkdf2_sha256_verifier, verify_pbkdf2_sha256_token
+from auth import (
+    create_pbkdf2_sha256_verifier,
+    extract_bearer_token,
+    extract_bearer_token_from_query,
+    is_public_http_path,
+    is_websocket_authorized,
+    verify_pbkdf2_sha256_token,
+)
 from core import app, main
 from runtime import create_runtime
 from state_ops import load_api_key_from_env
 
 
 class TestAuthRuntime(unittest.TestCase):
+    def test_favicon_paths_are_public(self):
+        # The default-deny middleware must not 401 the browser's automatic
+        # favicon probes at the host root.
+        self.assertTrue(is_public_http_path("/favicon.svg"))
+        self.assertTrue(is_public_http_path("/favicon.ico"))
+        self.assertFalse(is_public_http_path("/favicon.png"))
+
     def test_pbkdf2_verifier_round_trip(self):
         verifier = create_pbkdf2_sha256_verifier("static-token")
 
@@ -129,6 +143,53 @@ class TestAuthRuntime(unittest.TestCase):
                 self.assertFalse(app.state.runtime.enable_mcp)
             finally:
                 app.state.runtime = original_runtime
+
+    def test_extract_bearer_token_from_query(self):
+        self.assertEqual(extract_bearer_token_from_query({"token": "abc123"}), "abc123")
+        self.assertEqual(extract_bearer_token_from_query({"access_token": "xyz789"}), "xyz789")
+        self.assertEqual(extract_bearer_token_from_query({"token": "  padded  "}), "padded")
+        self.assertIsNone(extract_bearer_token_from_query({}))
+        self.assertIsNone(extract_bearer_token_from_query({"other": "value"}))
+        self.assertIsNone(extract_bearer_token_from_query({"token": ""}))
+        self.assertIsNone(extract_bearer_token_from_query(None))
+
+    def test_is_websocket_authorized_falls_back_to_query_params(self):
+        static_token = "static-token"
+        with tempfile.TemporaryDirectory() as temp_dir:
+            data_dir = Path(temp_dir)
+            (data_dir / "host-config.json").write_text(
+                json.dumps(
+                    {
+                        "access_token_mode": "static",
+                        "static_access_token_verifier": create_pbkdf2_sha256_verifier(static_token),
+                    }
+                ),
+                encoding="utf-8",
+            )
+            runtime = create_runtime(data_dir)
+
+        mock_websocket = mock.Mock()
+        mock_websocket.headers = {}
+        mock_websocket.query_params = {"token": static_token}
+
+        self.assertTrue(is_websocket_authorized(mock_websocket, runtime))
+        mock_websocket.query_params = {"token": "wrong-token"}
+        self.assertFalse(is_websocket_authorized(mock_websocket, runtime))
+
+    def test_runtime_dynamic_mode_uses_constant_time_compare(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            data_dir = Path(temp_dir)
+            (data_dir / "host-config.json").write_text(
+                json.dumps({"access_token_mode": "dynamic"}),
+                encoding="utf-8",
+            )
+            runtime = create_runtime(data_dir)
+
+        token = runtime.access_token
+        self.assertTrue(runtime.is_authorized(token))
+        self.assertFalse(runtime.is_authorized("wrong-token"))
+        self.assertFalse(runtime.is_authorized(""))
+        self.assertFalse(runtime.is_authorized(None))
 
 
 if __name__ == "__main__":

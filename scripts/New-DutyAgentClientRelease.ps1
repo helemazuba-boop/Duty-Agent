@@ -191,6 +191,14 @@ if (-not (Test-Path -LiteralPath (Join-Path $distDir "index.html"))) {
     throw "Missing UI build output: $(Join-Path $distDir "index.html")"
 }
 
+# A dev token baked into the build overrides the per-boot token the host passes
+# via the URL, so every /api/v1 call 401s for the lifetime of the artifact.
+$builtIndexHtml = Get-Content -LiteralPath (Join-Path $distDir "index.html") -Raw
+if ($builtIndexHtml -match '__DEV_TOKEN__') {
+    throw "Built UI index.html contains __DEV_TOKEN__ (dev token leaked into the release build). " +
+        "Remove VITE_BACKEND_TOKEN from duty-agent-ui\.env.local and rebuild."
+}
+
 Write-Host "[2/7] Syncing web UI to Assets_Duty\web..."
 $safeWebDir = Assert-PathInside -Path $webDir -Parent $root -Description "Web output directory"
 if (Test-Path -LiteralPath $safeWebDir) {

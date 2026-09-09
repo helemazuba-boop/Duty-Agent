@@ -14,4 +14,8 @@ For standalone frontend hosting, set `VITE_API_BASE_URL` to the backend origin:
 VITE_API_BASE_URL=http://127.0.0.1:8765
 ```
 
-`VITE_BACKEND_TOKEN` is still supported for local development token injection.
+`VITE_BACKEND_TOKEN` is supported for **local development only** (`vite` dev server): the
+`inject-dev-token` plugin reads it and injects `window.__DEV_TOKEN__` into the served page.
+It is never applied to `vite build` output — a baked-in token would override the per-boot
+token the desktop host passes via the URL and break auth with 401s. `New-DutyAgentClientRelease.ps1`
+fails the release if `__DEV_TOKEN__` appears in `dist/index.html`.

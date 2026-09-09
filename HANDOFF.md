@@ -425,3 +425,53 @@ usage error 全部走 `_JsonErrorParser` 输出 JSON+exit 2；15 个子命令 --
 4. ✅ CI-D：`concurrency: release-${{ github.ref }}` + cancel-in-progress。
 
 验证边界（如实声明）：本机无 pwsh，ps1/workflow 改动为静态审读级验证（语法保守写法、PS5.1 兼容）；UI 链路与两入口文件为本机 node22 实测通过。端到端以推送 tag 后的 Actions 运行为准。
+
+## 20. 401 stale-token 长效修复——WebView2 后端重启后自动重新导航（2026-08-24）
+
+> 根因：`DutyPythonIpcService` 的 watchdog 自动重启后端时，Python 进程每次启动生成新的动态 `access_token`，但 `DutyWebSettingsPage` 的 WebView2 仅在页面加载时导航一次到含旧 token 的 `WebAppUrl`。后续所有 `/api/v1/*` 请求携带旧 token → 后端 `is_authorized()` 返回 False → 全局 401。
+> 独立客户端 `MainForm` + `BackendProcessManager` 路径当前无自动重启逻辑，不触发此问题；但插件路径（ClassIsland）的 watchdog 会频繁重启，是 401 的高发场景。
+
+### 20.1 修复
+
+1. `IPythonIpcService` 接口新增 `event EventHandler? WebAppUrlChanged;`
+2. `DutyPythonIpcService` 在 `InitializeBackgroundAsync` 内 `_state = Ready` 且 TCS 落账后调用 `OnWebAppUrlChanged()`——此时 `_serverPort` 与 `_accessToken` 均已就位，`WebAppUrl` 返回完整新值。
+3. `DutyScheduleOrchestrator` 以标准代理模式转发 `_ipcService.WebAppUrlChanged`
+4. `DutyWebSettingsPage`：
+   - 构造时订阅 `_backendService.WebAppUrlChanged` 与 `Unloaded`
+   - `_initialWebNavigationCompleted` 标志位防止初始加载时的竞态重导航
+   - `OnWebAppUrlChanged` 取得新 `WebAppUrl` 并 `_webViewHost.NavigateTo(newUrl)`——`DutyWebViewHost.NavigateTo` 内部已做 `Dispatcher.UIThread.Post`，线程安全
+   - `OnPageUnloaded` 取消订阅 + 重置标志位，避免泄漏 `DutyScheduleOrchestrator`
+
+### 20.2 验证边界
+
+- 本机 Linux 无法构建 `net8.0-windows` 客户端/插件工程（缺少 WindowsDesktop SDK），改动为静态审读级验证
+- 逻辑正确性依赖推送后 Windows runner 的 CI 构建；建议实机验证流程：启动 ClassIsland 插件 → 触发一次后端崩溃/重启 → 确认 WebView2 自动刷新且 API 401 消失
+
+## 21. 客户端"一直 401"真因——生产 index.html 被注入硬编码 dev token（2026-09-06）
+
+> §20 的重导航修复是对的，但没治本：无论宿主把多新的 token 塞进 URL，前端根本不认 URL token。
+> 本机 `duty-agent-ui/.env.local` 残留 `VITE_BACKEND_TOKEN=neLrHh…`（某次旧后端会话的动态 token），
+> `vite.config.ts` 的 `inject-dev-token` 插件对 `vite build` 同样生效，把该值以
+> `window.__DEV_TOKEN__` 写进了部署产物 `Assets_Duty/web/index.html`。
+> 前端取 token 优先级是 `__DEV_TOKEN__ ?? urlToken`（bootstrapToken.ts / api/http.ts）——
+> 硬编码旧值永远压过宿主注入的真 token → 所有 `/api/v1/*` 请求 401，且 401 toast 提示的
+> "刷新页面" 也救不回来（刷新后仍是硬编码值）。动态 token 每次启动随机生成，必然失配。
+
+### 21.1 修复（全量）
+
+1. `duty-agent-ui/vite.config.ts`：`inject-dev-token` 插件加 `apply: 'serve'`——只在 dev server 注入，`vite build` 永不注入。
+2. `duty-agent-ui/src/bootstrapToken.ts`：优先级反转为 `urlToken ?? devToken`，宿主 URL token 永远优先。
+3. `duty-agent-ui/src/api/http.ts`：`getAccessToken()` 同步反转为 `getStoredToken() ?? __DEV_TOKEN__ ?? ''`。
+4. `duty-agent-ui/src/tokenStore.ts`：token 落 `sessionStorage`（key `duty_access_token`）+ `getToken()` 惰性恢复——WebView 内 F5 不再丢 token（session 随 WebView 进程结束，不会跨后端重启残留）。
+5. 删除本机 `duty-agent-ui/.env.local`（仅含旧 token 一行）。
+6. 重新 `npm run build` 并干净同步 dist → `Assets_Duty/web`（产物 hash 全量更新，index.html 无 `__DEV_TOKEN__`）。
+7. `Assets_Duty/auth.py`：`/favicon.svg`、`/favicon.ico` 加入公开精确路径（default-deny 中间件下浏览器根路径 favicon 探测不再 401；实际文件在 `/app/` 下，根路径探测得 404 属正常）。
+8. `scripts/New-DutyAgentClientRelease.ps1`：UI 构建后断言 `dist/index.html` 不含 `__DEV_TOKEN__`，泄漏即 fail（CI release.yml 经 build_client.bat 调用此脚本，本地/CI 双覆盖）。
+9. `duty-agent-ui/README.md`：注明 `VITE_BACKEND_TOKEN` 仅 dev server 生效。
+10. `Assets_Duty/test_auth_runtime.py`：新增 `test_favicon_paths_are_public`。
+
+### 21.2 验证（本机实测）
+
+- `py -3.13 test_auth_runtime.py`：11/11 通过。
+- 本地起后端（动态 token）：`/app/` 产物无 `__DEV_TOKEN__`；`Bearer <本次真 token>` → `/api/v1/roster` 200；`Bearer <旧 DEV token>` → 401；根路径 `/favicon.svg` 由 401 变 404。
+- 未改动项（如实声明）：`/api/v1/*` HTTP 仅认 Authorization 头、WS/MCP 才认 query token 的不对称保持原设计；C# 客户端代码（§20 的 WebAppUrlChanged 链路）本轮未动。

@@ -35,6 +35,11 @@ public class DutyScheduleOrchestrator : IDisposable
     private bool _pendingAutomationStateChange;
 
     public event EventHandler? ScheduleUpdated;
+    public event EventHandler? WebAppUrlChanged
+    {
+        add { _ipcService.WebAppUrlChanged += value; }
+        remove { _ipcService.WebAppUrlChanged -= value; }
+    }
     public DutyConfig Config => _configManager.Config;
 
     private const string DefaultAreaClassroom = "\u6559\u5BA4";

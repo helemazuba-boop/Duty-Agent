@@ -5,9 +5,10 @@ import { API_BASE_URL } from './baseUrl';
 import { getToken as getStoredToken, setToken as setStoredToken } from '../tokenStore';
 
 function getAccessToken(): string {
-  const devToken = (window as any).__DEV_TOKEN__;
-  if (devToken) return devToken;
-  return getStoredToken() ?? '';
+  // Stored token first: it comes from the host-provided URL token and tracks
+  // the running backend. __DEV_TOKEN__ is dev-server-only injection and may
+  // be stale relative to the current backend session.
+  return getStoredToken() ?? (window as any).__DEV_TOKEN__ ?? '';
 }
 
 export function setToken(t: string) {

@@ -34,6 +34,7 @@ public partial class DutyWebSettingsPage : SettingsPageBase
     private readonly DutyNotificationService _notificationService;
     private readonly DutyWebViewHost _webViewHost;
     private Size _lastLoggedContainerSize;
+    private bool _initialWebNavigationCompleted;
 
     public DutyWebSettingsPage()
         : this(
@@ -57,10 +58,12 @@ public partial class DutyWebSettingsPage : SettingsPageBase
         _webViewHost.WebMessageReceived += OnWebMessageReceived;
         _webViewHost.ContentReady += OnWebContentReady;
         _webViewHost.LoadFailed += OnWebLoadFailed;
+        _backendService.WebAppUrlChanged += OnWebAppUrlChanged;
         WebViewHostContainer.Child = _webViewHost;
         WebViewHostContainer.SizeChanged += OnWebViewHostContainerSizeChanged;
 
         Loaded += OnLoaded;
+        Unloaded += OnPageUnloaded;
         DutyDiagnosticsLogger.Info("SettingsPage", "Duty web settings page initialized.",
             new
             {
@@ -96,6 +99,7 @@ public partial class DutyWebSettingsPage : SettingsPageBase
             var entryUrl = await _backendService.GetWebAppUrlAsync();
             _webViewHost.NavigateTo(entryUrl);
             _webViewHost.RequestResizeSync();
+            _initialWebNavigationCompleted = true;
             DutyDiagnosticsLogger.Info("SettingsPage", "Backend web app ready.",
                 new { entryUrl });
         }
@@ -110,6 +114,30 @@ public partial class DutyWebSettingsPage : SettingsPageBase
     {
         var errorText = string.IsNullOrWhiteSpace(message) ? "WebView2 初始化失败。" : message.Trim();
         ShowWebLoadError(errorText);
+    }
+
+    private void OnPageUnloaded(object? sender, RoutedEventArgs e)
+    {
+        _backendService.WebAppUrlChanged -= OnWebAppUrlChanged;
+        _initialWebNavigationCompleted = false;
+    }
+
+    private async void OnWebAppUrlChanged(object? sender, EventArgs e)
+    {
+        if (!_initialWebNavigationCompleted)
+        {
+            return;
+        }
+
+        try
+        {
+            var newUrl = await _backendService.GetWebAppUrlAsync();
+            _webViewHost.NavigateTo(newUrl);
+        }
+        catch (Exception ex)
+        {
+            DutyDiagnosticsLogger.Warn("SettingsPage", "WebAppUrl changed; re-navigate skipped.", ex);
+        }
     }
 
     private void OnWebViewHostContainerSizeChanged(object? sender, SizeChangedEventArgs e)

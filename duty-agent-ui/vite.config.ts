@@ -13,6 +13,10 @@ export default defineConfig({
     tailwindcss(),
     {
       name: 'inject-dev-token',
+      // Dev-server only: a token baked into a production build would override
+      // the per-boot token the host passes via the URL, so every /api/v1 call
+      // would 401 until the next rebuild.
+      apply: 'serve',
       transformIndexHtml(html) {
         // Read token on every request so it picks up new backend token after backend restart
         const envPath = resolve(__dirname, '.env.local')

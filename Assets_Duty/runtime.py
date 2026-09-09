@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hmac
 import secrets
 import time
 import threading
@@ -103,7 +104,12 @@ class DutyRuntime:
     def is_authorized(self, candidate_token: str | None) -> bool:
         if self.access_token_mode == "static":
             return verify_pbkdf2_sha256_token(candidate_token, self.static_access_token_verifier)
-        return bool(candidate_token) and candidate_token == self.access_token
+        if not candidate_token:
+            return False
+        return hmac.compare_digest(
+            candidate_token.encode("utf-8"),
+            self.access_token.encode("utf-8"),
+        )
 
     def try_claim_duty_live_owner(self, owner_id: str) -> bool:
         normalized_owner = str(owner_id or "").strip()

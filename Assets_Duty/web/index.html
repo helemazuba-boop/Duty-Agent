@@ -5,11 +5,21 @@
     <link rel="icon" type="image/svg+xml" href="./favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Duty-Agent</title>
-    <script type="module" crossorigin src="./assets/index-DU1IOzgQ.js"></script>
-    <link rel="modulepreload" crossorigin href="./assets/es-COl7Etw7.js">
-    <link rel="stylesheet" crossorigin href="./assets/index-spX-Pjrs.css">
+    <script>
+      // 主题预置:在 CSS/JS 加载前写 data-theme,避免深色用户看到一帧白
+      (function () {
+        try {
+          var m = localStorage.getItem('duty_theme_mode') || 'auto';
+          var d = m === 'dark' || (m === 'auto' && matchMedia('(prefers-color-scheme: dark)').matches);
+          document.documentElement.dataset.theme = d ? 'dark' : 'light';
+        } catch (e) {}
+      })();
+    </script>
+    <script type="module" crossorigin src="./assets/index-DkHEwTII.js"></script>
+    <link rel="modulepreload" crossorigin href="./assets/es-DooJZHo1.js">
+    <link rel="stylesheet" crossorigin href="./assets/index-C6IzqGZl.css">
   </head>
   <body>
-    <div id="app"></div>
+    <div id="app"></div>
   </body>
 </html>

@@ -35,6 +35,7 @@ public interface IPythonIpcService: IDisposable
     string? LastErrorMessage { get; }
     string ServerBaseUrl { get; }
     string WebAppUrl { get; }
+    event EventHandler? WebAppUrlChanged;
 }
 
 public enum EngineState
@@ -88,6 +89,8 @@ public class DutyPythonIpcService : IPythonIpcService
         : string.IsNullOrWhiteSpace(_accessToken)
             ? $"{ServerBaseUrl}/app/"
             : $"{ServerBaseUrl}/app/#access_token={Uri.EscapeDataString(_accessToken)}";
+    public event EventHandler? WebAppUrlChanged;
+    private void OnWebAppUrlChanged() => WebAppUrlChanged?.Invoke(this, EventArgs.Empty);
     private readonly object _stateLock = new();
     private Task? _initializeTask;
     private string? _accessToken;
@@ -438,6 +441,8 @@ public class DutyPythonIpcService : IPythonIpcService
 
                 _tokenTcs.TrySetResult(_accessToken);
             }
+
+            OnWebAppUrlChanged();
 
             Debug.WriteLine($"Python Engine effectively ready on port {_serverPort}");
             lock (_errorBuffer) _errorBuffer.Clear();

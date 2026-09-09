@@ -327,7 +327,13 @@ public static class SecurityHelper
             "vpn",
             "wireguard",
             "tap",
-            "npcap"
+            "npcap",
+            "vethernet",
+            "vmnet",
+            "virtual switch",
+            "ndis",
+            "hyperv",
+            "wsl",
         };
         return ignoredKeywords.Any(adapterText.Contains);
     }
