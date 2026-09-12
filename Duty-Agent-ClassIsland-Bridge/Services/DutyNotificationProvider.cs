@@ -17,154 +17,45 @@ namespace DutyAgentBridge.Services;
 public sealed class DutyNotificationProvider : NotificationProviderBase
 {
     private readonly IIpcBridgeService _bridge;
-    private readonly object _streamGate = new();
-    private CancellationTokenSource? _streamCts;
-    private Task? _streamTask;
-    private int _streamGeneration;
 
     public DutyNotificationProvider(IIpcBridgeService bridge)
     {
         _bridge = bridge;
-        _bridge.StateChanged += (_, state) =>
-        {
-            if (state == IpcBridgeState.Connected)
-            {
-                StartNotificationStream();
-            }
-            else if (state is IpcBridgeState.Disconnected or IpcBridgeState.Error or IpcBridgeState.NotInstalled)
-            {
-                StopNotificationStream();
-            }
-        };
+        // 通知长连接由 IpcBridgeService 持有（随连接状态启停），这里只消费事件。
+        _bridge.NotificationReceived += OnNotificationReceived;
     }
 
+    private void OnNotificationReceived(object? sender, DutyNotificationEvent notification)
+    {
+        // 后端 duty_reminder 事件已带格式化正文（runtime._format_duty_reminder_body），
+        // 直接透传；snapshot_changed 是数据总线信号，不作为用户通知弹出。
+        if (notification.Type == "snapshot_changed")
+        {
+            return;
+        }
+
+        PublishGenericNotification(notification.Title, notification.Body);
+    }
+
+    /// <summary>
+    /// 排班任务结束通知。由自动化动作（DutyRunScheduleAction）在运行结束后调用。
+    /// </summary>
     public void PublishScheduleCompleted(bool success, string message, string? instruction)
     {
-        PublishGenericNotification(success ? "排班任务已完成" : "排班执行失败", message);
-    }
-
-    public void PublishAutoRunTriggered(DateTime now)
-    {
-        PublishGenericNotification("自动排班已开始执行", $"{now:yyyy-MM-dd HH:mm} 任务已加入队列");
-    }
-
-    public void PublishDutyReminder(string time, SchedulePoolItem? todayItem)
-    {
-        PublishGenericNotification($"当前值日提醒 {time}", FormatDutyReminderBody(todayItem));
-    }
-
-    private void StartNotificationStream()
-    {
-        Task? previous;
-        int observedGeneration;
-        lock (_streamGate)
-        {
-            previous = _streamTask;
-            if (previous is { IsCompleted: false })
-            {
-                // Fast disconnect→connect flip: the previous stream task is
-                // still draining after its stop. Chain the restart onto it —
-                // returning here used to leave the provider with NO stream
-                // after the old task finished (notifications dead until the
-                // next state flip). The generation check drops stale chains
-                // from tasks superseded by an even newer start request.
-                observedGeneration = ++_streamGeneration;
-                previous.ContinueWith(
-                    _ =>
-                    {
-                        bool shouldStart;
-                        lock (_streamGate)
-                        {
-                            shouldStart = _streamGeneration == observedGeneration &&
-                                          (_streamTask == null || _streamTask.IsCompleted);
-                        }
-                        if (shouldStart)
-                        {
-                            StartNotificationStream();
-                        }
-                    },
-                    CancellationToken.None,
-                    TaskContinuationOptions.ExecuteSynchronously,
-                    TaskScheduler.Default);
-                return;
-            }
-
-            // Cancel the previous stream's token without disposing it here:
-            // disposal is owned by the task's finally, so we never dispose a
-            // token the task may still be registering on.
-            try { _streamCts?.Cancel(); } catch { }
-            var cts = new CancellationTokenSource();
-            _streamCts = cts;
-            observedGeneration = ++_streamGeneration;
-            var token = cts.Token;
-            _streamTask = Task.Run(async () =>
-            {
-                // The task owns its CTS disposal and must never end in a
-                // silent fault: an ObjectDisposedException racing a stop used
-                // to kill the loop invisibly.
-                try
-                {
-                    while (!token.IsCancellationRequested && _bridge.State == IpcBridgeState.Connected)
-                    {
-                        try
-                        {
-                            await _bridge.ListenNotificationsAsync(HandleNotificationAsync, token);
-                        }
-                        catch (OperationCanceledException) when (token.IsCancellationRequested)
-                        {
-                            return;
-                        }
-                        catch (Exception ex)
-                        {
-                            Diagnostics.Error("DutyNotificationProvider", "Notification stream failed.", ex);
-                            await Task.Delay(TimeSpan.FromSeconds(5), token);
-                        }
-                    }
-                }
-                catch (OperationCanceledException)
-                {
-                    // Shutdown while delayed/listening: expected during stop.
-                }
-                finally
-                {
-                    cts.Dispose();
-                }
-            }, CancellationToken.None);
-        }
-    }
-
-    private void StopNotificationStream()
-    {
-        lock (_streamGate)
-        {
-            // Cancel only; the running task disposes the CTS in its finally so
-            // we never dispose a token the task is still registering on.
-            try
-            {
-                _streamCts?.Cancel();
-            }
-            catch
-            {
-            }
-        }
-    }
-
-    private Task HandleNotificationAsync(DutyNotificationEvent notification)
-    {
-        PublishGenericNotification(notification.Title, notification.Body);
-        return Task.CompletedTask;
+        PublishGenericNotification(
+            success ? "排班任务已完成" : "排班执行失败",
+            string.IsNullOrWhiteSpace(message) ? $"指令：{instruction}" : message);
     }
 
     private void PublishGenericNotification(string title, string? body)
     {
-        Dispatcher.UIThread.Invoke(() =>
+        Dispatcher.UIThread.InvokeAsync(() =>
         {
             var primaryText = string.IsNullOrWhiteSpace(title) ? "Duty-Agent" : title.Trim();
             var scrollingText = body?.Trim() ?? "";
 
             var maskContent = NotificationContent.CreateSimpleTextContent(primaryText, null);
             maskContent.Duration = TimeSpan.FromSeconds(2);
-            maskContent.IsSpeechEnabled = false;
 
             var overlayContent = string.IsNullOrWhiteSpace(scrollingText)
                 ? NotificationContent.CreateSimpleTextContent(primaryText, null)
@@ -173,7 +64,6 @@ public sealed class DutyNotificationProvider : NotificationProviderBase
                     TimeSpan.FromSeconds(8),
                     1,
                     null);
-            overlayContent.IsSpeechEnabled = false;
 
             ShowNotification(new NotificationRequest
             {
@@ -181,26 +71,5 @@ public sealed class DutyNotificationProvider : NotificationProviderBase
                 OverlayContent = overlayContent
             });
         });
-    }
-
-    private static string FormatDutyReminderBody(SchedulePoolItem? todayItem)
-    {
-        if (todayItem == null || todayItem.AreaAssignments.Count == 0)
-        {
-            return $"{DateTime.Now:yyyy-MM-dd} 暂无值日安排";
-        }
-
-        var parts = new List<string>();
-        foreach (var (area, students) in todayItem.AreaAssignments)
-        {
-            if (students.Count > 0)
-            {
-                parts.Add($"{area}: {string.Join(", ", students)}");
-            }
-        }
-
-        return parts.Count > 0
-            ? string.Join("; ", parts)
-            : $"{DateTime.Now:yyyy-MM-dd} 暂无值日安排";
     }
 }

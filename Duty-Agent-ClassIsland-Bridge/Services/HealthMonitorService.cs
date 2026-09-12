@@ -47,6 +47,7 @@ public sealed class HealthMonitorService : IHealthMonitorService
     // is dead). A rewritten meta file resets the throttle automatically.
     private long _connectFailureSignature;
     private int _connectFailureCount;
+    private long _lastHeartbeatErrorLogTick = long.MinValue;
 
     private readonly BridgeSettings _settings;
 
@@ -391,7 +392,14 @@ public sealed class HealthMonitorService : IHealthMonitorService
         }
         catch (Exception ex)
         {
-            Diagnostics.Error("HealthMonitor", "Bridge heartbeat failed.", ex);
+            // 连接中断期间每个节拍都会到这里：同一原因 30s 内只记一次，
+            // 避免故障窗口把日志刷成心跳失败流水账。
+            var now = Environment.TickCount64;
+            if (now - _lastHeartbeatErrorLogTick >= 30_000)
+            {
+                _lastHeartbeatErrorLogTick = now;
+                Diagnostics.Error("HealthMonitor", "Bridge heartbeat failed.", ex);
+            }
             _bridge.Disconnect();
             BridgeStateRequested?.Invoke(this, IpcBridgeState.Error);
             NoteConnectFailure();

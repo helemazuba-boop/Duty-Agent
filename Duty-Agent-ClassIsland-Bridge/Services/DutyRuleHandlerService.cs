@@ -4,18 +4,20 @@ using DutyAgentBridge.Models;
 namespace DutyAgentBridge.Services;
 
 /// <summary>
-/// 自动化规则处理服务
+/// 自动化规则处理服务。
+/// 规则评估发生在 ClassIsland 的规则引擎调用路径上，因此这里只做纯内存判断：
+/// 数据来自 DutyStateCache（由推送/兜底轮询维护），绝不发起同步网络请求。
 /// </summary>
 public sealed class DutyRuleHandlerService
 {
     private readonly IRulesetService? _rulesetService;
-    private readonly IIpcBridgeService _bridge;
+    private readonly DutyStateCache _cache;
     private bool _registered;
 
-    public DutyRuleHandlerService(IRulesetService? rulesetService, IIpcBridgeService bridge)
+    public DutyRuleHandlerService(IRulesetService? rulesetService, DutyStateCache cache)
     {
         _rulesetService = rulesetService;
-        _bridge = bridge;
+        _cache = cache;
     }
 
     public void Register()
@@ -39,26 +41,7 @@ public sealed class DutyRuleHandlerService
         var studentName = (settings.StudentName ?? string.Empty).Trim();
         var areaName = (settings.AreaName ?? string.Empty).Trim();
 
-        // 同步获取当前排班数据
-        DutyBackendSnapshot? snapshot;
-        try
-        {
-            snapshot = GetSnapshotSync();
-        }
-        catch
-        {
-            return false;
-        }
-
-        if (snapshot == null)
-        {
-            return false;
-        }
-
-        var today = DateTime.Now.ToString("yyyy-MM-dd");
-        var todayItem = snapshot.State.SchedulePool
-            .FirstOrDefault(x => string.Equals(x.Date, today, StringComparison.Ordinal));
-
+        var todayItem = _cache.GetTodayItem();
         if (todayItem == null)
         {
             return false;
@@ -87,28 +70,12 @@ public sealed class DutyRuleHandlerService
         return assignments.Values
             .Any(students => students.Any(name => string.Equals(name, studentName, StringComparison.Ordinal)));
     }
-
-    private DutyBackendSnapshot? GetSnapshotSync()
-    {
-        try
-        {
-            if (_bridge.State != IpcBridgeState.Connected)
-            {
-                return null;
-            }
-
-            // 使用 Task.Run 同步等待（避免 async void 问题）
-            return Task.Run(() => _bridge.GetSnapshotAsync()).Result;
-        }
-        catch
-        {
-            return null;
-        }
-    }
 }
 
 /// <summary>
-/// 自动化 ID 常量
+/// 自动化 ID 常量。
+/// 历史约定：Action/Rule 使用 kebab 字符串 id（组件/通知提供方使用 GUID）。
+/// 不改为 GUID——已保存的自动化配置按这些 id 引用，改动会让存量配置失效。
 /// </summary>
 public static class DutyAutomationIds
 {

@@ -1,6 +1,7 @@
 using System.ComponentModel;
 using System.IO;
 using System.Text.Json;
+using Microsoft.Win32;
 using ClassIsland.Core;
 using ClassIsland.Core.Abstractions;
 using ClassIsland.Core.Attributes;
@@ -41,6 +42,7 @@ public class Plugin : PluginBase
         services.AddSingleton(Settings);
         services.AddSingleton<IIpcBridgeService, IpcBridgeService>();
         services.AddSingleton<IHealthMonitorService, HealthMonitorService>();
+        services.AddSingleton<DutyStateCache>();
         services.AddSingleton<DutyRuleHandlerService>();
 
         services.AddNotificationProvider<DutyNotificationProvider>();
@@ -68,9 +70,25 @@ public class Plugin : PluginBase
 
         AppBase.Current.AppStopping += (_, _) =>
         {
+            SystemEvents.PowerModeChanged -= OnPowerModeChanged;
             IAppHost.GetService<IHealthMonitorService>().Stop();
             IAppHost.GetService<IIpcBridgeService>().Disconnect();
         };
+
+        // 系统从睡眠/休眠恢复时，到独立软件的 TCP 连接大概率已失效；
+        // 立即重建而不是等健康检查/空闲超时逐级兜底。
+        SystemEvents.PowerModeChanged += OnPowerModeChanged;
+    }
+
+    private void OnPowerModeChanged(object? sender, PowerModeChangedEventArgs e)
+    {
+        if (e.Mode != PowerModes.Resume)
+        {
+            return;
+        }
+
+        Diagnostics.Log("Plugin", "System resumed; reconnecting bridge.", "INFO");
+        IAppHost.GetService<IIpcBridgeService>()?.Reconnect();
     }
 
     /// <summary>

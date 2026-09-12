@@ -6,3 +6,10 @@ url: https://github.com/helemazuba-boop/Duty-Agent
 version: 0.50.0
 apiVersion: 2.0.0.0
 author: helemazuba-boop
+readme: README.md
+icon: icon.png
+repoOwner: helemazuba-boop
+repoName: Duty-Agent
+assetsRoot: master/Duty-Agent-ClassIsland-Bridge
+supportedOSPlatforms:
+- Windows

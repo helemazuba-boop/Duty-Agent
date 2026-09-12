@@ -1,5 +1,6 @@
 using ClassIsland.Core.Abstractions.Automation;
 using ClassIsland.Core.Attributes;
+using ClassIsland.Shared;
 using DutyAgentBridge.Models;
 using DutyAgentBridge.Services;
 
@@ -30,7 +31,24 @@ public sealed class DutyRunScheduleAction : ActionBase<DutyRunScheduleActionSett
             throw new InvalidOperationException("桥接未连接独立软件。");
         }
 
-        var result = await _bridge.RunScheduleAsync(Settings.Instruction);
+        var result = await _bridge.RunScheduleAsync(
+            Settings.Instruction,
+            progress => Diagnostics.Log(
+                "DutyRunScheduleAction",
+                $"Run progress: {progress.Phase} {progress.Message}",
+                "DEBUG"));
+
+        // 运行结束（无论成败）都要给 ClassIsland 一个可见反馈；
+        // 尊重动作设置中的完成通知开关。通知提供方为宿主注册的单例，
+        // 这里惰性解析以避免把解析失败放大成动作失败。
+        if (Settings.PublishCompletionNotification)
+        {
+            var notifications = IAppHost.GetService<DutyNotificationProvider>();
+            notifications?.PublishScheduleCompleted(
+                result.Success,
+                result.Success ? (result.AiResponse ?? "") : result.Message,
+                Settings.Instruction);
+        }
 
         if (!result.Success)
         {

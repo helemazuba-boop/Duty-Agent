@@ -21,9 +21,6 @@ public interface IIpcBridgeService : IDisposable
     void Disconnect();
     void Reconnect();
     Task SendHeartbeatAsync(CancellationToken cancellationToken = default);
-    Task ListenNotificationsAsync(
-        Func<DutyNotificationEvent, Task> onNotification,
-        CancellationToken cancellationToken = default);
 
     Task<CoreRunResult> RunScheduleAsync(
         string instruction,
@@ -40,6 +37,12 @@ public interface IIpcBridgeService : IDisposable
 
     event EventHandler<IpcBridgeState>? StateChanged;
     event EventHandler<string>? ErrorOccurred;
+
+    /// <summary>
+    /// 后端通知总线事件（SSE 长连接由本服务持有：Connected 自动建立、断开自动停止）。
+    /// 订阅者不应自行管理流生命周期。
+    /// </summary>
+    event EventHandler<DutyNotificationEvent>? NotificationReceived;
 }
 
 public sealed class IpcBridgeService : IIpcBridgeService
@@ -81,6 +84,15 @@ public sealed class IpcBridgeService : IIpcBridgeService
             {
                 _state = value;
                 StateChanged?.Invoke(this, value);
+                // 通知长连接的生命周期随连接状态：Connected 自动建立，离开即停。
+                if (value == IpcBridgeState.Connected)
+                {
+                    StartNotificationStream();
+                }
+                else
+                {
+                    StopNotificationStream();
+                }
             }
         }
     }
@@ -90,6 +102,7 @@ public sealed class IpcBridgeService : IIpcBridgeService
 
     public event EventHandler<IpcBridgeState>? StateChanged;
     public event EventHandler<string>? ErrorOccurred;
+    public event EventHandler<DutyNotificationEvent>? NotificationReceived;
 
     public IpcBridgeService(IBridgePaths paths, BridgeSettings settings)
     {
@@ -224,9 +237,77 @@ public sealed class IpcBridgeService : IIpcBridgeService
         await SendHeartbeatCoreAsync(_currentMeta!.Port, cancellationToken);
     }
 
-    public async Task ListenNotificationsAsync(
-        Func<DutyNotificationEvent, Task> onNotification,
-        CancellationToken cancellationToken = default)
+    #region Notification Stream (owned by this service)
+
+    private Task? _notificationStreamTask;
+    private CancellationTokenSource? _notificationStreamCts;
+    private readonly object _notificationStreamGate = new();
+
+    // 后端 ping 间隔 15s：45s（≈3 个 ping）没有任何数据即判定连接静默失效。
+    private static readonly TimeSpan NotificationIdleTimeout = TimeSpan.FromSeconds(45);
+
+    private void StartNotificationStream()
+    {
+        lock (_notificationStreamGate)
+        {
+            if (_notificationStreamTask is { IsCompleted: false })
+            {
+                return;
+            }
+
+            _notificationStreamCts = new CancellationTokenSource();
+            var token = _notificationStreamCts.Token;
+            _notificationStreamTask = Task.Run(async () =>
+            {
+                var reconnectDelay = TimeSpan.FromSeconds(2);
+                while (!token.IsCancellationRequested && State == IpcBridgeState.Connected)
+                {
+                    try
+                    {
+                        await ListenNotificationsCoreAsync(token);
+                        // 服务端正常关闭：立即按初始节奏重连。
+                        reconnectDelay = TimeSpan.FromSeconds(2);
+                    }
+                    catch (OperationCanceledException) when (token.IsCancellationRequested)
+                    {
+                        return;
+                    }
+                    catch (Exception ex)
+                    {
+                        Diagnostics.Log(
+                            "IpcBridge",
+                            $"Notification stream interrupted, retrying in {reconnectDelay.TotalSeconds:0}s: {ex.Message}",
+                            "WARN");
+                        try
+                        {
+                            await Task.Delay(reconnectDelay, token);
+                        }
+                        catch (OperationCanceledException)
+                        {
+                            return;
+                        }
+                        reconnectDelay = TimeSpan.FromSeconds(Math.Min(30, reconnectDelay.TotalSeconds * 1.5));
+                    }
+                }
+            }, CancellationToken.None);
+        }
+    }
+
+    private void StopNotificationStream()
+    {
+        lock (_notificationStreamGate)
+        {
+            try
+            {
+                _notificationStreamCts?.Cancel();
+            }
+            catch
+            {
+            }
+        }
+    }
+
+    private async Task ListenNotificationsCoreAsync(CancellationToken cancellationToken)
     {
         EnsureConnected();
         using var request = new HttpRequestMessage(
@@ -249,7 +330,21 @@ public sealed class IpcBridgeService : IIpcBridgeService
 
         while (!cancellationToken.IsCancellationRequested)
         {
-            var line = await reader.ReadLineAsync(cancellationToken);
+            string? line;
+            using (var idleCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken))
+            {
+                idleCts.CancelAfter(NotificationIdleTimeout);
+                try
+                {
+                    line = await reader.ReadLineAsync(idleCts.Token);
+                }
+                catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+                {
+                    throw new TimeoutException(
+                        $"通知流超过 {NotificationIdleTimeout.TotalSeconds:0}s 未收到任何数据（后端 ping 间隔 15s），判定连接已静默失效。");
+                }
+            }
+
             if (line == null)
             {
                 break;
@@ -266,7 +361,7 @@ public sealed class IpcBridgeService : IIpcBridgeService
                     if (notification != null &&
                         notification.Targets.Any(target => string.Equals(target, "classisland", StringComparison.OrdinalIgnoreCase)))
                     {
-                        await onNotification(notification);
+                        NotificationReceived?.Invoke(this, notification);
                     }
                 }
 
@@ -285,6 +380,8 @@ public sealed class IpcBridgeService : IIpcBridgeService
             }
         }
     }
+
+    #endregion
 
     private async Task<StandaloneMeta?> LoadMetaWithRetryAsync(CancellationToken cancellationToken)
     {
@@ -852,6 +949,7 @@ public sealed class IpcBridgeService : IIpcBridgeService
 
     public void Dispose()
     {
+        StopNotificationStream();
         Disconnect();
         _httpClient.Dispose();
         _socketGate.Dispose();
