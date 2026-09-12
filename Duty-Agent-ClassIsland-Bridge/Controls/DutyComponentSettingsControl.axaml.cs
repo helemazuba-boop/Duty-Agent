@@ -13,5 +13,9 @@ public partial class DutyComponentSettingsControl : ComponentBase<DutyComponentS
     public DutyComponentSettingsControl()
     {
         InitializeComponent();
+        // 绑定基线：Settings 由基类在初始化后加载；DataContext 指向自身，
+        // 让 XAML 里的 {Binding Settings.X} 可解析（双保险，XAML 里也有
+        // RelativeSource 写法，覆盖 Flyout 等特殊宿主）。
+        DataContext = this;
     }
 }

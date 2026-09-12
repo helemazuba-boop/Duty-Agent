@@ -7,9 +7,13 @@
                   xmlns:settings="clr-namespace:DutyAgentBridge.Models"
                   xmlns:ci="http://classisland.tech/schemas/xaml/core"
                   xmlns:fa="clr-namespace:FluentAvalonia.UI.Controls;assembly=FluentAvalonia"
+                  xmlns:local="clr-namespace:DutyAgentBridge.Controls"
                   x:CompileBindings="False"
                   mc:Ignorable="d" d:DesignWidth="800" d:DesignHeight="450">
-  <StackPanel Spacing="8">
+  <!-- 对齐 DutyIsland：内容区的 DataContext 显式指回控件自身，
+       否则 {Binding Settings.X} 解析不到对象，全部绑定失效。 -->
+  <StackPanel Spacing="8"
+              DataContext="{Binding RelativeSource={RelativeSource FindAncestor, AncestorType=local:DutyComponentSettingsControl}}">
     <fa:SettingsExpander IconSource="{ci:FluentIconSource &#xE8D4;}"
                          Header="字体大小"
                          Description="值日文本的显示字号。">
