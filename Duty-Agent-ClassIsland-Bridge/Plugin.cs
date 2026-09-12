@@ -54,7 +54,7 @@ public class Plugin : PluginBase
             "\u4ECA\u65E5\u503C\u65E5\u5339\u914D",
             "\uE8D4");
 
-        services.AddSettingsPageGroup("duty-agent-bridge.group", "\uE31E", "Duty-Agent \u6865\u63A5");
+        // 仅一个设置页，不注册设置分组（避免"Duty-Agent 桥接"分组里再套同名页面）。
 
         AppBase.Current.AppStarted += (_, _) =>
         {

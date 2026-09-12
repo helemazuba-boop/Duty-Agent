@@ -1,4 +1,4 @@
-using Avalonia;
+using System.ComponentModel;
 using Avalonia.Controls;
 using Avalonia.Interactivity;
 using Avalonia.Media;
@@ -15,9 +15,11 @@ namespace DutyAgentBridge.Controls;
 /// <summary>
 /// 桌面组件（继承 ClassIsland 组件系统）——显示今日值日安排。
 ///
-/// 数据源：DutyStateCache（后端推送 snapshot_changed / schedule_* 时刷新，
-/// 60s 安全轮询兜底）；跨天/分钟级兜底刷新挂 ILessonsService.PostMainTimerTicked。
-/// 组件自身不再持有定时器，也不直接发起网络请求。
+/// 对齐 DutyIsland 的组件规范：XAML 根为 ci:ComponentBase（x:TypeArguments），
+/// Loaded/Unloaded 由 XAML 事件接线，订阅服务事件与 Settings.PropertyChanged
+/// 实时刷新。数据源为 DutyStateCache（后端推送 snapshot_changed / schedule_*，
+/// 60s 安全轮询兜底）；跨天/分钟级兜底挂 ILessonsService.PostMainTimerTicked。
+/// 组件自身不持有定时器，也不直接发起网络请求。
 /// </summary>
 [ComponentInfo(
     "bc83d764-4c0d-4a36-a6da-27c96d2c339b",
@@ -26,40 +28,37 @@ namespace DutyAgentBridge.Controls;
     "\u663E\u793A\u4ECA\u65E5\u503C\u65E5\u5B89\u6392\u3002")]
 public partial class DutyComponent : ComponentBase<DutyComponentSettings>
 {
-    private readonly DutyStateCache _cache;
-    private readonly IIpcBridgeService _bridge;
-    private readonly ILessonsService? _lessonsService;
+    private readonly DutyStateCache _cache = IAppHost.GetService<DutyStateCache>();
+    private readonly IIpcBridgeService _bridge = IAppHost.GetService<IIpcBridgeService>();
+    private readonly ILessonsService? _lessonsService = IAppHost.GetService<ILessonsService>();
 
     public DutyComponent()
     {
         InitializeComponent();
-
-        // 组件由宿主实例化（无参构造），服务经服务定位器在构造体内解析；
-        // 课表服务不可用时（理论上不会）null 容错。
-        _cache = IAppHost.GetService<DutyStateCache>();
-        _bridge = IAppHost.GetService<IIpcBridgeService>();
-        _lessonsService = IAppHost.GetService<ILessonsService>();
     }
 
-    protected override void OnLoaded(RoutedEventArgs e)
+    private void Component_OnLoaded(object? sender, RoutedEventArgs e)
     {
-        base.OnLoaded(e);
         _cache.SnapshotUpdated += OnSnapshotUpdated;
         if (_lessonsService != null)
         {
             _lessonsService.PostMainTimerTicked += OnMainTimerTicked;
         }
         _bridge.StateChanged += OnBridgeStateChanged;
+        if (Settings != null)
+        {
+            Settings.PropertyChanged += OnSettingsChanged;
+        }
 
         if (_cache.State == null && _bridge.State == IpcBridgeState.Connected)
         {
             // 冷启动：缓存还没有数据，触发一次拉取。
             _ = _cache.RefreshAsync("component-initial");
         }
-        RenderFromCache();
+        RefreshContent();
     }
 
-    protected override void OnUnloaded(RoutedEventArgs e)
+    private void Component_OnUnloaded(object? sender, RoutedEventArgs e)
     {
         _cache.SnapshotUpdated -= OnSnapshotUpdated;
         if (_lessonsService != null)
@@ -67,18 +66,26 @@ public partial class DutyComponent : ComponentBase<DutyComponentSettings>
             _lessonsService.PostMainTimerTicked -= OnMainTimerTicked;
         }
         _bridge.StateChanged -= OnBridgeStateChanged;
-        base.OnUnloaded(e);
+        if (Settings != null)
+        {
+            Settings.PropertyChanged -= OnSettingsChanged;
+        }
+    }
+
+    private void OnSettingsChanged(object? sender, PropertyChangedEventArgs e)
+    {
+        Dispatcher.UIThread.Post(RefreshContent);
     }
 
     private void OnMainTimerTicked(object? sender, EventArgs e)
     {
         // 每分钟兜底：处理跨天（日期翻转后"今天"变化）等缓存事件覆盖不到的场景。
-        Dispatcher.UIThread.Post(RenderFromCache);
+        Dispatcher.UIThread.Post(RefreshContent);
     }
 
     private void OnSnapshotUpdated(object? sender, EventArgs e)
     {
-        Dispatcher.UIThread.Post(RenderFromCache);
+        Dispatcher.UIThread.Post(RefreshContent);
     }
 
     private void OnBridgeStateChanged(object? sender, IpcBridgeState state)
@@ -91,12 +98,12 @@ public partial class DutyComponent : ComponentBase<DutyComponentSettings>
             }
             else
             {
-                RenderFromCache();
+                RefreshContent();
             }
         });
     }
 
-    private void RenderFromCache()
+    private void RefreshContent()
     {
         if (_bridge.State != IpcBridgeState.Connected)
         {
@@ -230,8 +237,7 @@ public partial class DutyComponent : ComponentBase<DutyComponentSettings>
         // 仅在用户显式配置了覆盖色或错误态时才写 Foreground。
         if (isError)
         {
-            textBlock.Foreground = TryGetThemeBrush("SystemControlErrorTextForegroundBrush")
-                                   ?? new SolidColorBrush(Color.Parse("#f44336"));
+            textBlock.Foreground = new SolidColorBrush(Color.Parse("#f44336"));
         }
         else if (!string.IsNullOrWhiteSpace(Settings?.FontColor))
         {
@@ -242,7 +248,8 @@ public partial class DutyComponent : ComponentBase<DutyComponentSettings>
             }
             catch
             {
-                textBlock.Foreground = TryGetThemeBrush("SystemControlForegroundBaseHighBrush");
+                // 非法颜色值：清除本地覆盖，回到继承的主题前景色。
+                textBlock.ClearValue(TextBlock.ForegroundProperty);
             }
         }
 
@@ -250,16 +257,5 @@ public partial class DutyComponent : ComponentBase<DutyComponentSettings>
         {
             textBlock.FontSize = Settings.FontSize;
         }
-    }
-
-    private static IBrush? TryGetThemeBrush(string resourceKey)
-    {
-        // 主题画刷从宿主资源解析；解析失败返回 null 保留继承的主题前景色。
-        if (Application.Current?.TryGetResource(resourceKey, null, out var value) == true && value is IBrush brush)
-        {
-            return brush;
-        }
-
-        return null;
     }
 }

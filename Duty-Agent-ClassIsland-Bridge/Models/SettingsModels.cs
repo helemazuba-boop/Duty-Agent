@@ -77,20 +77,54 @@ public sealed class DutyAssignedStudentRuleSettings
 }
 
 /// <summary>
-/// 桌面组件设置
+/// 桌面组件设置（INPC：组件订阅变更实时重渲染，对齐 DutyIsland 的组件规范）。
 /// </summary>
-public sealed class DutyComponentSettings
+public sealed class DutyComponentSettings : INotifyPropertyChanged
 {
+    private int _fontSize = 14;
+    private string _fontColor = "";
+    private bool _useDualRowDisplay;
+    private bool _usePerAreaMultiLine;
+
     [JsonPropertyName("font_size")]
-    public int FontSize { get; set; } = 14;
+    public int FontSize
+    {
+        get => _fontSize;
+        set => Set(ref _fontSize, Math.Clamp(value, 8, 72));
+    }
 
     /// <summary>自定义文字颜色（留空跟随 ClassIsland 主题）</summary>
     [JsonPropertyName("font_color")]
-    public string FontColor { get; set; } = "";
+    public string FontColor
+    {
+        get => _fontColor;
+        set => Set(ref _fontColor, value);
+    }
 
     [JsonPropertyName("use_dual_row_display")]
-    public bool UseDualRowDisplay { get; set; } = false;
+    public bool UseDualRowDisplay
+    {
+        get => _useDualRowDisplay;
+        set => Set(ref _useDualRowDisplay, value);
+    }
 
     [JsonPropertyName("use_per_area_multiline")]
-    public bool UsePerAreaMultiLine { get; set; } = false;
+    public bool UsePerAreaMultiLine
+    {
+        get => _usePerAreaMultiLine;
+        set => Set(ref _usePerAreaMultiLine, value);
+    }
+
+    public event PropertyChangedEventHandler? PropertyChanged;
+
+    private void Set<T>(ref T field, T value, [CallerMemberName] string? propertyName = null)
+    {
+        if (EqualityComparer<T>.Default.Equals(field, value))
+        {
+            return;
+        }
+
+        field = value;
+        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(propertyName));
+    }
 }

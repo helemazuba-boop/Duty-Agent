@@ -11,7 +11,6 @@ using DutyAgentBridge.Services;
 
 namespace DutyAgentBridge.Views;
 
-[Group("duty-agent-bridge.group")]
 [SettingsPageInfo("duty-agent-bridge.settings", "Duty-Agent \u6865\u63A5", "\uE31E", "\uE31E")]
 public partial class DutyBridgeSettingsPage : SettingsPageBase
 {
@@ -20,13 +19,13 @@ public partial class DutyBridgeSettingsPage : SettingsPageBase
     private readonly DispatcherTimer? _confirmResetTimer;
     private bool _testArmed;
 
-    public Plugin Plugin { get; }
-
-    public DutyBridgeSettingsPage(Plugin plugin, IBridgePaths paths, IIpcBridgeService bridge)
+    public DutyBridgeSettingsPage()
     {
-        Plugin = plugin;
-        _paths = paths;
-        _bridge = bridge;
+        // Avalonia XAML 编译器要求无参构造；依赖经宿主服务定位器解析
+        // （Settings 为 Plugin.Initialize 注册的单例实例）。
+        Settings = IAppHost.GetService<BridgeSettings>();
+        _paths = IAppHost.GetService<IBridgePaths>();
+        _bridge = IAppHost.GetService<IIpcBridgeService>();
 
         InitializeComponent();
         DataContext = this;
@@ -47,6 +46,8 @@ public partial class DutyBridgeSettingsPage : SettingsPageBase
             TestScheduleButton.Content = "测试排班";
         };
     }
+
+    private BridgeSettings Settings { get; }
 
     private void OnBridgeStateChanged(object? sender, IpcBridgeState state)
     {

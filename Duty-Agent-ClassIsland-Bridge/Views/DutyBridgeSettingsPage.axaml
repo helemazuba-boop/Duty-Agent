@@ -1,90 +1,85 @@
-<ci:SettingsPageBase xmlns="https://github.com/avaloniaui"
+<ci:SettingsPageBase x:Class="DutyAgentBridge.Views.DutyBridgeSettingsPage"
+                     xmlns="https://github.com/avaloniaui"
                      xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-                     xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
                      xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+                     xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
                      xmlns:ci="http://classisland.tech/schemas/xaml/core"
-                     mc:Ignorable="d" d:DesignWidth="800" d:DesignHeight="600"
-                     x:Class="DutyAgentBridge.Views.DutyBridgeSettingsPage"
-                     TextElement.Foreground="{DynamicResource MaterialDesignBody}"
-                     Background="{DynamicResource MaterialDesignPaper}"
-                     FontFamily="{StaticResource HarmonyOsSans}"
-                     TextElement.FontWeight="Regular"
-                     TextElement.FontSize="14">
+                     xmlns:fa="clr-namespace:FluentAvalonia.UI.Controls;assembly=FluentAvalonia"
+                     xmlns:views="clr-namespace:DutyAgentBridge.Views"
+                     x:CompileBindings="False"
+                     mc:Ignorable="d" d:DesignWidth="800" d:DesignHeight="600">
 
   <ScrollViewer>
-    <StackPanel Margin="24" Spacing="16">
+    <StackPanel Margin="12" Spacing="8" MaxWidth="900" HorizontalAlignment="Stretch">
 
-      <TextBlock Text="Duty-Agent 桥接" FontSize="24" FontWeight="Bold"/>
-
-      <Border BorderBrush="{DynamicResource MaterialDesignDivider}" BorderThickness="1"
-              CornerRadius="8" Padding="16">
+      <fa:SettingsExpander Header="连接状态"
+                           Description="与独立 Duty-Agent 客户端（后端宿主）的桥接连接。"
+                           IconSource="{ci:FluentIconSource &#xE7F4;}">
         <StackPanel Spacing="8">
-          <TextBlock Text="连接状态" FontSize="14" FontWeight="SemiBold"/>
-          <TextBlock x:Name="StatusIndicator" Text="○ 未连接" FontSize="16"/>
-          <TextBlock x:Name="ConnectionDetails" Text="" FontSize="12"
-                     Opacity="0.7" IsVisible="False"/>
+          <TextBlock x:Name="StatusIndicator" Text="○ 未连接" FontSize="15"/>
+          <TextBlock x:Name="ConnectionDetails" Text="" FontSize="12" Opacity="0.7" IsVisible="False"/>
           <StackPanel Orientation="Horizontal" Spacing="8">
-            <Button x:Name="ReconnectButton" Content="重新连接" Click="OnReconnectClick" Width="110"/>
-            <Button Content="打开状态目录" Click="OnOpenStandaloneClick" Width="130"/>
+            <Button x:Name="ReconnectButton" Content="重新连接" Click="OnReconnectClick"/>
+            <Button Content="打开状态目录" Click="OnOpenStandaloneClick"/>
           </StackPanel>
         </StackPanel>
-      </Border>
+      </fa:SettingsExpander>
 
-      <Border BorderBrush="{DynamicResource MaterialDesignDivider}" BorderThickness="1"
-              CornerRadius="8" Padding="16">
-        <StackPanel Spacing="12">
-          <TextBlock Text="设置" FontSize="14" FontWeight="SemiBold"/>
-          <ToggleSwitch Content="ClassIsland 启动后自动连接独立软件"
-                        IsChecked="{Binding Settings.AutoConnect, Mode=TwoWay}"/>
+      <fa:SettingsExpander Header="自动连接"
+                           Description="ClassIsland 启动后自动连接独立 Duty-Agent 软件；关闭后仍可在上方手动重连。"
+                           IconSource="{ci:FluentIconSource &#xE895;}">
+        <fa:SettingsExpander.Footer>
+          <ToggleSwitch IsChecked="{Binding Settings.AutoConnect, Mode=TwoWay}"/>
+        </fa:SettingsExpander.Footer>
+      </fa:SettingsExpander>
+
+      <fa:SettingsExpander Header="连接参数"
+                           Description="连接超时与健康检查节奏；变更即时保存。"
+                           IconSource="{ci:FluentIconSource &#xE9D9;}">
+        <StackPanel Spacing="8">
           <StackPanel Orientation="Horizontal" Spacing="8">
             <TextBlock Text="连接超时（秒）" VerticalAlignment="Center"/>
-            <NumericUpDown x:Name="ConnectTimeoutInput" Minimum="3" Maximum="120" Increment="1"
-                           Width="120" Value="{Binding Settings.ConnectTimeoutSeconds, Mode=TwoWay}"/>
+            <NumericUpDown Minimum="3" Maximum="120" Increment="1" Width="130"
+                           Value="{Binding Settings.ConnectTimeoutSeconds, Mode=TwoWay}"/>
           </StackPanel>
           <StackPanel Orientation="Horizontal" Spacing="8">
             <TextBlock Text="健康检查间隔（毫秒）" VerticalAlignment="Center"/>
-            <NumericUpDown x:Name="HealthIntervalInput" Minimum="1000" Maximum="60000" Increment="500"
-                           Width="140" Value="{Binding Settings.HealthCheckIntervalMs, Mode=TwoWay}"/>
+            <NumericUpDown Minimum="1000" Maximum="60000" Increment="500" Width="150"
+                           Value="{Binding Settings.HealthCheckIntervalMs, Mode=TwoWay}"/>
           </StackPanel>
           <TextBlock TextWrapping="Wrap" FontSize="12" Opacity="0.7"
-                     Text="此插件需要与独立 Duty-Agent 客户端配合使用：客户端会写入 meta 文件，插件据此获取端口和 token。设置变更即时保存。"/>
+                     Text="此插件需要与独立 Duty-Agent 客户端配合使用：客户端会写入 meta 文件，插件据此获取端口和 token。"/>
         </StackPanel>
-      </Border>
+      </fa:SettingsExpander>
 
-      <Border BorderBrush="{DynamicResource MaterialDesignDivider}" BorderThickness="1"
-              CornerRadius="8" Padding="16">
+      <fa:SettingsExpander Header="路径诊断"
+                           Description="meta 文件来源与日志目录。"
+                           IconSource="{ci:FluentIconSource &#xE9D2;}">
         <StackPanel Spacing="4">
-          <TextBlock Text="路径诊断" FontSize="14" FontWeight="SemiBold"/>
           <TextBlock x:Name="MetaSourceText" Text="" FontSize="12" Opacity="0.7"/>
           <TextBlock x:Name="MetaFileText" Text="" FontSize="12" Opacity="0.7" TextWrapping="Wrap"/>
           <TextBlock x:Name="LogsDirectoryText" Text="" FontSize="12" Opacity="0.7" TextWrapping="Wrap"/>
           <StackPanel Orientation="Horizontal" Spacing="8" Margin="0,8,0,0">
-            <Button Content="打开配置目录" Click="OnOpenConfigFolderClick" Width="120"/>
-            <Button Content="打开日志目录" Click="OnOpenLogsFolderClick" Width="120"/>
+            <Button Content="打开配置目录" Click="OnOpenConfigFolderClick"/>
+            <Button Content="打开日志目录" Click="OnOpenLogsFolderClick"/>
           </StackPanel>
         </StackPanel>
-      </Border>
+      </fa:SettingsExpander>
 
-      <Border BorderBrush="{DynamicResource MaterialDesignDivider}" BorderThickness="1"
-              CornerRadius="8" Padding="16">
+      <fa:SettingsExpander Header="测试排班"
+                           Description="向独立软件发送一条真实排班指令（由其配置的模型执行并写排班数据），需二次确认。"
+                           IconSource="{ci:FluentIconSource &#xE945;}">
         <StackPanel Spacing="8">
-          <TextBlock Text="测试" FontSize="14" FontWeight="SemiBold"/>
-          <StackPanel Orientation="Horizontal" Spacing="8">
-            <Button x:Name="TestScheduleButton" Content="测试排班" Click="OnTestScheduleClick" Width="110"/>
-          </StackPanel>
+          <Button x:Name="TestScheduleButton" Content="测试排班" Click="OnTestScheduleClick" HorizontalAlignment="Left"/>
           <TextBlock x:Name="TestResult" Text="" FontSize="12" IsVisible="False" TextWrapping="Wrap"/>
-          <TextBlock Text="将向独立软件发送一条真实排班指令（由其配置的模型执行并写排班数据）。" FontSize="12" Opacity="0.7"/>
         </StackPanel>
-      </Border>
+      </fa:SettingsExpander>
 
-      <Border BorderBrush="{DynamicResource MaterialDesignDivider}" BorderThickness="1"
-              CornerRadius="8" Padding="16">
-        <StackPanel Spacing="4">
-          <TextBlock Text="关于" FontSize="14" FontWeight="SemiBold"/>
-          <TextBlock x:Name="VersionText" Text="Duty-Agent Bridge" FontSize="12" Opacity="0.7"/>
-          <TextBlock Text="与独立 Duty-Agent 客户端通信，提供 ClassIsland 通知和显示功能" FontSize="12" Opacity="0.7" TextWrapping="Wrap"/>
-        </StackPanel>
-      </Border>
+      <fa:SettingsExpander Header="关于"
+                           Description="与独立 Duty-Agent 客户端通信，提供 ClassIsland 通知和显示功能。"
+                           IconSource="{ci:FluentIconSource &#xE946;}">
+        <TextBlock x:Name="VersionText" Text="Duty-Agent Bridge" FontSize="12" Opacity="0.7"/>
+      </fa:SettingsExpander>
 
     </StackPanel>
   </ScrollViewer>
