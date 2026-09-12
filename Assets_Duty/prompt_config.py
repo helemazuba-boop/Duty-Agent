@@ -4,6 +4,7 @@ KEYWORD_REGISTRY = {
     "debt": ["欠", "补", "优先", "debt", "罚"],
     "credit": ["奖", "休息", "抵扣", "credit", "奖励"],
     "inactive": ["假", "离开", "不要", "生病", "屏蔽", "inactive", "请假"],
+    "absent": ["假", "离开", "生病", "缺席", "inactive", "请假"],
     "multi_day": ["到", "几天", "连续", "整周", "多天"],
 }
 
@@ -30,6 +31,7 @@ Output protocol:
 - In `[state]`, use `debt = 1004*2 1005` and `credit = 1002*2`; omit `*1`.
 - In `[state]`, use `pointer = <int>` to declare the next roster index after the last inspected candidate.
 - In `[state]`, use `consumed_credit = 1001 1002` to list IDs whose credit was consumed by pointer advancement this round.
+- In `[state]`, use `absent = 1005 1007` to declare IDs that must not be scheduled in this round (leave/sickness found in the instruction).
 - `[state]` is required when the schedule changes roster progression; omit only if nothing changed.
 """,
     "compact_base": """You are Duty-Agent Lite.
@@ -65,6 +67,17 @@ Required output:
         "Inactive IDs are unavailable and must never be assigned."
     ),
     "param_inactive": "inactive_ids={inactive_ids}",
+    "rule_absent": (
+        "Absent IDs (leave/sickness) are unavailable in this schedule window "
+        "and must never be assigned. Declare them with `absent = ...` in [state]."
+    ),
+    "param_absent": "absent_ids={absent_ids}",
+    "rule_day_override": (
+        "On dates listed in day_headcount_overrides, the overridden area needs "
+        "exactly the overridden headcount (e.g. extra people for a deep-clean "
+        "day) instead of its normal per-day count."
+    ),
+    "param_day_overrides": "day_headcount_overrides={day_overrides}",
     "rule_multi_day": (
         "Only generate the exact requested dates. Over-generation is fatal."
     ),

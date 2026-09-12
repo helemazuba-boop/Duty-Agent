@@ -430,6 +430,60 @@ def cmd_rollback(conn: Connection, args: argparse.Namespace) -> Any:
     return request(conn, "POST", "/api/v1/duty/schedule-rollback", trace_id=args.trace_id, timeout=args.timeout)
 
 
+def cmd_absence(conn: Connection, args: argparse.Namespace) -> Any:
+    body: dict = {"action": "clear" if args.clear else "add"}
+    if not args.clear:
+        person = _value_from(args, "person")
+        person = str(person or "").strip()
+        if not person:
+            raise ValueError("--person (roster ID or name) is required unless --clear")
+        body["person"] = person
+        from_date = _value_from(args, "from_date")
+        if from_date:
+            body["from_date"] = str(from_date).strip()
+        to_date = _value_from(args, "to_date")
+        if to_date:
+            body["to_date"] = str(to_date).strip()
+        if getattr(args, "days", None):
+            body["days"] = int(args.days)
+    return request(conn, "POST", "/api/v1/duty/absences", trace_id=args.trace_id, json_body=body, timeout=args.timeout)
+
+
+def cmd_note(conn: Connection, args: argparse.Namespace) -> Any:
+    body: dict = {"action": "clear" if args.clear else "add"}
+    if not args.clear:
+        text = _value_from(args, "text")
+        text = str(text or "").strip()
+        if not text:
+            raise ValueError("--text (or --text-file) is required unless --clear")
+        body["text"] = text
+        until = _value_from(args, "until")
+        if until:
+            body["until"] = str(until).strip()
+    return request(conn, "POST", "/api/v1/duty/run-notes", trace_id=args.trace_id, json_body=body, timeout=args.timeout)
+
+
+def cmd_override(conn: Connection, args: argparse.Namespace) -> Any:
+    body: dict = {"action": "clear" if args.clear else "set"}
+    date_value = _value_from(args, "date")
+    date_value = str(date_value or "").strip()
+    if not date_value:
+        raise ValueError("--date (YYYY-MM-DD) is required")
+    body["date"] = date_value
+    if not args.clear:
+        area = _value_from(args, "area")
+        area = str(area or "").strip()
+        if not area:
+            raise ValueError("--area is required unless --clear")
+        if not getattr(args, "count", None):
+            raise ValueError("--count is required unless --clear")
+        body["area"] = area
+        body["count"] = int(args.count)
+    elif getattr(args, "area", None):
+        body["area"] = str(_value_from(args, "area")).strip()
+    return request(conn, "POST", "/api/v1/duty/day-overrides", trace_id=args.trace_id, json_body=body, timeout=args.timeout)
+
+
 def cmd_health(conn: Connection, args: argparse.Namespace) -> Any:
     return request(conn, "GET", "/health", trace_id=args.trace_id, timeout=args.timeout)
 
@@ -1069,6 +1123,51 @@ COMMAND_SPECS: list[dict] = [
         "args": {"--entry": "JSON object matching DutyScheduleEntrySaveRequest; literal, @file, or -. Required."},
     },
     {
+        "name": "absence",
+        "summary": "Register or clear a leave-absence range; absent people are "
+                   "excluded from every schedule run until the range ends, then "
+                   "auto-pruned.",
+        "method": "POST",
+        "endpoint": "/api/v1/duty/absences",
+        "args": {
+            "--person": "Roster ID or name. Required for add (and for clearing one person).",
+            "--from-date": "Start date YYYY-MM-DD (default today).",
+            "--to-date": "End date YYYY-MM-DD (overrides --days).",
+            "--days": "Span in days from --from-date (default 1).",
+            "--clear": "Clear absences (all, or one person with --person).",
+        },
+    },
+    {
+        "name": "note",
+        "summary": "Add or clear a user run note (e.g. '周三大扫除，教室加2人'). Notes "
+                   "are injected into the prompt of every schedule run until their "
+                   "--until date passes or they are cleared; unlike the machine "
+                   "summary they are never overwritten by a run.",
+        "method": "POST",
+        "endpoint": "/api/v1/duty/run-notes",
+        "args": {
+            "--text": "Note text; literal, @file, or - for stdin. Required for add.",
+            "--text-file": "Path to the note text (no @ needed; PowerShell-safe).",
+            "--until": "Expiry date YYYY-MM-DD (optional).",
+            "--clear": "Clear all run notes.",
+        },
+    },
+    {
+        "name": "override",
+        "summary": "Set or clear a per-day per-area headcount override so one date "
+                   "can require a different headcount (e.g. 4 for a deep-clean day "
+                   "instead of the configured 2). Python enforces the count and "
+                   "repairs the schedule deterministically.",
+        "method": "POST",
+        "endpoint": "/api/v1/duty/day-overrides",
+        "args": {
+            "--date": "Target date YYYY-MM-DD. Required.",
+            "--area": "Area name. Required for set.",
+            "--count": "Required headcount (>0). Required for set.",
+            "--clear": "Clear the override (whole day, or one area with --area).",
+        },
+    },
+    {
         "name": "rollback",
         "summary": "Roll back to the previous persisted state.",
         "method": "POST",
@@ -1221,6 +1320,9 @@ HANDLERS = {
     "get-roster": cmd_get_roster,
     "replace-roster": cmd_replace_roster,
     "edit-entry": cmd_edit_entry,
+    "absence": cmd_absence,
+    "note": cmd_note,
+    "override": cmd_override,
     "rollback": cmd_rollback,
     "health": cmd_health,
     "run": cmd_run,
@@ -1359,6 +1461,26 @@ def build_parser() -> argparse.ArgumentParser:
     g = p.add_mutually_exclusive_group(required=True)
     g.add_argument("--entry", help="JSON entry object; literal, @file, or - for stdin.")
     g.add_argument("--entry-file", help="Path to the JSON entry (no @ needed; PowerShell-safe).")
+
+    p = _add("absence", "Register/clear a leave-absence range (excluded from scheduling until it ends).")
+    p.add_argument("--person", help="Roster ID or name; literal or - for stdin.")
+    p.add_argument("--from-date", dest="from_date", default="", help="Start date YYYY-MM-DD (default today).")
+    p.add_argument("--to-date", dest="to_date", default="", help="End date YYYY-MM-DD (overrides --days).")
+    p.add_argument("--days", type=int, default=0, help="Span in days from --from-date (default 1).")
+    p.add_argument("--clear", action="store_true", help="Clear absences (all, or one person with --person).")
+
+    p = _add("note", "Add/clear a run note injected into the next schedule runs (e.g. deep-clean reminders).")
+    g = p.add_mutually_exclusive_group(required=True)
+    g.add_argument("--text", help="Note text; literal, @file, or - for stdin.")
+    g.add_argument("--text-file", dest="text_file", help="Path to the note text (no @ needed; PowerShell-safe).")
+    p.add_argument("--until", default="", help="Expiry date YYYY-MM-DD (default: kept until cleared/expired).")
+    p.add_argument("--clear", action="store_true", help="Clear all run notes.")
+
+    p = _add("override", "Set/clear a per-day per-area headcount override (e.g. deep-clean extra people).")
+    p.add_argument("--date", help="Target date YYYY-MM-DD.")
+    p.add_argument("--area", help="Area name.")
+    p.add_argument("--count", type=int, default=0, help="Required headcount for that day/area.")
+    p.add_argument("--clear", action="store_true", help="Clear the override (whole day, or one area with --area).")
 
     _add("rollback", "Roll back to the previous state.")
     _add("health", "Backend health probe.")

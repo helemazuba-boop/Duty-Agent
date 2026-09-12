@@ -79,8 +79,16 @@ def build_prompt_messages(
     orchestration_mode: str = "auto",
     single_pass_strategy: str = "cloud_standard",
     last_pointer: int = 0,
+    absent_ids: List[int] | None = None,
+    day_overrides: Dict[str, Dict[str, int]] | None = None,
 ) -> List[Dict[str, str]]:
     inactive_ids = [person_id for person_id, active in id_to_active.items() if active == 0]
+    absent_ids = [int(person_id) for person_id in (absent_ids or [])]
+    day_overrides = {
+        str(day): {str(area): int(count) for area, count in areas.items()}
+        for day, areas in (day_overrides or {}).items()
+        if isinstance(areas, dict) and areas
+    }
     compact_mode = (
         single_pass_strategy != "incremental_thinking"
         and (model_profile == "campus_small" or orchestration_mode == "multi_agent")
@@ -123,6 +131,19 @@ def build_prompt_messages(
     if is_module_active("inactive", instruction, bool(inactive_ids)):
         params_list.append(PROMPTS["param_inactive"].format(inactive_ids=_format_ids(inactive_ids)))
         methods_list.append(PROMPTS["rule_inactive"])
+
+    if is_module_active("absent", instruction, bool(absent_ids)):
+        params_list.append(PROMPTS["param_absent"].format(absent_ids=_format_ids(absent_ids)))
+        methods_list.append(PROMPTS["rule_absent"])
+
+    if day_overrides:
+        override_tokens = " ".join(
+            f"{day}:{area}={count}"
+            for day in sorted(day_overrides)
+            for area, count in sorted(day_overrides[day].items())
+        )
+        params_list.append(PROMPTS["param_day_overrides"].format(day_overrides=override_tokens))
+        methods_list.append(PROMPTS["rule_day_override"])
 
     duty_rule = str(duty_rule or "").strip()
     if duty_rule:

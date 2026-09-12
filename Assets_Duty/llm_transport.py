@@ -763,6 +763,14 @@ def _parse_state_section(lines: List[str]) -> Dict[str, Any]:
                 except (TypeError, ValueError) as ex:
                     raise ValueError(f"invalid consumed_credit ID: {token}") from ex
             state_delta["consumed_credit_ids"] = ids
+        elif normalized_key == "absent":
+            absent_ids: List[int] = []
+            for token in value.strip().split():
+                try:
+                    absent_ids.append(int(token))
+                except (TypeError, ValueError) as ex:
+                    raise ValueError(f"invalid absent ID: {token}") from ex
+            state_delta["absent_ids"] = absent_ids
         else:
             raise ValueError(f"unsupported [state] field: {normalized_key}")
     return state_delta

@@ -15,18 +15,24 @@ SKIP_AUTH_BYPASS = _os.getenv("SKIP_AUTH_BYPASS", "").strip().lower() in ("1", "
 
 try:
     from models.schemas import (
+        DutyAbsenceRequest,
+        DutyDayOverrideRequest,
         DutyPlanIngestRequest,
         DutyPlanPromptRequest,
         DutyRequest,
+        DutyRunNoteRequest,
         DutyScheduleEntrySaveRequest,
         DutyScheduleEntrySaveResponse,
     )
     from state_ops import sanitize_error_for_client
 except ImportError:
     from ..models.schemas import (
+        DutyAbsenceRequest,
+        DutyDayOverrideRequest,
         DutyPlanIngestRequest,
         DutyPlanPromptRequest,
         DutyRequest,
+        DutyRunNoteRequest,
         DutyScheduleEntrySaveRequest,
         DutyScheduleEntrySaveResponse,
     )
@@ -205,6 +211,50 @@ async def schedule_rollback(request: Request):
         runtime.command_service.rollback_schedule,
         trace_id=trace_id,
         request_source=request_source,
+    )
+
+
+async def _run_adjustment_command(request: Request, payload_builder, method_name: str):
+    """Shared plumbing for the sudden-situation adjustment endpoints."""
+    runtime = getattr(request.app.state, "runtime", None)
+    if runtime is None:
+        raise HTTPException(status_code=503, detail="Runtime is not initialized.")
+    request_data = payload_builder()
+    trace_id, request_source = _resolve_request_meta(request, runtime, request_data)
+    payload = request_data.model_dump(exclude_none=True, exclude_unset=True)
+    payload.setdefault("trace_id", trace_id)
+    payload.setdefault("request_source", request_source)
+    method = getattr(runtime.command_service, method_name)
+    try:
+        return await asyncio.to_thread(method, payload, trace_id, request_source)
+    except ValueError as ex:
+        raise HTTPException(status_code=400, detail=sanitize_error_for_client(str(ex))) from ex
+
+
+@router.post("/absences")
+async def manage_absences(request_data: DutyAbsenceRequest, request: Request):
+    return await _run_adjustment_command(
+        request,
+        lambda: request_data,
+        "manage_absences",
+    )
+
+
+@router.post("/run-notes")
+async def manage_run_notes(request_data: DutyRunNoteRequest, request: Request):
+    return await _run_adjustment_command(
+        request,
+        lambda: request_data,
+        "manage_run_notes",
+    )
+
+
+@router.post("/day-overrides")
+async def manage_day_overrides(request_data: DutyDayOverrideRequest, request: Request):
+    return await _run_adjustment_command(
+        request,
+        lambda: request_data,
+        "manage_day_overrides",
     )
 
 

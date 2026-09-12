@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any, Dict, List
 
 from postprocess import merge_schedule_pool, reconcile_credit_list, recover_missing_debts, restore_schedule
-from state_ops import clone_count_map, resolve_debt_credit_conflicts, update_state
+from state_ops import clone_count_map, prune_operational_state, resolve_debt_credit_conflicts, update_state
 
 from .contracts import FrozenSnapshot
 from .validators import validate_final_schedule
@@ -55,6 +55,7 @@ def finalize_multi_agent_run(
         )
         state_data["last_pointer"] = barrier2["pointer_after"]
         state_data["schedule_pool"] = merge_schedule_pool(restored)
+        prune_operational_state(state_data)
         return state_data
 
     state_data = update_state(ctx.paths["state"], _apply_state_update, stop_event=stop_event)

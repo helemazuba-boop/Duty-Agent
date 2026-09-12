@@ -191,7 +191,16 @@ class TestMcpApi(unittest.TestCase):
         tool_names = [item["name"] for item in list_response.json()["result"]["tools"]]
         self.assertEqual(
             set(tool_names),
-            {"inspect_workspace", "update_scheduler_config", "replace_roster", "edit_schedule_entry", "run_schedule"},
+            {
+                "inspect_workspace",
+                "update_scheduler_config",
+                "replace_roster",
+                "edit_schedule_entry",
+                "manage_absences",
+                "manage_run_notes",
+                "manage_day_overrides",
+                "run_schedule",
+            },
         )
 
         replace_is_error, replace_payload = _extract_tool_payload(replace_roster_response)

@@ -131,6 +131,15 @@ class DutyLoopbackClient:
     async def edit_schedule_entry(self, payload: dict[str, Any]) -> dict[str, Any]:
         return await self._request_json("POST", "/api/v1/duty/schedule-entry", payload)
 
+    async def manage_absences(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return await self._request_json("POST", "/api/v1/duty/absences", payload)
+
+    async def manage_run_notes(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return await self._request_json("POST", "/api/v1/duty/run-notes", payload)
+
+    async def manage_day_overrides(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return await self._request_json("POST", "/api/v1/duty/day-overrides", payload)
+
     async def run_schedule(
         self,
         instruction: str,

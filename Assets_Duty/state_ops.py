@@ -640,6 +640,112 @@ def release_state_file_lock(lock_path: Path) -> None:
     release_file_lock(lock_path)
 
 
+def _normalize_absences(raw: object) -> List[dict]:
+    """Coerce state["absences"] into [{"id": int, "from": iso, "to": iso}]."""
+    result: List[dict] = []
+    if not isinstance(raw, list):
+        return result
+    for entry in raw:
+        if not isinstance(entry, dict):
+            continue
+        try:
+            person_id = int(entry.get("id"))
+        except (TypeError, ValueError):
+            continue
+        try:
+            start = datetime.strptime(str(entry.get("from", "")).strip()[:10], "%Y-%m-%d").date()
+            end = datetime.strptime(str(entry.get("to", "")).strip()[:10], "%Y-%m-%d").date()
+        except ValueError:
+            continue
+        if end < start:
+            continue
+        result.append({"id": person_id, "from": start.isoformat(), "to": end.isoformat()})
+    return result
+
+
+def _normalize_user_notes(raw: object) -> List[dict]:
+    """Coerce state["user_notes"] into [{"text", "until"|None, "created_at"}]."""
+    result: List[dict] = []
+    if not isinstance(raw, list):
+        return result
+    for entry in raw:
+        if isinstance(entry, dict):
+            text = str(entry.get("text", "") or "").strip()
+            if not text:
+                continue
+            until_raw = str(entry.get("until", "") or "").strip() or None
+            if until_raw is not None:
+                try:
+                    until_raw = datetime.strptime(until_raw[:10], "%Y-%m-%d").date().isoformat()
+                except ValueError:
+                    until_raw = None
+            result.append(
+                {
+                    "text": text,
+                    "until": until_raw,
+                    "created_at": str(entry.get("created_at", "") or "").strip(),
+                }
+            )
+        elif isinstance(entry, str) and entry.strip():
+            # Tolerate bare-string notes written by older builds.
+            result.append({"text": entry.strip(), "until": None, "created_at": ""})
+    return result
+
+
+def _normalize_day_overrides(raw: object) -> Dict[str, Dict[str, int]]:
+    """Coerce state["day_overrides"] into {"YYYY-MM-DD": {area: count>0}}."""
+    result: Dict[str, Dict[str, int]] = {}
+    if not isinstance(raw, dict):
+        return result
+    for raw_date, areas in raw.items():
+        date_text = str(raw_date or "").strip()[:10]
+        try:
+            date_text = datetime.strptime(date_text, "%Y-%m-%d").date().isoformat()
+        except ValueError:
+            continue
+        if not isinstance(areas, dict):
+            continue
+        normalized_areas: Dict[str, int] = {}
+        for raw_area, raw_count in areas.items():
+            area_name = str(raw_area or "").strip()
+            if not area_name:
+                continue
+            try:
+                count = int(raw_count)
+            except (TypeError, ValueError):
+                continue
+            if count > 0:
+                normalized_areas[area_name] = count
+        if normalized_areas:
+            result[date_text] = normalized_areas
+    return result
+
+
+def prune_operational_state(state_data: dict, today: Optional[date] = None) -> dict:
+    """Drop expired operational entries: absences ended before ``today``,
+    user notes expired before ``today``, day overrides for past dates.
+
+    Called by every settlement write so stale entries (e.g. a one-day cleaning
+    note) never leak into later runs regardless of which chain last settled."""
+    today = today or date.today()
+    state_data["absences"] = [
+        entry
+        for entry in _normalize_absences(state_data.get("absences", []))
+        if datetime.strptime(entry["to"], "%Y-%m-%d").date() >= today
+    ]
+    state_data["user_notes"] = [
+        entry
+        for entry in _normalize_user_notes(state_data.get("user_notes", []))
+        if entry["until"] is None or datetime.strptime(entry["until"], "%Y-%m-%d").date() >= today
+    ]
+    state_data["day_overrides"] = {
+        date_text: areas
+        for date_text, areas in _normalize_day_overrides(state_data.get("day_overrides", {})).items()
+        if datetime.strptime(date_text, "%Y-%m-%d").date() >= today
+    }
+    return state_data
+
+
 def _read_state_json(path: Path) -> dict:
     """Parse + normalize one state file. Raises on missing/corrupt content."""
     with open(path, "r", encoding="utf-8-sig") as file:
@@ -650,6 +756,9 @@ def _read_state_json(path: Path) -> dict:
         data["schedule_pool"] = []
     if "next_run_note" not in data or not isinstance(data["next_run_note"], str):
         data["next_run_note"] = ""
+    data["absences"] = _normalize_absences(data.get("absences", []))
+    data["user_notes"] = _normalize_user_notes(data.get("user_notes", []))
+    data["day_overrides"] = _normalize_day_overrides(data.get("day_overrides", {}))
     data["debt_counts"] = normalize_count_map(data.get("debt_counts", data.get("debt_list", [])))
     data["credit_counts"] = normalize_count_map(data.get("credit_counts", data.get("credit_list", [])))
     data["debt_counts"], data["credit_counts"] = resolve_debt_credit_conflicts(
@@ -668,6 +777,9 @@ def load_state(path: Path) -> dict:
         return {
             "schedule_pool": [],
             "next_run_note": "",
+            "absences": [],
+            "user_notes": [],
+            "day_overrides": {},
             "debt_counts": {},
             "credit_counts": {},
             "last_pointer": 0,

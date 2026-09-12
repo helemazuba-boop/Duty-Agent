@@ -116,6 +116,9 @@ class ExecutionCtx:
     # ---- roster validity ----
     _valid_ids: Set[int] = field(default_factory=set)
 
+    # ---- sudden-situation: leave/absence IDs excluded for this window ----
+    absent_ids: Set[int] = field(default_factory=set)
+
     @property
     def valid_ids(self) -> Set[int]:
         return self._valid_ids
@@ -602,13 +605,22 @@ def apply_special_commands(
 
 def _accept_slot(ctx: ExecutionCtx, slot: ScheduleSlot, ids: List[int]) -> None:
     """Validate and accept one slot into the schedule pool."""
-    # Basic validation
+    # Basic validation. Rejected IDs must be excluded below — the validation
+    # loop previously only logged rejections while the append loop still
+    # scheduled every ID, silently defeating INACTIVE enforcement.
+    invalid: Set[int] = set()
     for pid in ids:
         if ctx.valid_ids and pid not in ctx.valid_ids:
             ctx.rejected.append((slot.slot_key, 'NOT_FOUND', f'ID {pid} not in roster'))
+            invalid.add(pid)
             continue
         if pid in ctx.inactive_ids:
             ctx.rejected.append((slot.slot_key, 'INACTIVE', f'ID {pid} is inactive'))
+            invalid.add(pid)
+            continue
+        if pid in ctx.absent_ids:
+            ctx.rejected.append((slot.slot_key, 'ABSENT', f'ID {pid} is absent (leave/sickness)'))
+            invalid.add(pid)
             continue
 
     # Find or create entry for this date
@@ -625,6 +637,8 @@ def _accept_slot(ctx: ExecutionCtx, slot: ScheduleSlot, ids: List[int]) -> None:
 
     seen = set(entry['area_ids'][slot.area_name])
     for pid in ids:
+        if pid in invalid:
+            continue
         if pid in seen:
             ctx.rejected.append((slot.slot_key, 'DUPLICATE', f'{pid} already in {slot.area_name} on {slot.date_iso}'))
             continue
@@ -913,6 +927,7 @@ def parse_and_apply(
     round_num: int,
     alias_map: Optional[Dict[str, str]] = None,
     pool_echo: str = "full",
+    absent_ids: Optional[List[int]] = None,
 ) -> Tuple[str, ExecutionCtx]:
     """
     Top-level function called by the executor each polling round.
@@ -930,6 +945,7 @@ def parse_and_apply(
         flags: hints_on, max_rounds.
         round_num: Current round number.
         alias_map: Pre-populated alias→area_name map (from previous rounds).
+        absent_ids: Leave/absence person IDs excluded for this window.
 
     Returns:
         (response_text_for_llm, ctx)
@@ -951,6 +967,7 @@ def parse_and_apply(
         finalized=False,
         alias_map=dict(alias_map or {}),
         _valid_ids=set(all_ids),
+        absent_ids=set(absent_ids or []),
     )
 
     # Step 1: Split LLM text into sections

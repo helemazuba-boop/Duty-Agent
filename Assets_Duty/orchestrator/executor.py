@@ -28,6 +28,13 @@ from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 from execution_profiles import ExecutionPlan
 from conversation import compact_conversation_history
 from diagnostics import truncate_for_log
+from absence_ops import (
+    absences_for_window,
+    compose_run_notes,
+    day_override_count,
+    extract_absentees,
+    merge_absence_entries,
+)
 from llm_transport import call_llm_raw
 from state_ops import load_api_key_from_env
 from multi_agent.contracts import FrozenSnapshot
@@ -42,6 +49,7 @@ from state_ops import (
     load_roster,
     load_state,
     normalize_count_map,
+    prune_operational_state,
     resolve_debt_credit_conflicts,
     update_state,
 )
@@ -219,6 +227,7 @@ def _orchestrator_direct(
             required_slots=required_slots,
             flags=PollingFlags(hints_on=orch_ctx.hints_on, max_rounds=orch_ctx.max_rounds),
             round_num=round_num,
+            absent_ids=orch_ctx.absent_ids,
         )
 
         if exec_ctx.finalized:
@@ -326,6 +335,7 @@ def _orchestrator_poll_loop(
             required_slots=required_slots,
             flags=PollingFlags(hints_on=orch_ctx.hints_on, max_rounds=orch_ctx.max_rounds),
             round_num=round_num,
+            absent_ids=orch_ctx.absent_ids,
         )
 
         if exec_ctx.finalized:
@@ -405,6 +415,7 @@ def _orchestrator_poll_loop(
             required_slots=required_slots,
             flags=PollingFlags(hints_on=orch_ctx.hints_on, max_rounds=orch_ctx.max_rounds),
             round_num=round_num,
+            absent_ids=orch_ctx.absent_ids,
         )
 
         if exec_ctx.finalized:
@@ -450,10 +461,28 @@ def _orchestrator_bootstrap(
     debt_list = _expand_debt_counts(state_data.get("debt_counts", {}))
     credit_list = _expand_credit_counts(state_data.get("credit_counts", {}))
 
-    instruction = str(input_data.get("instruction", "生成排班")).strip()
-    instruction = anonymize_instruction(instruction, name_to_id)
+    raw_instruction = str(input_data.get("instruction", "生成排班")).strip()
     request_time = datetime.now()
     start_date = request_time.date()
+
+    # Persist leave/absence intent from the raw instruction BEFORE anonymization.
+    extracted_absences = extract_absentees(raw_instruction, name_to_id, today=start_date)
+    if extracted_absences:
+        def _merge_absences(current_state: dict) -> dict:
+            current_state["absences"] = merge_absence_entries(
+                current_state.get("absences", []),
+                extracted_absences,
+            )
+            return current_state
+
+        state_data = update_state(ctx.paths["state"], _merge_absences)
+
+    default_days = int(config.get("default_days", 7) or 7)
+    window_end = start_date + timedelta(days=max(1, default_days) - 1)
+    absent_ids = absences_for_window(state_data.get("absences", []), start_date, window_end)
+    day_overrides = dict(state_data.get("day_overrides", {}) or {})
+
+    instruction = anonymize_instruction(raw_instruction, name_to_id)
 
     polling_cfg: dict = config.get("polling", {}) or {}
     flags = PollingFlags(
@@ -478,8 +507,10 @@ def _orchestrator_bootstrap(
         debt_list=debt_list,
         credit_list=credit_list,
         last_pointer=int(state_data.get("last_pointer", 0) or 0),
-        previous_note=str(state_data.get("next_run_note", "")),
+        previous_note=compose_run_notes(state_data, today=start_date),
         duty_rule=str(config.get("duty_rule", "")).strip(),
+        absent_ids=absent_ids,
+        day_overrides=day_overrides,
     )
 
     # 计算日期范围
@@ -492,6 +523,7 @@ def _orchestrator_bootstrap(
     area_per_day_counts = _get_area_per_day_counts(config, area_names)
     required_slots = _build_required_slots(
         instruction, total_dates, id_to_name, area_names, area_per_day_counts,
+        day_overrides=day_overrides,
     )
 
     return snapshot, flags, config, total_dates, required_slots
@@ -511,6 +543,8 @@ def _build_orchestrator_context(
         all_areas=area_names,
         area_per_day_counts=area_per_day_counts,
         hints_on=flags.hints_on,
+        absent_ids=getattr(snapshot, "absent_ids", None),
+        day_overrides=getattr(snapshot, "day_overrides", None),
     )
     ctx._all_dates = total_dates
     return ctx
@@ -753,6 +787,7 @@ def _finalize(
             state_data["debt_counts"],
             state_data["credit_counts"],
         )
+        prune_operational_state(state_data)
         return state_data
 
     state_data = update_state(ctx.paths["state"], _apply_state, stop_event=None)
@@ -836,11 +871,13 @@ def _build_required_slots(
     id_to_name: Dict[int, str],
     area_names: List[str],
     area_per_day_counts: Optional[Dict[str, int]] = None,
+    day_overrides: Optional[Dict[str, Dict[str, int]]] = None,
 ) -> List[ScheduleUnit]:
     """每个 (日期, 区域) 生成 area_per_day_counts[area] 个 slot。
 
     counts 与提示词同源（config），避免“提示词要 N 人、校验器按 2 人算”的
-    口径不一致。未传入时沿用旧默认值 2。"""
+    口径不一致。未传入时沿用旧默认值 2。day_overrides（如大扫除单日加派）
+    覆盖该日期该区域的所需人数。"""
     if area_per_day_counts is None:
         area_per_day = {area: 2 for area in area_names}
     else:
@@ -848,7 +885,9 @@ def _build_required_slots(
     slots = []
     for d in dates:
         for area in area_names:
-            need = area_per_day.get(area, 2)
+            need = day_override_count(
+                day_overrides, d.isoformat(), area, area_per_day.get(area, 2)
+            )
             for i in range(need):
                 slots.append(ScheduleUnit(
                     date_iso=d.isoformat(),

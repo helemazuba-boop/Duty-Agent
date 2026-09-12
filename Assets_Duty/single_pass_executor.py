@@ -1,9 +1,19 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime
-from typing import Any, Dict
+from datetime import datetime, timedelta
+from typing import Any, Dict, List
 
+from absence_ops import (
+    absences_for_window,
+    compose_run_notes,
+    day_override_count,
+    extract_absentees,
+    fill_shortfall,
+    merge_absence_entries,
+    rotation_order,
+    trim_excess,
+)
 from execution_profiles import ExecutionPlan
 from llm_transport import call_llm_raw, parse_schedule_completion
 from postprocess import (
@@ -13,6 +23,7 @@ from postprocess import (
     reconcile_credit_list,
     recover_missing_debts,
     restore_schedule,
+    try_parse_iso_date,
     validate_llm_schedule_entries,
 )
 from prompt_gateway import build_single_pass_prompt_messages
@@ -27,11 +38,97 @@ from state_ops import (
     load_config,
     load_roster,
     load_state,
+    prune_operational_state,
     resolve_debt_credit_conflicts,
     update_state,
 )
 
 AI_RESPONSE_MAX_CHARS = 20000
+
+
+def _enforce_absence_and_counts(
+    normalized_ids: List[dict],
+    all_ids: List[int],
+    id_to_active: Dict[int, int],
+    last_pointer: int,
+    area_per_day_counts: Dict[str, int],
+    day_overrides: Dict[str, Dict[str, int]],
+    debt_counts: Dict[int, int],
+    absent_ids: set,
+) -> List[str]:
+    """Deterministic post-parse repair (D-A): strip absentees, trim excess,
+    fill shortfall. Mutates ``normalized_ids`` in place; returns warnings."""
+    warnings: List[str] = []
+    if not normalized_ids:
+        return warnings
+    rotation = rotation_order(all_ids, id_to_active, last_pointer)
+
+    for entry in normalized_ids:
+        date_text = str(entry.get("date", "") or "")
+        area_ids: Dict[str, List[int]] = entry.get("area_ids", {})
+        day_ids = {person_id for ids in area_ids.values() for person_id in ids}
+        entry_adjustments: List[str] = []
+
+        for area_name in list(area_ids.keys()):
+            ids = list(area_ids.get(area_name, []))
+
+            stripped = [person_id for person_id in ids if person_id in absent_ids]
+            if stripped:
+                ids = [person_id for person_id in ids if person_id not in absent_ids]
+                day_ids -= set(stripped)
+                warnings.append(
+                    f"{date_text}/{area_name}: 剔除缺席人员 "
+                    + " ".join(str(person_id) for person_id in stripped)
+                )
+                entry_adjustments.append(f"剔除缺席{len(stripped)}人")
+
+            override_present = bool((day_overrides or {}).get(date_text, {}).get(area_name))
+            if area_name in area_per_day_counts or override_present:
+                required: int | None = day_override_count(
+                    day_overrides, date_text, area_name,
+                    int(area_per_day_counts.get(area_name, 0) or 0),
+                )
+            else:
+                required = None  # dynamic model-declared area: leave count as-is
+
+            if required is not None:
+                kept, trimmed = trim_excess(ids, required, debt_counts)
+                if trimmed:
+                    ids = kept
+                    day_ids -= set(trimmed)
+                    warnings.append(
+                        f"{date_text}/{area_name}: 超额裁剪移除 "
+                        + " ".join(str(person_id) for person_id in trimmed)
+                    )
+                    entry_adjustments.append(f"裁剪{len(trimmed)}人")
+
+                if len(ids) < required:
+                    candidates = [
+                        person_id
+                        for person_id in rotation
+                        if person_id not in day_ids and person_id not in absent_ids
+                    ]
+                    ids, added = fill_shortfall(ids, required, candidates, debt_counts)
+                    if added:
+                        day_ids.update(added)
+                        warnings.append(
+                            f"{date_text}/{area_name}: 缺额自动补齐 "
+                            + " ".join(str(person_id) for person_id in added)
+                        )
+                        entry_adjustments.append(f"补齐{len(added)}人")
+                    if len(ids) < required:
+                        warnings.append(
+                            f"{date_text}/{area_name}: 人手不足，需 {required} 人仅排上 {len(ids)} 人"
+                        )
+                        entry_adjustments.append("人手不足")
+
+            area_ids[area_name] = ids
+
+        if entry_adjustments:
+            summary = "自动修正: " + "，".join(entry_adjustments)
+            entry["note"] = f"{str(entry.get('note', '') or '').strip()} {summary}".strip()
+
+    return warnings
 
 
 def _resolve_transport_overrides(plan: ExecutionPlan) -> Dict[str, Any] | None:
@@ -62,6 +159,33 @@ def build_single_pass_request(
     instruction = str(input_data.get("instruction", "Generate duty schedule")).strip()
     trace_id = str(input_data.get("trace_id", "")).strip()
 
+    # Persist leave/absence intent from the raw instruction (names → IDs) BEFORE
+    # anonymization, so plan-prompt → plan-ingest delegation and provider runs
+    # share the same persisted absence ranges.
+    extracted_absences = extract_absentees(
+        instruction, name_to_id, today=run_now.date()
+    )
+    if extracted_absences:
+        def _merge_absences(current_state: dict) -> dict:
+            current_state["absences"] = merge_absence_entries(
+                current_state.get("absences", []),
+                extracted_absences,
+            )
+            return current_state
+
+        state_data = update_state(
+            ctx.paths["state"], _merge_absences, stop_event=stop_event
+        )
+        if emit_progress_fn:
+            emit_progress_fn(
+                "absence_recorded",
+                "已从指令记录请假/缺席: " + ", ".join(
+                    f"ID {item['id']} ({item['from']}~{item['to']})"
+                    for item in extracted_absences
+                ),
+                json.dumps({"absences": extracted_absences}, ensure_ascii=False),
+            )
+
     api_key = (
         str(ctx.config.get("api_key", "")).strip()
         or load_api_key_from_env()
@@ -87,7 +211,13 @@ def build_single_pass_request(
     # re-derives the same values from config.
     area_names = get_configured_area_names(ctx.config) or [DEFAULT_SINGLE_AREA_NAME]
     area_per_day_counts = get_configured_area_per_day_counts(ctx.config, area_names)
-    previous_note = str(state_data.get("next_run_note", "") or "").strip()
+    default_days = int(ctx.config.get("default_days", 7) or 7)
+    window_end = start_date + timedelta(days=max(1, default_days) - 1)
+    window_absent_ids = absences_for_window(
+        state_data.get("absences", []), start_date, window_end
+    )
+    day_overrides = dict(state_data.get("day_overrides", {}) or {})
+    previous_note = compose_run_notes(state_data, today=run_now.date())
     previous_context = f"Previous run note (carry-over from the last schedule): {previous_note}" if previous_note else ""
 
     messages, prompt_metadata = build_single_pass_prompt_messages(
@@ -104,6 +234,8 @@ def build_single_pass_request(
         start_date=start_date.isoformat(),
         previous_context=previous_context,
         last_pointer=int(state_data.get("last_pointer", 0) or 0),
+        absent_ids=window_absent_ids,
+        day_overrides=day_overrides,
     )
 
     if emit_progress_fn:
@@ -170,6 +302,43 @@ def apply_single_pass_completion(
         area_names,
         area_per_day_counts,
     )
+
+    # Sudden-situation enforcement: persisted absences overlapping the schedule
+    # window plus model-declared absent IDs are stripped, then counts are
+    # repaired deterministically (D-A: fill shortfall, trim excess).
+    absent_ids_set: set = set()
+    schedule_dates = [
+        parsed
+        for parsed in (
+            try_parse_iso_date(entry.get("date", "")) for entry in normalized_ids
+        )
+        if parsed is not None
+    ]
+    if schedule_dates:
+        absent_ids_set.update(
+            absences_for_window(
+                state_data.get("absences", []),
+                min(schedule_dates),
+                max(schedule_dates),
+            )
+        )
+    for raw_id in ((llm_result.get("state_delta") or {}).get("absent_ids") or []):
+        try:
+            absent_ids_set.add(int(raw_id))
+        except (TypeError, ValueError):
+            continue
+    absent_ids_set &= set(all_ids)
+    adjustment_warnings = _enforce_absence_and_counts(
+        normalized_ids,
+        all_ids,
+        id_to_active,
+        int(state_data.get("last_pointer", 0) or 0),
+        area_per_day_counts,
+        dict(state_data.get("day_overrides", {}) or {}),
+        debt_counts,
+        absent_ids_set,
+    )
+
     restored = restore_schedule(normalized_ids, id_to_name, area_names, {})
     if not restored:
         raise ValueError("No valid schedule entries.")
@@ -219,6 +388,7 @@ def apply_single_pass_completion(
         )
         next_state["last_pointer"] = int(pointer_progress.get("pointer_after", next_state.get("last_pointer", 0)) or 0)
         next_state["schedule_pool"] = merge_schedule_pool(restored)
+        prune_operational_state(next_state)
         return next_state
 
     if stop_event and stop_event.is_set():
@@ -235,6 +405,7 @@ def apply_single_pass_completion(
         "prompt_gateway": prompt_metadata,
         "single_pass_strategy": single_pass_strategy,
         "transport_overrides": transport_overrides,
+        "adjustment_warnings": adjustment_warnings,
     }
 
 

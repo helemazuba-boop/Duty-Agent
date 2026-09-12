@@ -176,6 +176,11 @@ def validate_agent3_output(raw: Dict[str, Any], snapshot: FrozenSnapshot) -> Dic
 def merge_barrier1(snapshot: FrozenSnapshot, anchor: Dict[str, Any], accounting: Dict[str, Any], rules: Dict[str, Any]) -> Dict[str, Any]:
     active_ids = set(snapshot.active_ids)
     absent_ids = [person_id for person_id in accounting["absent_ids"] if person_id in active_ids]
+    # Persisted leave/absence ranges (Python-extracted or API/CLI-registered)
+    # join the Agent2-extracted absences as hard exclusions.
+    for person_id in getattr(snapshot, "absent_ids", []) or []:
+        if person_id in active_ids and person_id not in absent_ids:
+            absent_ids.append(person_id)
     must_run_ids = [person_id for person_id in accounting["must_run_ids"] if person_id in active_ids and person_id not in absent_ids]
     if len(must_run_ids) > anchor["total_slots"]:
         raise ValueError("must_run_ids exceed total slots")

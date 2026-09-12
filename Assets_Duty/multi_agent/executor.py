@@ -3,9 +3,15 @@ from __future__ import annotations
 import json
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Callable, Dict, List, Tuple
 
+from absence_ops import (
+    absences_for_window,
+    compose_run_notes,
+    extract_absentees,
+    merge_absence_entries,
+)
 from execution_profiles import ExecutionPlan
 from llm_transport import call_llm_json
 from prompt_gateway import build_agent_prompt
@@ -17,6 +23,7 @@ from state_ops import (
     load_config,
     load_roster,
     load_state,
+    update_state,
 )
 
 from .contracts import AgentTrace, FrozenSnapshot
@@ -34,6 +41,31 @@ from .validators import (
 )
 
 AGENT_JSON_RETRIES = 2
+
+
+def _check_capacity(snapshot: FrozenSnapshot, barrier1: Dict[str, Any], barrier2: Dict[str, Any]) -> None:
+    """Fail fast with a human-readable message when the active roster (minus
+    window absences) cannot cover the busiest single day of the template.
+
+    Cross-date (and same-day cross-area) reuse stays allowed, so the binding
+    constraint is the busiest day, not the sum of all slots."""
+    template = barrier2.get("template") or {}
+    if not template:
+        return
+    busiest_day_need = max(
+        sum(int(count) for count in areas.values()) for areas in template.values()
+    )
+    available = len(set(snapshot.active_ids) - set(barrier1["absent_ids"]))
+    if available < busiest_day_need:
+        absent_count = len(barrier1["absent_ids"])
+        raise ValueError(
+            f"可用人员不足：最忙的一天需要 {busiest_day_need} 人，"
+            f"当前仅有 {available} 人可用"
+            f"（在册 {len(snapshot.active_ids)} 人"
+            + (f"，扣除请假/缺席 {absent_count} 人" if absent_count else "")
+            + "）。建议：减少每日所需人数、缩短日期范围，"
+              "或通过名单管理恢复/添加成员。"
+        )
 
 
 def _emit_progress(emit_progress_fn, phase: str, message: str, payload: Dict[str, Any] | None = None) -> None:
@@ -66,14 +98,30 @@ def _freeze_snapshot(ctx: Context, input_data: dict) -> FrozenSnapshot:
 
     active_ids = [person_id for person_id in all_ids if id_to_active.get(person_id, 1) != 0]
     inactive_ids = [person_id for person_id in all_ids if id_to_active.get(person_id, 1) == 0]
-    instruction = str(input_data.get("instruction", "Generate duty schedule")).strip()
+    raw_instruction = str(input_data.get("instruction", "Generate duty schedule")).strip()
     request_source = str(input_data.get("request_source", "api")).strip() or "api"
     trace_id = str(input_data.get("trace_id", "")).strip()
+
+    # Persist leave/absence intent from the raw instruction BEFORE anonymization.
+    extracted_absences = extract_absentees(raw_instruction, name_to_id, today=start_date)
+    if extracted_absences:
+        def _merge_absences(current_state: dict) -> dict:
+            current_state["absences"] = merge_absence_entries(
+                current_state.get("absences", []),
+                extracted_absences,
+            )
+            return current_state
+
+        state_data = update_state(ctx.paths["state"], _merge_absences)
+
+    default_days = int(config.get("default_days", 7) or 7)
+    window_end = start_date + timedelta(days=max(1, default_days) - 1)
+    absent_ids = absences_for_window(state_data.get("absences", []), start_date, window_end)
 
     return FrozenSnapshot(
         trace_id=trace_id,
         request_source=request_source,
-        instruction=anonymize_instruction(instruction, name_to_id),
+        instruction=anonymize_instruction(raw_instruction, name_to_id),
         request_time=run_now,
         start_date=start_date,
         config=config,
@@ -87,8 +135,10 @@ def _freeze_snapshot(ctx: Context, input_data: dict) -> FrozenSnapshot:
         debt_list=count_map_to_id_list(state_data.get("debt_counts", {}), set(all_ids)),
         credit_list=count_map_to_id_list(state_data.get("credit_counts", {}), set(all_ids)),
         last_pointer=int(state_data.get("last_pointer", 0) or 0),
-        previous_note=str(state_data.get("next_run_note", "") or "").strip(),
+        previous_note=compose_run_notes(state_data, today=start_date),
         duty_rule=anonymize_instruction(str(config.get("duty_rule", "") or ""), name_to_id),
+        absent_ids=absent_ids,
+        day_overrides=dict(state_data.get("day_overrides", {}) or {}),
     )
 
 
@@ -232,6 +282,7 @@ def run_multi_agent_schedule(
                 "instruction": snapshot.instruction,
                 "request_time": snapshot.request_time.strftime("%Y-%m-%d %H:%M"),
                 "all_ids": snapshot.all_ids,
+                "suggested_absent_ids": snapshot.absent_ids,
                 "debt_list": snapshot.debt_list,
                 "credit_list": snapshot.credit_list,
             },
@@ -336,6 +387,10 @@ def run_multi_agent_schedule(
         },
     )
 
+    # Capacity pre-check: fail with an actionable message instead of a cryptic
+    # "slot count mismatch" from Agent6 validation / fallback filling.
+    _check_capacity(snapshot, barrier1, barrier2)
+
     try:
         _emit_progress(emit_progress_fn, "agent_start", "agent6_assembly started.", {"agent_id": "agent6_assembly"})
         agent6_result, agent6_raw, agent6_meta, agent6_trace = _run_agent(
@@ -363,7 +418,15 @@ def run_multi_agent_schedule(
             f"Agent6 failed, trying code fallback: {ex}",
             {"agent_id": "agent6_assembly"},
         )
-        final_schedule = fallback_fill_schedule(barrier2)
+        try:
+            final_schedule = fallback_fill_schedule(barrier2)
+        except Exception as fallback_ex:
+            raise RuntimeError(
+                "排班装配失败：Agent6 无法完成装配，代码兜底同样失败。"
+                f"候选池 {len(barrier2['final_pool'])} 人 / 槽位 {barrier2['total_slots']} 个"
+                f"（最忙日需 {max(sum(int(c) for c in areas.values()) for areas in barrier2['template'].values())} 人）。"
+                f"兜底错误：{fallback_ex}；Agent6 原始错误：{ex}"
+            ) from fallback_ex
         final_ai_response = "fallback_fill"
 
     _emit_progress(

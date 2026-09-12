@@ -158,6 +158,86 @@ def build_mcp_http_app(parent_app: FastAPI):
         return await client.edit_schedule_entry(payload)
 
     @server.tool(
+        name="manage_absences",
+        description=(
+            "Register or clear a leave-absence range. Absent people are excluded "
+            "from every schedule run until the range ends, then auto-pruned."
+        ),
+    )
+    async def manage_absences(
+        person: str | None = None,
+        from_date: str | None = None,
+        to_date: str | None = None,
+        days: int | None = None,
+        clear: bool = False,
+    ) -> dict[str, Any]:
+        client = create_loopback_client()
+        payload: dict[str, Any] = {"action": "clear" if clear else "add"}
+        if not clear:
+            if not str(person or "").strip():
+                raise RuntimeError("person (roster ID or name) is required unless clear=true")
+            payload["person"] = str(person).strip()
+            if from_date:
+                payload["from_date"] = from_date
+            if to_date:
+                payload["to_date"] = to_date
+            if days:
+                payload["days"] = int(days)
+        elif str(person or "").strip():
+            payload["person"] = str(person).strip()
+        return await client.manage_absences(payload)
+
+    @server.tool(
+        name="manage_run_notes",
+        description=(
+            "Add or clear a user run note (e.g. '周三大扫除，教室加2人'). Notes are "
+            "injected into the prompt of every schedule run until their until date "
+            "passes or they are cleared."
+        ),
+    )
+    async def manage_run_notes(
+        text: str | None = None,
+        until: str | None = None,
+        clear: bool = False,
+    ) -> dict[str, Any]:
+        client = create_loopback_client()
+        payload: dict[str, Any] = {"action": "clear" if clear else "add"}
+        if not clear:
+            if not str(text or "").strip():
+                raise RuntimeError("text is required unless clear=true")
+            payload["text"] = str(text).strip()
+            if until:
+                payload["until"] = until
+        return await client.manage_run_notes(payload)
+
+    @server.tool(
+        name="manage_day_overrides",
+        description=(
+            "Set or clear a per-day per-area headcount override so one date can "
+            "require a different headcount (e.g. 4 for a deep-clean day instead "
+            "of the configured 2)."
+        ),
+    )
+    async def manage_day_overrides(
+        date: str,
+        area: str | None = None,
+        count: int | None = None,
+        clear: bool = False,
+    ) -> dict[str, Any]:
+        client = create_loopback_client()
+        payload: dict[str, Any] = {"action": "clear" if clear else "set", "date": date}
+        if not clear:
+            if not str(area or "").strip():
+                raise RuntimeError("area is required unless clear=true")
+            if not count or int(count) <= 0:
+                raise RuntimeError("count (>0) is required unless clear=true")
+            payload["area"] = str(area).strip()
+            payload["count"] = int(count)
+        elif str(area or "").strip():
+            payload["area"] = str(area).strip()
+        return await client.manage_day_overrides(payload)
+
+    @server.tool(
         name="run_schedule",
         description=(
             "Run the scheduling engine through the existing duty live WebSocket chain. "

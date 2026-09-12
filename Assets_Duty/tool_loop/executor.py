@@ -21,6 +21,13 @@ import traceback
 from datetime import date, datetime, timedelta
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
+from absence_ops import (
+    absences_for_window,
+    compose_run_notes,
+    day_override_count,
+    extract_absentees,
+    merge_absence_entries,
+)
 from execution_profiles import ExecutionPlan
 from conversation import compact_conversation_history
 from llm_transport import (
@@ -39,6 +46,7 @@ from state_ops import (
     load_roster,
     load_state,
     normalize_count_map,
+    prune_operational_state,
     save_json_atomic,
 )
 
@@ -244,7 +252,9 @@ def _read_snapshot(
     Dict[int, str],   # id_to_name
     List[dict],       # schedule_pool
     PollingFlags,
-    str,              # previous_note (state.next_run_note)
+    str,              # previous_note (machine summary + user notes)
+    Set[int],         # absent_ids (leave/absence for this window)
+    Dict[str, Dict[str, int]],  # day_overrides
 ]:
     config = load_config(ctx)
     state_data = load_state(ctx.paths["state"])
@@ -255,14 +265,33 @@ def _read_snapshot(
     last_pointer = int(state_data.get("last_pointer", 0) or 0)
     inactive_ids = {pid for pid in all_ids if id_to_active.get(pid, 1) == 0}
     schedule_pool = list(state_data.get("schedule_pool", []) or [])
-    previous_note = str(state_data.get("next_run_note", "") or "").strip()
+    previous_note = compose_run_notes(state_data)
 
-    instruction = str(input_data.get("instruction", "Generate duty schedule")).strip()
-    instruction = anonymize_instruction(instruction, name_to_id)
-
+    raw_instruction = str(input_data.get("instruction", "Generate duty schedule")).strip()
     request_time = datetime.now()
     start_date = request_time.date()
     start_date_iso = start_date.isoformat()
+
+    # Persist leave/absence intent from the raw instruction BEFORE anonymization.
+    extracted_absences = extract_absentees(raw_instruction, name_to_id, today=start_date)
+    if extracted_absences:
+        def _merge_absences(current_state: dict) -> dict:
+            current_state["absences"] = merge_absence_entries(
+                current_state.get("absences", []),
+                extracted_absences,
+            )
+            return current_state
+
+        state_data = update_state(ctx.paths["state"], _merge_absences)
+
+    default_days = int(config.get("default_days", 7) or 7)
+    window_end = start_date + timedelta(days=max(1, default_days) - 1)
+    absent_ids = set(
+        absences_for_window(state_data.get("absences", []), start_date, window_end)
+    )
+    day_overrides = dict(state_data.get("day_overrides", {}) or {})
+
+    instruction = anonymize_instruction(raw_instruction, name_to_id)
 
     # Polling flags from settings
     polling_config: dict = config.get("polling", {}) or {}
@@ -287,6 +316,8 @@ def _read_snapshot(
         schedule_pool,
         flags,
         previous_note,
+        absent_ids,
+        day_overrides,
     )
 
 
@@ -322,6 +353,7 @@ def _build_required_slots(
     schedule_pool: List[dict],
     area_names: List[str],
     area_per_day_counts: Optional[Dict[str, int]] = None,
+    day_overrides: Optional[Dict[str, Dict[str, int]]] = None,
 ) -> List[ScheduleUnit]:
     """
     Compute all (date, area) slots that need to be filled.
@@ -330,7 +362,8 @@ def _build_required_slots(
     "04-01~04-07") and combines with area names to generate the slot list.
     Each (date, area) yields area_per_day_counts[area] units so the remaining
     manifest reflects the configured headcount (default 1 to keep the
-    single-area legacy behavior when counts are not provided).
+    single-area legacy behavior when counts are not provided); day_overrides
+    (e.g. a deep-clean day) replace the configured count for that date/area.
     Already-scheduled dates (in schedule_pool) are excluded.
     """
     filled_dates: Set[str] = set()
@@ -344,7 +377,10 @@ def _build_required_slots(
 
     def _units_for_date(day: date) -> None:
         for area in area_names:
-            need = (area_per_day_counts or {}).get(area, 1)
+            need = day_override_count(
+                day_overrides, day.isoformat(), area,
+                (area_per_day_counts or {}).get(area, 1),
+            )
             for _ in range(need):
                 slots.append(ScheduleUnit(date_iso=day.isoformat(), area_name=area, alias=""))
 
@@ -406,6 +442,7 @@ def _write_state(
     existing["credit_counts"] = dict(ctx_exec.credit_counts)
     existing["last_pointer"] = ctx_exec.last_pointer
     existing["schedule_pool"] = list(ctx_exec.schedule_pool)
+    prune_operational_state(existing)
     save_json_atomic(state_path, existing)
 
 
@@ -475,6 +512,8 @@ def run_tool_loop_schedule(
             schedule_pool,
             flags,
             previous_note,
+            absent_ids,
+            day_overrides,
         ) = _read_snapshot(ctx, input_data)
 
         trace_id = str(input_data.get("trace_id", "")).strip() or ""
@@ -516,6 +555,8 @@ def run_tool_loop_schedule(
             area_names=area_names,
             area_per_day_counts=area_per_day_counts,
             previous_note=previous_note,
+            absent_ids=sorted(absent_ids),
+            day_overrides=day_overrides,
         )
 
         # Optional hints injection
@@ -540,6 +581,7 @@ def run_tool_loop_schedule(
             schedule_pool=schedule_pool,
             area_names=area_names,
             area_per_day_counts=area_per_day_counts,
+            day_overrides=day_overrides,
         )
 
         # --------------------------------------------------------------------------
@@ -688,6 +730,7 @@ def run_tool_loop_schedule(
                         round_num=round_num,
                         alias_map=alias_map,
                         pool_echo="delta",
+                        absent_ids=sorted(absent_ids),
                     )
                 except Exception as ex:
                     tb = traceback.format_exc()

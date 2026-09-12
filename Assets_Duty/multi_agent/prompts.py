@@ -68,6 +68,7 @@ def _build_agent2_prompt(agent_context: Dict[str, Any]) -> List[Dict[str, str]]:
         "instruction": agent_context["instruction"],
         "request_time": agent_context["request_time"],
         "roster_ids": agent_context["all_ids"],
+        "suggested_absent_ids": agent_context.get("suggested_absent_ids", []),
         "current_debt_ids": agent_context["debt_list"],
         "current_credit_ids": agent_context["credit_list"],
     }
@@ -81,6 +82,7 @@ def _build_agent2_prompt(agent_context: Dict[str, Any]) -> List[Dict[str, str]]:
     }
     rules = [
         "Only output IDs present in roster_ids.",
+        "suggested_absent_ids are pre-extracted leave/absence IDs from the instruction; include them in absent_ids unless the instruction clearly contradicts them.",
         "Absences should not be duplicated in new_debt_ids if already owed.",
         "must_run_ids are for people explicitly required this round.",
     ]

@@ -42,6 +42,39 @@ class DutyPlanIngestRequest(BaseModel):
     request_source: Optional[str] = None
 
 
+class DutyAbsenceRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    action: Literal["add", "clear"] = "add"
+    person: Optional[str] = None  # roster ID or name; required for add
+    from_date: Optional[str] = None  # YYYY-MM-DD; default today
+    to_date: Optional[str] = None  # YYYY-MM-DD; overrides days
+    days: Optional[int] = None  # span from from_date (default 1)
+    trace_id: Optional[str] = None
+    request_source: Optional[str] = None
+
+
+class DutyRunNoteRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    action: Literal["add", "clear"] = "add"
+    text: Optional[str] = None  # required for add
+    until: Optional[str] = None  # YYYY-MM-DD; None = until cleared/expired
+    trace_id: Optional[str] = None
+    request_source: Optional[str] = None
+
+
+class DutyDayOverrideRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    action: Literal["set", "clear"] = "set"
+    date: Optional[str] = None  # YYYY-MM-DD; required
+    area: Optional[str] = None  # area name; required for set
+    count: Optional[int] = None  # >0; required for set
+    trace_id: Optional[str] = None
+    request_source: Optional[str] = None
+
+
 class DutyScheduleEntryModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

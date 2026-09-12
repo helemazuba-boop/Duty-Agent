@@ -48,6 +48,8 @@ class OrchestratorContext:
     duty_rule: str
     all_areas: List[str]
     area_per_day_counts: Dict[str, int]
+    absent_ids: List[int] = field(default_factory=list)
+    day_overrides: Dict[str, Dict[str, int]] = field(default_factory=dict)
     hints_on: bool = True
     max_rounds: int = 15
     week_threshold_days: int = 7
@@ -59,6 +61,8 @@ class OrchestratorContext:
         all_areas: List[str],
         area_per_day_counts: Dict[str, int],
         hints_on: bool = True,
+        absent_ids: List[int] | None = None,
+        day_overrides: Dict[str, Dict[str, int]] | None = None,
     ) -> OrchestratorContext:
         return cls(
             trace_id=snapshot.trace_id,
@@ -80,6 +84,8 @@ class OrchestratorContext:
             duty_rule=snapshot.duty_rule,
             all_areas=all_areas,
             area_per_day_counts=area_per_day_counts,
+            absent_ids=list(absent_ids or []),
+            day_overrides=dict(day_overrides or {}),
             hints_on=hints_on,
             max_rounds=snapshot.config.get("polling", {}).get("max_rounds", 15),
             week_threshold_days=7,

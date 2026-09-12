@@ -44,7 +44,8 @@ def build_orchestrator_system_prompt(
 - 债务人员（优先安排）：{debt_text}
 - 信用人员（可优先）：{credit_text}
 - 不活跃人员：{', '.join(str(p) for p in ctx.inactive_ids) or '无'}
-
+- 请假/缺席人员（本窗口不可安排）：{', '.join(str(p) for p in ctx.absent_ids) or '无'}
+{_day_overrides_block(ctx.day_overrides)}
 ## 可用学生池
 {person_pool}
 
@@ -338,6 +339,17 @@ def _previous_note_block(previous_note: str) -> str:
 ## 上一轮备注（来自上次排班的遗留说明）
 {note}
 """
+
+
+def _day_overrides_block(day_overrides: Dict[str, Dict[str, int]]) -> str:
+    overrides = day_overrides or {}
+    if not overrides:
+        return ""
+    lines = ["- 单日人数覆盖（该日该区域按下表人数安排，如大扫除加派）："]
+    for day in sorted(overrides):
+        for area, count in sorted(overrides[day].items()):
+            lines.append(f"  - {day} {area}：{count} 人")
+    return "\n".join(lines) + "\n"
 
 
 def _command_directive_block(hints_on: bool) -> str:

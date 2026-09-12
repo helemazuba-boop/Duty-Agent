@@ -81,12 +81,15 @@ def build_tool_system_prompt(
     area_names: Optional[List[str]] = None,
     area_per_day_counts: Optional[Dict[str, int]] = None,
     previous_note: str = "",
+    absent_ids: Optional[List[int]] = None,
+    day_overrides: Optional[Dict[str, Dict[str, int]]] = None,
 ) -> str:
     """
     Build the system prompt for the tool-loop AI session.
     This is the preamble injected before every AI turn.
     """
     inactive_str = _format_ids(inactive_ids)
+    absent_str = _format_ids(absent_ids or [])
     debt_str = _format_count_map(debt_counts)
     credit_str = _format_count_map(credit_counts)
     compact = len(all_ids) <= 30
@@ -112,6 +115,17 @@ def build_tool_system_prompt(
 
     if inactive_str:
         lines.append(f"  inactive_ids={inactive_str}")
+
+    if absent_str:
+        lines.append(f"  absent_ids={absent_str}")
+
+    if day_overrides:
+        override_tokens = " ".join(
+            f"{day}:{area}={count}"
+            for day in sorted(day_overrides)
+            for area, count in sorted(day_overrides[day].items())
+        )
+        lines.append(f"  day_headcount_overrides={override_tokens}")
 
     if debt_str:
         lines.append(f"  current_debt_counts={debt_str}")
@@ -142,6 +156,12 @@ def build_tool_system_prompt(
     lines.append("- Credit rule: when the normal roster progression reaches a credited ID,")
     lines.append("  skip that ID once if possible. Credit is consumed only when that skip happens.")
     lines.append("- Inactive IDs are unavailable and must never be assigned.")
+    lines.append("- Absent IDs (leave/sickness) are unavailable in this window and must never be assigned.")
+    if day_overrides:
+        lines.append(
+            "- On dates with day_headcount_overrides, the overridden area needs exactly "
+            "the overridden headcount (e.g. extra people for a deep-clean day)."
+        )
     lines.append("- Only generate the exact requested dates. Over-generation is fatal.")
     if area_names:
         counts = area_per_day_counts or {}

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime
 from typing import Any, Dict, List
 
@@ -25,6 +25,9 @@ class FrozenSnapshot:
     last_pointer: int
     previous_note: str
     duty_rule: str
+    # Sudden-situation context (leave/absence for this window + day overrides).
+    absent_ids: List[int] = field(default_factory=list)
+    day_overrides: Dict[str, Dict[str, int]] = field(default_factory=dict)
 
 
 @dataclass
