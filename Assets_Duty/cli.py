@@ -56,6 +56,7 @@ SERVE_LOG_MAX_BYTES = 5 * 1024 * 1024
 # Keep in sync with runtime.APP_VERSION; single-sourcing tracked in HANDOFF §24.
 APP_VERSION = "0.50.0"
 _TOKEN_MODE_LOG_RE = re.compile(r"__DUTY_SERVER_TOKEN_MODE__:([A-Za-z_]+)")
+_TOKEN_LOG_RE = re.compile(r"__DUTY_SERVER_TOKEN__:(\S+)")
 
 
 # --------------------------------------------------------------------------- #
@@ -609,19 +610,35 @@ def _rotate_serve_log(log_path: Path, max_bytes: int = SERVE_LOG_MAX_BYTES) -> N
         pass
 
 
+def _read_server_log_field(log_path: Path, regex: "re.Pattern[str]") -> str:
+    """Last match of a startup-block field in the serve log.
+
+    The backend prints the port/token block once at startup, but the log is
+    append-across-restarts until rotation, so the line can sit anywhere in the
+    file — scan it all and take the LAST occurrence (the most recent run)."""
+    try:
+        text = log_path.read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return ""
+    matches = regex.findall(text)
+    return matches[-1].strip() if matches else ""
+
+
+def _read_token_from_log(log_path: Path) -> str:
+    """Recover the dynamic token from the serve log when the .dev-token write
+    did not happen (the backend treats that write as best-effort).
+
+    The token is already in the log in plaintext, so reading it back does not
+    widen the exposure; it just keeps 'duty-cli serve' from producing a meta
+    file whose token no consumer can use."""
+    return _read_server_log_field(log_path, _TOKEN_LOG_RE)
+
+
 def _read_token_mode_from_log(log_path: Path) -> str:
     """Recover the backend's token mode from its bootstrap stdout line in the
     serve log. Without it, ``token_present: false`` cannot be told apart from
     'static mode does not need a token'."""
-    try:
-        with open(log_path, "rb") as handle:
-            handle.seek(0, os.SEEK_END)
-            handle.seek(max(0, handle.tell() - 8192))
-            tail = handle.read(8192).decode("utf-8", errors="ignore")
-        match = _TOKEN_MODE_LOG_RE.search(tail)
-        return match.group(1) if match else ""
-    except OSError:
-        return ""
+    return _read_server_log_field(log_path, _TOKEN_MODE_LOG_RE)
 
 
 def _pid_alive(pid: Optional[int]) -> bool:
@@ -804,6 +821,11 @@ def cmd_serve(conn: Connection, args: argparse.Namespace) -> Any:
     loopback = "localhost,127.0.0.1,::1"
     child_env["NO_PROXY"] = f"{existing_no_proxy},{loopback}" if existing_no_proxy else loopback
     child_env["no_proxy"] = child_env["NO_PROXY"]
+    # A serve-managed backend is an explicit CLI/dev flow: authorize the
+    # .dev-token drop so the CLI's own token fallback chain (and doctor's
+    # re-resolve) can authenticate without flags. The desktop client path does
+    # not go through here and keeps its no-token-file contract.
+    child_env["DUTY_DEV_WRITE_TOKEN"] = "1"
     # MCP is opt-out here: default honors host-config enable_mcp (like the
     # plugin path); the desktop standalone client hard-disables it on its own.
     child_argv = [
@@ -858,7 +880,9 @@ def cmd_serve(conn: Connection, args: argparse.Namespace) -> Any:
             "base_url": base_url,
         }
 
-    token = _read_dev_token(data_dir)
+    # .dev-token first (authorized above); the serve log is the fallback for
+    # the backend's best-effort write (e.g. denied by FS permissions).
+    token = _read_dev_token(data_dir) or _read_token_from_log(log_path)
     token_mode = _read_token_mode_from_log(log_path)
     # Full shared schema — the desktop host writes the same field set for its
     # bridge meta; consumers (this CLI included) can rely on any writer.

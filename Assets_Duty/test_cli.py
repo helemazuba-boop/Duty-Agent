@@ -265,6 +265,49 @@ class TestCliDelegation(unittest.TestCase):
         self.assertEqual(payload["status"], "error")
         self.assertNotEqual(payload.get("mode"), "single_pass")
 
+    def test_plan_prompt_missing_roster_returns_error_result(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            original = getattr(app.state, "runtime", None)
+            runtime = self._with_runtime(temp_dir)
+            try:
+                with TestClient(app) as client, _cli_routed_to(client):
+                    exit_code, payload = _run_cli(
+                        [
+                            "--base-url", BASE_URL,
+                            f"--token={runtime.access_token}",
+                            "plan-prompt",
+                            "--instruction", "本周排班",
+                        ]
+                    )
+            finally:
+                self._teardown_runtime(runtime, original)
+
+        self.assertEqual(exit_code, 1)
+        self.assertEqual(payload["status"], "error")
+        self.assertIn("roster", payload["message"].lower())
+
+    def test_plan_ingest_missing_roster_returns_error_result(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            original = getattr(app.state, "runtime", None)
+            runtime = self._with_runtime(temp_dir)
+            try:
+                with TestClient(app) as client, _cli_routed_to(client):
+                    exit_code, payload = _run_cli(
+                        [
+                            "--base-url", BASE_URL,
+                            f"--token={runtime.access_token}",
+                            "plan-ingest",
+                            "--completion", "[areas]\nA = Classroom\n[schedule]\n09-14 = A:1\n",
+                            "--handle", "{}",
+                        ]
+                    )
+            finally:
+                self._teardown_runtime(runtime, original)
+
+        self.assertEqual(exit_code, 1)
+        self.assertEqual(payload["status"], "error")
+        self.assertIn("roster", payload["message"].lower())
+
     def test_plan_ingest_lands_schedule_and_advances_ledger(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             original = getattr(app.state, "runtime", None)
@@ -592,6 +635,52 @@ class TestCliFullFixRegression(unittest.TestCase):
         for key in ("version", "pid", "port", "token_mode", "token", "started_at", "data_dir"):
             self.assertIn(key, schema)
         self.assertTrue(any("CLASSISLAND_CONFIG_PATH" in p for p in payload["meta_file"]["discovery_order"]))
+
+    # ---- Wave: serve token chain + friendly user-data errors -----------------------------
+    def test_serve_authorizes_dev_token_write(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            with mock.patch.object(cli, "_health_ok", return_value=False), \
+                    mock.patch.object(cli, "_wait_health", return_value=True), \
+                    mock.patch.object(cli.subprocess, "Popen") as popen:
+                proc = mock.Mock()
+                proc.pid = 4713
+                proc.poll.return_value = None
+                popen.return_value = proc
+                _run_cli(["--data-dir", temp_dir, "serve", "--port", "8799"])
+            self.assertEqual(popen.call_args.kwargs["env"].get("DUTY_DEV_WRITE_TOKEN"), "1")
+
+    def test_read_token_from_log_takes_last_run(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            log_path = Path(temp_dir) / cli.SERVE_LOG_NAME
+            log_path.write_text(
+                "__DUTY_SERVER_TOKEN__:old_token\n"
+                "noise without markers\n"
+                "__DUTY_SERVER_TOKEN__:new_token\n",
+                encoding="utf-8",
+            )
+            self.assertEqual(cli._read_token_from_log(log_path), "new_token")
+            self.assertEqual(cli._read_token_from_log(Path(temp_dir) / "missing.log"), "")
+
+    def test_serve_meta_token_falls_back_to_log(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            data_dir = Path(temp_dir)
+            (data_dir / cli.SERVE_LOG_NAME).write_text(
+                "__DUTY_SERVER_TOKEN_MODE__:dynamic\n"
+                "__DUTY_SERVER_TOKEN__:log_token_abc\n",
+                encoding="utf-8",
+            )
+            with mock.patch.object(cli, "_health_ok", return_value=False), \
+                    mock.patch.object(cli, "_wait_health", return_value=True), \
+                    mock.patch.object(cli.subprocess, "Popen") as popen:
+                proc = mock.Mock()
+                proc.pid = 4714
+                proc.poll.return_value = None
+                popen.return_value = proc
+                _, payload = _run_cli(["--data-dir", temp_dir, "serve", "--port", "8799"])
+            self.assertTrue(payload["token_present"])
+            self.assertEqual(payload["token_mode"], "dynamic")
+            meta = json.loads((data_dir / cli.META_FILE_NAME).read_text(encoding="utf-8"))
+            self.assertEqual(meta["token"], "log_token_abc")
 
 
 if __name__ == "__main__":

@@ -137,7 +137,24 @@ class CommandService:
                 "trace_id": effective_trace_id,
             }
 
-        messages, resume_context = build_single_pass_request(context, request_payload, plan)
+        try:
+            messages, resume_context = build_single_pass_request(context, request_payload, plan)
+        except (FileNotFoundError, ValueError) as ex:
+            # User-data conditions (missing roster.csv, malformed instruction
+            # input) must surface as a regular error result, not as a 500: the
+            # CLI and the UI both render status:error payloads verbatim.
+            self._runtime.logger.warn(
+                "CommandService",
+                "Rejected build_schedule_prompt on user data.",
+                trace_id=effective_trace_id,
+                request_source=request_source,
+                error_message=str(ex),
+            )
+            return {
+                "status": "error",
+                "message": str(ex),
+                "trace_id": effective_trace_id,
+            }
         self._runtime.logger.info(
             "CommandService",
             "Finished build_schedule_prompt.",
@@ -208,7 +225,25 @@ class CommandService:
             request_source=request_source,
         )
         try:
-            result = apply_single_pass_completion(context, completion_text, resume_context, stop_event=stop_event)
+            try:
+                result = apply_single_pass_completion(context, completion_text, resume_context, stop_event=stop_event)
+            except (FileNotFoundError, ValueError) as ex:
+                # Missing roster.csv or an unparsable/unsettled completion are
+                # caller-fixable conditions; report them as a regular error
+                # result instead of an HTTP 500. The lock release stays in the
+                # surrounding finally.
+                self._runtime.logger.warn(
+                    "CommandService",
+                    "Rejected apply_schedule_completion on user data.",
+                    trace_id=effective_trace_id,
+                    request_source=request_source,
+                    error_message=str(ex),
+                )
+                return {
+                    "status": "error",
+                    "message": str(ex),
+                    "trace_id": effective_trace_id,
+                }
             result.setdefault("trace_id", effective_trace_id)
             self._runtime.logger.info(
                 "CommandService",
