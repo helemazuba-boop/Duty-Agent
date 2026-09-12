@@ -30,7 +30,7 @@ public partial class DutyComponent : ComponentBase<DutyComponentSettings>
 
         _timer = new DispatcherTimer
         {
-            Interval = TimeSpan.FromSeconds(Settings?.RefreshIntervalSeconds ?? 60)
+            Interval = TimeSpan.FromSeconds(60)
         };
         _timer.Tick += (_, _) => _ = UpdateStateAsync();
     }

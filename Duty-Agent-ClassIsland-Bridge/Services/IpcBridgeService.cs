@@ -45,6 +45,7 @@ public interface IIpcBridgeService : IDisposable
 public sealed class IpcBridgeService : IIpcBridgeService
 {
     private readonly IBridgePaths _paths;
+    private readonly BridgeSettings _settings;
     private readonly HttpClient _httpClient;
 
     private IpcBridgeState _state = IpcBridgeState.Initial;
@@ -58,7 +59,7 @@ public sealed class IpcBridgeService : IIpcBridgeService
     private readonly SemaphoreSlim _socketGate = new(1, 1);
     private readonly SemaphoreSlim _stateGate = new(1, 1);
 
-    private readonly TimeSpan _connectTimeout = TimeSpan.FromSeconds(15);
+    private TimeSpan ConnectTimeout => TimeSpan.FromSeconds(Math.Clamp(_settings.ConnectTimeoutSeconds, 3, 120));
     private readonly TimeSpan _requestTimeout = TimeSpan.FromMinutes(5);
 
     private const string AuthorizationHeader = "Authorization";
@@ -90,44 +91,11 @@ public sealed class IpcBridgeService : IIpcBridgeService
     public event EventHandler<IpcBridgeState>? StateChanged;
     public event EventHandler<string>? ErrorOccurred;
 
-    public IpcBridgeService(IBridgePaths paths)
+    public IpcBridgeService(IBridgePaths paths, BridgeSettings settings)
     {
         _paths = paths;
+        _settings = settings;
         _httpClient = new HttpClient { Timeout = _requestTimeout };
-        LoadSettings();
-    }
-
-    private BridgeSettings _settings = new();
-
-    private void LoadSettings()
-    {
-        try
-        {
-            var settingsPath = Path.Combine(_paths.SharedConfigFolder, "bridge-settings.json");
-            if (File.Exists(settingsPath))
-            {
-                var json = File.ReadAllText(settingsPath);
-                _settings = JsonSerializer.Deserialize<BridgeSettings>(json, JsonOptions) ?? new BridgeSettings();
-            }
-        }
-        catch
-        {
-            _settings = new BridgeSettings();
-        }
-    }
-
-    private void SaveSettings()
-    {
-        try
-        {
-            var settingsPath = Path.Combine(_paths.SharedConfigFolder, "bridge-settings.json");
-            var json = JsonSerializer.Serialize(_settings, JsonOptions);
-            File.WriteAllText(settingsPath, json);
-        }
-        catch
-        {
-            // 静默忽略设置保存失败
-        }
     }
 
     #region Connection Management
@@ -164,7 +132,7 @@ public sealed class IpcBridgeService : IIpcBridgeService
 
             // 等待端口分配（独立软件启动时 port=0，分配后写入）
             var port = meta.Port;
-            var timeoutAt = DateTime.UtcNow.Add(_connectTimeout);
+            var timeoutAt = DateTime.UtcNow.Add(ConnectTimeout);
 
             while (port <= 0 && DateTime.UtcNow < timeoutAt && !linkedCt.IsCancellationRequested)
             {
@@ -320,7 +288,7 @@ public sealed class IpcBridgeService : IIpcBridgeService
 
     private async Task<StandaloneMeta?> LoadMetaWithRetryAsync(CancellationToken cancellationToken)
     {
-        var timeoutAt = DateTime.UtcNow.Add(_connectTimeout);
+        var timeoutAt = DateTime.UtcNow.Add(ConnectTimeout);
 
         while (DateTime.UtcNow < timeoutAt && !cancellationToken.IsCancellationRequested)
         {

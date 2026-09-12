@@ -48,18 +48,21 @@ public sealed class HealthMonitorService : IHealthMonitorService
     private long _connectFailureSignature;
     private int _connectFailureCount;
 
-    private const int DefaultIntervalMs = 5000;
+    private readonly BridgeSettings _settings;
 
     public bool IsRunning => _isRunning;
     public StandaloneMeta? CurrentMeta => _lastMeta;
 
     public event EventHandler<IpcBridgeState>? BridgeStateRequested;
 
-    public HealthMonitorService(IBridgePaths paths, IIpcBridgeService bridge)
+    public HealthMonitorService(IBridgePaths paths, IIpcBridgeService bridge, BridgeSettings settings)
     {
         _paths = paths;
         _bridge = bridge;
+        _settings = settings;
     }
+
+    private int IntervalMs => Math.Clamp(_settings.HealthCheckIntervalMs, 1000, 60000);
 
     public void Start()
     {
@@ -68,9 +71,9 @@ public sealed class HealthMonitorService : IHealthMonitorService
             if (_isRunning) return;
             _isRunning = true;
 
-            Diagnostics.Info("HealthMonitor", "Health monitor started.", new { intervalMs = DefaultIntervalMs });
+            Diagnostics.Info("HealthMonitor", "Health monitor started.", new { intervalMs = IntervalMs });
 
-            _timer = new System.Timers.Timer(DefaultIntervalMs)
+            _timer = new System.Timers.Timer(IntervalMs)
             {
                 AutoReset = true,
                 Enabled = true
@@ -274,10 +277,19 @@ public sealed class HealthMonitorService : IHealthMonitorService
     {
         var currentState = _bridge.State;
 
+        // 自动连接关闭时只维持已建立的连接（心跳），不再主动发起新连接；
+        // 用户仍可在设置页手动“重新连接”。
+        var autoConnectAllowed = _settings.AutoConnect ||
+                                 currentState is IpcBridgeState.Connected;
+
         switch (currentState)
         {
             case IpcBridgeState.Initial:
             case IpcBridgeState.Disconnected:
+                if (!autoConnectAllowed)
+                {
+                    return;
+                }
                 // 独立软件已启动，尝试连接
                 BridgeStateRequested?.Invoke(this, IpcBridgeState.Checking);
                 _ = ConnectBridgeAsync();
@@ -306,6 +318,10 @@ public sealed class HealthMonitorService : IHealthMonitorService
                 break;
 
             case IpcBridgeState.NotInstalled:
+                if (!autoConnectAllowed)
+                {
+                    return;
+                }
                 // 独立软件已安装，重新检测
                 BridgeStateRequested?.Invoke(this, IpcBridgeState.Checking);
                 _ = ConnectBridgeAsync();
@@ -313,7 +329,7 @@ public sealed class HealthMonitorService : IHealthMonitorService
 
             case IpcBridgeState.Error:
                 // 出错后重试（同一份 meta 反复失败时按上限节流）
-                if (_connectFailureCount < StaleMetaDetectionLimit)
+                if (_connectFailureCount < StaleMetaDetectionLimit && autoConnectAllowed)
                 {
                     BridgeStateRequested?.Invoke(this, IpcBridgeState.Checking);
                     _ = ConnectBridgeAsync();

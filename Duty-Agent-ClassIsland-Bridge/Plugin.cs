@@ -1,12 +1,12 @@
-using System.Diagnostics;
+using System.ComponentModel;
 using System.IO;
-using System.Reflection;
 using System.Text.Json;
 using ClassIsland.Core;
 using ClassIsland.Core.Abstractions;
 using ClassIsland.Core.Attributes;
 using ClassIsland.Core.Extensions.Registry;
 using ClassIsland.Shared;
+using ClassIsland.Shared.Helpers;
 using DutyAgentBridge.Controls;
 using DutyAgentBridge.Controls.RuleSettingsControls;
 using DutyAgentBridge.Models;
@@ -21,9 +21,24 @@ namespace DutyAgentBridge;
 [PluginEntrance]
 public class Plugin : PluginBase
 {
+    public BridgeSettings Settings { get; private set; } = new();
+
     public override void Initialize(HostBuilderContext context, IServiceCollection services)
     {
-        services.AddSingleton<IBridgePaths, BridgePaths>();
+        // 官方设置模式（ExamplePlugins/PluginWithSettingsPage）：设置存放在宿主分配的
+        // PluginConfigFolder，ConfigureFileHelper 读写，INPC 变更即自动落盘，
+        // 从而纳入宿主的配置备份体系。
+        var settingsPath = Path.Combine(PluginConfigFolder, "Settings.json");
+        Settings = ConfigureFileHelper.LoadConfig<BridgeSettings>(settingsPath);
+
+        var paths = new BridgePaths(this);
+        MigrateLegacySettings(paths, settingsPath);
+
+        Settings.PropertyChanged += (_, _) =>
+            ConfigureFileHelper.SaveConfig(settingsPath, Settings);
+
+        services.AddSingleton<IBridgePaths>(paths);
+        services.AddSingleton(Settings);
         services.AddSingleton<IIpcBridgeService, IpcBridgeService>();
         services.AddSingleton<IHealthMonitorService, HealthMonitorService>();
         services.AddSingleton<DutyRuleHandlerService>();
@@ -37,14 +52,16 @@ public class Plugin : PluginBase
             "\u4ECA\u65E5\u503C\u65E5\u5339\u914D",
             "\uE8D4");
 
-        InjectSettingsPageGroup(services);
+        services.AddSettingsPageGroup("duty-agent-bridge.group", "\uE31E", "Duty-Agent \u6865\u63A5");
 
         AppBase.Current.AppStarted += (_, _) =>
         {
-            var paths = IAppHost.GetService<IBridgePaths>();
             Diagnostics.Initialize(paths.LogsDirectory);
 
-            _ = IAppHost.GetService<IIpcBridgeService>().ConnectAsync();
+            if (Settings.AutoConnect)
+            {
+                _ = IAppHost.GetService<IIpcBridgeService>().ConnectAsync();
+            }
             IAppHost.GetService<IHealthMonitorService>().Start();
             IAppHost.GetService<DutyRuleHandlerService>().Register();
         };
@@ -56,308 +73,116 @@ public class Plugin : PluginBase
         };
     }
 
-    private static void InjectSettingsPageGroup(IServiceCollection services)
+    /// <summary>
+    /// 0.50.x 曾把设置自管在 SharedConfigFolder\bridge-settings.json（绕过宿主配置体系）。
+    /// 迁移其取值到宿主 Settings.json 后删除旧文件。
+    /// </summary>
+    private void MigrateLegacySettings(BridgePaths paths, string newSettingsPath)
     {
         try
         {
-            var registeredSettingsPageInfos = ClassIsland.Core.Services.Registry.SettingsWindowRegistryService.Registered
-                .Where(info => info.Id.StartsWith("duty-agent-bridge", StringComparison.Ordinal))
-                .ToList();
-
-            if (!InjectService.TryGetAddSettingsPageGroupMethod(out var addSettingsPageGroupMethod) ||
-                addSettingsPageGroupMethod is null)
+            var legacyPath = Path.Combine(paths.LegacySharedConfigFolder, "bridge-settings.json");
+            if (!File.Exists(legacyPath) || File.Exists(newSettingsPath))
             {
+                // 新设置已存在时不做迁移（以宿主文件为准）。
                 return;
             }
 
-            addSettingsPageGroupMethod.Invoke(
-                typeof(SettingsWindowRegistryExtensions),
-                [services, "duty-agent-bridge.group", "\uE31E", "Duty-Agent \u6865\u63A5"]);
-
-            var groupIdProperty = InjectService.GetSettingsPageInfoGroupIdProperty();
-            if (groupIdProperty is null)
+            using var document = JsonDocument.Parse(File.ReadAllText(legacyPath));
+            var root = document.RootElement;
+            if (root.TryGetProperty("auto_connect", out var autoConnect) &&
+                (autoConnect.ValueKind == JsonValueKind.True || autoConnect.ValueKind == JsonValueKind.False))
             {
-                return;
+                Settings.AutoConnect = autoConnect.GetBoolean();
+            }
+            if (root.TryGetProperty("connect_timeout_seconds", out var timeout) &&
+                timeout.TryGetInt32(out var timeoutValue))
+            {
+                Settings.ConnectTimeoutSeconds = timeoutValue;
+            }
+            if (root.TryGetProperty("health_check_interval_ms", out var interval) &&
+                interval.TryGetInt32(out var intervalValue))
+            {
+                Settings.HealthCheckIntervalMs = intervalValue;
             }
 
-            foreach (var info in registeredSettingsPageInfos)
-            {
-                groupIdProperty.SetValue(info, "duty-agent-bridge.group");
-            }
+            // 迁移发生在 PropertyChanged 挂接之前，这里显式落盘一次。
+            ConfigureFileHelper.SaveConfig(newSettingsPath, Settings);
+            File.Delete(legacyPath);
+            Diagnostics.Log("Plugin", "Migrated legacy bridge-settings.json into host Settings.json.");
         }
-        catch
+        catch (Exception ex)
         {
+            Diagnostics.Log("Plugin", $"Legacy settings migration skipped: {ex.Message}", "WARN");
         }
     }
 }
 
+/// <summary>
+/// 桥接路径：全部由宿主已知的固定布局推导，不再自建发现链。
+/// </summary>
 public interface IBridgePaths
 {
+    /// <summary>宿主为本插件分配的配置目录（&lt;AppConfig&gt;\Plugins\duty-agent-bridge）。</summary>
     string PluginConfigFolder { get; }
 
+    /// <summary>与独立软件共享的桥接目录（&lt;AppConfig&gt;\DutyAgentBridge），承载 meta 文件契约。</summary>
     string SharedConfigFolder { get; }
 
+    /// <summary>独立软件写入的 meta 文件完整路径。</summary>
     string MetaFilePath { get; }
 
+    /// <summary>插件日志目录（PluginConfigFolder\logs）。</summary>
     string LogsDirectory { get; }
 
-    string ConfigFolder { get; }
-
-    string ConfigSource { get; }
-
-    IReadOnlyList<BridgeConfigCandidate> ConfigCandidates { get; }
+    /// <summary>meta 根目录的来源（host-layout / CLASSISLAND_CONFIG_PATH），用于诊断。</summary>
+    string MetaSource { get; }
 }
 
 public sealed class BridgePaths : IBridgePaths
 {
     private const string MetaFileName = ".duty-agent-meta.json";
     private const string EnvVarName = "CLASSISLAND_CONFIG_PATH";
+    private const string SharedFolderName = "DutyAgentBridge";
+
+    /// <summary>0.50.x 时代的共享目录（仅用于旧设置迁移）。</summary>
+    internal string LegacySharedConfigFolder { get; }
 
     public string PluginConfigFolder { get; }
-
     public string SharedConfigFolder { get; }
-
     public string MetaFilePath { get; }
-
     public string LogsDirectory { get; }
+    public string MetaSource { get; }
 
-    public string ConfigFolder { get; }
-
-    public string ConfigSource { get; }
-
-    public IReadOnlyList<BridgeConfigCandidate> ConfigCandidates { get; }
-
-    public BridgePaths()
+    public BridgePaths(Plugin plugin)
     {
-        var discovery = DiscoverClassIslandConfigFolder();
-        ConfigFolder = discovery.ConfigFolder;
-        ConfigSource = discovery.Source;
-        ConfigCandidates = discovery.Candidates;
+        // 宿主 PluginService 固定按 <AppConfig>\Plugins\<manifest.id> 分配（源码已验证），
+        // Initialize 调用时该属性已赋值，因此可确定性推出配置根。
+        PluginConfigFolder = plugin.PluginConfigFolder;
+        if (string.IsNullOrWhiteSpace(PluginConfigFolder))
+        {
+            PluginConfigFolder = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "ClassIsland", "Config", "Plugins", "duty-agent-bridge");
+        }
 
-        SharedConfigFolder = Path.Combine(ConfigFolder, "DutyAgentBridge");
-        PluginConfigFolder = SharedConfigFolder;
+        var appConfigRoot = Path.GetFullPath(Path.Combine(PluginConfigFolder, "..", ".."));
+        SharedConfigFolder = Path.Combine(appConfigRoot, SharedFolderName);
         MetaFilePath = Path.Combine(SharedConfigFolder, MetaFileName);
-        LogsDirectory = Path.Combine(SharedConfigFolder, "logs");
+        MetaSource = "host-layout";
+        LegacySharedConfigFolder = SharedConfigFolder;
 
-        Directory.CreateDirectory(SharedConfigFolder);
+        // 便携/特殊部署逃生舱：显式指定 ClassIsland 配置目录时优先生效。
+        if (Environment.GetEnvironmentVariable(EnvVarName) is { Length: > 0 } overrideRoot)
+        {
+            var configFolder = Path.GetFullPath(Environment.ExpandEnvironmentVariables(overrideRoot));
+            SharedConfigFolder = Path.Combine(configFolder, SharedFolderName);
+            MetaFilePath = Path.Combine(SharedConfigFolder, MetaFileName);
+            MetaSource = EnvVarName;
+        }
+
+        LogsDirectory = Path.Combine(PluginConfigFolder, "logs");
+        Directory.CreateDirectory(PluginConfigFolder);
         Directory.CreateDirectory(LogsDirectory);
-    }
-
-    private static BridgeConfigDiscovery DiscoverClassIslandConfigFolder()
-    {
-        var candidates = new List<(string Path, string Source)>();
-        AddCandidate(candidates, Environment.GetEnvironmentVariable(EnvVarName), EnvVarName);
-
-        var assemblyDirectory = Path.GetDirectoryName(typeof(BridgePaths).Assembly.Location);
-        foreach (var candidate in EnumerateConfigCandidatesFromPath(assemblyDirectory))
-        {
-            AddCandidate(candidates, candidate, "plugin-location");
-        }
-
-        foreach (var process in Process.GetProcessesByName("ClassIsland"))
-        {
-            string? executablePath = null;
-            try
-            {
-                executablePath = process.MainModule?.FileName;
-            }
-            catch
-            {
-            }
-
-            foreach (var candidate in EnumerateConfigCandidatesFromPath(Path.GetDirectoryName(executablePath)))
-            {
-                AddCandidate(candidates, candidate, "running-process");
-            }
-        }
-
-        AddCandidate(candidates, GetAppDataConfigFolder(), "appdata");
-
-        var normalized = candidates
-            .Select(candidate => NormalizeCandidate(candidate.Path, candidate.Source))
-            .Where(candidate => !string.IsNullOrWhiteSpace(candidate.ConfigFolder))
-            .DistinctBy(candidate => candidate.ConfigFolder, StringComparer.OrdinalIgnoreCase)
-            .ToList();
-
-        if (normalized.Count == 0)
-        {
-            var fallback = GetAppDataConfigFolder();
-            normalized.Add(new BridgeConfigCandidate(
-                fallback,
-                "appdata",
-                Directory.Exists(fallback),
-                HasLiveMetaFile(fallback)));
-        }
-
-        var selected =
-            normalized.FirstOrDefault(candidate => candidate.Source == EnvVarName) ??
-            normalized.FirstOrDefault(candidate => candidate.Source == "plugin-location" && candidate.Exists) ??
-            normalized.FirstOrDefault(candidate => candidate.Source == "running-process" && candidate.Exists) ??
-            normalized.FirstOrDefault(candidate => candidate.HasLiveMeta) ??
-            normalized.FirstOrDefault(candidate => candidate.Source == "appdata") ??
-            normalized.FirstOrDefault(candidate => candidate.Exists) ??
-            normalized[0];
-
-        return new BridgeConfigDiscovery(selected.ConfigFolder, selected.Source, normalized);
-    }
-
-    private static void AddCandidate(List<(string Path, string Source)> candidates, string? path, string source)
-    {
-        if (!string.IsNullOrWhiteSpace(path))
-        {
-            candidates.Add((path, source));
-        }
-    }
-
-    private static BridgeConfigCandidate NormalizeCandidate(string rawPath, string source)
-    {
-        var configFolder = NormalizeConfigFolder(rawPath);
-        return new BridgeConfigCandidate(
-            configFolder,
-            source,
-            Directory.Exists(configFolder),
-            HasLiveMetaFile(configFolder));
-    }
-
-    private static bool HasLiveMetaFile(string configFolder)
-    {
-        try
-        {
-            var metaPath = Path.Combine(configFolder, "DutyAgentBridge", MetaFileName);
-            if (!File.Exists(metaPath))
-            {
-                return false;
-            }
-
-            using var document = JsonDocument.Parse(File.ReadAllText(metaPath));
-            if (!document.RootElement.TryGetProperty("pid", out var pidElement) ||
-                !pidElement.TryGetInt32(out var pid) ||
-                pid <= 0)
-            {
-                return false;
-            }
-
-            using var process = Process.GetProcessById(pid);
-            return !process.HasExited;
-        }
-        catch
-        {
-            return false;
-        }
-    }
-
-    private static IEnumerable<string> EnumerateConfigCandidatesFromPath(string? startPath)
-    {
-        if (string.IsNullOrWhiteSpace(startPath))
-        {
-            yield break;
-        }
-
-        var current = new DirectoryInfo(startPath);
-        while (current is not null)
-        {
-            yield return Path.Combine(current.FullName, "data", "Config");
-
-            if (Directory.Exists(Path.Combine(current.FullName, "Plugins")) ||
-                Directory.Exists(Path.Combine(current.FullName, "Config")) ||
-                File.Exists(Path.Combine(current.FullName, "Settings.json")))
-            {
-                yield return Path.Combine(current.FullName, "Config");
-            }
-
-            current = current.Parent;
-        }
-    }
-
-    private static string NormalizeConfigFolder(string rawPath)
-    {
-        var expanded = Environment.ExpandEnvironmentVariables(rawPath.Trim().Trim('"'));
-        var fullPath = Path.GetFullPath(expanded);
-        if (File.Exists(fullPath))
-        {
-            fullPath = Path.GetDirectoryName(fullPath) ?? fullPath;
-        }
-
-        var directory = new DirectoryInfo(fullPath);
-        if (directory.Name.Equals("DutyAgentBridge", StringComparison.OrdinalIgnoreCase) &&
-            directory.Parent is not null)
-        {
-            return directory.Parent.FullName;
-        }
-
-        if (directory.Name.Equals("Config", StringComparison.OrdinalIgnoreCase))
-        {
-            return directory.FullName;
-        }
-
-        var dataConfig = Path.Combine(fullPath, "data", "Config");
-        if (Directory.Exists(dataConfig) ||
-            Directory.Exists(Path.Combine(fullPath, "data", "Plugins")) ||
-            File.Exists(Path.Combine(fullPath, "ClassIsland.exe")))
-        {
-            return Path.GetFullPath(dataConfig);
-        }
-
-        var directConfig = Path.Combine(fullPath, "Config");
-        if (Directory.Exists(directConfig) ||
-            Directory.Exists(Path.Combine(fullPath, "Plugins")) ||
-            File.Exists(Path.Combine(fullPath, "Settings.json")))
-        {
-            return Path.GetFullPath(directConfig);
-        }
-
-        return fullPath;
-    }
-
-    private static string GetAppDataConfigFolder()
-    {
-        return Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            "ClassIsland",
-            "Config");
-    }
-}
-
-internal static class InjectService
-{
-    private static MethodInfo? _addSettingsPageGroupMethod;
-    private static PropertyInfo? _settingsPageInfoGroupIdProperty;
-    private static bool _initialized;
-
-    public static bool TryGetAddSettingsPageGroupMethod(out MethodInfo? method)
-    {
-        EnsureInitialized();
-        method = _addSettingsPageGroupMethod;
-        return method is not null;
-    }
-
-    public static PropertyInfo? GetSettingsPageInfoGroupIdProperty()
-    {
-        EnsureInitialized();
-        return _settingsPageInfoGroupIdProperty;
-    }
-
-    private static void EnsureInitialized()
-    {
-        if (_initialized)
-        {
-            return;
-        }
-
-        _initialized = true;
-
-        try
-        {
-            var extType = typeof(SettingsWindowRegistryExtensions);
-            _addSettingsPageGroupMethod = extType.GetMethod(
-                "AddSettingsPageGroup",
-                [typeof(IServiceCollection), typeof(string), typeof(string), typeof(string)]);
-
-            var infoType = Type.GetType("ClassIsland.Core.Services.Registry.SettingsPageInfo, ClassIsland.Core")!;
-            _settingsPageInfoGroupIdProperty = infoType.GetProperty("GroupId");
-        }
-        catch
-        {
-        }
     }
 }

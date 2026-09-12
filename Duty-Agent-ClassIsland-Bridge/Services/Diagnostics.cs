@@ -23,19 +23,9 @@ public static class Diagnostics
 
     static Diagnostics()
     {
-        // 尝试获取日志目录
-        try
-        {
-            var configFolder = Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                "ClassIsland", "Config", "DutyAgentBridge");
-            _logDirectory = Path.Combine(configFolder, "logs");
-            Directory.CreateDirectory(_logDirectory);
-        }
-        catch
-        {
-            _logDirectory = Path.GetTempPath();
-        }
+        // Initialize() 之前的少量日志（如设置迁移）落到临时目录兜底；
+        // 正式日志目录由 AppStarted 时传入的 PluginConfigFolder\logs 接管。
+        _logDirectory = Path.GetTempPath();
     }
 
     public static void Initialize(string logDirectory)

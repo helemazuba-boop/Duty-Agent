@@ -1,27 +1,55 @@
+using System.ComponentModel;
+using System.Runtime.CompilerServices;
 using System.Text.Json.Serialization;
 
 namespace DutyAgentBridge.Models;
 
 /// <summary>
-/// 桥接插件设置模型（保存在 ClassIsland 配置目录）
+/// 桥接插件设置模型（官方模式：存放在宿主分配的 PluginConfigFolder\Settings.json，
+/// 经 ConfigureFileHelper 读写；INPC 变更即自动落盘）。
 /// </summary>
-public sealed class BridgeSettings
+public sealed class BridgeSettings : INotifyPropertyChanged
 {
-    /// <summary>独立软件元数据文件路径（可自定义）</summary>
-    [JsonPropertyName("meta_file_path")]
-    public string MetaFilePath { get; set; } = "";
+    private bool _autoConnect = true;
+    private int _connectTimeoutSeconds = 15;
+    private int _healthCheckIntervalMs = 5000;
 
-    /// <summary>自动连接（ClassIsland 启动时自动连接独立软件）</summary>
+    /// <summary>自动连接（ClassIsland 启动后自动连接独立软件）</summary>
     [JsonPropertyName("auto_connect")]
-    public bool AutoConnect { get; set; } = true;
+    public bool AutoConnect
+    {
+        get => _autoConnect;
+        set => Set(ref _autoConnect, value);
+    }
 
-    /// <summary>连接超时（秒）</summary>
+    /// <summary>连接超时（秒，3-120）</summary>
     [JsonPropertyName("connect_timeout_seconds")]
-    public int ConnectTimeoutSeconds { get; set; } = 15;
+    public int ConnectTimeoutSeconds
+    {
+        get => _connectTimeoutSeconds;
+        set => Set(ref _connectTimeoutSeconds, Math.Clamp(value, 3, 120));
+    }
 
-    /// <summary>健康检查轮询间隔（毫秒）</summary>
+    /// <summary>健康检查轮询间隔（毫秒，1000-60000）</summary>
     [JsonPropertyName("health_check_interval_ms")]
-    public int HealthCheckIntervalMs { get; set; } = 5000;
+    public int HealthCheckIntervalMs
+    {
+        get => _healthCheckIntervalMs;
+        set => Set(ref _healthCheckIntervalMs, Math.Clamp(value, 1000, 60000));
+    }
+
+    public event PropertyChangedEventHandler? PropertyChanged;
+
+    private void Set<T>(ref T field, T value, [CallerMemberName] string? propertyName = null)
+    {
+        if (EqualityComparer<T>.Default.Equals(field, value))
+        {
+            return;
+        }
+
+        field = value;
+        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(propertyName));
+    }
 }
 
 /// <summary>
@@ -53,12 +81,10 @@ public sealed class DutyAssignedStudentRuleSettings
 /// </summary>
 public sealed class DutyComponentSettings
 {
-    [JsonPropertyName("refresh_interval_seconds")]
-    public int RefreshIntervalSeconds { get; set; } = 60;
-
     [JsonPropertyName("font_size")]
     public int FontSize { get; set; } = 14;
 
+    /// <summary>自定义文字颜色（留空跟随 ClassIsland 主题）</summary>
     [JsonPropertyName("font_color")]
     public string FontColor { get; set; } = "";
 

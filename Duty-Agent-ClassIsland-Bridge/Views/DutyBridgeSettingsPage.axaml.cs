@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using Avalonia.Controls;
 using Avalonia.Interactivity;
 using Avalonia.Media;
@@ -10,21 +11,41 @@ using DutyAgentBridge.Services;
 
 namespace DutyAgentBridge.Views;
 
-[FullWidthPage]
-[HidePageTitle]
+[Group("duty-agent-bridge.group")]
 [SettingsPageInfo("duty-agent-bridge.settings", "Duty-Agent \u6865\u63A5", "\uE31E", "\uE31E")]
 public partial class DutyBridgeSettingsPage : SettingsPageBase
 {
-    private readonly IIpcBridgeService _bridge = IAppHost.GetService<IIpcBridgeService>();
-    private readonly IBridgePaths _paths = IAppHost.GetService<IBridgePaths>();
+    private readonly IBridgePaths _paths;
+    private readonly IIpcBridgeService _bridge;
+    private readonly DispatcherTimer? _confirmResetTimer;
+    private bool _testArmed;
 
-    public DutyBridgeSettingsPage()
+    public Plugin Plugin { get; }
+
+    public DutyBridgeSettingsPage(Plugin plugin, IBridgePaths paths, IIpcBridgeService bridge)
     {
-        InitializeComponent();
+        Plugin = plugin;
+        _paths = paths;
+        _bridge = bridge;
 
-        _bridge.StateChanged += OnBridgeStateChanged;
-        UpdateConnectionStatus();
+        InitializeComponent();
+        DataContext = this;
+
+        VersionText.Text = $"Duty-Agent Bridge v{GetType().Assembly.GetName().Version?.ToString(3) ?? "?"}";
         UpdatePathDiagnostics();
+        UpdateConnectionStatus();
+
+        // 页面是按导航重建的 transient 实例：Loaded/Unloaded 管理订阅，避免事件泄漏。
+        Loaded += (_, _) => _bridge.StateChanged += OnBridgeStateChanged;
+        Unloaded += (_, _) => _bridge.StateChanged -= OnBridgeStateChanged;
+
+        _confirmResetTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(3) };
+        _confirmResetTimer.Tick += (_, _) =>
+        {
+            _confirmResetTimer.Stop();
+            _testArmed = false;
+            TestScheduleButton.Content = "测试排班";
+        };
     }
 
     private void OnBridgeStateChanged(object? sender, IpcBridgeState state)
@@ -39,14 +60,14 @@ public partial class DutyBridgeSettingsPage : SettingsPageBase
 
         StatusIndicator.Text = state switch
         {
-            IpcBridgeState.Initial => "\u25CB \u672A\u8FDE\u63A5",
-            IpcBridgeState.Checking => "\u25CB \u68C0\u6D4B\u4E2D...",
-            IpcBridgeState.Connecting => "\u25CB \u8FDE\u63A5\u4E2D...",
-            IpcBridgeState.Connected => "\u25CF \u5DF2\u8FDE\u63A5",
-            IpcBridgeState.Disconnected => "\u25CB \u5DF2\u65AD\u5F00",
-            IpcBridgeState.NotInstalled => "\u25CB \u672A\u68C0\u6D4B\u5230\u72EC\u7ACB\u5BA2\u6237\u7AEF",
-            IpcBridgeState.Error => $"\u26A0 \u9519\u8BEF: {_bridge.LastError ?? ""}",
-            _ => "\u25CB \u672A\u77E5"
+            IpcBridgeState.Initial => "\u25CB 未连接",
+            IpcBridgeState.Checking => "\u25CB 检测中...",
+            IpcBridgeState.Connecting => "\u25CB 连接中...",
+            IpcBridgeState.Connected => "\u25CF 已连接",
+            IpcBridgeState.Disconnected => "\u25CB 已断开",
+            IpcBridgeState.NotInstalled => "\u25CB 未检测到独立客户端",
+            IpcBridgeState.Error => $"\u26A0 错误: {_bridge.LastError ?? ""}",
+            _ => "\u25CB 未知"
         };
 
         StatusIndicator.Foreground = state switch
@@ -71,24 +92,9 @@ public partial class DutyBridgeSettingsPage : SettingsPageBase
 
     private void UpdatePathDiagnostics()
     {
-        ConfigSourceText.Text = $"\u53D1\u73B0\u6765\u6E90: {_paths.ConfigSource}";
-        ConfigFolderText.Text = $"ClassIsland \u914D\u7F6E\u76EE\u5F55: {_paths.ConfigFolder}";
-        MetaFileText.Text = $"Meta \u6587\u4EF6: {_paths.MetaFilePath}";
-        LogsDirectoryText.Text = $"\u65E5\u5FD7\u76EE\u5F55: {_paths.LogsDirectory}";
-        ConfigCandidatesText.Text = string.Join(
-            Environment.NewLine,
-            _paths.ConfigCandidates.Select(candidate =>
-                $"- [{FormatCandidateState(candidate)}] {candidate.Source}: {candidate.ConfigFolder}"));
-    }
-
-    private static string FormatCandidateState(BridgeConfigCandidate candidate)
-    {
-        if (candidate.HasLiveMeta)
-        {
-            return "\u5B58\u5728, live meta";
-        }
-
-        return candidate.Exists ? "\u5B58\u5728" : "\u4E0D\u5B58\u5728";
+        MetaSourceText.Text = $"Meta 来源: {_paths.MetaSource}";
+        MetaFileText.Text = $"Meta 文件: {_paths.MetaFilePath}";
+        LogsDirectoryText.Text = $"日志目录: {_paths.LogsDirectory}";
     }
 
     private void OnReconnectClick(object? sender, RoutedEventArgs e)
@@ -105,13 +111,13 @@ public partial class DutyBridgeSettingsPage : SettingsPageBase
         }
         else
         {
-            OpenFolder(_paths.SharedConfigFolder);
+            OpenFolder(_paths.PluginConfigFolder);
         }
     }
 
     private void OnOpenConfigFolderClick(object? sender, RoutedEventArgs e)
     {
-        OpenFolder(_paths.SharedConfigFolder);
+        OpenFolder(_paths.PluginConfigFolder);
     }
 
     private void OnOpenLogsFolderClick(object? sender, RoutedEventArgs e)
@@ -126,7 +132,7 @@ public partial class DutyBridgeSettingsPage : SettingsPageBase
             if (!string.IsNullOrWhiteSpace(folder))
             {
                 Directory.CreateDirectory(folder);
-                System.Diagnostics.Process.Start("explorer.exe", folder);
+                Process.Start(new ProcessStartInfo("explorer.exe", folder) { UseShellExecute = true });
             }
         }
         catch
@@ -136,28 +142,43 @@ public partial class DutyBridgeSettingsPage : SettingsPageBase
 
     private async void OnTestScheduleClick(object? sender, RoutedEventArgs e)
     {
-        if (_bridge.State != IpcBridgeState.Connected)
+        // 两段式确认：第一次点击仅武装（3 秒后自动复位），避免误触发真实排班。
+        if (!_testArmed)
         {
+            _testArmed = true;
+            TestScheduleButton.Content = "确认执行？";
+            _confirmResetTimer?.Start();
             return;
         }
 
-        TestResult.Text = "\u6D4B\u8BD5\u4E2D...";
-        TestResult.IsVisible = true;
+        _confirmResetTimer?.Stop();
+        _testArmed = false;
+        TestScheduleButton.Content = "测试排班";
 
+        if (_bridge.State != IpcBridgeState.Connected)
+        {
+            TestResult.Text = "桥接未连接独立软件。";
+            TestResult.IsVisible = true;
+            return;
+        }
+
+        TestScheduleButton.IsEnabled = false;
+        TestResult.Text = "排班执行中…（由独立软件配置的模型完成，可能需要数十秒）";
+        TestResult.IsVisible = true;
         try
         {
-            var result = await _bridge.RunScheduleAsync("\u8BF7\u57FA\u4E8E\u5F53\u524D\u540D\u518C\u751F\u6210\u503C\u65E5\u5B89\u6392\u3002");
+            var result = await _bridge.RunScheduleAsync("请基于当前名册生成明天的值日安排。");
             TestResult.Text = result.Success
-                ? $"\u6210\u529F: {result.Message}"
-                : $"\u5931\u8D25: {result.Message}";
-            TestResult.Foreground = result.Success
-                ? new SolidColorBrush(Color.Parse("#52c41a"))
-                : new SolidColorBrush(Color.Parse("#ff4d4f"));
+                ? $"排班完成：{(result.AiResponse ?? "").Trim()}"
+                : $"排班失败：{result.Message}";
         }
         catch (Exception ex)
         {
-            TestResult.Text = $"\u9519\u8BEF: {ex.Message}";
-            TestResult.Foreground = new SolidColorBrush(Color.Parse("#ff4d4f"));
+            TestResult.Text = $"排班失败：{ex.Message}";
+        }
+        finally
+        {
+            TestScheduleButton.IsEnabled = true;
         }
     }
 }
