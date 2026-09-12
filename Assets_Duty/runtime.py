@@ -499,6 +499,23 @@ class DutyRuntime:
             data={"status": status or "unknown"},
         )
 
+    def publish_snapshot_changed(self, reason: str, trace_id: str | None = None) -> None:
+        """向桥接订阅者广播一次排班快照变更提示（保存/回滚/名单/配置变更后）。
+
+        这不是用户通知，而是数据总线信号：bridge 收到后重拉 /api/v1/snapshot，
+        从而免去轮询。targets 固定 classisland——桌面/Web 界面不应为此弹 toast。
+        """
+        self.publish_notification(
+            "snapshot_changed",
+            "排班数据已更新",
+            str(reason or "").strip(),
+            level="info",
+            route="/schedule",
+            source="snapshot",
+            targets=["classisland"],
+            data={"reason": str(reason or "").strip(), "trace_id": str(trace_id or "").strip()},
+        )
+
     def _notification_reminder_loop(self) -> None:
         while not self.notification_reminder_stop.is_set():
             try:
