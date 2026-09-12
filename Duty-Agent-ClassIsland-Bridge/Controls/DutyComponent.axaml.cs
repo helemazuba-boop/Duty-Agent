@@ -19,7 +19,7 @@ namespace DutyAgentBridge.Controls;
 /// Loaded/Unloaded 由 XAML 事件接线，订阅服务事件与 Settings.PropertyChanged
 /// 实时刷新。数据源为 DutyStateCache（后端推送 snapshot_changed / schedule_*，
 /// 60s 安全轮询兜底）；跨天/分钟级兜底挂 ILessonsService.PostMainTimerTicked。
-/// 组件自身不持有定时器，也不直接发起网络请求。
+/// 换行模式：不换行 / 按区域一行 / 按人数对半拆两行（Settings.WrapMode）。
 /// </summary>
 [ComponentInfo(
     "bc83d764-4c0d-4a36-a6da-27c96d2c339b",
@@ -94,7 +94,7 @@ public partial class DutyComponent : ComponentBase<DutyComponentSettings>
         {
             if (state is IpcBridgeState.Disconnected or IpcBridgeState.NotInstalled)
             {
-                ShowSingleRow("\u672A\u8FDE\u63A5\u72B6\u6001", isError: true);
+                RenderRows(["\u672A\u8FDE\u63A5\u72B6\u6001"], isError: true);
             }
             else
             {
@@ -107,7 +107,7 @@ public partial class DutyComponent : ComponentBase<DutyComponentSettings>
     {
         if (_bridge.State != IpcBridgeState.Connected)
         {
-            ShowSingleRow("\u672A\u8FDE\u63A5\u72B6\u6001", isError: true);
+            RenderRows(["\u672A\u8FDE\u63A5\u72B6\u6001"], isError: true);
             return;
         }
 
@@ -115,82 +115,73 @@ public partial class DutyComponent : ComponentBase<DutyComponentSettings>
         if (todayItem == null)
         {
             // 缓存为空且从未成功拉取过：提示刷新中；确认今天无排班：给出明确文案。
-            ShowSingleRow(_cache.State == null ? "\u6B63\u5728\u83B7\u53D6\u6392\u73ED\u6570\u636E\u2026" : "\u8BE5\u65E5\u6682\u65E0\u503C\u65E5\u5B89\u6392");
+            RenderRows([_cache.State == null ? "\u6B63\u5728\u83B7\u53D6\u6392\u73ED\u6570\u636E\u2026" : "\u8BE5\u65E5\u6682\u65E0\u503C\u65E5\u5B89\u6392"]);
             return;
         }
 
         var areaOrder = todayItem.AreaAssignments.Keys.ToList();
         if (areaOrder.Count == 0)
         {
-            ShowSingleRow("\u8BE5\u65E5\u6682\u65E0\u503C\u65E5\u5B89\u6392");
+            RenderRows(["\u8BE5\u65E5\u6682\u65E0\u503C\u65E5\u5B89\u6392"]);
             return;
         }
 
-        if (Settings?.UseDualRowDisplay == true)
-        {
-            RenderDualRow(areaOrder, todayItem.AreaAssignments);
-        }
-        else
-        {
-            RenderSingleRow(areaOrder, todayItem.AreaAssignments);
-        }
+        RenderRows(BuildLines(areaOrder, todayItem.AreaAssignments));
     }
 
-    private void RenderSingleRow(List<string> areaOrder, Dictionary<string, List<string>> assignments)
+    /// <summary>按设置的三种换行模式产出显示行。</summary>
+    private List<string> BuildLines(List<string> areaOrder, Dictionary<string, List<string>> assignments)
     {
-        var segments = areaOrder
-            .Select(area =>
+        var mode = Settings?.WrapMode ?? DutyWrapMode.None;
+
+        if (mode == DutyWrapMode.PerArea)
+        {
+            // 按区域换行：每个区域独占一行。
+            return areaOrder
+                .Select(area => FormatAreaLine(area, assignments))
+                .ToList();
+        }
+
+        if (mode == DutyWrapMode.Split)
+        {
+            // 对半拆分：把全部 (区域, 学生) 条目按人数对半拆成两行，
+            // 同一区域不跨行重复出现区域名。
+            var allEntries = new List<(string Area, string Student)>();
+            foreach (var area in areaOrder)
             {
                 var students = assignments.TryGetValue(area, out var names) ? names : [];
-                var text = students.Count > 0 ? string.Join("\u3001", students) : "\u65E0";
-                return $"{area}\uFF1A{text}";
-            })
-            .ToList();
-
-        var separator = Settings?.UsePerAreaMultiLine == true
-            ? Environment.NewLine
-            : "\uFF1B";
-
-        DutyTextRow1.Text = string.Join(separator, segments);
-        ApplyTextStyle(DutyTextRow1, isError: false);
-        DutyTextRow2.IsVisible = false;
-    }
-
-    private void RenderDualRow(List<string> areaOrder, Dictionary<string, List<string>> assignments)
-    {
-        var allEntries = new List<(string Area, string Student)>();
-        foreach (var area in areaOrder)
-        {
-            var students = assignments.TryGetValue(area, out var names) ? names : [];
-            if (students.Count == 0)
-            {
-                allEntries.Add((area, "\u65E0"));
-            }
-            else
-            {
-                foreach (var student in students)
+                if (students.Count == 0)
                 {
-                    allEntries.Add((area, student));
+                    allEntries.Add((area, "\u65E0"));
+                }
+                else
+                {
+                    allEntries.AddRange(students.Select(student => (area, student)));
                 }
             }
+
+            if (allEntries.Count <= 1)
+            {
+                return [FormatAreaLine(areaOrder[0], assignments)];
+            }
+
+            var mid = (allEntries.Count + 1) / 2;
+            return
+            [
+                FormatRowEntries(allEntries.Take(mid).ToList()),
+                FormatRowEntries(allEntries.Skip(mid).ToList())
+            ];
         }
 
-        if (allEntries.Count <= 1)
-        {
-            RenderSingleRow(areaOrder, assignments);
-            return;
-        }
+        // 不换行：所有区域排在同一行。
+        return [string.Join("\uFF1B", areaOrder.Select(area => FormatAreaLine(area, assignments)))];
+    }
 
-        var mid = (allEntries.Count + 1) / 2;
-        var row1Entries = allEntries.Take(mid).ToList();
-        var row2Entries = allEntries.Skip(mid).ToList();
-
-        DutyTextRow1.Text = FormatRowEntries(row1Entries);
-        ApplyTextStyle(DutyTextRow1, isError: false);
-
-        DutyTextRow2.Text = FormatRowEntries(row2Entries);
-        ApplyTextStyle(DutyTextRow2, isError: false);
-        DutyTextRow2.IsVisible = true;
+    private static string FormatAreaLine(string area, Dictionary<string, List<string>> assignments)
+    {
+        var students = assignments.TryGetValue(area, out var names) ? names : [];
+        var text = students.Count > 0 ? string.Join("\u3001", students) : "\u65E0";
+        return $"{area}\uFF1A{text}";
     }
 
     private static string FormatRowEntries(List<(string Area, string Student)> entries)
@@ -224,17 +215,28 @@ public partial class DutyComponent : ComponentBase<DutyComponentSettings>
         return string.Join("\uFF1B", segments);
     }
 
-    private void ShowSingleRow(string text, bool isError = false)
+    private void RenderRows(IReadOnlyList<string> lines, bool isError = false)
     {
-        DutyTextRow1.Text = text;
-        ApplyTextStyle(DutyTextRow1, isError);
-        DutyTextRow2.IsVisible = false;
+        RowsHost.Children.Clear();
+        foreach (var line in lines)
+        {
+            var textBlock = new TextBlock
+            {
+                Text = line,
+                TextWrapping = TextWrapping.Wrap,
+                HorizontalAlignment = Avalonia.Layout.HorizontalAlignment.Center
+            };
+            ApplyTextStyle(textBlock, isError);
+            RowsHost.Children.Add(textBlock);
+        }
     }
 
     private void ApplyTextStyle(TextBlock textBlock, bool isError)
     {
-        // 默认继承 ClassIsland 主题前景色（axaml 未设置 Foreground 即随主题），
-        // 仅在用户显式配置了覆盖色或错误态时才写 Foreground。
+        // 先清除上一轮遗留的本地值（例如错误态的红色），恢复继承的主题前景色；
+        // 之后仅在用户显式配置了覆盖色时写 Foreground。否则错误红会永久卡死。
+        textBlock.ClearValue(TextBlock.ForegroundProperty);
+
         if (isError)
         {
             textBlock.Foreground = new SolidColorBrush(Color.Parse("#f44336"));
@@ -248,8 +250,7 @@ public partial class DutyComponent : ComponentBase<DutyComponentSettings>
             }
             catch
             {
-                // 非法颜色值：清除本地覆盖，回到继承的主题前景色。
-                textBlock.ClearValue(TextBlock.ForegroundProperty);
+                // 非法颜色值：保持继承的主题前景色。
             }
         }
 

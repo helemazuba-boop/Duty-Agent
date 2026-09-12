@@ -1,29 +1,44 @@
-<UserControl xmlns="https://github.com/avaloniaui"
-             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-             xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
-             xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
-             mc:Ignorable="d" d:DesignWidth="400" d:DesignHeight="300"
-             x:Class="DutyAgentBridge.Controls.DutyComponentSettingsControl">
-  <StackPanel Margin="16">
-    <TextBlock Text="\u503C\u65E5\u4EBA\u5458 \u8BBE\u7F6E" FontSize="18" FontWeight="Bold" Margin="0,0,0,16"/>
-    <!-- 刷新间隔 -->
-    <StackPanel Margin="0,0,0,12">
-      <TextBlock Text="\u5237\u65B0\u95F4\u9694\uFF08\u79D2\uFF09" FontWeight="SemiBold"/>
-      <NumericUpDown Value="60" Minimum="10" Maximum="3600" Increment="10" Width="200" Margin="0,4,0,0"/>
-    </StackPanel>
-    <!-- 字体大小 -->
-    <StackPanel Margin="0,0,0,12">
-      <TextBlock Text="\u5B57\u4F53\u5927\u5C0F" FontWeight="SemiBold"/>
-      <NumericUpDown Value="14" Minimum="8" Maximum="32" Width="200" Margin="0,4,0,0"/>
-    </StackPanel>
-    <!-- 字体颜色 -->
-    <StackPanel Margin="0,0,0,12">
-      <TextBlock Text="\u5B57\u4F53\u989C\u8272" FontWeight="SemiBold"/>
-      <TextBox Text="" Width="200" Margin="0,4,0,0" Watermark="#000000"/>
-    </StackPanel>
-    <!-- 双行显示 -->
-    <CheckBox Content="\u542F\u7528\u53CC\u884C\u663E\u793A" Margin="0,0,0,8"/>
-    <!-- 每个区域换行 -->
-    <CheckBox Content="\u6BCF\u4E2A\u533A\u57DF\u6362\u884C\u663E\u793A" Margin="0,0,0,8"/>
+<ci:ComponentBase x:Class="DutyAgentBridge.Controls.DutyComponentSettingsControl"
+                  x:TypeArguments="settings:DutyComponentSettings"
+                  xmlns="https://github.com/avaloniaui"
+                  xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+                  xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+                  xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+                  xmlns:settings="clr-namespace:DutyAgentBridge.Models"
+                  xmlns:ci="http://classisland.tech/schemas/xaml/core"
+                  xmlns:fa="clr-namespace:FluentAvalonia.UI.Controls;assembly=FluentAvalonia"
+                  x:CompileBindings="False"
+                  mc:Ignorable="d" d:DesignWidth="800" d:DesignHeight="450">
+  <StackPanel Spacing="8">
+    <fa:SettingsExpander IconSource="{ci:FluentIconSource &#xE8D4;}"
+                         Header="字体大小"
+                         Description="值日文本的显示字号。">
+      <fa:SettingsExpander.Footer>
+        <NumericUpDown Minimum="8" Maximum="72" Increment="1" Width="130"
+                       Value="{Binding Settings.FontSize, Mode=TwoWay}"/>
+      </fa:SettingsExpander.Footer>
+    </fa:SettingsExpander>
+
+    <fa:SettingsExpander IconSource="{ci:FluentIconSource &#xE790;}"
+                         Header="字体颜色"
+                         Description="留空跟随 ClassIsland 主题；可填 #RRGGBB 或颜色名。">
+      <fa:SettingsExpander.Footer>
+        <TextBox MinWidth="128" Watermark="跟随主题"
+                 Text="{Binding Settings.FontColor, Mode=TwoWay}"/>
+      </fa:SettingsExpander.Footer>
+    </fa:SettingsExpander>
+
+    <fa:SettingsExpander IconSource="{ci:FluentIconSource &#xE751;}"
+                         Header="换行方式"
+                         Description="不换行 / 每个区域一行 / 按人数对半拆成两行。">
+      <fa:SettingsExpander.Footer>
+        <ComboBox MinWidth="170"
+                  SelectedIndex="{Binding Settings.WrapModeIndex, Mode=TwoWay}">
+          <ComboBoxItem Content="不换行"/>
+          <ComboBoxItem Content="按区域换行"/>
+          <ComboBoxItem Content="对半拆分（两行）"/>
+        </ComboBox>
+      </fa:SettingsExpander.Footer>
+    </fa:SettingsExpander>
   </StackPanel>
-</UserControl>
+</ci:ComponentBase>
