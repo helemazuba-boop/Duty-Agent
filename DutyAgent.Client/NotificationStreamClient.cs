@@ -14,6 +14,10 @@ internal sealed class NotificationStreamClient : IDisposable
     private CancellationTokenSource? _cts;
     private Task? _workerTask;
 
+    // 后端每 15s 发一次 SSE ping；静默超过 45s（≈3 个 ping 周期未到）
+    // 即判定连接已失效，主动断开重连。
+    private static readonly TimeSpan IdleTimeout = TimeSpan.FromSeconds(45);
+
     public NotificationStreamClient(BackendProcessManager backend, DesktopNotificationService notificationService)
     {
         _backend = backend;
@@ -70,14 +74,24 @@ internal sealed class NotificationStreamClient : IDisposable
             {
                 await ListenOnceAsync(cancellationToken).ConfigureAwait(false);
                 reconnectDelay = TimeSpan.FromSeconds(2);
+                ClientLog.Info("通知流连接已结束（服务端关闭）。");
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
                 return;
             }
-            catch
+            catch (Exception ex)
             {
-                await Task.Delay(reconnectDelay, cancellationToken).ConfigureAwait(false);
+                ClientLog.Warn($"通知流连接中断，{(int)reconnectDelay.TotalSeconds}s 后重连：{ex.Message}");
+                try
+                {
+                    await Task.Delay(reconnectDelay, cancellationToken).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException)
+                {
+                    return;
+                }
+
                 reconnectDelay = TimeSpan.FromSeconds(Math.Min(30, reconnectDelay.TotalSeconds * 1.5));
             }
         }
@@ -98,6 +112,7 @@ internal sealed class NotificationStreamClient : IDisposable
             HttpCompletionOption.ResponseHeadersRead,
             cancellationToken).ConfigureAwait(false);
         response.EnsureSuccessStatusCode();
+        ClientLog.Info("通知流已连接。");
 
         await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
         using var reader = new StreamReader(stream);
@@ -106,7 +121,21 @@ internal sealed class NotificationStreamClient : IDisposable
 
         while (!cancellationToken.IsCancellationRequested)
         {
-            var line = await reader.ReadLineAsync(cancellationToken).ConfigureAwait(false);
+            string? line;
+            using (var idleCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken))
+            {
+                idleCts.CancelAfter(IdleTimeout);
+                try
+                {
+                    line = await reader.ReadLineAsync(idleCts.Token).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+                {
+                    throw new TimeoutException(
+                        $"通知流超过 {IdleTimeout.TotalSeconds:0}s 未收到任何数据（后端 ping 间隔 15s），判定连接已静默失效。");
+                }
+            }
+
             if (line is null)
             {
                 break;
@@ -154,8 +183,9 @@ internal sealed class NotificationStreamClient : IDisposable
                 _notificationService.Show(notification);
             }
         }
-        catch
+        catch (Exception ex)
         {
+            ClientLog.Warn($"通知事件解析失败：{ex.Message}");
         }
     }
 

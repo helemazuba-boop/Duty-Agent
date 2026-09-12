@@ -1,13 +1,19 @@
 <script setup lang="ts">
 /**
- * Panel — 三层卡片体系的第二层:白底 + 1px 边框 + 圆角 10,无阴影。
- * 替代裸 a-card;面板内分区用 surface-2 底,禁止卡中套卡。
+ * Panel — 三层卡片体系的第二层:浅色模式靠柔和阴影浮出画布(无边框),
+ * 深色模式靠 8% 白细线;面板内分区用 surface-2 底,禁止卡中套卡。
+ *
+ * padded 默认 true。注意:Vue 的 boolean prop 缺省值是 false 而不是 undefined,
+ * 不写默认值时"没传 padded"的面板会全部变成 flush,内容直接贴边。
  */
-defineProps<{
-  title?: string;
-  subtitle?: string;
-  padded?: boolean;
-}>();
+withDefaults(
+  defineProps<{
+    title?: string;
+    subtitle?: string;
+    padded?: boolean;
+  }>(),
+  { padded: true },
+);
 </script>
 
 <template>
@@ -32,8 +38,9 @@ defineProps<{
 <style scoped>
 .da-panel {
   background: var(--dt-surface);
-  border: 1px solid var(--dt-border);
+  border: 1px solid var(--dt-card-border);
   border-radius: var(--dt-radius-lg);
+  box-shadow: var(--dt-shadow-card);
   min-width: 0;
 }
 

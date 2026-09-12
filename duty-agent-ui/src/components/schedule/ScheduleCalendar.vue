@@ -267,7 +267,7 @@ const CHIP_LIMIT = 3;
   min-height: 96px;
   width: 100%;
   padding: 6px;
-  border: 1px solid var(--dt-border-2);
+  border: 1px solid var(--dt-border);
   border-radius: var(--dt-radius);
   background: var(--dt-surface);
   cursor: pointer;

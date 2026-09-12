@@ -127,7 +127,9 @@ public sealed class CoreRunProgress
 }
 
 /// <summary>
-/// 后端配置（来自 GET /api/v1/config）
+/// 通知事件（消费 GET /api/v1/notifications/stream，schema 真源是
+/// Python runtime.publish_notification）。字段按 C4 契约全部可空容错，
+/// 老后端不携带新增字段时保持 null/默认值。
 /// </summary>
 public sealed class DutyNotificationEvent
 {
@@ -157,6 +159,13 @@ public sealed class DutyNotificationEvent
 
     [JsonPropertyName("created_at")]
     public double CreatedAt { get; set; }
+
+    // C4 契约：新增字段可空容错，老后端不携带时保持 null。
+    [JsonPropertyName("created_at_iso")]
+    public string? CreatedAtIso { get; set; }
+
+    [JsonPropertyName("data")]
+    public Dictionary<string, object?>? Data { get; set; }
 }
 public sealed class DutyBackendConfig
 {

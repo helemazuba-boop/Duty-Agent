@@ -1,4 +1,5 @@
 using System.Net.NetworkInformation;
+using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
 
@@ -8,6 +9,10 @@ public static class SecurityHelper
 {
     private const string AesMacPrefix = "aesmac:v1:";
     private const string Pbkdf2Sha256Prefix = "pbkdf2_sha256";
+    // 契约 C2/D4：plan_presets[].api_key 的 DPAPI 密文前缀，Python 侧
+    // dpapi_compat.unprotect() 按该前缀识别并解密（失败置空 + warn，不抛）。
+    private const string DpapiPrefix = "dpapi:v1:";
+    private const uint CryptProtectUiForbidden = 0x1;
     private const int AesKeyBytes = 32;
     private const int HmacKeyBytes = 32;
     private const int SaltBytes = 16;
@@ -18,6 +23,134 @@ public static class SecurityHelper
 
     private static readonly byte[] AppBindingEntropy =
         SHA256.HashData(Encoding.UTF8.GetBytes("Duty-Agent.ApiKey.MacBinding.v1"));
+
+    #region DPAPI (当前用户作用域)
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct DataBlob
+    {
+        public int CbData;
+        public IntPtr PbData;
+    }
+
+    [DllImport("crypt32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    private static extern bool CryptProtectData(
+        ref DataBlob pDataIn,
+        string? szDataDescr,
+        IntPtr pOptionalEntropy,
+        IntPtr pvReserved,
+        IntPtr pPromptStruct,
+        uint dwFlags,
+        out DataBlob pDataOut);
+
+    [DllImport("crypt32.dll", SetLastError = true)]
+    private static extern bool CryptUnprotectData(
+        ref DataBlob pDataIn,
+        IntPtr ppszDataDescr,
+        IntPtr pOptionalEntropy,
+        IntPtr pvReserved,
+        IntPtr pPromptStruct,
+        uint dwFlags,
+        out DataBlob pDataOut);
+
+    public static bool IsDpapiProtected(string? value)
+    {
+        return !string.IsNullOrWhiteSpace(value) &&
+               value.StartsWith(DpapiPrefix, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// 以当前 Windows 用户作用域加密（CryptProtectData），
+    /// 返回 "dpapi:v1:&lt;base64>"，仅本机本用户可解。
+    /// 加密失败抛 CryptographicException —— 调用方决定是否明文降级。
+    /// </summary>
+    public static string ProtectForCurrentUser(string plainText)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(plainText);
+
+        var plainBytes = Encoding.UTF8.GetBytes(plainText);
+        var input = CreateBlob(plainBytes);
+        try
+        {
+            if (!CryptProtectData(ref input, "Duty-Agent plan api_key", IntPtr.Zero, IntPtr.Zero, IntPtr.Zero, CryptProtectUiForbidden, out var output))
+            {
+                throw new CryptographicException($"CryptProtectData failed (win32 error {Marshal.GetLastWin32Error()}).");
+            }
+
+            var cipherBytes = ReadBlobAndFreeBuffer(output);
+            return DpapiPrefix + Convert.ToBase64String(cipherBytes);
+        }
+        finally
+        {
+            Marshal.FreeHGlobal(input.PbData);
+            CryptographicOperations.ZeroMemory(plainBytes);
+        }
+    }
+
+    /// <summary>
+    /// 解密 "dpapi:v1:&lt;base64>" 密文；格式不符/解密失败返回 null（不抛，
+    /// 与 Python 侧 dpapi_compat 的容错语义对齐）。
+    /// </summary>
+    public static string? UnprotectCurrentUser(string? cipherText)
+    {
+        if (string.IsNullOrWhiteSpace(cipherText) || !IsDpapiProtected(cipherText))
+        {
+            return null;
+        }
+
+        byte[] cipherBytes;
+        try
+        {
+            cipherBytes = Convert.FromBase64String(cipherText[DpapiPrefix.Length..]);
+        }
+        catch (FormatException)
+        {
+            return null;
+        }
+
+        var input = CreateBlob(cipherBytes);
+        try
+        {
+            if (!CryptUnprotectData(ref input, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero, CryptProtectUiForbidden, out var output))
+            {
+                return null;
+            }
+
+            return Encoding.UTF8.GetString(ReadBlobAndFreeBuffer(output));
+        }
+        finally
+        {
+            Marshal.FreeHGlobal(input.PbData);
+        }
+    }
+
+    private static DataBlob CreateBlob(byte[] bytes)
+    {
+        var pointer = Marshal.AllocHGlobal(bytes.Length);
+        Marshal.Copy(bytes, 0, pointer, bytes.Length);
+        return new DataBlob { CbData = bytes.Length, PbData = pointer };
+    }
+
+    /// <summary>把 CRYPTPROTECT 分配的输出缓冲区拷贝为托管数组并释放原缓冲区。</summary>
+    private static byte[] ReadBlobAndFreeBuffer(DataBlob blob)
+    {
+        try
+        {
+            var bytes = new byte[blob.CbData];
+            if (blob.CbData > 0)
+            {
+                Marshal.Copy(blob.PbData, bytes, 0, blob.CbData);
+            }
+
+            return bytes;
+        }
+        finally
+        {
+            Marshal.FreeHGlobal(blob.PbData);
+        }
+    }
+
+    #endregion
 
     public static bool IsCurrentEncryptionFormat(string? encryptedText)
     {

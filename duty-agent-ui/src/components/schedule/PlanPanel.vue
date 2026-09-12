@@ -112,7 +112,7 @@ const subtitle = computed(() => {
   justify-content: space-between;
   gap: 8px;
   padding: 8px 16px;
-  border-bottom: 1px solid var(--dt-border-2);
+  border-bottom: 1px solid var(--dt-border);
 }
 
 .plan-day:last-child {
@@ -157,7 +157,7 @@ const subtitle = computed(() => {
 
 .plan-foot {
   padding: 10px 16px;
-  border-top: 1px solid var(--dt-border-2);
+  border-top: 1px solid var(--dt-border);
 }
 
 .plan-foot__link {

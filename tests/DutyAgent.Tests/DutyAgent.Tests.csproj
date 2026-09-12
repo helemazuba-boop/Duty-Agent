@@ -1,0 +1,42 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Wave 2-E 加分项：Services 纯逻辑的最小回归测试工程。
+
+    Services/Models 并非独立类库（编译进主插件 Duty-Agent.csproj），而主工程
+    依赖 ClassIsland/CommunityToolkit 等插件宿主包，测试工程直接 ProjectReference
+    会把整个插件（WPF/UI）拖进编译。因此这里按文件引用只编译可独立测试的纯逻辑：
+      - Services/HostConfigFileLock.cs        （O_EXCL 文件锁并发互斥）
+      - Services/SecurityHelper.cs            （DPAPI 加解密往返）
+      - Services/DutyBackendDocumentNormalizer.cs（归一化，对齐 Python 侧）
+    以及它们依赖的 Models 文件（全部只依赖 BCL）。不修改任何源码文件。
+  -->
+
+  <PropertyGroup>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <IsPackable>false</IsPackable>
+    <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="..\..\Services\HostConfigFileLock.cs" Link="IncludedSources\Services\HostConfigFileLock.cs" />
+    <Compile Include="..\..\Services\SecurityHelper.cs" Link="IncludedSources\Services\SecurityHelper.cs" />
+    <Compile Include="..\..\Services\DutyBackendDocumentNormalizer.cs" Link="IncludedSources\Services\DutyBackendDocumentNormalizer.cs" />
+    <Compile Include="..\..\Models\DutyBackendConfig.cs" Link="IncludedSources\Models\DutyBackendConfig.cs" />
+    <Compile Include="..\..\Models\DutySettingsModels.cs" Link="IncludedSources\Models\DutySettingsModels.cs" />
+    <Compile Include="..\..\Models\DutyState.cs" Link="IncludedSources\Models\DutyState.cs" />
+    <Compile Include="..\..\Models\DutyAccessTokenModes.cs" Link="IncludedSources\Models\DutyAccessTokenModes.cs" />
+    <Compile Include="..\..\Models\DutyServerPortModes.cs" Link="IncludedSources\Models\DutyServerPortModes.cs" />
+    <Compile Include="..\..\Models\RosterEntry.cs" Link="IncludedSources\Models\RosterEntry.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.11.1" />
+    <PackageReference Include="xunit" Version="2.9.2" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2" />
+  </ItemGroup>
+
+</Project>

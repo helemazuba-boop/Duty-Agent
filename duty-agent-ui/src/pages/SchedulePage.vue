@@ -582,7 +582,7 @@ const fmtTime = (ts: number) =>
 
 .ai-run__result {
   padding: 10px 12px;
-  border-top: 1px solid var(--dt-border-2);
+  border-top: 1px solid var(--dt-border);
   font-size: 14px;
   line-height: 1.7;
   color: var(--dt-text);

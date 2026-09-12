@@ -2,14 +2,15 @@
 :root,
 [data-theme='light'] {
   color-scheme: light;
-  --dt-primary: #4F46E5;
-  --dt-primary-soft: #EEF2FF;
+  --dt-primary: #5B5BD6;
+  --dt-primary-soft: #F0F0FE;
   --dt-live: #0891B2;
   --dt-live-soft: #ECFEFF;
   --dt-bg: #F6F7F9;
   --dt-surface: #FFFFFF;
   --dt-surface-2: #F9FAFB;
   --dt-overlay: #FFFFFF;
+  --dt-card-border: transparent;
   --dt-border: #E5E7EB;
   --dt-border-strong: #D1D5DB;
   --dt-hover: #F3F4F6;
@@ -19,7 +20,7 @@
   --dt-success: #16A34A;
   --dt-warning: #D97706;
   --dt-danger: #DC2626;
-  --dt-selection: #C7D2FE;
+  --dt-selection: #C8C8F5;
   --dt-scrollbar: #D1D5DB;
   --dt-spotlight: #1F2937;
   --dt-font-sans: Inter, "PingFang SC", "Microsoft YaHei", system-ui, -apple-system, sans-serif;
@@ -27,20 +28,23 @@
   --dt-radius-lg: 10px;
   --dt-radius-xl: 12px;
   --dt-shadow-overlay: 0 8px 24px rgba(0, 0, 0, 0.08);
+  --dt-shadow-card: 0 1px 2px rgba(15, 20, 30, 0.05), 0 6px 24px rgba(15, 20, 30, 0.06);
+  --dt-shadow-card-hover: 0 2px 4px rgba(15, 20, 30, 0.06), 0 12px 32px rgba(15, 20, 30, 0.10);
   --dt-shadow-subtle: 0 1px 2px rgba(0, 0, 0, 0.06);
 }
 
 [data-theme='dark'] {
   color-scheme: dark;
-  --dt-primary: #818CF8;
-  --dt-primary-soft: rgba(129, 140, 248, 0.14);
+  --dt-primary: #8F8DF0;
+  --dt-primary-soft: rgba(143, 141, 240, 0.14);
   --dt-live: #22D3EE;
   --dt-live-soft: rgba(34, 211, 238, 0.15);
   --dt-bg: #0F1115;
   --dt-surface: #161920;
   --dt-surface-2: #1D212A;
   --dt-overlay: #232834;
-  --dt-border: rgba(255, 255, 255, 0.10);
+  --dt-card-border: rgba(255, 255, 255, 0.08);
+  --dt-border: rgba(255, 255, 255, 0.08);
   --dt-border-strong: rgba(255, 255, 255, 0.18);
   --dt-hover: rgba(255, 255, 255, 0.06);
   --dt-text: #E6E8EB;
@@ -49,7 +53,7 @@
   --dt-success: #4ADE80;
   --dt-warning: #FBBF24;
   --dt-danger: #F87171;
-  --dt-selection: rgba(129, 140, 248, 0.35);
+  --dt-selection: rgba(143, 141, 240, 0.35);
   --dt-scrollbar: rgba(255, 255, 255, 0.16);
   --dt-spotlight: #2A2F3A;
   --dt-font-sans: Inter, "PingFang SC", "Microsoft YaHei", system-ui, -apple-system, sans-serif;
@@ -57,5 +61,7 @@
   --dt-radius-lg: 10px;
   --dt-radius-xl: 12px;
   --dt-shadow-overlay: 0 8px 24px rgba(0, 0, 0, 0.4);
+  --dt-shadow-card: none;
+  --dt-shadow-card-hover: none;
   --dt-shadow-subtle: 0 1px 2px rgba(0, 0, 0, 0.06);
 }

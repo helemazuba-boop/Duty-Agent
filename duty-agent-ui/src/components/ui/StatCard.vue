@@ -1,6 +1,6 @@
 <script setup lang="ts">
 /**
- * StatCard — 自绘 KPI 卡:标签 13px 次级色 → 数字 28px tabular → 底部 12px 对比信息。
+ * StatCard — 自绘 KPI 卡:标签 13px 次级色 → 数字 40px tabular → 底部 12px 对比信息。
  * 不用 AntD Statistic、不放 icon 大色块(那是模板味的来源)。
  * flashKey:传入"数据签名",变化时根元素触发一次环形 flash(v-flash 指令)。
  * to:传入路由地址则整卡渲染为 RouterLink。
@@ -46,17 +46,19 @@ withDefaults(
   display: flex;
   flex-direction: column;
   gap: 2px;
-  padding: 14px 16px;
+  padding: 16px 18px;
   background: var(--dt-surface);
-  border: 1px solid var(--dt-border);
+  border: 1px solid var(--dt-card-border);
   border-radius: var(--dt-radius-lg);
+  box-shadow: var(--dt-shadow-card);
   min-width: 0;
   text-decoration: none;
-  transition: border-color 0.15s ease;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
 }
 
 a.da-stat:hover {
   border-color: var(--dt-border-strong);
+  box-shadow: var(--dt-shadow-card-hover);
 }
 
 .da-stat__label {
@@ -74,9 +76,10 @@ a.da-stat:hover {
 }
 
 .da-stat__value {
-  font-size: 28px;
-  line-height: 36px;
+  font-size: 40px;
+  line-height: 48px;
   font-weight: 600;
+  letter-spacing: -0.02em;
   color: var(--dt-text);
 }
 

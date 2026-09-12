@@ -37,3 +37,17 @@ public class SchedulePoolItem
     [JsonPropertyName("note")]
     public string Note { get; set; } = string.Empty;
 }
+
+/// <summary>
+/// GET /api/v1/state 的响应封装（契约 C1，Python 后端提供）：
+/// {"state": load_state() 原样 dict, "mtime_ns": int|null}。
+/// mtime_ns 为 null 时（旧后端/无文件），消费方退化为按内容比较感知变更。
+/// </summary>
+public sealed class DutyBackendStateEnvelope
+{
+    [JsonPropertyName("state")]
+    public DutyState? State { get; set; }
+
+    [JsonPropertyName("mtime_ns")]
+    public long? MtimeNs { get; set; }
+}

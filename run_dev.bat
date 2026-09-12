@@ -9,4 +9,5 @@ chcp 65001 >nul
 setlocal enabledelayedexpansion
 set "ARGS=--skip-auth"
 if /i "%~1"=="full-auth" set "ARGS="
+if defined ARGS echo [警告] 开发模式已绕过鉴权，勿用于生产。
 "%~dp0Assets_Duty\python-embed\python.exe" "%~dp0orchestrator.py" %ARGS%

@@ -34,6 +34,7 @@ import difflib
 import json
 import math
 import os
+import re
 import subprocess
 import sys
 import time
@@ -51,6 +52,10 @@ PID_FILE_NAME = ".duty-agent-serve.pid"
 SERVE_LOG_NAME = "duty-serve.log"
 DEV_TOKEN_NAME = ".dev-token"
 SERVE_HEALTH_TIMEOUT_SECONDS = 30.0
+SERVE_LOG_MAX_BYTES = 5 * 1024 * 1024
+# Keep in sync with runtime.APP_VERSION; single-sourcing tracked in HANDOFF §24.
+APP_VERSION = "0.50.0"
+_TOKEN_MODE_LOG_RE = re.compile(r"__DUTY_SERVER_TOKEN_MODE__:([A-Za-z_]+)")
 
 
 # --------------------------------------------------------------------------- #
@@ -203,6 +208,11 @@ def _candidate_meta_paths(explicit: Optional[str]) -> list[Path]:
     env_meta = os.environ.get("DUTY_AGENT_META", "").strip()
     if env_meta:
         candidates.append(Path(env_meta).expanduser())
+    # Same override the desktop client's ClassIslandConfigLocator honors: a
+    # portable ClassIsland install is invisible to the %APPDATA% guesses below.
+    classisland_root = os.environ.get("CLASSISLAND_CONFIG_PATH", "").strip()
+    if classisland_root:
+        candidates.append(Path(classisland_root).expanduser() / "DutyAgentBridge" / META_FILE_NAME)
     appdata = os.environ.get("APPDATA", "").strip()
     localappdata = os.environ.get("LOCALAPPDATA", "").strip()
     for base in (appdata, localappdata):
@@ -262,15 +272,7 @@ def resolve_connection(args: argparse.Namespace) -> Connection:
     if not token:
         data_dir = getattr(args, "data_dir", None)
         data_path = Path(data_dir).expanduser() if data_dir else _default_data_dir()
-        token_file = data_path / DEV_TOKEN_NAME
-        try:
-            if token_file.is_file():
-                # utf-8-sig: an editor that saves the BOM would otherwise ship
-                # U+FEFF inside the bearer token and fail as a cryptic
-                # protocol error deep inside httpx.
-                token = token_file.read_text(encoding="utf-8-sig").strip()
-        except OSError:
-            token = ""
+        token = _read_dev_token(data_path)
 
     return Connection(base_url, token, source)
 
@@ -431,6 +433,53 @@ def cmd_health(conn: Connection, args: argparse.Namespace) -> Any:
     return request(conn, "GET", "/health", trace_id=args.trace_id, timeout=args.timeout)
 
 
+class _SseAccumulator:
+    """Accumulate SSE ``event:``/``data:`` lines into parsed events.
+
+    One event ends at a blank line; multi-line ``data:`` payloads are joined
+    (spec-compliant read — some proxies re-frame a large JSON into several
+    ``data:`` lines). ``finish()`` flushes a trailing event at EOF, which some
+    servers emit without a final blank line; dropping it used to lose the
+    ``complete`` event entirely."""
+
+    def __init__(self) -> None:
+        self.event: Optional[str] = None
+        self.data_lines: list[str] = []
+        self.final: Optional[dict] = None
+        self.last_data: Optional[dict] = None
+
+    def _flush(self) -> None:
+        event, self.event = self.event, None
+        raw_lines, self.data_lines = self.data_lines, []
+        if not raw_lines:
+            return
+        raw = "\n".join(raw_lines)
+        try:
+            parsed = json.loads(raw)
+        except ValueError:
+            _log(f"[cli] warning: dropped unparseable SSE data ({len(raw)} chars)")
+            parsed = None
+        if isinstance(parsed, dict):
+            self.last_data = parsed
+            phase = parsed.get("phase") or parsed.get("message")
+            if phase:
+                _log(f"[cli] progress: {phase}")
+        if event == "complete":
+            self.final = parsed if isinstance(parsed, dict) else self.final
+
+    def feed_line(self, line: str) -> None:
+        if not line:
+            self._flush()
+            return
+        if line.startswith("event:"):
+            self.event = line[len("event:"):].strip()
+        elif line.startswith("data:"):
+            self.data_lines.append(line[len("data:"):].strip())
+
+    def finish(self) -> None:
+        self._flush()
+
+
 def cmd_run(conn: Connection, args: argparse.Namespace) -> Any:
     """Provider-backed schedule run: trigger the backend to call its configured
     model and settle the result. Consumes the ``/schedule`` SSE stream and
@@ -443,8 +492,7 @@ def cmd_run(conn: Connection, args: argparse.Namespace) -> Any:
     # ReadTimeout mid-generation.
     run_timeout = max(float(getattr(args, "timeout", 0) or 0), 300.0)
     _log(f"[cli] POST {url} (SSE, timeout={run_timeout:.0f}s)")
-    final: Optional[dict] = None
-    last_data: Optional[dict] = None
+    acc = _SseAccumulator()
     try:
         with httpx.stream(
             "POST", url,
@@ -456,38 +504,12 @@ def cmd_run(conn: Connection, args: argparse.Namespace) -> Any:
             if resp.status_code >= 400:
                 resp.read()
                 raise RuntimeError(f"POST /api/v1/duty/schedule -> HTTP {resp.status_code}: {_extract_detail(resp)}")
-            event = None
-            data_lines: list[str] = []
             for line in resp.iter_lines():
-                if not line:
-                    # Blank line = end of one SSE event: flush accumulated
-                    # multi-line ``data:`` payloads. Some proxies re-frame a
-                    # large JSON into several data: lines; joining them is the
-                    # spec-compliant read.
-                    if data_lines:
-                        raw = "\n".join(data_lines)
-                        data_lines.clear()
-                        try:
-                            parsed = json.loads(raw)
-                        except ValueError:
-                            _log(f"[cli] warning: dropped unparseable SSE data ({len(raw)} chars)")
-                            parsed = None
-                        if isinstance(parsed, dict):
-                            last_data = parsed
-                            phase = parsed.get("phase") or parsed.get("message")
-                            if phase:
-                                _log(f"[cli] progress: {phase}")
-                        if event == "complete":
-                            final = parsed if isinstance(parsed, dict) else final
-                        event = None
-                    continue
-                if line.startswith("event:"):
-                    event = line[len("event:"):].strip()
-                elif line.startswith("data:"):
-                    data_lines.append(line[len("data:"):].strip())
+                acc.feed_line(line)
+            acc.finish()
     except httpx.HTTPError as ex:
         raise RuntimeError(f"Request to {url} failed: {ex}") from ex
-    result = final if final is not None else last_data
+    result = acc.final if acc.final is not None else acc.last_data
     if result is None:
         return {"status": "error", "message": "Schedule stream ended without a completion event."}
     return result
@@ -530,6 +552,76 @@ def _remove_pid_file(path: Path) -> None:
             path.unlink()
     except OSError:
         pass
+
+
+def _remove_pid_file_if_owned(path: Path, pid: int) -> bool:
+    """Remove the pid file only when it still registers ``pid``.
+
+    A concurrent ``serve`` may have overwritten the registration between our
+    write and this call; deleting unconditionally could unregister a healthy
+    backend we do not own (the desktop client enforces the same discipline via
+    MetaFileBelongsToCurrentProcess)."""
+    current = _read_pid(path)
+    if current is not None and current == int(pid):
+        _remove_pid_file(path)
+        return True
+    return False
+
+
+def _meta_file_for(data_dir: Path) -> Path:
+    return Path(data_dir) / META_FILE_NAME
+
+
+def _remove_meta_if_owned(data_dir: Path, pid: int) -> bool:
+    """Remove serve's meta file only when it belongs to ``pid``."""
+    try:
+        meta_path = _meta_file_for(data_dir)
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        if isinstance(meta, dict) and int(meta.get("pid", 0) or 0) == int(pid):
+            meta_path.unlink()
+            return True
+    except (OSError, ValueError):
+        pass
+    return False
+
+
+def _read_dev_token(data_dir: Path) -> str:
+    """Read the backend's dynamic token file.
+
+    utf-8-sig: an editor that saves the BOM would otherwise ship U+FEFF inside
+    the bearer token and fail as a cryptic protocol error deep inside httpx."""
+    token_file = Path(data_dir) / DEV_TOKEN_NAME
+    try:
+        if token_file.is_file():
+            return token_file.read_text(encoding="utf-8-sig").strip()
+    except OSError:
+        pass
+    return ""
+
+
+def _rotate_serve_log(log_path: Path, max_bytes: int = SERVE_LOG_MAX_BYTES) -> None:
+    """Keep one generation of the serve log; the append-only file used to grow
+    without bound across serve restarts."""
+    try:
+        if log_path.exists() and log_path.stat().st_size >= max_bytes:
+            os.replace(log_path, log_path.with_name(log_path.name + ".1"))
+    except OSError:
+        pass
+
+
+def _read_token_mode_from_log(log_path: Path) -> str:
+    """Recover the backend's token mode from its bootstrap stdout line in the
+    serve log. Without it, ``token_present: false`` cannot be told apart from
+    'static mode does not need a token'."""
+    try:
+        with open(log_path, "rb") as handle:
+            handle.seek(0, os.SEEK_END)
+            handle.seek(max(0, handle.tell() - 8192))
+            tail = handle.read(8192).decode("utf-8", errors="ignore")
+        match = _TOKEN_MODE_LOG_RE.search(tail)
+        return match.group(1) if match else ""
+    except OSError:
+        return ""
 
 
 def _pid_alive(pid: Optional[int]) -> bool:
@@ -653,10 +745,13 @@ def _stop_managed(data_dir: Path) -> dict:
     if pid is None:
         return {"status": "success", "stopped": False, "reason": "no managed pid file"}
     if not _pid_alive(pid):
-        _remove_pid_file(pid_path)
+        _remove_pid_file_if_owned(pid_path, pid)
         return {"status": "success", "stopped": False, "reason": "stale pid file; process not running", "pid": pid}
     gone = _terminate_pid(pid)
-    _remove_pid_file(pid_path)
+    if not _remove_pid_file_if_owned(pid_path, pid):
+        _log(f"[cli] pid file {pid_path} no longer registers pid {pid}; left untouched.")
+    if gone:
+        _remove_meta_if_owned(data_dir, pid)
     return {"status": "success", "stopped": gone, "pid": pid}
 
 
@@ -696,6 +791,7 @@ def cmd_serve(conn: Connection, args: argparse.Namespace) -> Any:
 
     serve_port = port if port > 0 else DEFAULT_PORT
     log_path = data_dir / SERVE_LOG_NAME
+    _rotate_serve_log(log_path)
     creationflags = 0
     if os.name == "nt":
         creationflags = getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
@@ -708,18 +804,23 @@ def cmd_serve(conn: Connection, args: argparse.Namespace) -> Any:
     loopback = "localhost,127.0.0.1,::1"
     child_env["NO_PROXY"] = f"{existing_no_proxy},{loopback}" if existing_no_proxy else loopback
     child_env["no_proxy"] = child_env["NO_PROXY"]
+    # MCP is opt-out here: default honors host-config enable_mcp (like the
+    # plugin path); the desktop standalone client hard-disables it on its own.
+    child_argv = [
+        sys.executable,
+        str(_core_py_path()),
+        "--server",
+        "--port",
+        str(serve_port),
+        "--data-dir",
+        str(data_dir),
+        "--no-parent-watch",
+    ]
+    if getattr(args, "disable_mcp_runtime", False):
+        child_argv.append("--disable-mcp-runtime")
     try:
         proc = subprocess.Popen(
-            [
-                sys.executable,
-                str(_core_py_path()),
-                "--server",
-                "--port",
-                str(serve_port),
-                "--data-dir",
-                str(data_dir),
-                "--no-parent-watch",
-            ],
+            child_argv,
             stdout=log_handle,
             stderr=subprocess.STDOUT,
             stdin=subprocess.DEVNULL,
@@ -748,7 +849,8 @@ def cmd_serve(conn: Connection, args: argparse.Namespace) -> Any:
         # The healthy backend answering at base_url is NOT our child (another
         # concurrent serve won the port and ours died on bind). Do not let our
         # dead pid overwrite the winner's registration.
-        _remove_pid_file(pid_path)
+        if not _remove_pid_file_if_owned(pid_path, proc.pid):
+            _log(f"[cli] pid file {pid_path} was re-registered by another serve; left untouched.")
         return {
             "status": "success",
             "already_running": True,
@@ -756,19 +858,21 @@ def cmd_serve(conn: Connection, args: argparse.Namespace) -> Any:
             "base_url": base_url,
         }
 
-    token = ""
-    token_file = data_dir / DEV_TOKEN_NAME
+    token = _read_dev_token(data_dir)
+    token_mode = _read_token_mode_from_log(log_path)
+    # Full shared schema — the desktop host writes the same field set for its
+    # bridge meta; consumers (this CLI included) can rely on any writer.
+    meta_payload = {
+        "version": APP_VERSION,
+        "pid": proc.pid,
+        "port": serve_port,
+        "token_mode": token_mode,
+        "token": token,
+        "started_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "data_dir": str(data_dir),
+    }
     try:
-        if token_file.is_file():
-            token = token_file.read_text(encoding="utf-8-sig").strip()
-    except OSError:
-        token = ""
-
-    try:
-        (data_dir / META_FILE_NAME).write_text(
-            json.dumps({"port": serve_port, "token": token}, ensure_ascii=False),
-            encoding="utf-8",
-        )
+        _meta_file_for(data_dir).write_text(json.dumps(meta_payload, ensure_ascii=False), encoding="utf-8")
     except OSError as ex:
         _log(f"[cli] warning: could not write meta file: {ex}")
 
@@ -779,6 +883,7 @@ def cmd_serve(conn: Connection, args: argparse.Namespace) -> Any:
         "port": serve_port,
         "base_url": base_url,
         "token_present": bool(token),
+        "token_mode": token_mode,
         "log_file": str(log_path),
     }
 
@@ -793,13 +898,7 @@ def cmd_status(conn: Connection, args: argparse.Namespace) -> Any:
     pid = _read_pid(_pid_file_for(data_dir))
     managed = pid is not None and _pid_alive(pid)
 
-    token = ""
-    token_file = data_dir / DEV_TOKEN_NAME
-    try:
-        if token_file.is_file():
-            token = token_file.read_text(encoding="utf-8-sig").strip()
-    except OSError:
-        token = ""
+    token = _read_dev_token(data_dir)
 
     result: dict = {
         "status": "success",
@@ -809,6 +908,10 @@ def cmd_status(conn: Connection, args: argparse.Namespace) -> Any:
         "managed": managed,
         "managed_pid": pid if managed else None,
     }
+    meta = _load_meta(getattr(args, "meta_file", None))
+    if isinstance(meta, dict) and str(meta.get("token_mode") or "").strip():
+        # Lets callers tell 'token missing' apart from 'static mode needs none'.
+        result["token_mode"] = str(meta.get("token_mode")).strip()
     if running:
         try:
             info = request(probe, "GET", "/engine/info", trace_id=None, timeout=5.0)
@@ -980,12 +1083,12 @@ COMMAND_SPECS: list[dict] = [
         "args": {
             "--stop": "Stop the backend managed by duty-cli (via pid file) and exit.",
             "--force": "Stop the managed backend (if any) and start a fresh one.",
-            "--port": "Port to serve/probe on (default 8765).",
-            "--data-dir": "Data directory for pid/meta/token/log files (default Assets_Duty/data).",
+            "--disable-mcp-runtime": "Start the backend with MCP disabled. Default: honor host-config enable_mcp.",
         },
-        "returns": "{status, started|already_running|stopped, pid, port, base_url, token_present, log_file}",
-        "notes": "Writes <data-dir>/.duty-agent-serve.pid and .duty-agent-meta.json so later "
-                 "commands auto-discover the backend.",
+        "returns": "{status, started|already_running|stopped, pid, port, base_url, token_present, token_mode, log_file}",
+        "notes": "Writes <data-dir>/.duty-agent-serve.pid and .duty-agent-meta.json (full shared schema, see "
+                 "meta_file below) so later commands auto-discover the backend. The append-only serve log is "
+                 "rotated at 5 MB (one .1 generation kept).",
     },
     {
         "name": "status",
@@ -1046,8 +1149,8 @@ def cmd_describe(_conn: Optional[Connection], _args: argparse.Namespace) -> Any:
         "global_flags": {
             "--base-url": "Backend base URL; else env DUTY_AGENT_BASE_URL; else meta file; else http://127.0.0.1:<port>.",
             "--token": "Bearer token; else env DUTY_AGENT_TOKEN; else meta file token; else <data-dir>/.dev-token.",
-            "--port": f"Port for the base-url fallback (default {DEFAULT_PORT}). Must precede the subcommand.",
-            "--data-dir": "Directory holding .dev-token for the token fallback. Must precede the subcommand.",
+            "--port": f"Port for the base-url fallback (default {DEFAULT_PORT}).",
+            "--data-dir": "Directory holding .dev-token / pid / meta files.",
             "--meta-file": "Explicit path to .duty-agent-meta.json for discovery.",
             "--trace-id": "Optional X-Duty-Trace-Id to correlate logs.",
             "--request-source": f"X-Duty-Request-Source value (default {DEFAULT_REQUEST_SOURCE}).",
@@ -1055,10 +1158,31 @@ def cmd_describe(_conn: Optional[Connection], _args: argparse.Namespace) -> Any:
             "--pretty": "Pretty-print the stdout JSON.",
             "--show-secrets": "Do not redact api_key fields in output.",
             "--out": "Also write the stdout JSON to this path as UTF-8 (use instead of PowerShell '>' which writes UTF-16 that some read tools cannot parse).",
+            "--version": "Print the CLI version as JSON and exit.",
         },
         "conventions": {
-            "flag_order": "Global flags must precede the subcommand (e.g. 'duty-cli --port 8811 plan-prompt ...').",
+            "flag_order": "Global flags are accepted both before and after the subcommand; when given in both places the subcommand-level value wins.",
             "file_args": "For file-valued args prefer the '--<name>-file PATH' variant over '@PATH': the '@' form collides with PowerShell's splatting operator.",
+            "data_dirs": "The CLI dev flow defaults to Assets_Duty/data; the desktop client uses %LOCALAPPDATA%/DutyAgent/data. Pass --data-dir/--meta-file to target the desktop instance's files.",
+        },
+        "meta_file": {
+            "purpose": "Optional discovery record for an already-running backend; written by 'duty-cli serve' and by the desktop host (same schema).",
+            "schema": {
+                "version": "backend/CLI version string",
+                "pid": "backend process id",
+                "port": "loopback HTTP port",
+                "token_mode": "dynamic | static | empty=unknown",
+                "token": "bearer token (dynamic mode)",
+                "started_at": "ISO-8601 UTC",
+                "data_dir": "backend data directory",
+            },
+            "discovery_order": [
+                "--meta-file",
+                "env DUTY_AGENT_META (direct file path)",
+                "env CLASSISLAND_CONFIG_PATH/<root>/DutyAgentBridge (portable ClassIsland override, same var as the desktop host)",
+                "%APPDATA%/ClassIsland/DutyAgentBridge",
+                "%LOCALAPPDATA%/DutyAgent/data",
+            ],
         },
         "commands": COMMAND_SPECS,
     }
@@ -1101,7 +1225,7 @@ class _JsonErrorParser(argparse.ArgumentParser):
             "(JSON, no network), or 'duty-cli --help' for human-readable usage."
         )
         if "unrecognized arguments" in message:
-            hint += " Note: global flags (--port/--data-dir/...) must precede the subcommand."
+            hint += " Note: global flags are accepted both before and after the subcommand; check the flag spelling."
         if "invalid choice" in message:
             try:
                 candidates = [spec["name"] for spec in COMMAND_SPECS]
@@ -1132,7 +1256,36 @@ def _timeout_type(text: str) -> float:
     return value
 
 
+def _install_common_args(p: argparse.ArgumentParser, *, suppressed: bool) -> None:
+    """Install the global flags shared by the top-level parser and subparsers.
+
+    Subparsers receive SUPPRESS defaults so an omitted flag never clobbers a
+    value parsed at the global position. Attaching the same set to both makes
+    every global flag legal before AND after the subcommand (previously only
+    --port/--data-dir were; the rest failed with 'unrecognized arguments')."""
+    def d(default: Any) -> Any:
+        return argparse.SUPPRESS if suppressed else default
+
+    p.add_argument("--base-url", default=d(""), help="Backend base URL (overrides env/meta discovery).")
+    p.add_argument("--token", default=d(""), help="Bearer token (overrides env/meta discovery).")
+    p.add_argument("--port", type=int, default=d(0), help=f"Port for base-url fallback (default {DEFAULT_PORT}).")
+    p.add_argument("--data-dir", default=d(""), help="Directory holding .dev-token / pid / meta files.")
+    p.add_argument("--meta-file", default=d(""), help="Explicit path to .duty-agent-meta.json.")
+    p.add_argument("--trace-id", default=d(""), help="Optional X-Duty-Trace-Id header value.")
+    p.add_argument("--request-source", default=d(DEFAULT_REQUEST_SOURCE), help="X-Duty-Request-Source header value.")
+    p.add_argument("--timeout", type=_timeout_type, default=d(DEFAULT_TIMEOUT_SECONDS), help="HTTP timeout in seconds (0 < t <= 3600).")
+    p.add_argument("--pretty", action="store_true", help="Pretty-print stdout JSON.")
+    p.add_argument("--show-secrets", action="store_true", help="Do not redact api_key fields.")
+    p.add_argument("--out", default=d(""), help="Also write the stdout JSON to this path as UTF-8 (avoids PowerShell '>' UTF-16).")
+    p.add_argument("--version", action="store_true", help="Print the CLI version as JSON and exit.")
+
+
 def build_parser() -> argparse.ArgumentParser:
+    common_defaults = argparse.ArgumentParser(add_help=False)
+    _install_common_args(common_defaults, suppressed=False)
+    common_suppressed = argparse.ArgumentParser(add_help=False)
+    _install_common_args(common_suppressed, suppressed=True)
+
     parser = _JsonErrorParser(
         prog="duty-cli",
         description="Duty-Agent CLI: external context-engineering client for an already-running backend.",
@@ -1141,28 +1294,21 @@ def build_parser() -> argparse.ArgumentParser:
             "catalog of every command, its arguments, and the two-phase delegation "
             "flow. Running with no command prints that same catalog."
         ),
+        parents=[common_defaults],
     )
-    parser.add_argument("--base-url", default="", help="Backend base URL (overrides env/meta discovery).")
-    parser.add_argument("--token", default="", help="Bearer token (overrides env/meta discovery).")
-    parser.add_argument("--port", type=int, default=0, help=f"Port for base-url fallback (default {DEFAULT_PORT}).")
-    parser.add_argument("--data-dir", default="", help="Directory holding .dev-token for token fallback.")
-    parser.add_argument("--meta-file", default="", help="Explicit path to .duty-agent-meta.json.")
-    parser.add_argument("--trace-id", default="", help="Optional X-Duty-Trace-Id header value.")
-    parser.add_argument("--request-source", default=DEFAULT_REQUEST_SOURCE, help="X-Duty-Request-Source header value.")
-    parser.add_argument("--timeout", type=_timeout_type, default=DEFAULT_TIMEOUT_SECONDS, help="HTTP timeout in seconds (0 < t <= 3600).")
-    parser.add_argument("--pretty", action="store_true", help="Pretty-print stdout JSON.")
-    parser.add_argument("--show-secrets", action="store_true", help="Do not redact api_key fields.")
-    parser.add_argument("--out", default="", help="Also write the stdout JSON to this path as UTF-8 (avoids PowerShell '>' UTF-16).")
 
     sub = parser.add_subparsers(dest="command", required=False)
 
-    p = sub.add_parser("plan-prompt", help="Build a single_pass prompt for external-AI delegation.")
+    def _add(name: str, help_text: str) -> argparse.ArgumentParser:
+        return sub.add_parser(name, help=help_text, parents=[common_suppressed])
+
+    p = _add("plan-prompt", "Build a single_pass prompt for external-AI delegation.")
     g = p.add_mutually_exclusive_group(required=True)
     g.add_argument("--instruction", help="Instruction text; literal, @file, or - for stdin.")
     g.add_argument("--instruction-file", help="Path to instruction text (no @ needed; PowerShell-safe).")
     p.add_argument("--handle-out", default="", help="Write only the resume_context handle to this UTF-8 path (feed to plan-ingest --handle-file).")
 
-    p = sub.add_parser("plan-ingest", help="Ingest an external-AI completion.")
+    p = _add("plan-ingest", "Ingest an external-AI completion.")
     g = p.add_mutually_exclusive_group(required=True)
     g.add_argument("--completion", help="Completion text; literal, @file, or - for stdin.")
     g.add_argument("--completion-file", help="Path to the V2 INI completion (no @ needed; PowerShell-safe).")
@@ -1170,52 +1316,49 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument("--handle", help="resume_context JSON; literal, @file, or - for stdin.")
     g.add_argument("--handle-file", help="Path to the resume_context JSON (no @ needed; PowerShell-safe).")
 
-    sub.add_parser("inspect", help="Read engine/info + snapshot.")
-    sub.add_parser("get-config", help="Read config.")
+    _add("inspect", "Read engine/info + snapshot.")
+    _add("get-config", "Read config.")
 
-    p = sub.add_parser("update-config", help="Patch config.")
+    p = _add("update-config", "Patch config.")
     g = p.add_mutually_exclusive_group(required=True)
     g.add_argument("--patch", help="JSON patch object; literal, @file, or - for stdin.")
     g.add_argument("--patch-file", help="Path to the JSON patch (no @ needed; PowerShell-safe).")
 
-    sub.add_parser("get-roster", help="Read roster.")
+    _add("get-roster", "Read roster.")
 
-    p = sub.add_parser("replace-roster", help="Replace the full roster.")
+    p = _add("replace-roster", "Replace the full roster.")
     g = p.add_mutually_exclusive_group(required=True)
     g.add_argument("--roster", help="JSON roster array; literal, @file, or - for stdin.")
     g.add_argument("--roster-file", help="Path to the JSON roster (no @ needed; PowerShell-safe).")
 
-    p = sub.add_parser("edit-entry", help="Create/overwrite one schedule entry.")
+    p = _add("edit-entry", "Create/overwrite one schedule entry.")
     g = p.add_mutually_exclusive_group(required=True)
     g.add_argument("--entry", help="JSON entry object; literal, @file, or - for stdin.")
     g.add_argument("--entry-file", help="Path to the JSON entry (no @ needed; PowerShell-safe).")
 
-    sub.add_parser("rollback", help="Roll back to the previous state.")
-    sub.add_parser("health", help="Backend health probe.")
+    _add("rollback", "Roll back to the previous state.")
+    _add("health", "Backend health probe.")
 
-    p = sub.add_parser("run", help="Provider-backed schedule run (backend calls its configured model).")
+    p = _add("run", "Provider-backed schedule run (backend calls its configured model).")
     g = p.add_mutually_exclusive_group(required=True)
     g.add_argument("--instruction", help="Instruction text; literal, @file, or - for stdin.")
     g.add_argument("--instruction-file", help="Path to instruction text (no @ needed; PowerShell-safe).")
 
-    p = sub.add_parser("serve", help="Start/stop the backend (detached, pid-file managed).")
+    p = _add("serve", "Start/stop the backend (detached, pid-file managed).")
     p.add_argument("--stop", action="store_true", help="Stop the backend managed by duty-cli.")
     p.add_argument("--force", action="store_true", help="Stop a managed backend and restart it.")
-    # SUPPRESS default: when the flag is omitted at the subcommand level, do NOT
-    # write the dest, so a global-position ``--port``/``--data-dir`` survives
-    # instead of being clobbered by the subparser default.
-    p.add_argument("--port", type=int, default=argparse.SUPPRESS, help=f"Port to serve/probe on (default {DEFAULT_PORT}).")
-    p.add_argument("--data-dir", default=argparse.SUPPRESS, help="Data directory for pid/meta/token/log files.")
+    p.add_argument(
+        "--disable-mcp-runtime",
+        action="store_true",
+        help="Start the backend with MCP disabled. Default: honor host-config enable_mcp "
+             "(the desktop standalone client hard-disables it on its own).",
+    )
 
-    p = sub.add_parser("status", help="Probe backend liveness and discovery info.")
-    p.add_argument("--port", type=int, default=argparse.SUPPRESS, help=f"Port to probe (default {DEFAULT_PORT}).")
-    p.add_argument("--data-dir", default=argparse.SUPPRESS, help="Data directory holding the pid/token files.")
+    p = _add("status", "Probe backend liveness and discovery info.")
 
-    p = sub.add_parser("doctor", help="First-run check: bootstrap backend + readiness report (with model probe).")
-    p.add_argument("--port", type=int, default=argparse.SUPPRESS, help=f"Port to serve/probe on (default {DEFAULT_PORT}).")
-    p.add_argument("--data-dir", default=argparse.SUPPRESS, help="Data directory for backend files.")
+    p = _add("doctor", "First-run check: bootstrap backend + readiness report (with model probe).")
 
-    sub.add_parser("describe", help="Emit the machine-readable command catalog (no network).")
+    _add("describe", "Emit the machine-readable command catalog (no network).")
 
     return parser
 
@@ -1244,6 +1387,14 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     # Normalize the dashed dest names used by handlers.
     args.trace_id = str(getattr(args, "trace_id", "") or "").strip() or None
+
+    if getattr(args, "version", False):
+        return emit(
+            {"status": "success", "tool": "duty-agent-cli", "version": APP_VERSION},
+            pretty=pretty,
+            show_secrets=show_secrets,
+            out_path=out_path,
+        )
 
     handler = HANDLERS.get(args.command)
 

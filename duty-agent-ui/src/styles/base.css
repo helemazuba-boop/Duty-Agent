@@ -171,7 +171,7 @@ body {
 }
 
 .page-title {
-  font-size: 20px;
+  font-size: 24px;
   font-weight: 600;
   color: var(--dt-text);
   margin: 0;
@@ -219,9 +219,10 @@ body {
 }
 
 .stat-value {
-  font-size: 28px;
+  font-size: 40px;
   font-weight: 600;
   line-height: 1.2;
+  letter-spacing: -0.02em;
   color: var(--dt-text);
 }
 

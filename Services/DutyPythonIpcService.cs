@@ -24,6 +24,7 @@ public interface IPythonIpcService: IDisposable
     Task<DutyBackendConfig> UpdateBackendConfigAsync(DutyBackendConfigPatch patch, string requestSource = "host_settings", string? traceId = null, CancellationToken cancellationToken = default);
     Task<DutyScheduleEntrySaveResponse> SaveScheduleEntryAsync(DutyScheduleEntrySaveRequest request, string requestSource = "host_settings", string? traceId = null, CancellationToken cancellationToken = default);
     Task<DutyBackendSnapshot> GetBackendSnapshotAsync(string requestSource = "host_settings", string? traceId = null, CancellationToken cancellationToken = default);
+    Task<DutyBackendStateEnvelope> GetBackendStateAsync(CancellationToken cancellationToken = default);
     Task EnsureReadyAsync(CancellationToken cancellationToken = default);
     Task RestartEngineAsync();
     Task StopAsync();
@@ -699,6 +700,12 @@ public class DutyPythonIpcService : IPythonIpcService
                 }
             }
 
+            // HTTP 就绪探测：port/token bootstrap 只证明进程活着并打出了端口，
+            // 不证明 FastAPI 已经 accept；历史上"Ready 但连接被拒"的窗口把
+            // 首个请求直接打进 Faulted/失败分支。这里轮询 /health，≤15s 内
+            // 200 才算启动完成（对齐 EngineStartupTimeoutSeconds）。
+            await WaitForBackendHealthAsync().ConfigureAwait(false);
+
             startupCompleted = true;
             _lastEngineReadyUtc = DateTime.UtcNow;
         }
@@ -744,6 +751,49 @@ public class DutyPythonIpcService : IPythonIpcService
         catch (SocketException)
         {
             return false;
+        }
+    }
+
+    // 启动期 HTTP 就绪探测：轮询 /health 直到 200 或超时（≤15s）。
+    // 仅用于启动窗口（StartPythonProcessAsync 内），不是运行期看门狗。
+    private async Task WaitForBackendHealthAsync()
+    {
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(EngineStartupTimeoutSeconds));
+        string? lastFailure = null;
+        try
+        {
+            while (true)
+            {
+                cts.Token.ThrowIfCancellationRequested();
+                try
+                {
+                    using var request = new HttpRequestMessage(HttpMethod.Get, $"http://127.0.0.1:{_serverPort}/health");
+                    ApplyAuthorizationHeader(request);
+                    using var response = await _httpClient.SendAsync(request, cts.Token).ConfigureAwait(false);
+                    if (response.IsSuccessStatusCode)
+                    {
+                        return;
+                    }
+
+                    lastFailure = $"HTTP {(int)response.StatusCode}";
+                }
+                catch (OperationCanceledException)
+                {
+                    throw;
+                }
+                catch (Exception ex)
+                {
+                    lastFailure = ex.Message;
+                }
+
+                await Task.Delay(250, cts.Token).ConfigureAwait(false);
+            }
+        }
+        catch (OperationCanceledException) when (cts.IsCancellationRequested)
+        {
+            throw new TimeoutException(
+                $"Backend /health did not become ready within {EngineStartupTimeoutSeconds}s." +
+                (lastFailure == null ? string.Empty : $" Last failure: {lastFailure}"));
         }
     }
 
@@ -1123,7 +1173,16 @@ public class DutyPythonIpcService : IPythonIpcService
                                 finalResult = CoreRunResult.Fail(msg);
                             }
                         }
-                        catch { }
+                        catch (Exception ex)
+                        {
+                            // 静默吞掉会让用户看到误导性的"stream closed prematurely"；
+                            // 记录样本并给出明确的失败结果。
+                            var parseError = $"Schedule result event parse failed: {ex.Message}";
+                            DutyDiagnosticsLogger.Warn("BackendIpc", "SSE complete-event parse failed.",
+                                new { preview = TruncateForLog(dataBuffer.ToString(), 320), error = ex.Message });
+                            LastErrorMessage = parseError;
+                            finalResult = CoreRunResult.Fail("后端返回的排班结果无法解析，请重试或查看后端日志。");
+                        }
                     }
                     else if (dataBuffer.Length > 0)
                     {
@@ -1135,7 +1194,13 @@ public class DutyPythonIpcService : IPythonIpcService
                             var chunk = evt.TryGetProperty("stream_chunk", out var cp) ? cp.GetString() : null;
                             progressCallback?.Invoke(new CoreRunProgress(phase, progressMessage, chunk));
                         }
-                        catch { }
+                        catch (Exception ex)
+                        {
+                            // 进度事件解析失败不致命：记日志并继续读流。
+                            DutyDiagnosticsLogger.Warn("BackendIpc", "SSE progress-event parse failed.",
+                                new { preview = TruncateForLog(dataBuffer.ToString(), 320), error = ex.Message });
+                            LastErrorMessage = $"Schedule progress event parse failed: {ex.Message}";
+                        }
                     }
 
                     currentEvent = null;
@@ -1369,6 +1434,28 @@ public class DutyPythonIpcService : IPythonIpcService
         return await SendJsonAsync<DutyBackendSnapshot>(HttpMethod.Get, "/api/v1/snapshot", null, requestSource, traceId, cancellationToken).ConfigureAwait(false);
     }
 
+    // GET /api/v1/state (契约 C1)。DutyStateManager 以 5s 间隔轮询本方法，
+    // 因此这里刻意不走 SendJsonAsync 的 Info 级请求日志，避免常驻轮询把
+    // 诊断日志刷成每 5s 两行；失败由调用方以"状态翻转"策略降频记录。
+    public async Task<DutyBackendStateEnvelope> GetBackendStateAsync(CancellationToken cancellationToken = default)
+    {
+        await EnsureReadyAsync(cancellationToken).ConfigureAwait(false);
+
+        using var request = new HttpRequestMessage(HttpMethod.Get, $"http://127.0.0.1:{_serverPort}/api/v1/state");
+        ApplyAuthorizationHeader(request);
+
+        using var response = await _httpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
+        var responseText = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+        if (!response.IsSuccessStatusCode)
+        {
+            throw new HttpRequestException(
+                $"GET /api/v1/state failed with HTTP {(int)response.StatusCode}: {TruncateForLog(responseText, 320)}");
+        }
+
+        var parsed = JsonSerializer.Deserialize<DutyBackendStateEnvelope>(responseText, JsonOptions);
+        return parsed ?? throw new InvalidOperationException("Failed to parse backend state response.");
+    }
+
     public async Task SendCancelScheduleAsync(CancellationToken cancellationToken = default)
     {
         var socket = _activeRunSocket;
@@ -1455,6 +1542,9 @@ public class DutyPythonIpcService : IPythonIpcService
                         durationMs = stopwatch.ElapsedMilliseconds,
                         responsePreview = TruncateForLog(responseText, 320)
                     });
+                // 引擎状态页/调用方依赖该字段显示"最近一次失败原因"；
+                // 非 2xx 也属于引擎层失败，必须更新而不是只留启动期错误。
+                LastErrorMessage = $"Backend request {method.Method} {relativePath} failed with HTTP {(int)response.StatusCode}: {TruncateForLog(responseText, 320)}";
                 response.EnsureSuccessStatusCode();
             }
 
@@ -1609,6 +1699,11 @@ public class DutyPythonIpcService : IPythonIpcService
                 _pythonJobHandle = CreateJobObject(IntPtr.Zero, null);
                 if (_pythonJobHandle == IntPtr.Zero)
                 {
+                    // Job 绑定失败意味着"杀宿主进程带走后端"的兜底失效，
+                    // 孤儿 python.exe 会残留系统 —— 必须可见而不是静默。
+                    DutyDiagnosticsLogger.Error("BackendIpc",
+                        "CreateJobObject failed; python child processes may outlive the host process.",
+                        data: new { win32Error = Marshal.GetLastWin32Error() });
                     return;
                 }
 
@@ -1633,6 +1728,9 @@ public class DutyPythonIpcService : IPythonIpcService
                     {
                         CloseHandle(_pythonJobHandle);
                         _pythonJobHandle = IntPtr.Zero;
+                        DutyDiagnosticsLogger.Error("BackendIpc",
+                            "SetInformationJobObject failed; python child processes may outlive the host process.",
+                            data: new { win32Error = Marshal.GetLastWin32Error() });
                         return;
                     }
                 }
@@ -1647,8 +1745,9 @@ public class DutyPythonIpcService : IPythonIpcService
                 AssignProcessToJobObject(_pythonJobHandle, process.Handle);
             }
         }
-        catch
+        catch (Exception ex)
         {
+            DutyDiagnosticsLogger.Error("BackendIpc", "Failed to bind python process to job object.", ex);
         }
     }
 

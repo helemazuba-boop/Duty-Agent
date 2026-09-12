@@ -3,8 +3,6 @@
 
 from __future__ import annotations
 
-import traceback
-
 from execution_profiles import build_execution_plan, resolve_execution_profile
 from llm_transport import call_llm
 from multi_agent import run_multi_agent_schedule
@@ -79,7 +77,9 @@ def run_schedule(ctx: Context, input_data: dict, emit_progress_fn=None, stop_eve
         result.setdefault("execution_plan", execution_plan.to_metadata())
         return result
     except Exception as ex:
-        traceback.print_exc()
+        # 不写 stderr：后端 stdout/stderr 是通向宿主客户端的管道，缓冲区写满
+        # 会永久阻塞写入线程（若在事件循环上则整个服务假死）。异常已由下方
+        # 文件 logger 完整记录（含 traceback）。
         _logger = getattr(ctx, "logger", None)
         if _logger is not None:
             _logger.error(

@@ -30,4 +30,11 @@ internal sealed class NotificationEvent
 
     [JsonPropertyName("created_at")]
     public double CreatedAt { get; set; }
+
+    // C4 契约：通知 schema 的新增字段全部可空容错，老后端不携带时保持 null。
+    [JsonPropertyName("created_at_iso")]
+    public string? CreatedAtIso { get; set; }
+
+    [JsonPropertyName("data")]
+    public Dictionary<string, object?>? Data { get; set; }
 }

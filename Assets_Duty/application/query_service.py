@@ -20,6 +20,8 @@ class QueryService:
             "version": self._runtime.version,
             "uptime_seconds": round(time.monotonic() - self._runtime.started_at, 3),
             "data_dir": str(self._runtime.data_dir),
+            # 任务2：让"鉴权被绕过"从 /health 即可观测（SKIP_AUTH_BYPASS 环境）。
+            "auth_bypassed": bool(getattr(self._runtime, "skip_auth_bypass", False)),
         }
 
     def engine_info(self) -> dict:
@@ -32,6 +34,7 @@ class QueryService:
             "supported_single_pass_strategies": ["auto", "cloud_standard", "edge_tuned", "edge_generic", "incremental_thinking"],
             "supported_plan_profiles": ["standard", "agents", "incremental_small", "offline"],
             "current_runtime_mode": "dynamic_dispatch",
+            "auth_bypassed": bool(getattr(self._runtime, "skip_auth_bypass", False)),
         }
 
     def get_config(self, trace_id: str | None = None, request_source: str = "api") -> dict:

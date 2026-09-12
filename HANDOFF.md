@@ -475,3 +475,104 @@ usage error 全部走 `_JsonErrorParser` 输出 JSON+exit 2；15 个子命令 --
 - `py -3.13 test_auth_runtime.py`：11/11 通过。
 - 本地起后端（动态 token）：`/app/` 产物无 `__DEV_TOKEN__`；`Bearer <本次真 token>` → `/api/v1/roster` 200；`Bearer <旧 DEV token>` → 401；根路径 `/favicon.svg` 由 401 变 404。
 - 未改动项（如实声明）：`/api/v1/*` HTTP 仅认 Authorization 头、WS/MCP 才认 query token 的不对称保持原设计；C# 客户端代码（§20 的 WebAppUrlChanged 链路）本轮未动。
+
+## 22. 后端"假死"（进程存活但所有请求超时）——管道排空缺失（2026-09-11）
+
+> §21 修复后实测发现的第二个独立缺陷。现象：客户端 UI 显示"后端未连接"，但后端进程仍在、端口仍在监听，
+> `/health` 等所有请求超时无响应，后端日志戛然而止无任何错误。
+> py-spy 线程栈实锤：MainThread（uvicorn 事件循环）卡在 `logging.error → StreamHandler.emit` 写 stderr；
+> 另一排班工作线程卡在 `engine.py:82 traceback.print_exc()` 写 stderr。
+> 根因：`BackendProcessManager` 仅在启动 20 秒内读取后端 stdout/stderr（stderr 排空任务因
+> `linkedCts` dispose 抛 ObjectDisposedException 被吞而提前死亡，stdout 捕获完 port/token 后即停止读取）。
+> 运行期异常的 traceback 把管道缓冲区（约 4 KiB）写满后，任何写 stderr 的线程永久阻塞——
+> 写入发生在事件循环上即整服务假死。独立客户端无 watchdog，假死无法自愈。
+
+### 22.1 修复
+
+1. `DutyAgent.Client/BackendProcessManager.cs`（根修）：
+   - stdout/stderr 改为**进程生命周期排空泵**：启动即开两个常驻 Task 逐行读取至 EOF；
+   - stdout 泵内联解析 `__DUTY_SERVER_PORT__/__DUTY_SERVER_TOKEN__` 引导行，经 TCS 通知 `WaitForBootstrapAsync`（TCS 由启动闭包捕获，避免旧进程 Exited 污染新一轮引导）；
+   - stderr 泵写入 Debug 输出并维护 8 KiB 环形缓冲，启动超时信息携带最近 stderr 便于诊断；
+   - 进程退出前未完成引导时经 Exited 事件使引导立即失败（而非等满 20s 超时）。
+2. `Assets_Duty/engine.py`：删除 `run_schedule` except 中的 `traceback.print_exc()`——下一行已有文件 logger 完整记录（含 traceback），裸写 stderr 属重复且是本次假死触发点。
+3. 排查其余运行期 print：`core.py` 的 print 均为启动期一次性输出，保留。
+
+### 22.2 验证（本机实测）
+
+- `py -3.13`：engine 导入 OK，`test_auth_runtime.py` 11/11 通过。
+- `dotnet build` 0 警告 0 错误；新客户端实机启动：后端引导（新 TCS 路径）正常，带新 token `GET /api/v1/snapshot` → 200。
+- 修复后排班失败将在 UI/诊断日志中显示真实错误（此前被吞进写满的管道），后端不再假死。
+
+## 23. 排班卡"stream_start ×2"——LLM 端点不稳定 + 重试不可见 + SuicideWatch 失效（2026-09-11）
+
+> 实测排班时 UI 长时间停在 `stream_start`（×2）。py-spy 线程栈：排班线程卡在
+> `llm_transport.request_llm_stream → urlopen → _read_status`（TLS 建立后等响应状态行）。
+> 当前方案 `https://integrate.api.nvidia.com/v1`（deepseek）从本机网络**不稳定**：23:38 同配置 20s 成功，
+> 23:40 起三次尝试全部 120s 读超时（×2 即第 2 次尝试），23:46:52 按 `120s×3+退避≈6min` 规律失败——
+> 超时机制本身正常，问题是无反馈的长等待 + 触发的两个次生 bug。
+
+### 23.1 修复
+
+1. `Assets_Duty/llm_transport.py`：`execute_with_retries` 新增 `progress_callback/stop_event` 透传——
+   网络类错误重试前发出 `llm_retry` 进度事件（第 N 次失败、将重试 M/3、退避秒数），退避改为
+   `stop_event.wait()` 可被取消；三处调用点全部接入。重试期间 UI 不再是黑箱。
+2. `Assets_Duty/core.py`：**SuicideWatch 修复**。父进程死亡后 stdout/stderr 管道读端关闭，
+   `WaitForSingleObject` 返回后的 `print(..., flush=True)` 抛 BrokenPipeError 导致线程死亡、
+   `os._exit(0)` 永不执行——后端成为孤儿（实测存活 3 分钟+）。改为 `_safe_print()`（吞 OSError）
+   且退出路径上不再有 print；posix 分支同步修复。
+3. 实测回归：强杀客户端 → 后端 5 秒内自我退出（PASS）；`GET /api/v1/snapshot` 带新 token → 200。
+
+### 23.2 待办/建议（非代码）
+
+- `integrate.api.nvidia.com` 在当前网络环境时通时断：建议在设置页用"检测/模型探测"验证端点可达性，
+  或换成稳定可达的服务商/中转（此前 stepfun 配置可用）。排班失败的真实原因现已会显示在 UI 与
+  诊断日志中（`Network error: The read operation timed out`）。
+
+## 24. 全量修复战役总账（2026-09-12，REPAIR_PLAN.md 为规格源）
+
+> 依据 2026-09-11 三路并行审计的 48 项发现，按"文件所有权互斥"拆 5 波执行：
+> 阶段 0（主 agent 规格）→ Wave 1（A=Python 后端 / B=C# 插件服务 / C=独立客户端+前端，3 并行）→
+> Wave 2（D=构建CI / E=回归测试，2 并行）→ Wave 3（主 agent 收尾验收）。
+
+### 24.1 架构决策（用户拍板 D1/D2/D3，主 agent 默认 D4/D5）
+
+- D1 state.json 单写方：插件 DutyStateManager 删除全部文件 IO 与 FileSystemWatcher，改 5s 轮询 `GET /api/v1/state`（mtime_ns 去抖）；A 提供 C1 契约端点。
+- D2 auto-run 单点化：插件删除 `_autoRunTimer`/`TryRunAutoSchedule` auto-run 分支/本地提醒发布；后端为唯一触发者。
+- D3 死入口处置：删除 `Assets_Duty/desktop/`、`Assets_Duty/start_backend.py`、`build_desktop.bat`（管道假死同型活体）；`orchestrator.py` 修复保留（终身排空 + 进程树终止 + dev-token env 注入）。
+- D4 api_key DPAPI：`dpapi:v1:` 前缀；C# SecurityHelper P/Invoke crypt32 加密写入 settings.json，Python dpapi_compat ctypes 解密（仅运行时投影层，持久化保持密文）；明文键兼容读取。跨语言往返实测 PASS（PowerShell DPAPI → Python unprotect）。
+- D5 auto-run 原子认领：`state_ops.claim_auto_run_today` 在 host-config O_EXCL 锁临界区内"读日期→非今日原子置今日"；当日重试改为胜出进程内存 attempt 计数；10 线程并发恰 1 胜出（实测）。
+
+### 24.2 修复清单（48 项发现 → 本战役处置）
+
+已修：P0-1 state.json 双写、P0-2 auto-run 双触发、host-config 五写入方接入文件锁（含插件覆盖列表剔除 auto_run_*/duty_reminder_*/last_auto_run_date/ai_consecutive_failures）、api_key 明文（DPAPI）、.dev-token 生产落盘（env 门控）、SKIP_AUTH_BYPASS 不可见（/health /engine/info auth_bypassed + 文件日志 WARN + 客户端环境清洗）、/shutdown 硬杀（should_exit 优雅关停，lifespan/worker join 可达）、端口 0 TOCTOU（Server.serve(sockets=[prebound])）、独立客户端零自愈（watchdog 3 次/2-8-30s 退避 + BackendRestarted 重导航）、host-config 损坏静默清空（corrupt 快照 + 客户端日志 + 不再无条件重置 token mode）、Python 47 处静默 except 中最危险 6 处、前端 WS 无 idle 超时（90s）、连接检测三处合一（useBackendConnection）、401/500 文案、通知 schema 客户端/桥两侧对齐（C4）、版本号 9 处硬编码（version.py 单一源 + 发布 stamp 四面一致性断言）、python-embed 无冒烟（导入自检）、CI 零测试（test.yml：py 逐文件 + 3 个 dotnet build）、normalizer 三份归一、DevTools 无条件开启、dev orchestrator 管道/孤儿、test_cli token flake、ps1 中文 manifest PS5.1 乱码（既有 bug 顺手修）。
+
+测试：Python 22 文件 260/260 全绿（含新增 test_repair_wave1.py 15 用例）；C# 新增 tests/DutyAgent.Tests 22/22（HostConfigFileLock 并发、DPAPI、normalizer）；三工程 dotnet build 0 错误；实机冒烟：客户端+后端配对、auth_bypassed=false、无 token 401、/api/v1/state 契约符合、强杀客户端后端自退（沿用 §22 验证）。
+
+### 24.3 遗留待办（P2，未入本战役，按优先级）
+
+1. `duty-cli serve` 的 duty-serve.log 仍会记录 stdout 里的 token 行（cli.py:700，A 战役未覆盖）。
+2. cli serve 并发 pid 文件竞态（cli.py:742 输家删赢家）。
+3. 独立客户端无 Job Object（防护单层化）；退出路径 sync-over-async 最长 10s。
+4. bridge meta 双生产者双 schema；BaseUrl/8765 拼接 10+ 处未收敛；超时矩阵三层不一致。
+5. routers 错误风格未统一（HTTPException vs 200+error dict vs close code）；host-config watcher 过度触发（任何归一化回写都拉起 AutoStartManager）。
+6. E 转达：claim_auto_run_today 后进程内 host-config 缓存不失效（当前无害，重试判定在内存态；未来有人从缓存读日期会踩坑）。
+7. C 偏差备案：客户端 watchdog 放弃后不主动 re-arm（仅稳定运行 30min 后重获预算）；SSE 排班路径无 idle 超时（仅 WS 有）。
+
+## 24. CLI 质量审计全量修复——发现契约 / 注册所有权 / 旗标位置 / 诊断盲区（2026-09-12）
+
+> 对 cli.py（1305 行）+ test_cli.py 的专项审计确认了 6 项问题（P1-P6），本次全量修复。
+> 总体结论：CLI 的机器可读契约（单 JSON stdout / describe 目录 / 退出码语义 / 审计回归绑定）是三条支线中最好的，应作为项目级规范推广。
+
+### 24.1 修复项
+
+1. **P1 发现链路对齐**：`_candidate_meta_paths` 增加 `CLASSISLAND_CONFIG_PATH` 候选（与桌面端 `ClassIslandConfigLocator` 同名环境变量，便携版 ClassIsland 此前对 CLI 不可见）；`serve` 写的 meta 从 `{port, token}` 升级为与桌面端一致的完整 schema（version/pid/port/token_mode/token/started_at/data_dir）；`describe` 新增 `meta_file` 节（schema + 发现顺序），`conventions` 说明 CLI 与桌面端 data-dir 的差异。
+2. **P2 注册所有权**：新增 `_remove_pid_file_if_owned` / `_remove_meta_if_owned`——并发 serve 或竞态下不再无条件删除注册；`serve` 的 "not our child" 分支与 `_stop_managed` 全部走所有权校验（对齐桌面端 `MetaFileBelongsToCurrentProcess` 纪律）。
+3. **P3 旗标位置**：`_install_common_args(parents=)` 机制——全部全局旗标（含 --pretty/--out/--base-url/--version 等）挂到主 parser（真实默认值）和每个子 parser（SUPPRESS 默认值），双位置合法、子命令级值优先；实测 `health --pretty` 从 "unrecognized arguments" 变为正常网络错误。
+4. **P4 token 去重 + 诊断**：`.dev-token` 读取三处复制收敛为 `_read_dev_token`；serve 从日志尾部恢复 `__DUTY_SERVER_TOKEN_MODE__`，meta/status 输出 `token_mode`，`token_present:false` 与 "static 模式不需要 token" 从此可区分。
+5. **P5 MCP 显式化**：serve 新增 `--disable-mcp-runtime` 旗标；默认保持 host-config `enable_mcp` 语义（与插件路径一致），文档说明桌面独立客户端是强制禁用的那一方。
+6. **P6 杂项**：serve 日志 5MB 轮转（保留一代 .1）；SSE 累积重构为可测的 `_SseAccumulator`（EOF 无空行结尾不再丢失 complete 事件，多行 data: 合并有测试锁定）；新增 `--version`（JSON 输出，APP_VERSION 与 runtime.APP_VERSION 保持同步，单源化待办）。
+
+### 24.2 验证
+
+- `py -3.13 test_cli.py`：40/40（新增 13 项 §24 回归）；`test_auth_runtime` 11/11、`test_llm_transport` 8/8 无波及。
+- 实测：`--version`、`status --port 8799 --pretty`（子命令后全局旗标）、`health --pretty`（JSON 网络错误）、`serve --stop`（无托管实例时干净返回）、describe 的 meta_file 契约。

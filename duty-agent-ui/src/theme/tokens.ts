@@ -18,6 +18,8 @@ export interface PaletteTokens {
   surface: string;
   surface2: string;
   overlay: string;
+  /** 卡片描边:浅色透明(靠阴影分层),深色 8% 白 */
+  cardBorder: string;
   border: string;
   borderStrong: string;
   hover: string;

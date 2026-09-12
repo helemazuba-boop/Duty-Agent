@@ -1,0 +1,19 @@
+# Minimal dependency set for running the Assets_Duty unittest suite outside
+# python-embed (consumed by .github/workflows/test.yml on Python 3.11, which
+# matches the embedded runtime). Versions mirror the wheels actually shipped
+# in Assets_Duty/python-embed/Lib/site-packages so CI exercises the same code
+# paths as the release runtime.
+#
+# Deliberately NOT listed:
+# - cryptography: no Assets_Duty source/test imports it (DPAPI goes through
+#   ctypes, PBKDF2 through hashlib); it ships in python-embed only as a wheel.
+# - pytest: every test_*.py is a standalone unittest.main() script that CI
+#   runs directly, one process each.
+# Transitive deps (anyio, h11, httpcore, idna, certifi, click, ... ) resolve
+# via pip from the pins below.
+fastapi==0.135.1
+starlette==0.52.1
+pydantic==2.12.5
+uvicorn==0.41.0
+httpx==0.28.1
+mcp==1.20.0

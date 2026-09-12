@@ -26,6 +26,7 @@ from datetime import date, datetime, timedelta
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 from execution_profiles import ExecutionPlan
+from diagnostics import truncate_for_log
 from llm_transport import call_llm_raw
 from state_ops import load_api_key_from_env
 from multi_agent.contracts import FrozenSnapshot
@@ -273,6 +274,7 @@ def _orchestrator_poll_loop(
         # 并行执行所有 TimeWindow Agent
         # --------------------------------------------------------------------------
         fragments: List[Tuple[TimeWindow, str]] = []
+        _logger = getattr(ctx, "logger", None)
         with ThreadPoolExecutor(max_workers=len(windows)) as pool:
             futures = {
                 pool.submit(
@@ -282,6 +284,7 @@ def _orchestrator_poll_loop(
                     config,
                     window_assignments.get(w.index, ""),
                     stop_event,
+                    _logger,
                 ): w
                 for w in windows
             }
@@ -343,6 +346,7 @@ def _orchestrator_poll_loop(
         # 重试对应窗口
         # --------------------------------------------------------------------------
         retry_windows = strategy.get("retry_windows", [])
+        _logger = getattr(ctx, "logger", None)
         for idx in retry_windows:
             window = windows[idx]
             hint_msg = retry_context.get(idx, "")
@@ -354,8 +358,22 @@ def _orchestrator_poll_loop(
                 )
                 try:
                     fragment = future.result(timeout=TW_CONFIG["timeout"] + 10)
-                except Exception:
-                    fragment = f"; [[#{window.name}]]\n; RETRY FAILED"
+                except Exception as ex:
+                    # 任务9：重试代理崩溃不能再静默——结果以 degraded 标记留在
+                    # INI 片段里（随汇总流程可见），并写 ERROR 日志。
+                    if _logger is not None:
+                        _logger.error(
+                            "Orchestrator",
+                            "TimeWindow retry agent failed; fragment marked degraded.",
+                            trace_id=getattr(ctx, "trace_id", ""),
+                            window=window.name,
+                            exc=ex,
+                        )
+                    fragment = (
+                        f"; [[#{window.name}]]\n"
+                        f"; RETRY FAILED (degraded: {type(ex).__name__}: "
+                        f"{truncate_for_log(str(ex), 160)})"
+                    )
                 for i, (w, _) in enumerate(fragments):
                     if w.index == idx:
                         fragments[i] = (window, fragment)
@@ -506,6 +524,7 @@ def _call_timewindow_agent(
     config: dict,
     window_assignment: str,
     stop_event: Optional[object],
+    logger=None,
 ) -> str:
     """并行调用一个 TimeWindow Agent，返回 INI 文本."""
     system_prompt = build_timewindow_system_prompt(window, orch_ctx)
@@ -529,11 +548,22 @@ def _call_timewindow_agent(
             if attempt < TW_CONFIG["max_retries"]:
                 messages.append({"role": "user", "content": "未检测到 INI 格式，请输出 INI 片段。"})
                 continue
-        except Exception:
+        except Exception as ex:
+            # 任务9：调用失败不能再静默吞掉——记录后重试；预算耗尽走下方
+            # degraded 兜底片段。
+            if logger is not None:
+                logger.error(
+                    "Orchestrator",
+                    "TimeWindow agent call failed.",
+                    trace_id=orch_ctx.trace_id,
+                    window=window.name,
+                    attempt=attempt + 1,
+                    exc=ex,
+                )
             if attempt < TW_CONFIG["max_retries"]:
                 continue
 
-    return f"; [[#{window.name}]]\n; TIMEOUT/ERROR: no output"
+    return f"; [[#{window.name}]]\n; TIMEOUT/ERROR: no output (degraded)"
 
 
 def _call_timewindow_agent_retry(

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import ctypes
+import dpapi_compat
 import json
 import os
 import re
@@ -383,7 +384,7 @@ def _normalize_persisted_config(config: dict | None) -> dict:
     }
 
 
-def _hydrate_runtime_config(persisted: dict) -> dict:
+def _hydrate_runtime_config(persisted: dict, logger=None) -> dict:
     normalized = _normalize_persisted_config(persisted)
     plan_presets = normalized["plan_presets"]
     selected_plan_id = normalized["selected_plan_id"]
@@ -392,7 +393,11 @@ def _hydrate_runtime_config(persisted: dict) -> dict:
 
     return {
         "version": normalized["version"],
-        "api_key": selected_plan["api_key"],
+        # D4/C2：config.json 里 plan 的 api_key 可能是 C# 写入的 DPAPI 密文
+        # （dpapi:v1:<base64>）。解密只发生在运行时投影这一层——持久化文件保持
+        # 密文原样，load 时"raw != normalized 则回写"的比较也不受影响。
+        # 解密失败由 dpapi_compat 置空 + 告警，不抛；无前缀明文键原样透传。
+        "api_key": dpapi_compat.unprotect(selected_plan["api_key"], logger=logger),
         "base_url": selected_plan["base_url"],
         "model": selected_plan["model"],
         "model_profile": selected_plan["model_profile"],
@@ -796,7 +801,7 @@ def load_config(ctx: Context) -> dict:
     finally:
         release_file_lock(lock_path)
 
-    config = _hydrate_runtime_config(persisted)
+    config = _hydrate_runtime_config(persisted, logger=getattr(ctx, "logger", None))
     if changed:
         _log(
             ctx,
@@ -833,7 +838,7 @@ def save_config(ctx: Context, config: dict) -> dict:
     finally:
         release_file_lock(lock_path)
 
-    normalized = _hydrate_runtime_config(persisted)
+    normalized = _hydrate_runtime_config(persisted, logger=getattr(ctx, "logger", None))
     _log(
         ctx,
         "INFO",
@@ -913,7 +918,7 @@ def patch_config(ctx: Context, patch: dict) -> dict:
     finally:
         release_file_lock(lock_path)
 
-    return _hydrate_runtime_config(persisted)
+    return _hydrate_runtime_config(persisted, logger=getattr(ctx, "logger", None))
 
 
 def _normalize_time_string(value: object, default: str) -> str:
@@ -1247,6 +1252,36 @@ def update_host_runtime_fields(ctx: Context, patch: dict | None) -> dict:
     finally:
         release_file_lock(lock_path)
     return persisted
+
+
+def claim_auto_run_today(data_dir: Path, logger=None, *, today: str | None = None) -> bool:
+    """跨进程原子认领今日 auto-run（D5）。
+
+    复用 host-config 的 O_EXCL 文件锁，在**同一临界区**内完成
+    "读 last_auto_run_date → 非今日则置为今日"两步并落盘：只有一个进程能把
+    日期翻到今天，因此只有一个进程获得今日的触发权。返回 True = 认领成功
+    （调用方随后执行排班）；False = 已是今日（被本进程早前 tick 或其他进程
+    认领过）。
+
+    不能拆成"先读后写"两次锁获取，否则两个进程会在读写间隙都判定为
+    "非今日"而双双触发，造成重复排班——这正是本函数存在的意义。
+
+    ``today`` 由调用方传入（runtime 用自己的时钟结果），便于测试注入固定
+    时钟；缺省取本机当前日期。
+    """
+    ctx = Context(Path(data_dir), logger=logger, request_source="auto_run_claim")
+    lock_path = _host_config_lock_path(ctx)
+    today_text = str(today or "").strip() or datetime.now().strftime("%Y-%m-%d")
+    acquire_file_lock(lock_path, CONFIG_LOCK_TIMEOUT_SECONDS)
+    try:
+        current, _ = _load_persisted_host_config_unlocked(ctx.paths["host_config"])
+        if str(current.get("last_auto_run_date", "") or "") == today_text:
+            return False
+        current["last_auto_run_date"] = today_text
+        save_json_atomic(ctx.paths["host_config"], _normalize_persisted_host_config(current))
+        return True
+    finally:
+        release_file_lock(lock_path)
 
 
 def load_api_key_from_env() -> str:

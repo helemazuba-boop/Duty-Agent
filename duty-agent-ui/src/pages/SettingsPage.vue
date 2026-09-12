@@ -1,34 +1,26 @@
 <script setup lang="ts">
-import { computed, ref, onMounted } from 'vue';
+import { computed, ref, onBeforeUnmount, onMounted } from 'vue';
 import {
   Input, Button, Space, Divider, Alert, message, Select, Switch, Slider, Tag, InputNumber,
 } from 'ant-design-vue';
-import { SaveOutlined, ThunderboltOutlined } from '@ant-design/icons-vue';
+import { ApiOutlined, SaveOutlined, ThunderboltOutlined } from '@ant-design/icons-vue';
 import AiToolsPanel from '@/components/ai-tools/AiToolsPanel.vue';
 import PageHeader from '@/components/ui/PageHeader.vue';
 import Panel from '@/components/ui/Panel.vue';
 import StatusDot from '@/components/ui/StatusDot.vue';
 import { api, type NotificationSettings } from '@/api/http';
+import { useBackendConnection } from '@/composables/useBackendConnection';
+import { hasHost, onHostMessage, sendToHost } from '@/utils/hostBridge';
 
 const activeTab = ref('ai-schedule');
 
 // ======== 连接状态 ========
-const backendConnected = ref(false);
-const backendLoading = ref(false);
+// 后端连接状态统一消费 useBackendConnection 单例（20s 轮询 + 错误分类）。
+const { status: backendConnStatus, checking: backendPolling, checkNow: recheckBackend } = useBackendConnection();
+const backendConnected = computed(() => backendConnStatus.value === 'ok');
+const backendLoading = computed(() => backendPolling.value);
 const bridgeConnected = ref(false);
 const bridgeLoading = ref(false);
-
-const checkBackend = async () => {
-  backendLoading.value = true;
-  try {
-    await api.getSnapshot();
-    backendConnected.value = true;
-  } catch {
-    backendConnected.value = false;
-  } finally {
-    backendLoading.value = false;
-  }
-};
 
 const checkBridge = async () => {
   bridgeLoading.value = true;
@@ -43,7 +35,7 @@ const checkBridge = async () => {
 };
 
 const checkConnections = async () => {
-  await Promise.allSettled([checkBackend(), checkBridge()]);
+  await Promise.allSettled([recheckBackend(), checkBridge()]);
 };
 
 // ======== 后端配置(方案 / 规则) ========
@@ -222,6 +214,33 @@ const CLOSE_ACTION_OPTIONS = [
   { value: 'tray', label: '驻留后台(托盘)' },
   { value: 'exit', label: '退出程序' },
 ];
+
+// ======== ClassIsland 桥接插件(安装动作在宿主进程执行,结果经消息桥回传) ========
+const hostAvailable = hasHost();
+const bridgeInstalling = ref(false);
+let offHostMessage: (() => void) | null = null;
+
+const installBridgePlugin = () => {
+  if (!sendToHost({ type: 'install-bridge' })) {
+    message.warning('该操作需要在 Duty-Agent 客户端内进行');
+    return;
+  }
+  bridgeInstalling.value = true;
+};
+
+onMounted(() => {
+  offHostMessage = onHostMessage((msg) => {
+    if (msg.type !== 'install-bridge-result') return;
+    bridgeInstalling.value = false;
+    if (msg.ok) message.success(String(msg.message ?? 'ClassIsland 插件安装成功'));
+    else message.error(String(msg.message ?? 'ClassIsland 插件安装失败'));
+  });
+});
+
+onBeforeUnmount(() => {
+  offHostMessage?.();
+  offHostMessage = null;
+});
 
 const notificationEntryOptions = [
   { label: '系统通知', value: 'system' },
@@ -796,6 +815,31 @@ onMounted(async () => {
             </div>
           </div>
         </Panel>
+
+        <Panel
+          class="mb-16"
+          title="ClassIsland 桥接插件"
+          subtitle="把值日安排投递到 ClassIsland 卡片;安装动作由客户端完成"
+        >
+          <template #actions>
+            <Button
+              size="small"
+              :loading="bridgeInstalling"
+              :disabled="!hostAvailable"
+              @click="installBridgePlugin"
+            >
+              <template #icon><ApiOutlined /></template>
+              安装 / 更新插件
+            </Button>
+          </template>
+          <div class="config-desc">
+            {{
+              hostAvailable
+                ? '安装后重启 ClassIsland 即可在卡片上看到值日信息;重复安装会覆盖旧版本。'
+                : '该操作需要在 Duty-Agent 独立客户端内进行(浏览器预览中不可用)。'
+            }}
+          </div>
+        </Panel>
       </a-tab-pane>
     </a-tabs>
   </div>
@@ -848,11 +892,18 @@ onMounted(async () => {
   padding: 12px 20px 16px;
 }
 
-/* 配置网格 */
+/* 配置网格:固定列数,不用 auto-fit——列数随容器宽度(如 6px 滚动条槽位)
+   漂移会让字段在 2/3 列间整行跳上跳下 */
 .form-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 16px;
+}
+
+@media (min-width: 1280px) {
+  .form-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
 }
 
 .form-grid > * {
@@ -900,6 +951,8 @@ onMounted(async () => {
   flex-wrap: wrap;
   gap: 4px;
   margin-top: 6px;
+  /* 标签随连接/方案状态增减,保底一行高度,避免同排字段上下跳 */
+  min-height: 24px;
 }
 
 .slider-row {

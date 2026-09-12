@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import io
 import json
+import logging
 import re
 import socket
 import ssl
@@ -14,6 +15,7 @@ from datetime import date, timedelta
 from urllib.parse import urlparse
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
+from diagnostics import truncate_for_log
 from state_ops import DEFAULT_SINGLE_AREA_NAME
 
 LLM_TIMEOUT_SECONDS = 120
@@ -21,6 +23,10 @@ LLM_MAX_RETRIES = 2
 LLM_RETRY_BACKOFF_SECONDS = 2
 LLM_STREAM_ENABLED_DEFAULT = True
 LLM_STREAM_PROGRESS_MIN_INTERVAL_SECONDS = 0.2
+
+# 模块级 debug 日志（stdlib logging，默认不配置 handler 时静默）：仅用于
+# 流式 chunk 解析失败等低频排障路径，不替代 diagnostics 文件日志。
+_LOGGER = logging.getLogger(__name__)
 
 # Module-level storage for streaming tool-call extraction.
 # qwen3.5 emits tool_calls as non-SSE JSON between SSE chunks.
@@ -161,7 +167,12 @@ def extract_text_from_stream_event(event_obj: dict) -> str:
     )
 
 
-def execute_with_retries(request_fn: Callable[[], str], mode: str) -> str:
+def execute_with_retries(
+    request_fn: Callable[[], str],
+    mode: str,
+    progress_callback=None,
+    stop_event: Optional[threading.Event] = None,
+) -> str:
     last_error: Optional[Exception] = None
     for attempt in range(LLM_MAX_RETRIES + 1):
         try:
@@ -186,7 +197,20 @@ def execute_with_retries(request_fn: Callable[[], str], mode: str) -> str:
                 ) from ex
             last_error = ex
             if attempt < LLM_MAX_RETRIES:
-                time.sleep(LLM_RETRY_BACKOFF_SECONDS * (attempt + 1))
+                backoff = LLM_RETRY_BACKOFF_SECONDS * (attempt + 1)
+                if progress_callback:
+                    progress_callback(
+                        "llm_retry",
+                        f"LLM attempt {attempt + 1} failed ({ex}); "
+                        f"retrying {attempt + 2}/{LLM_MAX_RETRIES + 1} in {backoff}s.",
+                        "",
+                    )
+                # 可取消的退避等待：用户点取消时立刻中止，而不是睡满整个 backoff。
+                if stop_event is not None:
+                    if stop_event.wait(backoff):
+                        raise InterruptedError("Cancelled.")
+                else:
+                    time.sleep(backoff)
                 continue
             raise RuntimeError(f"Network error: {ex}") from ex
     raise RuntimeError(f"LLM request failed after retries: {last_error}")
@@ -266,8 +290,15 @@ def request_llm_stream(url: str, payload: dict, api_key: str, progress_callback=
                         if text:
                             chunks.append(text)
                             buffered_for_progress.append(text)
-                    except Exception:
-                        pass
+                    except Exception as ex:
+                        # 任务9：chunk 解析失败不能静默 pass——出问题时行内容里
+                        # 可能藏着排障所需的线索。debug 级别 + 截断样本，避免
+                        # 正常运行时刷屏。
+                        _LOGGER.debug(
+                            "Non-SSE stream chunk parse failed (%s): sample=%r",
+                            type(ex).__name__,
+                            truncate_for_log(decoded, 200),
+                        )
                 continue
 
             if not line.startswith("data:"):
@@ -369,6 +400,8 @@ def call_llm_raw(
             content = execute_with_retries(
                 lambda: request_llm_stream(url, payload, api_key, progress_callback, stop_event),
                 mode="stream",
+                progress_callback=progress_callback,
+                stop_event=stop_event,
             )
         except StreamUnsupportedError:
             if progress_callback:
@@ -390,6 +423,8 @@ def call_llm_raw(
         content = execute_with_retries(
             lambda: request_llm_non_stream(url, payload, api_key, stop_event),
             mode="non_stream",
+            progress_callback=progress_callback,
+            stop_event=stop_event,
         )
 
     # Handle streaming tool_calls: when content is the [TOOL_CALL] marker,
@@ -772,6 +807,7 @@ def call_llm_json(
             content = execute_with_retries(
                 lambda: request_llm_non_stream(url, payload, api_key, stop_event),
                 mode="non_stream",
+                stop_event=stop_event,
             )
 
     raise RuntimeError(f"JSON parse failed: {last_parse_error}")

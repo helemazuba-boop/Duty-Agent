@@ -2,12 +2,14 @@
 # -*- coding: utf-8 -*-
 """Unit tests for the backend auto-run worker (A4 integration).
 
-Covers ``DutyRuntime.check_auto_run`` orchestration: success resets failures and
-stamps today, sub-limit failures keep ``last_auto_run_date`` and increment the
-counter, hitting the limit gives up for today, busy (lock held *or*
-``code=="busy"``) skips without counting, the target-time gate blocks normal
-triggers while catch-up bypasses it, and the worker start/stop helpers are
-idempotent and join the thread.
+Covers ``DutyRuntime.check_auto_run`` orchestration under the D5 claim-first
+semantics: a due tick atomically claims today (``last_auto_run_date`` is
+stamped at claim time, not on success), sub-limit failures retry via the
+winner's in-memory attempt budget (host-config failure counters are
+diagnostics only), busy (lock held *or* ``code=="busy"``) skips without
+consuming an attempt, exhausting the attempt budget gives up for the day, the
+target-time gate blocks normal triggers while catch-up bypasses it, and the
+worker start/stop helpers are idempotent and join the thread.
 
 The trigger helpers (``is_auto_run_triggered``/``detect_catchup_due``) live in
 ``auto_run`` (A1). They are imported defensively by ``runtime``; these tests
@@ -143,7 +145,10 @@ class TestCheckAutoRun(_AutoRunRuntimeTestBase):
         self.assertEqual(cfg["last_auto_run_date"], EXPECTED_TODAY)
         self.assertEqual(cfg["ai_consecutive_failures"], 0)
 
-    def test_failure_below_limit_keeps_last_and_increments_failures(self):
+    def test_failure_below_limit_claims_today_and_retries_in_memory(self):
+        # D5 claim-first：认领即把 last_auto_run_date 置为今日（不再是"失败后
+        # 保持旧日期"）；跨日重试改为胜出进程的内存 attempt 预算，host-config
+        # 失败计数只作诊断持久化。
         runtime = self._make_runtime(
             auto_run_mode="Weekly",
             auto_run_retry_times=3,
@@ -152,14 +157,28 @@ class TestCheckAutoRun(_AutoRunRuntimeTestBase):
         )
         self._drive(runtime, run_schedule_result={"status": "error", "message": "boom"})
         cfg = self._host_config(runtime)
-        # last preserved so the trigger still holds -> next tick retries
-        self.assertEqual(cfg["last_auto_run_date"], "2026-07-09")
+        # 认领先于执行：失败后日期已是今日；首次失败把诊断计数推到 1。
+        self.assertEqual(cfg["last_auto_run_date"], EXPECTED_TODAY)
         self.assertEqual(cfg["ai_consecutive_failures"], 1)
 
-    def test_failure_at_limit_gives_up_and_stamps_today(self):
+        # 内存 attempt（1/3）驱动下一个 tick 重试：trigger/catchup 均为 False
+        # 也必须重跑，且不需要再次认领。
+        self._drive(
+            runtime,
+            run_schedule_result={"status": "error", "message": "boom again"},
+            trigger=False,
+            catchup=False,
+        )
+        cfg = self._host_config(runtime)
+        self.assertEqual(cfg["last_auto_run_date"], EXPECTED_TODAY)
+        self.assertEqual(cfg["ai_consecutive_failures"], 2)
+
+    def test_retry_budget_exhaustion_gives_up_for_today(self):
+        # 内存 attempt 达到 auto_run_retry_times 后当日放弃：不再认领、不再
+        # 执行；last_auto_run_date 保持今日（次日由认领语义自然放行）。
         runtime = self._make_runtime(
             auto_run_mode="Weekly",
-            auto_run_retry_times=3,
+            auto_run_retry_times=1,
             ai_consecutive_failures=2,
             ai_failures_date=EXPECTED_TODAY,
             last_auto_run_date="2026-07-09",
@@ -169,10 +188,21 @@ class TestCheckAutoRun(_AutoRunRuntimeTestBase):
         self.assertEqual(cfg["last_auto_run_date"], EXPECTED_TODAY)
         self.assertEqual(cfg["ai_consecutive_failures"], 3)
 
+        # 预算已耗尽（attempt 1/1）：即使处于可触发状态也不执行。
+        self._drive(
+            runtime,
+            run_schedule_result={"status": "success"},
+            trigger=False,
+            catchup=False,
+            expect_invoked=False,
+        )
+
     def test_stale_failure_counter_resets_across_days(self):
         # Failures stamped on a previous day must not eat today's retry budget:
         # the pre-fix behavior carried the counter over and gave up after a
-        # single attempt the next morning.
+        # single attempt the next morning. Under D5 the retry budget is the
+        # in-memory attempt counter, so the persisted counter only resets for
+        # diagnostics while the run still retries.
         runtime = self._make_runtime(
             auto_run_mode="Weekly",
             auto_run_retry_times=3,
@@ -182,10 +212,21 @@ class TestCheckAutoRun(_AutoRunRuntimeTestBase):
         )
         self._drive(runtime, run_schedule_result={"status": "error", "message": "boom"})
         cfg = self._host_config(runtime)
-        # Fresh budget for today: first failure counts as 1, run is retried.
-        self.assertEqual(cfg["last_auto_run_date"], "2026-07-09")
+        # Fresh budget for today: claim stamps today, first failure counts as 1.
+        self.assertEqual(cfg["last_auto_run_date"], EXPECTED_TODAY)
         self.assertEqual(cfg["ai_consecutive_failures"], 1)
         self.assertEqual(cfg["ai_failures_date"], EXPECTED_TODAY)
+
+        # In-memory retry budget (1/3) is untouched by the stale counter:
+        # the next tick retries without trigger/catchup.
+        self._drive(
+            runtime,
+            run_schedule_result={"status": "error", "message": "boom again"},
+            trigger=False,
+            catchup=False,
+        )
+        cfg = self._host_config(runtime)
+        self.assertEqual(cfg["ai_consecutive_failures"], 2)
 
     def test_retry_times_zero_gives_up_on_first_failure(self):
         runtime = self._make_runtime(
@@ -202,13 +243,27 @@ class TestCheckAutoRun(_AutoRunRuntimeTestBase):
     def test_busy_result_code_skips_without_counting(self):
         runtime = self._make_runtime(
             auto_run_mode="Weekly",
+            auto_run_retry_times=3,
             ai_consecutive_failures=1,
             last_auto_run_date="2026-07-09",
         )
+        # Claim-first：busy 返回时今日已被认领（日期=今日），但失败计数原样。
         self._drive(runtime, run_schedule_result={"code": "busy"})
         cfg = self._host_config(runtime)
-        self.assertEqual(cfg["last_auto_run_date"], "2026-07-09")
+        self.assertEqual(cfg["last_auto_run_date"], EXPECTED_TODAY)
         self.assertEqual(cfg["ai_consecutive_failures"], 1)
+
+        # busy 不消耗内存 attempt（仍为 0/3）：下一 tick 无需 trigger 即重试，
+        # 且成功后清零诊断计数。
+        self._drive(
+            runtime,
+            run_schedule_result={"status": "success"},
+            trigger=False,
+            catchup=False,
+        )
+        cfg = self._host_config(runtime)
+        self.assertEqual(cfg["last_auto_run_date"], EXPECTED_TODAY)
+        self.assertEqual(cfg["ai_consecutive_failures"], 0)
 
     def test_held_schedule_lock_skips_without_invoking_engine(self):
         runtime = self._make_runtime(

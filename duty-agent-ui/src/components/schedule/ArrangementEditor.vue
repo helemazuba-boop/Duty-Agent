@@ -221,7 +221,7 @@ const handleSave = () => {
   flex-direction: column;
   gap: 8px;
   padding: 12px;
-  border: 1px solid var(--dt-border-2);
+  border: 1px solid var(--dt-border);
   border-radius: var(--dt-radius);
   background: var(--dt-surface-2);
 }

@@ -38,8 +38,8 @@ const openCreate = () => {
 
 <template>
   <div class="ai-tools-panel">
-    <!-- 启用开关 -->
-    <Panel class="mb-16">
+    <!-- 启用开关:行自带 12px 20px 内边距,面板保持 flush -->
+    <Panel class="mb-16" :padded="false">
       <div class="enable-row">
         <Switch v-model:checked="store.config.enabled" />
         <span class="enable-row__label">启用 AI 工具调用</span>
@@ -171,7 +171,7 @@ const openCreate = () => {
   justify-content: space-between;
   gap: 16px;
   padding: 12px 20px;
-  border-bottom: 1px solid var(--dt-border-2);
+  border-bottom: 1px solid var(--dt-border);
   transition: background 0.15s ease;
 }
 

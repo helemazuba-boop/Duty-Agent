@@ -9,6 +9,7 @@ Duty-Agent Dev Environment Orchestrator
 """
 import subprocess
 import sys
+import threading
 import time
 import os
 import socket
@@ -19,7 +20,6 @@ from pathlib import Path
 # cloning the repo to any path (the old hardcoded D:\projects\... constants
 # broke on every other machine).
 ROOT = Path(__file__).resolve().parent
-BACKEND_TOKEN_FILE = str(ROOT / "Assets_Duty" / "data" / ".dev-token")
 FRONTEND_ENV_FILE = str(ROOT / "duty-agent-ui" / ".env.local")
 BACKEND_PY = str(ROOT / "Assets_Duty" / "core.py")
 PYTHON_EMBED = str(ROOT / "Assets_Duty" / "python-embed" / "python.exe")
@@ -50,6 +50,42 @@ def write_env_local(token: str) -> None:
     print(f"[orchestrator] .env.local written: {FRONTEND_ENV_FILE}")
 
 
+def drain_pipe(pipe, prefix: str = "") -> None:
+    """终身排空一条子进程输出管道（任务10）。
+
+    捕获 token 之后管道仍必须持续被读：后端 stdout/stderr 是通向宿主的管道，
+    写满缓冲区会把后端永久阻塞（见 engine.py 同样的约束）。随子进程退出，
+    readline 返回 "" 自然结束。
+    """
+    try:
+        for line in iter(pipe.readline, ""):
+            text = line.rstrip("\r\n")
+            if text:
+                print(f"{prefix}{text}", flush=True)
+    except (OSError, ValueError):
+        # 管道随子进程退出而关闭，读端异常属于正常收尾。
+        pass
+
+
+def kill_process_tree(pid: int) -> None:
+    """taskkill /T /F 终止整个子进程树（任务10）。
+
+    前端经 `cmd /c npm run dev` 启动，实际监听 5173 的 node 是孙进程；
+    只 terminate 顶层 cmd 会留下孤儿 node 继续占用端口，必须整树终止。
+    """
+    if os.name != "nt":
+        return
+    try:
+        subprocess.run(
+            ["taskkill", "/PID", str(pid), "/T", "/F"],
+            capture_output=True,
+            check=False,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+    except OSError:
+        pass
+
+
 def main():
     parser = argparse.ArgumentParser(description="Duty-Agent Dev Environment Startup")
     parser.add_argument(
@@ -64,6 +100,9 @@ def main():
     if skip_auth:
         env["SKIP_AUTH_BYPASS"] = "1"
         print("[INFO] SKIP_AUTH_BYPASS=1 — Token 鉴权已禁用")
+    # 任务3：dev 流程显式授权后端把 dynamic token 落盘 .dev-token（cli 的
+    # token 回退链会读它）。没有这个 env 时后端不再写该文件。
+    env["DUTY_DEV_WRITE_TOKEN"] = "1"
 
     print("=" * 60)
     print("  Duty-Agent Dev Environment Startup")
@@ -77,12 +116,17 @@ def main():
     backend_proc = subprocess.Popen(
         [PYTHON_EMBED, BACKEND_PY, "--server", "--port", "8765"],
         stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
+        # stderr 独立成管道，与 stdout 各配一个排空线程（任务10：终身排空两管道）。
+        stderr=subprocess.PIPE,
         creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         text=True,
         bufsize=1,
         env=env,
     )
+    threading.Thread(
+        target=drain_pipe, args=(backend_proc.stderr, "[backend:err] "),
+        name="drain-backend-stderr", daemon=True,
+    ).start()
 
     token = None
     port_seen = False
@@ -110,6 +154,12 @@ def main():
         if port_seen and token is not None:
             break
 
+    # 捕获结束：stdout 交给专职排空线程直到后端退出，不再有缓冲写满风险。
+    threading.Thread(
+        target=drain_pipe, args=(backend_proc.stdout,),
+        name="drain-backend-stdout", daemon=True,
+    ).start()
+
     # Write .env.local
     if token:
         write_env_local(token)
@@ -132,6 +182,15 @@ def main():
         text=True,
         bufsize=1,
     )
+    threading.Thread(
+        target=drain_pipe, args=(frontend_proc.stdout, "[frontend] "),
+        name="drain-frontend-stdout", daemon=True,
+    ).start()
+    if frontend_proc.stderr is not None:
+        threading.Thread(
+            target=drain_pipe, args=(frontend_proc.stderr, "[frontend:err] "),
+            name="drain-frontend-stderr", daemon=True,
+        ).start()
 
     if wait_port("::1", 5173, 60):
         print("[4/5] Frontend ready: http://localhost:5173")
@@ -161,10 +220,15 @@ def main():
         backend_proc.wait()
     except KeyboardInterrupt:
         print("\n[orchestrator] Stopping...")
-        backend_proc.terminate()
-        backend_proc.wait()
-        frontend_proc.terminate()
-        frontend_proc.wait()
+        # 任务10：整树终止。后端可能带 MCP 子进程，前端的 node 是 cmd 的
+        # 孙进程——单杀顶层会留孤儿进程继续占端口。
+        kill_process_tree(backend_proc.pid)
+        kill_process_tree(frontend_proc.pid)
+        try:
+            backend_proc.wait(timeout=10)
+            frontend_proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            print("[orchestrator] WARN: some child processes did not exit in time.")
         print("[orchestrator] Done.")
 
 

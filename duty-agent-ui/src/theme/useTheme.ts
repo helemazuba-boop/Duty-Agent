@@ -7,6 +7,7 @@
 import { computed, ref, watchEffect } from 'vue';
 import { makeAntdTheme, type ResolvedTheme } from './antd';
 import { safeStorage } from '@/utils/safeStorage';
+import { sendToHost } from '@/utils/hostBridge';
 
 export type ThemeMode = 'light' | 'dark' | 'auto';
 
@@ -40,9 +41,13 @@ watchEffect(() => {
 });
 
 watchEffect(() => {
-  if (typeof document !== 'undefined') {
-    document.documentElement.dataset.theme = resolved.value;
-  }
+  if (typeof document === 'undefined') return;
+  const theme = resolved.value;
+  document.documentElement.dataset.theme = theme;
+
+  // 同步给 WinForms 宿主:DWM 标题栏/窗口底色需要具体色值,而不是"深/浅"开关
+  const bg = getComputedStyle(document.documentElement).getPropertyValue('--dt-bg').trim();
+  sendToHost({ type: 'theme-sync', dark: theme === 'dark', bg });
 });
 
 export function useTheme() {

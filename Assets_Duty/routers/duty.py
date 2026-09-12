@@ -216,11 +216,19 @@ async def duty_live(websocket: WebSocket):
         await websocket.send_json({"type": "error", "message": "Runtime is not initialized."})
         await websocket.close(code=1011)
         return
+    trace_id, request_source = _resolve_websocket_meta(websocket, runtime)
     if not SKIP_AUTH_BYPASS and not is_websocket_authorized(websocket, runtime):
+        # 任务9：4401 拒连必须留痕，否则客户端"连上就被关"完全无法排查。
+        runtime.logger.warn(
+            "DutyLive",
+            "Rejected WebSocket duty control channel: missing or invalid bearer token.",
+            trace_id=trace_id,
+            request_source=request_source,
+            close_code=WEBSOCKET_UNAUTHORIZED_CODE,
+        )
         await websocket.close(code=WEBSOCKET_UNAUTHORIZED_CODE, reason="Unauthorized")
         return
 
-    trace_id, request_source = _resolve_websocket_meta(websocket, runtime)
     owner_claimed = runtime.try_claim_duty_live_owner(trace_id)
     if not owner_claimed:
         current_owner = runtime.get_duty_live_owner()

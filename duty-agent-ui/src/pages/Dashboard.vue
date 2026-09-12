@@ -14,6 +14,7 @@ import ArrangementEditor from '@/components/schedule/ArrangementEditor.vue';
 import FirstRunWizard from '@/components/onboarding/FirstRunWizard.vue';
 import { useTheme } from '@/theme/useTheme';
 import { useToday } from '@/composables/useToday';
+import { useBackendConnection } from '@/composables/useBackendConnection';
 import { personChipStyle } from '@/utils/personColor';
 import {
   fmtDate,
@@ -36,6 +37,16 @@ const personVars = (name: string) => personChipStyle(name, resolved.value);
 const workspace = ref<Workspace | null>(null);
 const loading = ref(false);
 const error = ref<string | null>(null);
+
+// 后端连接状态统一消费 useBackendConnection 单例（数据源单一化）。
+const { status: connStatus, errorKind: connErrorKind } = useBackendConnection();
+const connUnreachable = computed(() => connStatus.value === 'error');
+const dotStatus = computed(() => (error.value || connUnreachable.value ? 'error' : 'ok'));
+const statusLabel = computed(() => {
+  if (connErrorKind.value === 'unauthorized') return '登录状态已失效';
+  if (error.value || connUnreachable.value) return '后端未连接';
+  return `最后更新 ${new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}`;
+});
 
 const WIZARD_DISMISS_KEY = 'duty_first_run_dismissed';
 const wizardOpen = ref(false);
@@ -227,12 +238,7 @@ const copyContact = async (name: string) => {
   <div class="page-container animate-fade-in">
     <PageHeader title="仪表盘">
       <template #subtitle>
-        <StatusDot
-          :status="error ? 'error' : 'ok'"
-          :label="error
-            ? '数据加载失败'
-            : `最后更新 ${new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}`"
-        />
+        <StatusDot :status="dotStatus" :label="statusLabel" />
       </template>
       <template #actions>
         <a-button :loading="loading" @click="refresh">
@@ -243,7 +249,15 @@ const copyContact = async (name: string) => {
       </template>
     </PageHeader>
 
-    <div v-if="error" class="da-error-tip">数据加载失败:{{ error }}</div>
+    <div v-if="error || connUnreachable" class="da-error-tip">
+      {{
+        connErrorKind === 'unauthorized'
+          ? '登录状态已失效，请重启 Duty-Agent 客户端或在设置页重新检测连接。'
+          : connUnreachable
+            ? '后端未连接，数据加载失败。请确认 Duty-Agent 客户端正在运行。'
+            : '数据加载失败，请点击右上角"刷新"重试。'
+      }}
+    </div>
 
     <!-- ======== Hero 行:今日值班 + 接下来 3 天 ======== -->
     <div class="hero-grid">
@@ -522,7 +536,7 @@ const copyContact = async (name: string) => {
   width: 100%;
   padding: 10px 12px;
   border: 0;
-  border-bottom: 1px solid var(--dt-border-2);
+  border-bottom: 1px solid var(--dt-border);
   background: transparent;
   cursor: pointer;
   text-align: left;
@@ -590,7 +604,7 @@ const copyContact = async (name: string) => {
   align-items: center;
   gap: 2px;
   padding: 10px 4px 12px;
-  border: 1px solid var(--dt-border-2);
+  border: 1px solid var(--dt-border);
   border-radius: var(--dt-radius);
   background: var(--dt-surface);
   cursor: pointer;

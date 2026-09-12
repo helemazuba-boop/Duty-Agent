@@ -5,12 +5,14 @@
 
 import { ref } from 'vue';
 import { apiUrl } from '@/api/baseUrl';
+import { getToken } from '@/api/http';
 import type { ScheduleProgress, ScheduleResult } from './useScheduleWebSocket';
 
 export interface RunScheduleSSEOptions {
   instruction: string;
   baseUrl: string;
-  token: string;
+  /** 可选：缺省时从 http.ts 的共享 getToken() 取（host 注入 token 的单源）。 */
+  token?: string;
   onProgress?: (p: ScheduleProgress) => void;
   signal?: AbortSignal;
 }
@@ -23,6 +25,7 @@ export function useScheduleSSE() {
 
   async function runSchedule(opts: RunScheduleSSEOptions): Promise<ScheduleResult> {
     const { baseUrl, token, instruction, onProgress, signal } = opts;
+    const authToken = token || getToken() || '';
     isRunning.value = true;
     currentPhase.value = '';
     progress.value = '';
@@ -35,7 +38,7 @@ export function useScheduleSSE() {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`,
+          Authorization: `Bearer ${authToken}`,
         },
         body: JSON.stringify({ instruction }),
         signal,

@@ -5,6 +5,7 @@
 
 import { ref } from 'vue';
 import { apiUrl, wsUrl } from '@/api/baseUrl';
+import { getToken } from '@/api/http';
 
 export interface ScheduleProgress {
   phase: string;
@@ -22,10 +23,14 @@ export interface ScheduleResult {
 export interface RunScheduleOptions {
   instruction: string;
   baseUrl: string;
-  token: string;
+  /** 可选：缺省时从 http.ts 的共享 getToken() 取（host 注入 token 的单源）。 */
+  token?: string;
   onProgress?: (p: ScheduleProgress) => void;
   signal?: AbortSignal;
 }
+
+/** 运行期空闲超时：90s 内未收到任何 WS 消息即按错误收尾（区别于 5s 连接超时）。 */
+const IDLE_TIMEOUT_MS = 90_000;
 
 function getScheduleApiUrl(baseUrl: string): string {
   return baseUrl ? `${baseUrl}/api/v1/duty/schedule` : apiUrl('/api/v1/duty/schedule');
@@ -48,12 +53,13 @@ async function runScheduleSSE(
   onProgress?: (p: ScheduleProgress) => void,
 ): Promise<ScheduleResult> {
   const { baseUrl, token, instruction, signal } = opts;
+  const authToken = token || getToken() || '';
 
   const response = await fetch(getScheduleApiUrl(baseUrl), {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      Authorization: `Bearer ${token}`,
+      Authorization: `Bearer ${authToken}`,
     },
     body: JSON.stringify({ instruction }),
     signal,
@@ -129,6 +135,7 @@ export function useScheduleWebSocket() {
 
   async function runSchedule(opts: RunScheduleOptions): Promise<ScheduleResult> {
     const { baseUrl, token, instruction, onProgress, signal } = opts;
+    const authToken = token || getToken() || '';
     isRunning.value = true;
     currentPhase.value = '';
     progress.value = '';
@@ -143,14 +150,44 @@ export function useScheduleWebSocket() {
     }
 
     try {
-      const scheduleWsUrl = getScheduleWsUrl(baseUrl, token);
+      const scheduleWsUrl = getScheduleWsUrl(baseUrl, authToken);
       const clientChangeId = crypto.randomUUID().replace(/-/g, '');
       const traceId = `fe-${Date.now()}`;
 
       let ws: WebSocket | null = null;
       let wsDone = false;
+      let idleTimer: number | undefined;
+
+      const clearIdleTimer = () => {
+        if (idleTimer !== undefined) {
+          window.clearTimeout(idleTimer);
+          idleTimer = undefined;
+        }
+      };
+
+      // timeout 回调发生在 Promise executor 作用域之外，用此引用 resolve。
+      let resolveIdle: (message: string) => void = () => {};
+
+      // 运行期空闲看门狗：连接建立后每收到一条消息就重置；
+      // 90s 静默（服务器挂起/半开连接）则按错误收尾，isRunning 在 finally 复位。
+      const armIdleTimer = () => {
+        clearIdleTimer();
+        idleTimer = window.setTimeout(() => {
+          idleTimer = undefined;
+          if (wsDone || !ws) return;
+          wsDone = true;
+          const timeoutMessage = `连接超时：${IDLE_TIMEOUT_MS / 1000} 秒未收到服务器消息，已中止本次排班`;
+          try { ws.close(); } catch { /* ignore */ }
+          currentPhase.value = 'timeout';
+          progress.value = timeoutMessage;
+          onProgress?.({ phase: 'timeout', message: timeoutMessage });
+          resolveIdle(timeoutMessage);
+        }, IDLE_TIMEOUT_MS);
+      };
 
       const wsResult = await new Promise<ScheduleResult>((resolve, reject) => {
+        resolveIdle = (message) => resolve({ status: 'error', message });
+
         ws = new WebSocket(scheduleWsUrl);
 
         ws.onopen = () => {
@@ -159,9 +196,11 @@ export function useScheduleWebSocket() {
             trace_id: traceId,
             request_source: 'web_ui',
           }));
+          armIdleTimer();
         };
 
         ws.onmessage = (evt) => {
+          armIdleTimer();
           try {
             const msg = JSON.parse(evt.data as string);
 
@@ -196,16 +235,19 @@ export function useScheduleWebSocket() {
                   result.status = 'success';
                 }
                 wsDone = true;
+                clearIdleTimer();
                 resolve(result);
                 break;
               }
               case 'schedule_cancelled': {
                 wsDone = true;
+                clearIdleTimer();
                 resolve({ status: 'cancelled', message: '排班执行已取消' });
                 break;
               }
               case 'error': {
                 wsDone = true;
+                clearIdleTimer();
                 const errMsg = (msg.message || 'Unknown error') as string;
                 resolve({ status: 'error', message: errMsg });
                 break;
@@ -215,13 +257,14 @@ export function useScheduleWebSocket() {
               }
             }
           } catch (e) {
-            // Ignore parse errors
+            console.warn('[useScheduleWebSocket] WS 消息解析失败:', e, evt.data);
           }
         };
 
         ws.onerror = () => {
           if (!wsDone) {
             wsDone = true;
+            clearIdleTimer();
             reject(new Error('WebSocket connection error'));
           }
         };
@@ -229,10 +272,12 @@ export function useScheduleWebSocket() {
         ws.onclose = () => {
           if (!wsDone) {
             wsDone = true;
+            clearIdleTimer();
             reject(new Error('WebSocket closed unexpectedly'));
           }
         };
 
+        // 连接超时（5s）：与运行期 idle 超时独立，仅覆盖"连不上"阶段。
         setTimeout(() => {
           if (!wsDone && ws && ws.readyState !== WebSocket.OPEN) {
             try { ws.close(); } catch { /* ignore */ }
@@ -241,6 +286,7 @@ export function useScheduleWebSocket() {
         }, 5000);
       });
 
+      clearIdleTimer();
       return wsResult;
     } catch (wsErr: unknown) {
       const wsErrMsg = wsErr instanceof Error ? wsErr.message : String(wsErr);
@@ -248,7 +294,7 @@ export function useScheduleWebSocket() {
       if (wsErrMsg === 'WS_TIMEOUT' || wsErrMsg.includes('WebSocket') || wsErrMsg.includes('connection')) {
         try {
           const sseResult = await runScheduleSSE(
-            { baseUrl, token, instruction, signal: abortController.signal },
+            { baseUrl, token: authToken, instruction, signal: abortController.signal },
             (p) => {
               currentPhase.value = p.phase;
               progress.value = p.message;

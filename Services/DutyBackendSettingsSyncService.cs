@@ -5,8 +5,6 @@ namespace DutyAgent.Services;
 
 public sealed class DutyBackendSettingsSyncService : IDisposable
 {
-    private const string DefaultBaseUrl = "https://integrate.api.nvidia.com/v1";
-    private const string DefaultModel = "moonshotai/kimi-k2-thinking";
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         PropertyNameCaseInsensitive = true
@@ -246,7 +244,9 @@ public sealed class DutyBackendSettingsSyncService : IDisposable
                 {
                     ExpectedVersion = remote.Version,
                     SelectedPlanId = localBackend.SelectedPlanId,
-                    PlanPresets = ClonePlanPresets(localBackend.PlanPresets),
+                    // 按现状传值：本地存储的 api_key（dpapi:v1: 密文）原样上传，
+                    // Python 侧 config 归一化处解密（契约 C2）。
+                    PlanPresets = DutyBackendDocumentNormalizer.ClonePlanPresets(localBackend.PlanPresets),
                     DutyRule = localBackend.DutyRule
                 };
 
@@ -350,24 +350,24 @@ public sealed class DutyBackendSettingsSyncService : IDisposable
 
     private static bool BackendMatches(DutyEditableBackendSettingsDocument localBackend, DutyBackendConfig remote)
     {
-        var normalizedLocal = NormalizeBackendDocument(localBackend);
-        var normalizedRemote = NormalizeBackendDocument(new DutyEditableBackendSettingsDocument
+        var normalizedLocal = DutyBackendDocumentNormalizer.Normalize(localBackend);
+        var normalizedRemote = DutyBackendDocumentNormalizer.Normalize(new DutyEditableBackendSettingsDocument
         {
             SelectedPlanId = remote.SelectedPlanId,
-            PlanPresets = ClonePlanPresets(remote.PlanPresets),
+            PlanPresets = DutyBackendDocumentNormalizer.ClonePlanPresets(remote.PlanPresets),
             DutyRule = remote.DutyRule
         });
 
         var localComparable = new
         {
             selected_plan_id = normalizedLocal.SelectedPlanId,
-            plan_presets = ClonePlanPresets(normalizedLocal.PlanPresets),
+            plan_presets = CloneComparablePlanPresets(normalizedLocal.PlanPresets),
             duty_rule = normalizedLocal.DutyRule ?? string.Empty
         };
         var remoteComparable = new
         {
             selected_plan_id = normalizedRemote.SelectedPlanId,
-            plan_presets = ClonePlanPresets(normalizedRemote.PlanPresets),
+            plan_presets = CloneComparablePlanPresets(normalizedRemote.PlanPresets),
             duty_rule = normalizedRemote.DutyRule ?? string.Empty
         };
         return string.Equals(
@@ -376,134 +376,39 @@ public sealed class DutyBackendSettingsSyncService : IDisposable
             StringComparison.Ordinal);
     }
 
-    private static List<DutyPlanPreset> ClonePlanPresets(IEnumerable<DutyPlanPreset>? presets)
+    /// <summary>
+    /// api_key 参与比较前先"解密还原"：本地存储是 dpapi:v1: 密文（C2/D4），后端
+    /// 归一化后返回的是解密后的明文。两侧都做 Unprotect-if-protected，才能按
+    /// 内容比较 —— 否则密文(不确定) vs 明文永远不等，同步 worker 会陷入补丁循环。
+    /// </summary>
+    private static List<object> CloneComparablePlanPresets(IEnumerable<DutyPlanPreset> presets)
     {
-        return (presets ?? [])
-            .Select(plan => new DutyPlanPreset
-            {
-                Id = plan.Id,
-                Name = plan.Name,
-                ModeId = plan.ModeId,
-                ApiKey = plan.ApiKey,
-                BaseUrl = plan.BaseUrl,
-                Model = plan.Model,
-                ModelProfile = plan.ModelProfile,
-                ProviderHint = plan.ProviderHint,
-                MultiAgentExecutionMode = plan.MultiAgentExecutionMode
-            })
-            .ToList();
+        return presets.Select(plan => (object)new
+        {
+            id = plan.Id,
+            name = plan.Name,
+            mode_id = plan.ModeId,
+            api_key = UnwrapApiKeyForComparison(plan.ApiKey),
+            base_url = plan.BaseUrl,
+            model = plan.Model,
+            model_profile = plan.ModelProfile,
+            provider_hint = plan.ProviderHint,
+            multi_agent_execution_mode = plan.MultiAgentExecutionMode
+        }).ToList();
     }
 
-    private static DutyEditableBackendSettingsDocument NormalizeBackendDocument(DutyEditableBackendSettingsDocument? backend)
+    private static string UnwrapApiKeyForComparison(string? apiKey)
     {
-        backend ??= new DutyEditableBackendSettingsDocument();
-        var presets = ClonePlanPresets(backend.PlanPresets);
-        if (presets.Count == 0)
+        if (string.IsNullOrWhiteSpace(apiKey))
         {
-            presets =
-            [
-                CreateDefaultPlanPreset(DutyBackendModeIds.Standard),
-                CreateDefaultPlanPreset(DutyBackendModeIds.Agents),
-                CreateDefaultPlanPreset(DutyBackendModeIds.IncrementalSmall),
-                CreateDefaultPlanPreset(DutyBackendModeIds.Offline)
-            ];
+            return string.Empty;
         }
 
-        for (var i = 0; i < presets.Count; i++)
+        if (!SecurityHelper.IsDpapiProtected(apiKey))
         {
-            var preset = presets[i];
-            preset.Id = string.IsNullOrWhiteSpace(preset.Id) ? $"plan-{i + 1}" : preset.Id.Trim();
-            preset.Name = string.IsNullOrWhiteSpace(preset.Name) ? preset.Id : preset.Name.Trim();
-            preset.ModeId = NormalizePlanModeId(preset.ModeId);
-            preset.ApiKey = (preset.ApiKey ?? string.Empty).Trim();
-            preset.BaseUrl = string.IsNullOrWhiteSpace(preset.BaseUrl) ? DefaultBaseUrl : preset.BaseUrl.Trim();
-            preset.Model = string.IsNullOrWhiteSpace(preset.Model) ? DefaultModel : preset.Model.Trim();
-            preset.ModelProfile = NormalizeModelProfile(preset.ModelProfile);
-            preset.ProviderHint = (preset.ProviderHint ?? string.Empty).Trim();
-            preset.MultiAgentExecutionMode = string.Equals(preset.ModeId, DutyBackendModeIds.Agents, StringComparison.Ordinal)
-                ? NormalizeMultiAgentExecutionMode(preset.MultiAgentExecutionMode)
-                : "auto";
+            return apiKey;
         }
 
-        // Mirror the Python-side normalization (state_ops._normalize_plan_presets):
-        // the offline (model-free) preset is always ensured, including for
-        // configs saved before offline mode existed. Without this, BackendMatches
-        // could never converge against a backend that injected the preset.
-        if (!presets.Any(x => string.Equals(x.ModeId, DutyBackendModeIds.Offline, StringComparison.Ordinal)))
-        {
-            presets.Add(CreateDefaultPlanPreset(DutyBackendModeIds.Offline));
-        }
-
-        var selectedPlanId = (backend.SelectedPlanId ?? string.Empty).Trim();
-        if (!presets.Any(x => string.Equals(x.Id, selectedPlanId, StringComparison.Ordinal)))
-        {
-            selectedPlanId = presets[0].Id;
-        }
-
-        return new DutyEditableBackendSettingsDocument
-        {
-            SelectedPlanId = selectedPlanId,
-            PlanPresets = presets,
-            DutyRule = backend.DutyRule ?? string.Empty
-        };
-    }
-
-    private static DutyPlanPreset CreateDefaultPlanPreset(string modeId)
-    {
-        return new DutyPlanPreset
-        {
-            Id = modeId,
-            Name = modeId switch
-            {
-                DutyBackendModeIds.Agents => "Agents",
-                DutyBackendModeIds.IncrementalSmall => "增量小模型",
-                DutyBackendModeIds.Offline => "离线算法",
-                _ => "标准"
-            },
-            ModeId = modeId,
-            BaseUrl = DefaultBaseUrl,
-            Model = DefaultModel,
-            ModelProfile = "auto",
-            MultiAgentExecutionMode = "auto"
-        };
-    }
-
-    private static string NormalizePlanModeId(string? modeId)
-    {
-        return (modeId ?? DutyBackendModeIds.Standard).Trim().ToLowerInvariant() switch
-        {
-            DutyBackendModeIds.Agents => DutyBackendModeIds.Agents,
-            "multi_agent" => DutyBackendModeIds.Agents,
-            DutyBackendModeIds.IncrementalSmall => DutyBackendModeIds.IncrementalSmall,
-            "incremental" => DutyBackendModeIds.IncrementalSmall,
-            "small_incremental" => DutyBackendModeIds.IncrementalSmall,
-            DutyBackendModeIds.Offline => DutyBackendModeIds.Offline,
-            "algorithm" => DutyBackendModeIds.Offline,
-            "local" => DutyBackendModeIds.Offline,
-            "deterministic" => DutyBackendModeIds.Offline,
-            _ => DutyBackendModeIds.Standard
-        };
-    }
-
-    private static string NormalizeModelProfile(string? value)
-    {
-        return (value ?? "auto").Trim().ToLowerInvariant() switch
-        {
-            "cloud" => "cloud",
-            "campus_small" => "campus_small",
-            "edge" => "edge",
-            "custom" => "custom",
-            _ => "auto"
-        };
-    }
-
-    private static string NormalizeMultiAgentExecutionMode(string? value)
-    {
-        return (value ?? "auto").Trim().ToLowerInvariant() switch
-        {
-            "parallel" => "parallel",
-            "serial" => "serial",
-            _ => "auto"
-        };
+        return SecurityHelper.UnprotectCurrentUser(apiKey) ?? string.Empty;
     }
 }

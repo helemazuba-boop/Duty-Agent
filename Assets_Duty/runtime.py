@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hmac
+import os
 import secrets
 import time
 import threading
@@ -14,7 +15,8 @@ from application.command_service import CommandService
 from application.query_service import QueryService
 from auth import normalize_access_token_mode, verify_pbkdf2_sha256_token
 from diagnostics import DutyDiagnosticsLogger
-from state_ops import Context, load_host_config, load_state, update_host_runtime_fields
+from state_ops import Context, claim_auto_run_today, load_host_config, load_state, update_host_runtime_fields
+from version import APP_VERSION
 
 # A1 provides ``auto_run`` (trigger + catch-up pure functions). It is an optional
 # dependency at import time: if it has not landed yet the worker degrades
@@ -26,7 +28,7 @@ except Exception:  # pragma: no cover - import guard for the A1 dependency
     is_auto_run_triggered = None
     detect_catchup_due = None
 
-APP_VERSION = "0.50.0"
+SKIP_AUTH_BYPASS = os.getenv("SKIP_AUTH_BYPASS", "").strip().lower() in ("1", "true", "yes")
 # 20s = 3 heartbeats at the bridge's 5s health-tick cadence + drift margin; the
 # old 15s TTL meant two lost ticks already flipped the bridge to disconnected.
 BRIDGE_HEARTBEAT_TTL_SECONDS = 20.0
@@ -65,6 +67,14 @@ class DutyRuntime:
         self.version = APP_VERSION
         self.started_at = time.monotonic()
         self.logger = DutyDiagnosticsLogger(self.logs_dir)
+        self.skip_auth_bypass = SKIP_AUTH_BYPASS
+        if self.skip_auth_bypass:
+            # 任务2：鉴权被绕过必须在文件日志里可见（每进程启动 WARN 一次），
+            # 否则只有盯着控制台的人才知道这个环境没有鉴权。
+            self.logger.warn(
+                "Auth",
+                "SKIP_AUTH_BYPASS is ENABLED - token verification is bypassed for this process.",
+            )
         self.schedule_run_lock = threading.Lock()
         self.duty_live_owner_lock = threading.Lock()
         self.duty_live_owner_id: str | None = None
@@ -96,6 +106,14 @@ class DutyRuntime:
         self.start_notification_workers()
         self.auto_run_stop = threading.Event()
         self.auto_run_thread: threading.Thread | None = None
+        # D5：当日重试完全由胜出进程的内存态决定——认领日期 + attempt 计数，
+        # 不再依赖 host-config 失败计数做跨进程重试（跨进程只保证"今日仅一个
+        # 进程触发"；进程崩溃导致的当日漏跑由次日 catch-up 兜底）。
+        self._auto_run_claim_date: str | None = None
+        self._auto_run_attempts: int = 0
+        # 任务9：订阅者队列满导致的丢弃必须计数并周期性告警，不再静默。
+        self.notification_queue_dropped_total = 0
+        self._notification_drop_warn_at = 10
         self.start_auto_run_worker()
 
     def new_trace_id(self) -> str:
@@ -255,12 +273,14 @@ class DutyRuntime:
         today = now.strftime("%Y-%m-%d")
         last = str(cfg.get("last_auto_run_date", "") or "")
         retry_times = _safe_int(cfg.get("auto_run_retry_times"), 3, lo=0)
-        failures = _safe_int(cfg.get("ai_consecutive_failures"), 0, lo=0)
-        # The retry budget is per-day: a counter stamped on another (or no) day
-        # is stale and must not eat into today's attempts.
-        if str(cfg.get("ai_failures_date", "") or "") != today:
-            failures = 0
         parameter = str(cfg.get("auto_run_parameter", "") or "")
+
+        # D5：当日重试 = 胜出进程内存态（claim 日期 + attempt 计数）。host-config
+        # 里的失败计数只作为诊断信息持久化，不再驱动跨进程重试。
+        retry_pending = (
+            self._auto_run_claim_date == today
+            and self._auto_run_attempts < max(1, retry_times)
+        )
 
         target_time = self._parse_auto_run_time(cfg.get("auto_run_time"))
         normal_due = (
@@ -268,15 +288,32 @@ class DutyRuntime:
             and last != today
             and (target_time is None or now.time() >= target_time)
         )
-        if not normal_due and not detect_catchup_due(mode, parameter, last, now.date()):
+        if not retry_pending and not normal_due and not detect_catchup_due(mode, parameter, last, now.date()):
             return
 
         # Busy pre-check (does not consume a retry): if a manual run holds the
-        # schedule lock right now, bail before invoking the engine.
+        # schedule lock right now, bail before claiming/executing.
         if not self.schedule_run_lock.acquire(blocking=False):
             self.logger.info("AutoRun", "Skipped: manual run in progress (busy).")
             return
         self.schedule_run_lock.release()
+
+        if retry_pending:
+            self.logger.info(
+                "AutoRun",
+                "Retrying auto run (in-process attempt).",
+                attempt=self._auto_run_attempts + 1,
+                retry_times=retry_times,
+            )
+        else:
+            # D5：跨进程原子认领——文件锁临界区内"读 last_auto_run_date →
+            # 非今日则置为今日"一步完成，先 claim 再执行。认领失败说明另一
+            # 进程已拥有今日执行权，本轮直接退出。
+            if not claim_auto_run_today(self.data_dir, self.logger, today=today):
+                self.logger.info("AutoRun", "Skipped: another process already claimed today's auto run.")
+                return
+            self._auto_run_claim_date = today
+            self._auto_run_attempts = 0
 
         result = self._invoke_auto_run(now)
         if str(result.get("code", "") or "").lower() == "busy":
@@ -284,29 +321,36 @@ class DutyRuntime:
             return
 
         ok = str(result.get("status", "") or "").lower() in {"success", "ok"}
+        # host-config 失败计数仅作诊断持久化；今日预算以内存 attempt 为准。
+        failures_today = _safe_int(cfg.get("ai_consecutive_failures"), 0, lo=0)
+        if str(cfg.get("ai_failures_date", "") or "") != today:
+            failures_today = 0
+
         if ok:
-            self._persist_auto_run_state(last_auto_run_date=today, ai_consecutive_failures=0, ai_failures_date=today)
+            self._auto_run_claim_date = None
+            self._auto_run_attempts = 0
+            self._persist_auto_run_state(ai_consecutive_failures=0, ai_failures_date=today)
             self.logger.info("AutoRun", "Auto schedule succeeded.", last_auto_run_date=today)
             return
 
-        failures += 1
-        if failures >= max(1, retry_times):
-            self._persist_auto_run_state(last_auto_run_date=today, ai_consecutive_failures=failures, ai_failures_date=today)
+        self._auto_run_attempts += 1
+        failures_today += 1
+        self._persist_auto_run_state(ai_consecutive_failures=failures_today, ai_failures_date=today)
+        if self._auto_run_attempts >= max(1, retry_times):
+            self._auto_run_claim_date = None  # 今日放弃：内存重试预算耗尽
             self.logger.warn(
                 "AutoRun",
                 "Auto run failed; gave up for today after retries.",
-                ai_consecutive_failures=failures,
+                attempts=self._auto_run_attempts,
                 retry_times=retry_times,
                 last_auto_run_date=today,
             )
         else:
-            self._persist_auto_run_state(last_auto_run_date=last, ai_consecutive_failures=failures, ai_failures_date=today)
             self.logger.warn(
                 "AutoRun",
-                "Auto run failed; will retry next tick.",
-                ai_consecutive_failures=failures,
+                "Auto run failed; will retry next tick (in-process).",
+                attempts=self._auto_run_attempts,
                 retry_times=retry_times,
-                last_auto_run_date=last,
             )
 
     @staticmethod
@@ -336,6 +380,8 @@ class DutyRuntime:
         ai_consecutive_failures: int | None = None,
         ai_failures_date: str | None = None,
     ) -> None:
+        # D5：日期回写已由 state_ops.claim_auto_run_today 在认领临界区内完成，
+        # 这里保留该助手但 check_auto_run 只用它更新失败计数（诊断用途）。
         patch: dict[str, Any] = {}
         if last_auto_run_date is not None:
             patch["last_auto_run_date"] = last_auto_run_date
@@ -390,6 +436,7 @@ class DutyRuntime:
             self.notification_history.append(event)
             self.notification_history = self.notification_history[-50:]
 
+        dropped = 0
         for queue in subscribers:
             # Drop-oldest on a full queue, with one retry: between our
             # get_nowait and put_nowait another publisher may refill the
@@ -403,6 +450,23 @@ class DutyRuntime:
                         queue.get_nowait()
                     except Exception:
                         pass
+            else:
+                # 两次尝试后仍未入队：事件对该订阅者彻底丢失（任务9：不再静默）。
+                dropped += 1
+
+        if dropped:
+            self.notification_queue_dropped_total += dropped
+            if self.notification_queue_dropped_total >= self._notification_drop_warn_at:
+                # 每 10 次丢弃 WARN 一次：太慢的订阅者应该被看见，但不能
+                # 每丢一条就刷一行日志。
+                self.logger.warn(
+                    "NotificationBus",
+                    "Subscriber queue full; notifications were dropped.",
+                    dropped_this_event=dropped,
+                    dropped_total=self.notification_queue_dropped_total,
+                    subscriber_count=len(subscribers),
+                )
+                self._notification_drop_warn_at += 10
 
         self.logger.info(
             "NotificationBus",

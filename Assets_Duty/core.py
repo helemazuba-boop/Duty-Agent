@@ -8,7 +8,6 @@ import sys
 import time
 import traceback
 import threading
-import signal
 from pathlib import Path
 from contextlib import asynccontextmanager
 
@@ -21,7 +20,7 @@ if SKIP_AUTH_BYPASS:
 
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
-from fastapi import FastAPI, BackgroundTasks, Request
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.responses import RedirectResponse
@@ -40,7 +39,9 @@ from auth import (
 from mcp_server import build_mcp_http_app
 from runtime import create_runtime
 from routers import bridge, config, duty, notifications, readiness, roster
+from version import APP_VERSION
 import uvicorn
+import uvicorn.main  # noqa: F401 — run_uvicorn_server 需替换 uvicorn.main.Server
 
 WEB_DIRECTORY = Path(__file__).resolve().parent / "web"
 
@@ -57,7 +58,7 @@ async def lifespan(app: FastAPI):
         runtime.stop_auto_run_worker()
     print("[Lifespan] Engine shutting down", flush=True)
 
-app = FastAPI(title="Duty-Agent IPC Engine", version="0.50.0", lifespan=lifespan)
+app = FastAPI(title="Duty-Agent IPC Engine", version=APP_VERSION, lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -123,8 +124,20 @@ async def require_bearer_for_protected_routes(request: Request, call_next):
 async def web_app_root():
     return RedirectResponse(url="/app/")
 
+
+class WebAppStaticFiles(StaticFiles):
+    """"/app" 静态托管:index.html 永远 revalidate,带 hash 的 assets 正常缓存。
+    不加 no-cache 时 WebView2 会启发式缓存旧 HTML,刷新后仍加载旧 hash 的 JS/CSS。"""
+
+    def file_response(self, *args, **kwargs):
+        response = super().file_response(*args, **kwargs)
+        if response.media_type == "text/html":
+            response.headers["Cache-Control"] = "no-cache"
+        return response
+
+
 if WEB_DIRECTORY.is_dir():
-    app.mount("/app", StaticFiles(directory=str(WEB_DIRECTORY), html=True), name="web_app")
+    app.mount("/app", WebAppStaticFiles(directory=str(WEB_DIRECTORY), html=True), name="web_app")
 
 app.include_router(duty.router)
 app.include_router(bridge.router)
@@ -138,7 +151,7 @@ app.include_router(readiness.router)
 async def root(request: Request):
     runtime = getattr(request.app.state, "runtime", None)
     if runtime is None:
-        return {"status": "running", "engine": "Duty-Agent FastAPI", "version": "0.50.0"}
+        return {"status": "running", "engine": "Duty-Agent FastAPI", "version": APP_VERSION}
     payload = runtime.query_service.health()
     payload["engine"] = "Duty-Agent FastAPI"
     return payload
@@ -148,7 +161,7 @@ async def root(request: Request):
 async def health(request: Request):
     runtime = getattr(request.app.state, "runtime", None)
     if runtime is None:
-        return {"status": "ok", "version": "0.50.0"}
+        return {"status": "ok", "version": APP_VERSION, "auth_bypassed": SKIP_AUTH_BYPASS}
     return runtime.query_service.health()
 
 
@@ -156,22 +169,74 @@ async def health(request: Request):
 async def engine_info(request: Request):
     runtime = getattr(request.app.state, "runtime", None)
     if runtime is None:
-        return {"engine": "Duty-Agent Unified Scheduling Engine", "version": "0.50.0"}
+        return {"engine": "Duty-Agent Unified Scheduling Engine", "version": APP_VERSION, "auth_bypassed": SKIP_AUTH_BYPASS}
     return runtime.query_service.engine_info()
 
 
 @app.post("/shutdown")
-async def shutdown(background_tasks: BackgroundTasks):
-    def exit_process():
-        time.sleep(0.5)
-        print("[Server] Manual shutdown triggered. Exiting...", flush=True)
-        os.kill(os.getpid(), signal.SIGTERM)
-
-    background_tasks.add_task(exit_process)
+async def shutdown():
+    # 任务1：优雅关停 —— 置 should_exit 让 uvicorn 主循环走完整退出路径
+    # （停止 accept → 等待在途请求 → lifespan shutdown → runtime worker join）。
+    # 旧实现 os.kill(SIGTERM) 在 Windows 上等价于硬杀进程，lifespan 永远不执行。
+    server = getattr(app.state, "uvicorn_server", None)
+    if server is None:
+        return JSONResponse(status_code=503, content={"detail": "Uvicorn server instance is not captured yet."})
+    server.should_exit = True
     return {"status": "shutting down"}
 
 
+def run_uvicorn_server(app: FastAPI, *, host: str, port: int, log_level: str, prebound_socket=None) -> None:
+    """启动 uvicorn，并把运行中的 Server 实例捕获到 app.state.uvicorn_server（任务1）。
+
+    uvicorn.run() 在内部才构造 Server，外部拿不到实例；这里在 run() 调用期间
+    临时把 Server 类指向捕获子类（uvicorn.main.run 通过自身模块全局量构造
+    ``Server(config)``，因此必须替换 ``uvicorn.main.Server``；包级
+    ``uvicorn.Server`` 一并替换以兼容不同引用路径），run() 内部构造即落到子类
+    上，从而把实例挂到 app.state 供 /shutdown 置 should_exit。finally 恢复
+    原类；既有测试通过 mock ``core.uvicorn.run`` 拦截启动的方式依然有效
+    （mock 生效时子类根本不会被构造）。
+
+    任务4：传入 prebound_socket 时，经由 ``Server.serve(sockets=[sock])``
+    （uvicorn 0.41.0 支持；Config/run 不暴露 sock 参数）直接接管已绑定的监听
+    socket，消除"探测端口 → close → 重新 bind"窗口内端口被其他进程抢占的
+    TOCTOU；asyncio 在接管时会自行调用 listen(backlog)，这里只需保持句柄存活。
+    """
+    class _CapturedServer(uvicorn.Server):
+        def __init__(self, config):
+            super().__init__(config)
+            app.state.uvicorn_server = self
+
+        async def serve(self, sockets=None):
+            if sockets is None and prebound_socket is not None:
+                sockets = [prebound_socket]
+            await super().serve(sockets=sockets)
+
+    # uvicorn/__init__.py 把包属性 main 覆盖成了 click 的 Command 对象，
+    # 子模块本体只能从 sys.modules 里取（module-level 的 import uvicorn.main
+    # 已保证它被加载）。
+    uvicorn_main_module = sys.modules["uvicorn.main"]
+    real_main_server = uvicorn_main_module.Server
+    real_pkg_server = uvicorn.Server
+    uvicorn_main_module.Server = _CapturedServer
+    uvicorn.Server = _CapturedServer
+    try:
+        # timeout_graceful_shutdown=5：SSE/WebSocket 等长连接不会主动结束，
+        # 必须给优雅退出一个硬上限，否则 POST /shutdown 可能无限等待。
+        uvicorn.run(app, host=host, port=port, log_level=log_level, timeout_graceful_shutdown=5)
+    finally:
+        uvicorn_main_module.Server = real_main_server
+        uvicorn.Server = real_pkg_server
+
+
 def monitor_parent_process():
+    def _safe_print(message: str) -> None:
+        # 父进程死亡后 stdout/stderr 管道读端即关闭，任何 print 都可能抛
+        # BrokenPipeError（或阻塞）；控制台输出绝不能挡在退出路径之前。
+        try:
+            print(message, flush=True)
+        except OSError:
+            pass
+
     parent_pid = os.getppid()
     if parent_pid <= 1:
         return
@@ -187,27 +252,24 @@ def monitor_parent_process():
         kernel32 = ctypes.windll.kernel32
         handle = kernel32.OpenProcess(SYNCHRONIZE, False, parent_pid)
         if not handle:
-            print(f"[Lifecycle] Cannot open parent PID {parent_pid}, exiting.", flush=True)
+            _safe_print(f"[Lifecycle] Cannot open parent PID {parent_pid}, exiting.")
             os._exit(1)
 
-        print(f"[Lifecycle] Windows SuicideWatch active (Kernel Handle) for parent PID: {parent_pid}", flush=True)
+        _safe_print(f"[Lifecycle] Windows SuicideWatch active (Kernel Handle) for parent PID: {parent_pid}")
         try:
             result = kernel32.WaitForSingleObject(ctypes.wintypes.HANDLE(handle), INFINITE)
             if result == WAIT_OBJECT_0:
-                print(f"[Lifecycle] Parent {parent_pid} exited. Shutting down self...", flush=True)
                 os._exit(0)
         finally:
             kernel32.CloseHandle(handle)
     else:
-        print(f"[Lifecycle] Posix SuicideWatch active for parent PID: {parent_pid}", flush=True)
+        _safe_print(f"[Lifecycle] Posix SuicideWatch active for parent PID: {parent_pid}")
         while True:
             if os.getppid() != parent_pid:
-                print(f"[Lifecycle] Parent {parent_pid} lost (reparented). Shutting down self...", flush=True)
                 os._exit(0)
             try:
                 os.kill(parent_pid, 0)
             except OSError:
-                print(f"[Lifecycle] Parent {parent_pid} lost. Shutting down self...", flush=True)
                 os._exit(0)
             time.sleep(2)
 
@@ -228,22 +290,30 @@ def main():
         app.state.runtime = create_runtime(data_dir, disable_mcp_runtime=args.disable_mcp_runtime)
 
         import socket
+        # 任务4：--port 0 时先 bind 探测端口；bind 后不 close —— 保持监听句柄
+        # 直至 uvicorn 经 serve(sockets=[sock]) 接管（见 run_uvicorn_server），
+        # 消除"关闭探测 socket → 重新 bind"窗口内端口被抢占的 TOCTOU。
+        prebound_socket = None
         actual_port = args.port
         if actual_port == 0:
-            temp_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            temp_sock.bind(('127.0.0.1', 0))
-            actual_port = temp_sock.getsockname()[1]
-            temp_sock.close()
+            prebound_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            prebound_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            prebound_socket.bind(("127.0.0.1", 0))
+            actual_port = prebound_socket.getsockname()[1]
 
         print(f"__DUTY_SERVER_PORT__:{actual_port}", flush=True)
         print(f"__DUTY_SERVER_TOKEN_MODE__:{app.state.runtime.access_token_mode}", flush=True)
         if app.state.runtime.access_token_mode == "dynamic":
             print(f"__DUTY_SERVER_TOKEN__:{app.state.runtime.access_token}", flush=True)
-            try:
-                token_file = data_dir / ".dev-token"
-                token_file.write_text(app.state.runtime.access_token, encoding="utf-8")
-            except Exception:
-                pass
+            # 任务3：.dev-token 只在显式开发流程落盘（orchestrator.py 注入
+            # DUTY_DEV_WRITE_TOKEN=1）。生产客户端从 __DUTY_SERVER_TOKEN__ 管道
+            # 拿 token，数据目录不再默认出现明文 token 文件。
+            if os.getenv("DUTY_DEV_WRITE_TOKEN", "").strip() == "1":
+                try:
+                    token_file = data_dir / ".dev-token"
+                    token_file.write_text(app.state.runtime.access_token, encoding="utf-8")
+                except Exception:
+                    pass
 
         if not args.no_parent_watch:
             watch_thread = threading.Thread(
@@ -255,17 +325,28 @@ def main():
         else:
             print("[Lifecycle] SuicideWatch disabled (--no-parent-watch).", flush=True)
 
-        uvicorn.run(app, host="127.0.0.1", port=actual_port, log_level="warning")
+        run_uvicorn_server(app, host="127.0.0.1", port=actual_port, log_level="warning", prebound_socket=prebound_socket)
     else:
         from engine import run_schedule
-        from state_ops import Context, save_json_atomic
+        from state_ops import Context, sanitize_error_for_client, save_json_atomic
         ctx = Context(data_dir)
         input_data = {}
         if ctx.paths["input"].exists():
             try:
                 with open(ctx.paths["input"], "r", encoding="utf-8-sig") as f:
                     input_data = json.load(f)
-            except: pass
+            except (OSError, ValueError) as ex:
+                # 任务9：损坏的 input.json 不能再静默吞掉——把空输入当合法输入
+                # 跑完会写出误导性的 result。这里显式记录并以 error 结果返回。
+                print(f"[core] Failed to parse {ctx.paths['input'].name}: {ex}", file=sys.stderr, flush=True)
+                save_json_atomic(
+                    ctx.paths["result"],
+                    {
+                        "status": "error",
+                        "message": sanitize_error_for_client(f"Failed to parse input.json: {ex}"),
+                    },
+                )
+                return
 
         result = run_schedule(ctx, input_data)
 

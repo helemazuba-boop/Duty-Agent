@@ -1,3 +1,4 @@
+import argparse
 import contextlib
 import io
 import json
@@ -222,7 +223,7 @@ class TestCliDelegation(unittest.TestCase):
                     exit_code, payload = _run_cli(
                         [
                             "--base-url", BASE_URL,
-                            "--token", runtime.access_token,
+                            f"--token={runtime.access_token}",
                             "plan-prompt",
                             "--instruction", "本周排班",
                         ]
@@ -252,7 +253,7 @@ class TestCliDelegation(unittest.TestCase):
                     exit_code, payload = _run_cli(
                         [
                             "--base-url", BASE_URL,
-                            "--token", runtime.access_token,
+                            f"--token={runtime.access_token}",
                             "plan-prompt",
                             "--instruction", "本周排班",
                         ]
@@ -274,7 +275,7 @@ class TestCliDelegation(unittest.TestCase):
                     _, prompt_payload = _run_cli(
                         [
                             "--base-url", BASE_URL,
-                            "--token", runtime.access_token,
+                            f"--token={runtime.access_token}",
                             "plan-prompt",
                             "--instruction", "本周排班",
                         ]
@@ -285,7 +286,7 @@ class TestCliDelegation(unittest.TestCase):
                     exit_code, payload = _run_cli(
                         [
                             "--base-url", BASE_URL,
-                            "--token", runtime.access_token,
+                            f"--token={runtime.access_token}",
                             "plan-ingest",
                             "--completion", completion,
                             "--handle", json.dumps(resume_context),
@@ -313,7 +314,7 @@ class TestCliDelegation(unittest.TestCase):
                     exit_code, payload = _run_cli(
                         [
                             "--base-url", BASE_URL,
-                            "--token", "wrong-token",
+                            "--token=wrong-token",
                             "plan-prompt",
                             "--instruction", "本周排班",
                         ]
@@ -456,6 +457,141 @@ class TestCliHardening(unittest.TestCase):
             gone = cli._terminate_pid(123456)
         run.assert_not_called()
         self.assertFalse(gone)
+
+
+class TestCliFullFixRegression(unittest.TestCase):
+    """HANDOFF §24 regressions: discovery parity, registration ownership,
+    flag placement, SSE EOF flush, serve diagnostics."""
+
+    # ---- P3: global flags legal in both positions ---------------------------------
+    def test_global_flag_after_subcommand_accepted(self):
+        exit_code, payload = _run_cli(["status", "--port", "8799", "--pretty"])
+        self.assertEqual(exit_code, 0)
+        self.assertFalse(payload["running"])
+
+    def test_out_file_after_subcommand(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            out = Path(temp_dir) / "status.json"
+            _run_cli(["status", "--port", "8799", "--out", str(out)])
+            self.assertTrue(out.exists())
+            self.assertEqual(json.loads(out.read_text(encoding="utf-8"))["status"], "success")
+
+    # ---- P2: registration ownership ------------------------------------------------
+    def test_pid_removal_requires_ownership(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            pid_path = Path(temp_dir) / cli.PID_FILE_NAME
+            cli._write_pid(pid_path, 4242)
+            # A concurrent serve re-registered a different pid: refuse to remove.
+            self.assertFalse(cli._remove_pid_file_if_owned(pid_path, 4243))
+            self.assertEqual(cli._read_pid(pid_path), 4242)
+            self.assertTrue(cli._remove_pid_file_if_owned(pid_path, 4242))
+            self.assertIsNone(cli._read_pid(pid_path))
+
+    def test_stop_managed_cleans_owned_meta(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            data_dir = Path(temp_dir)
+            cli._write_pid(cli._pid_file_for(data_dir), 4242)
+            (data_dir / cli.META_FILE_NAME).write_text(
+                json.dumps({"pid": 4242, "port": 8765}), encoding="utf-8")
+            with mock.patch.object(cli, "_pid_alive", return_value=True), \
+                    mock.patch.object(cli, "_terminate_pid", return_value=True) as term:
+                payload = cli._stop_managed(data_dir)
+            self.assertTrue(payload["stopped"])
+            self.assertIsNone(cli._read_pid(cli._pid_file_for(data_dir)))
+            self.assertFalse((data_dir / cli.META_FILE_NAME).exists())
+            term.assert_called_once_with(4242)
+
+    # ---- P1: discovery parity --------------------------------------------------------
+    def test_meta_discovery_honors_classisland_env(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            bridge_dir = Path(temp_dir) / "DutyAgentBridge"
+            bridge_dir.mkdir()
+            (bridge_dir / cli.META_FILE_NAME).write_text(
+                json.dumps({"port": 9911, "token": "tk"}), encoding="utf-8")
+            args = argparse.Namespace(
+                base_url="", token="", port=0, data_dir="", meta_file="", request_source="cli")
+            with mock.patch.dict(os.environ, {"CLASSISLAND_CONFIG_PATH": temp_dir}):
+                conn = cli.resolve_connection(args)
+            self.assertEqual(conn.token, "tk")
+            self.assertTrue(conn.base_url.endswith(":9911"))
+
+    # ---- P4: token helper + BOM safety --------------------------------------------------
+    def test_read_dev_token_strips_bom(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            token_file = Path(temp_dir) / cli.DEV_TOKEN_NAME
+            token_file.write_bytes(b"\xef\xbb\xbf tok ")
+            self.assertEqual(cli._read_dev_token(Path(temp_dir)), "tok")
+
+    # ---- P5: serve mcp flag is explicit -------------------------------------------------
+    def test_serve_mcp_flag_passthrough(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            with mock.patch.object(cli, "_health_ok", return_value=False), \
+                    mock.patch.object(cli, "_wait_health", return_value=True), \
+                    mock.patch.object(cli.subprocess, "Popen") as popen:
+                proc = mock.Mock()
+                proc.pid = 4711
+                proc.poll.return_value = None
+                popen.return_value = proc
+                exit_code, payload = _run_cli(
+                    ["--data-dir", temp_dir, "serve", "--disable-mcp-runtime", "--port", "8799"])
+            self.assertEqual(exit_code, 0)
+            self.assertIn("--disable-mcp-runtime", popen.call_args.args[0])
+            self.assertIn("--no-parent-watch", popen.call_args.args[0])
+            self.assertEqual(payload["port"], 8799)
+
+    def test_serve_default_keeps_mcp_host_config_semantics(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            with mock.patch.object(cli, "_health_ok", return_value=False), \
+                    mock.patch.object(cli, "_wait_health", return_value=True), \
+                    mock.patch.object(cli.subprocess, "Popen") as popen:
+                proc = mock.Mock()
+                proc.pid = 4712
+                proc.poll.return_value = None
+                popen.return_value = proc
+                _run_cli(["--data-dir", temp_dir, "serve", "--port", "8799"])
+            self.assertNotIn("--disable-mcp-runtime", popen.call_args.args[0])
+
+    # ---- P6: log rotation + SSE EOF -------------------------------------------------------
+    def test_serve_log_rotation(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            log_path = Path(temp_dir) / cli.SERVE_LOG_NAME
+            log_path.write_text("x" * 100, encoding="utf-8")
+            cli._rotate_serve_log(log_path, max_bytes=50)
+            self.assertFalse(log_path.exists())
+            self.assertTrue(log_path.with_name(log_path.name + ".1").exists())
+            # Small logs stay untouched.
+            log_path.write_text("tiny", encoding="utf-8")
+            cli._rotate_serve_log(log_path, max_bytes=50)
+            self.assertTrue(log_path.exists())
+
+    def test_sse_flush_at_eof_keeps_final_event(self):
+        acc = cli._SseAccumulator()
+        acc.feed_line("event: complete")
+        acc.feed_line('data: {"status":"success","ai_response":"x"}')
+        acc.finish()
+        self.assertIsNotNone(acc.final)
+        self.assertEqual(acc.final["status"], "success")
+
+    def test_sse_multiline_data_joined(self):
+        acc = cli._SseAccumulator()
+        acc.feed_line("event: complete")
+        acc.feed_line('data: {"status":')
+        acc.feed_line('data: "success"}')
+        acc.feed_line("")
+        self.assertEqual(acc.final["status"], "success")
+
+    # ---- P6: --version ---------------------------------------------------------------------
+    def test_version_flag_emits_json(self):
+        exit_code, payload = _run_cli(["--version"])
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(payload["version"], cli.APP_VERSION)
+
+    def test_describe_publishes_meta_schema(self):
+        _, payload = _run_cli(["describe"])
+        schema = payload["meta_file"]["schema"]
+        for key in ("version", "pid", "port", "token_mode", "token", "started_at", "data_dir"):
+            self.assertIn(key, schema)
+        self.assertTrue(any("CLASSISLAND_CONFIG_PATH" in p for p in payload["meta_file"]["discovery_order"]))
 
 
 if __name__ == "__main__":

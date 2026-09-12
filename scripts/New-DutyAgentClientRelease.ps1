@@ -130,6 +130,74 @@ function Invoke-TarGz {
         -WorkingDirectory $root
 }
 
+function Read-Utf8Text {
+    # version.py / manifest.yml carry CJK text as BOM-less UTF-8; Get-Content
+    # under Windows PowerShell 5.1 decodes that with the system ANSI codepage,
+    # so stamping must round-trip through the .NET UTF-8 APIs instead.
+    param([Parameter(Mandatory = $true)][string]$Path)
+    return [System.IO.File]::ReadAllText($Path, [System.Text.Encoding]::UTF8)
+}
+
+function Write-Utf8Text {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$Text
+    )
+
+    # Preserve the file's original BOM state (Set-Content -Encoding UTF8
+    # unconditionally adds one under PS 5.1).
+    $bytes = [System.IO.File]::ReadAllBytes($Path)
+    $hasBom = ($bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF)
+    [System.IO.File]::WriteAllText($Path, $Text, (New-Object System.Text.UTF8Encoding($hasBom)))
+}
+
+function Get-AppVersionFromPyText {
+    # Extracts the APP_VERSION value from version.py text (contract C3 single
+    # source). Returns $null when the assignment is missing.
+    param([Parameter(Mandatory = $true)][string]$Text)
+    $match = [System.Text.RegularExpressions.Regex]::Match($Text, '(?m)^APP_VERSION[ \t]*=[ \t]*"([^"\r\n]*)"')
+    if (-not $match.Success) {
+        return $null
+    }
+    return $match.Groups[1].Value
+}
+
+function ConvertTo-NormalizedVersion {
+    # Normalizes "9.9.9" / "9.9.9.0" / "9.9" to a comparable 4-part
+    # System.Version (MSBuild pads the Win32 FileVersion resource to
+    # Major.Minor.Build.Revision, so "9.9.9" reads back as "9.9.9.0").
+    param([string]$Value)
+    if ([string]::IsNullOrWhiteSpace($Value)) {
+        return $null
+    }
+
+    try {
+        $parsed = [version]$Value
+    }
+    catch {
+        return $null
+    }
+
+    $build = [Math]::Max($parsed.Build, 0)
+    $revision = [Math]::Max($parsed.Revision, 0)
+    return New-Object System.Version($parsed.Major, $parsed.Minor, $build, $revision)
+}
+
+function Test-SameVersionValue {
+    # Numeric version equality tolerant to trailing ".0" padding.
+    param(
+        [string]$Actual,
+        [Parameter(Mandatory = $true)][string]$Expected
+    )
+
+    $actualNormalized = ConvertTo-NormalizedVersion -Value $Actual
+    $expectedNormalized = ConvertTo-NormalizedVersion -Value $Expected
+    if ($null -eq $actualNormalized -or $null -eq $expectedNormalized) {
+        return $false
+    }
+    return ($actualNormalized.Equals($expectedNormalized))
+}
+
 $root = Get-NormalizedFullPath (Join-Path $PSScriptRoot "..")
 $uiDir = Join-Path $root "duty-agent-ui"
 $assetsDir = Join-Path $root "Assets_Duty"
@@ -178,6 +246,49 @@ if (-not (Test-Path -LiteralPath (Join-Path $assetsDir "core.py"))) {
     throw "Missing backend entry: $(Join-Path $assetsDir "core.py")"
 }
 
+$versionPy = Join-Path $assetsDir "version.py"
+if (-not (Test-Path -LiteralPath $versionPy)) {
+    throw "Missing version single source (contract C3): $versionPy"
+}
+
+if (-not [string]::IsNullOrWhiteSpace($ReleaseVersion)) {
+    # Contract C3: Assets_Duty\version.py is the version single source the
+    # backend imports at runtime, so the release stamps it alongside the two
+    # csproj (/p:Version) and the bridge manifest. Only the quoted value of
+    # the APP_VERSION line is rewritten; comments, docstring, line endings
+    # and the rest of the file stay byte-identical.
+    Write-Host "[0/7] Stamping Assets_Duty\version.py -> $ReleaseVersion ..."
+    $versionPyText = Read-Utf8Text -Path $versionPy
+    $appVersionLinePattern = '(?m)^APP_VERSION[ \t]*=[ \t]*"[^"\r\n]*"'
+    $appVersionLines = [System.Text.RegularExpressions.Regex]::Matches($versionPyText, $appVersionLinePattern)
+    if ($appVersionLines.Count -eq 0) {
+        throw "version.py has no APP_VERSION assignment line to stamp."
+    }
+    if ($appVersionLines.Count -gt 1) {
+        throw "version.py has $($appVersionLines.Count) APP_VERSION lines; expected exactly one."
+    }
+    $versionPyText = [System.Text.RegularExpressions.Regex]::Replace(
+        $versionPyText,
+        $appVersionLinePattern,
+        ('APP_VERSION = "{0}"' -f $ReleaseVersion))
+    Write-Utf8Text -Path $versionPy -Text $versionPyText
+    $stampedVersion = Get-AppVersionFromPyText -Text (Read-Utf8Text -Path $versionPy)
+    if ($stampedVersion -ne $ReleaseVersion) {
+        throw "version.py stamp verification failed: expected '$ReleaseVersion', file now reports '$stampedVersion'."
+    }
+}
+
+# A python-embed tree that packages cleanly but cannot import its wheels would
+# ship a client that dies on backend startup ("packages fine, never runs").
+# fastapi/uvicorn/pydantic/httpx are hard imports of core.py; cryptography and
+# mcp are the binary wheels shipped inside python-embed.
+Write-Host "[0/7] Smoke-testing the embedded Python runtime..."
+$embedPython = Join-Path $assetsDir "python-embed\python.exe"
+Invoke-Tool `
+    -FilePath $embedPython `
+    -Arguments @("-c", "import fastapi, uvicorn, pydantic, httpx, cryptography, mcp") `
+    -WorkingDirectory $root
+
 if (-not $SkipWebBuild) {
     Write-Host "[1/7] Building web UI..."
     Invoke-Tool -FilePath "npm.cmd" -Arguments @("run", "build") -WorkingDirectory $uiDir
@@ -189,6 +300,21 @@ else {
 $distDir = Join-Path $uiDir "dist"
 if (-not (Test-Path -LiteralPath (Join-Path $distDir "index.html"))) {
     throw "Missing UI build output: $(Join-Path $distDir "index.html")"
+}
+
+if ($SkipWebBuild) {
+    # -SkipWebBuild ships the existing dist as-is. If any UI source file is
+    # newer than dist\index.html the package would silently carry stale UI,
+    # so fail and ask for a real build instead.
+    $newestUiSource = Get-ChildItem -LiteralPath (Join-Path $uiDir "src") -Recurse -File -ErrorAction SilentlyContinue |
+        Sort-Object LastWriteTime -Descending |
+        Select-Object -First 1
+    $distIndexHtml = Get-Item -LiteralPath (Join-Path $distDir "index.html")
+    if ($null -ne $newestUiSource -and $newestUiSource.LastWriteTime -gt $distIndexHtml.LastWriteTime) {
+        throw "Stale web artifact: '$($distIndexHtml.FullName)' ($($distIndexHtml.LastWriteTime)) is older than UI source " +
+            "'$($newestUiSource.FullName)' ($($newestUiSource.LastWriteTime)). " +
+            "Run 'npm run build' in duty-agent-ui first, or drop -SkipWebBuild."
+    }
 }
 
 # A dev token baked into the build overrides the per-boot token the host passes
@@ -299,20 +425,19 @@ if (-not [string]::IsNullOrWhiteSpace($ReleaseVersion)) {
     # plugin update check keys off manifest version, so shipping every release
     # as the hardcoded 0.50.0 silently disabled upgrade detection.
     $stagedManifest = Join-Path $bridgeReleaseDir "manifest.yml"
-    $manifestLines = Get-Content -LiteralPath $stagedManifest
-    $matched = $false
-    $patched = foreach ($line in $manifestLines) {
-        if ($line -match '^(version:)') {
-            $matched = $true
-            "$($Matches[1]) $ReleaseVersion"
-        } else {
-            $line
-        }
+    # UTF-8 in/out: manifest.yml carries CJK strings and is BOM-less, which
+    # Get-Content/Set-Content under PS 5.1 would round-trip as ANSI mojibake.
+    $manifestText = Read-Utf8Text -Path $stagedManifest
+    $manifestVersionPattern = '(?m)^version:[ \t]*[^\r\n]*'
+    $manifestVersionLines = [System.Text.RegularExpressions.Regex]::Matches($manifestText, $manifestVersionPattern)
+    if ($manifestVersionLines.Count -ne 1) {
+        throw "manifest.yml has no (or more than one) 'version:' line to stamp."
     }
-    if (-not $matched) {
-        throw "manifest.yml has no 'version:' line to stamp."
-    }
-    Set-Content -LiteralPath $stagedManifest -Value $patched -Encoding UTF8
+    $manifestText = [System.Text.RegularExpressions.Regex]::Replace(
+        $manifestText,
+        $manifestVersionPattern,
+        ("version: {0}" -f $ReleaseVersion))
+    Write-Utf8Text -Path $stagedManifest -Text $manifestText
 }
 
 if (-not (Test-Path -LiteralPath (Join-Path $bridgeReleaseDir "DutyAgentBridge.dll"))) {
@@ -321,6 +446,50 @@ if (-not (Test-Path -LiteralPath (Join-Path $bridgeReleaseDir "DutyAgentBridge.d
 
 if (-not (Test-Path -LiteralPath (Join-Path $bridgeReleaseDir "manifest.yml"))) {
     throw "Bridge release is missing manifest.yml"
+}
+
+# Contract C3: after stamping, all four version surfaces must agree before
+# anything is bundled or zipped: version.py (the runtime single source), the
+# two published binaries (duty-agent.exe / DutyAgentBridge.dll carry the
+# /p:Version), and the staged bridge manifest (ClassIsland's update check
+# reads it). Otherwise one release reports three different versions.
+$appVersionSurfaces = [ordered]@{
+    "Assets_Duty\version.py APP_VERSION"  = (Get-AppVersionFromPyText -Text (Read-Utf8Text -Path $versionPy))
+    "duty-agent.exe FileVersion"          = (Get-Item -LiteralPath $mainExe).VersionInfo.FileVersion
+    "DutyAgentBridge.dll FileVersion"     = (Get-Item -LiteralPath (Join-Path $bridgeReleaseDir "DutyAgentBridge.dll")).VersionInfo.FileVersion
+    "bridge manifest.yml version"         = $null
+}
+$stagedManifestVersionMatch = [System.Text.RegularExpressions.Regex]::Match(
+    (Read-Utf8Text -Path (Join-Path $bridgeReleaseDir "manifest.yml")),
+    '(?m)^version:[ \t]*([^ \t\r\n]+)')
+if ($stagedManifestVersionMatch.Success) {
+    $appVersionSurfaces["bridge manifest.yml version"] = $stagedManifestVersionMatch.Groups[1].Value
+}
+$surfaceSummary = ($appVersionSurfaces.GetEnumerator() | ForEach-Object { "  {0}: {1}" -f $_.Key, $_.Value }) -join "`r`n"
+
+if (-not [string]::IsNullOrWhiteSpace($ReleaseVersion)) {
+    foreach ($surface in $appVersionSurfaces.GetEnumerator()) {
+        if (-not (Test-SameVersionValue -Actual $surface.Value -Expected $ReleaseVersion)) {
+            throw "Version stamp mismatch (expected $ReleaseVersion everywhere):`r`n$surfaceSummary"
+        }
+    }
+    Write-Host "[6/7] Version consistency OK: all four surfaces report $ReleaseVersion."
+}
+else {
+    # No explicit stamp: defaults apply. The bridge dll and the manifest then
+    # carry their checked-in versions, which must still agree with version.py.
+    # duty-agent.exe is exempt: DutyAgent.Client.csproj declares no <Version>,
+    # so MSBuild's 1.0.0 default is expected there until it gets one.
+    $defaultVersion = $appVersionSurfaces["Assets_Duty\version.py APP_VERSION"]
+    if ([string]::IsNullOrWhiteSpace($defaultVersion)) {
+        throw "Assets_Duty\version.py carries no APP_VERSION value (contract C3 broken)."
+    }
+    foreach ($surfaceName in @("DutyAgentBridge.dll FileVersion", "bridge manifest.yml version")) {
+        if (-not (Test-SameVersionValue -Actual $appVersionSurfaces[$surfaceName] -Expected $defaultVersion)) {
+            throw "Default versions drift from version.py (expected $defaultVersion everywhere it is declared):`r`n$surfaceSummary"
+        }
+    }
+    Write-Host "[6/7] Default version consistency OK: $defaultVersion (duty-agent.exe not stamped; MSBuild default applies)."
 }
 
 # Bundle the bridge inside the client package so the client's one-click

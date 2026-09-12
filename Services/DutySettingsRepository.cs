@@ -46,8 +46,6 @@ public sealed class DutySettingsChangedEventArgs : EventArgs
 public sealed partial class DutySettingsRepository : IDutySettingsRepository
 {
     private const string DefaultDutyReminderTime = "07:40";
-    private const string DefaultBaseUrl = "https://integrate.api.nvidia.com/v1";
-    private const string DefaultModel = "moonshotai/kimi-k2-thinking";
     private const int MinServicePort = 1024;
     private const int MaxServicePort = 65535;
 
@@ -145,6 +143,7 @@ public sealed partial class DutySettingsRepository : IDutySettingsRepository
                 backend_settings_changed = backendSettingsChanged,
                 selected_plan_id = nextSettings.Backend.SelectedPlanId
             });
+            EncryptBackendApiKeysInPlace(nextSettings.Backend);
             WriteJsonAtomicallyTracked(_pluginPaths.SettingsPath, nextSettings, "settings_json", new
             {
                 previous_version = currentSettings.Version,
@@ -227,6 +226,7 @@ public sealed partial class DutySettingsRepository : IDutySettingsRepository
             nextSettings.Version = Math.Max(1, currentSettings.Version) + 1;
             nextSettings.SavedAtUtc = DateTimeOffset.UtcNow;
 
+            EncryptBackendApiKeysInPlace(nextSettings.Backend);
             WriteJsonAtomicallyTracked(_pluginPaths.SettingsPath, nextSettings, "settings_json_host_security", new
             {
                 previous_version = currentSettings.Version,
@@ -280,6 +280,7 @@ public sealed partial class DutySettingsRepository : IDutySettingsRepository
             {
                 nextSettings.Version = Math.Max(1, currentSettings.Version) + 1;
                 nextSettings.SavedAtUtc = DateTimeOffset.UtcNow;
+                EncryptBackendApiKeysInPlace(nextSettings.Backend);
                 WriteJsonAtomicallyTracked(_pluginPaths.SettingsPath, nextSettings, "settings_json", new
                 {
                     previous_version = currentSettings.Version,
@@ -407,6 +408,7 @@ public sealed partial class DutySettingsRepository : IDutySettingsRepository
             draft_exists = File.Exists(_pluginPaths.SettingsDraftPath)
         });
         var migrated = MigrateLocalSettingsUnlocked();
+        EncryptBackendApiKeysInPlace(migrated.Settings.Backend);
         WriteJsonAtomicallyTracked(_pluginPaths.SettingsPath, migrated.Settings, "settings_json_migrated", new
         {
             version = migrated.Settings.Version,
@@ -468,7 +470,7 @@ public sealed partial class DutySettingsRepository : IDutySettingsRepository
         }
 
         settings.Host = NormalizePersistedHostSettings(settings.Host);
-        settings.Backend = NormalizeBackendDocument(settings.Backend);
+        settings.Backend = DutyBackendDocumentNormalizer.Normalize(settings.Backend);
         settings.SavedAtUtc = DateTimeOffset.UtcNow;
         runtimeState = NormalizeHostRuntimeState(runtimeState);
         return (settings, runtimeState);
@@ -481,7 +483,7 @@ public sealed partial class DutySettingsRepository : IDutySettingsRepository
             Version = 1,
             SavedAtUtc = DateTimeOffset.UtcNow,
             Host = new DutyPersistedHostSettings(),
-            Backend = NormalizeBackendDocument(new DutyEditableBackendSettingsDocument())
+            Backend = DutyBackendDocumentNormalizer.Normalize(new DutyEditableBackendSettingsDocument())
         };
     }
 
@@ -503,7 +505,7 @@ public sealed partial class DutySettingsRepository : IDutySettingsRepository
 
         if (draft.Backend != null)
         {
-            settings.Backend = NormalizeBackendDocument(draft.Backend);
+            settings.Backend = DutyBackendDocumentNormalizer.Normalize(draft.Backend);
         }
     }
 
@@ -599,7 +601,7 @@ public sealed partial class DutySettingsRepository : IDutySettingsRepository
             backend.DutyRule = patch.DutyRule;
         }
 
-        var normalized = NormalizeBackendDocument(backend);
+        var normalized = DutyBackendDocumentNormalizer.Normalize(backend);
         backend.SelectedPlanId = normalized.SelectedPlanId;
         backend.PlanPresets = normalized.PlanPresets;
         backend.DutyRule = normalized.DutyRule;
@@ -612,7 +614,7 @@ public sealed partial class DutySettingsRepository : IDutySettingsRepository
             Version = Math.Max(1, document.Version),
             SavedAtUtc = document.SavedAtUtc == default ? DateTimeOffset.UtcNow : document.SavedAtUtc.ToUniversalTime(),
             Host = NormalizePersistedHostSettings(document.Host),
-            Backend = NormalizeBackendDocument(document.Backend)
+            Backend = DutyBackendDocumentNormalizer.Normalize(document.Backend)
         };
     }
 
@@ -648,45 +650,6 @@ public sealed partial class DutySettingsRepository : IDutySettingsRepository
         {
             AiConsecutiveFailures = Math.Max(0, state.AiConsecutiveFailures),
             LastAutoRunDate = (state.LastAutoRunDate ?? string.Empty).Trim()
-        };
-    }
-
-    private static DutyEditableBackendSettingsDocument NormalizeBackendDocument(DutyEditableBackendSettingsDocument? backend)
-    {
-        backend ??= new DutyEditableBackendSettingsDocument();
-        var presets = ClonePlanPresets(backend.PlanPresets);
-        if (presets.Count == 0)
-        {
-            presets = CreateDefaultPlanPresets();
-        }
-
-        for (var i = 0; i < presets.Count; i++)
-        {
-            var preset = presets[i];
-            preset.Id = string.IsNullOrWhiteSpace(preset.Id) ? $"plan-{i + 1}" : preset.Id.Trim();
-            preset.Name = string.IsNullOrWhiteSpace(preset.Name) ? preset.Id : preset.Name.Trim();
-            preset.ModeId = NormalizePlanModeId(preset.ModeId);
-            preset.ApiKey = (preset.ApiKey ?? string.Empty).Trim();
-            preset.BaseUrl = string.IsNullOrWhiteSpace(preset.BaseUrl) ? DefaultBaseUrl : preset.BaseUrl.Trim();
-            preset.Model = string.IsNullOrWhiteSpace(preset.Model) ? DefaultModel : preset.Model.Trim();
-            preset.ModelProfile = NormalizeModelProfile(preset.ModelProfile);
-            preset.ProviderHint = (preset.ProviderHint ?? string.Empty).Trim();
-            preset.MultiAgentExecutionMode = string.Equals(preset.ModeId, DutyBackendModeIds.Agents, StringComparison.Ordinal)
-                ? NormalizeMultiAgentExecutionMode(preset.MultiAgentExecutionMode)
-                : "auto";
-        }
-
-        var selectedPlanId = (backend.SelectedPlanId ?? string.Empty).Trim();
-        if (!presets.Any(x => string.Equals(x.Id, selectedPlanId, StringComparison.Ordinal)))
-        {
-            selectedPlanId = presets[0].Id;
-        }
-
-        return new DutyEditableBackendSettingsDocument
-        {
-            SelectedPlanId = selectedPlanId,
-            PlanPresets = presets,
-            DutyRule = backend.DutyRule ?? string.Empty
         };
     }
 
@@ -749,10 +712,10 @@ public sealed partial class DutySettingsRepository : IDutySettingsRepository
 
     private static DutyEditableBackendSettingsDocument CreateBackendDocument(DutyBackendConfig config)
     {
-        return NormalizeBackendDocument(new DutyEditableBackendSettingsDocument
+        return DutyBackendDocumentNormalizer.Normalize(new DutyEditableBackendSettingsDocument
         {
             SelectedPlanId = config.SelectedPlanId,
-            PlanPresets = ClonePlanPresets(config.PlanPresets),
+            PlanPresets = DutyBackendDocumentNormalizer.ClonePlanPresets(config.PlanPresets),
             DutyRule = config.DutyRule
         });
     }
@@ -786,29 +749,58 @@ public sealed partial class DutySettingsRepository : IDutySettingsRepository
 
     private void WriteCompatibilityHostConfig(DutyLocalSettingsDocument settings, DutyHostRuntimeState runtimeState)
     {
-        var projected = CreateProjectedHostConfig(settings.Host, runtimeState);
-        // host-config.json is shared with the Python backend (and the standalone
-        // client), which manage fields this plugin's typed projection does not
-        // model (notification_entry, client_auto_start, client_close_action,
-        // ai_failures_date, ...). Serializing the bare projection used to wipe
-        // those keys on every host-side save; the backend then normalized them
-        // back to defaults — silent config resets. Merge instead: our known
-        // fields win, everything else already in the file is preserved.
-        var merged = MergeProjectedHostConfigWithFile(_pluginPaths.HostConfigPath, projected);
-        // Version must stay monotonic ACROSS writers: the Python side increments
-        // the same field per patch. Seeding from our local settings document
-        // alone could move the file version backwards and break optimistic
-        // concurrency for in-flight patches.
-        merged["version"] = Math.Max(Math.Max(1, settings.Version), ReadHostConfigFileVersion(_pluginPaths.HostConfigPath) + 1);
-        WriteJsonAtomicallyTracked(_pluginPaths.HostConfigPath, merged, "host_config_projection", new
+        // host-config.json 是与 Python 后端（及独立客户端）共享的文件，双方通过
+        // <文件>.lock 跨进程互斥（协议见 HostConfigFileLock / state_ops.acquire_file_lock）。
+        // 读-合并-版本号递增-写 必须整体持锁，否则并发写会互相覆盖键与 version 回退。
+        using (HostConfigFileLock.Acquire(_pluginPaths.HostConfigLockPath))
         {
-            settings_version = settings.Version,
-            auto_run_mode = projected.AutoRunMode,
-            access_token_mode = projected.AccessTokenMode,
-            enable_mcp = projected.EnableMcp,
-            static_access_token_configured = HasStaticAccessTokenConfigured(settings.Host)
-        });
+            var projected = CreateProjectedHostConfig(settings.Host, runtimeState);
+            // host-config.json is shared with the Python backend (and the standalone
+            // client), which manage fields this plugin's typed projection does not
+            // model (notification_entry, client_auto_start, client_close_action,
+            // ai_failures_date, ...). Serializing the bare projection used to wipe
+            // those keys on every host-side save; the backend then normalized them
+            // back to defaults — silent config resets. Merge instead: our known
+            // fields win, everything else already in the file is preserved.
+            // D2/D5 之后 auto_run_* / duty_reminder_* / 运行时认领键的 owner 是
+            // host-config / Python 后端，插件投影只读不写（见 BackendOwnedHostConfigKeys）。
+            var merged = MergeProjectedHostConfigWithFile(_pluginPaths.HostConfigPath, projected);
+            // Version must stay monotonic ACROSS writers: the Python side increments
+            // the same field per patch. Seeding from our local settings document
+            // alone could move the file version backwards and break optimistic
+            // concurrency for in-flight patches.
+            merged["version"] = Math.Max(Math.Max(1, settings.Version), ReadHostConfigFileVersion(_pluginPaths.HostConfigPath) + 1);
+            WriteJsonAtomicallyTracked(_pluginPaths.HostConfigPath, merged, "host_config_projection", new
+            {
+                settings_version = settings.Version,
+                access_token_mode = projected.AccessTokenMode,
+                enable_mcp = projected.EnableMcp,
+                static_access_token_configured = HasStaticAccessTokenConfigured(settings.Host)
+            });
+        }
     }
+
+    /// <summary>
+    /// 插件投影不得覆盖的 host-config.json 键（owner = host-config / Python 后端）：
+    /// - auto_run_* / duty_reminder_*：D2 后 auto-run 触发、当日认领（last_auto_run_date）、
+    ///   失败计数与值日提醒全部由后端单点管理；插件本地 settings.json 中的同名字段仅供
+    ///   ClassIsland 插件设置页显示，写回共享文件会打掉后端/客户端刚保存的状态。
+    /// - last_auto_run_date / ai_consecutive_failures：D5 原子认领的运行时状态，
+    ///   只允许后端在文件锁内维护；插件从自身 host-state.json 投影旧值会造成重复触发。
+    /// - notification_entry 等未建模键由合并逻辑天然保留，不在本列表。
+    /// </summary>
+    private static readonly HashSet<string> BackendOwnedHostConfigKeys = new(StringComparer.Ordinal)
+    {
+        "auto_run_mode",
+        "auto_run_parameter",
+        "auto_run_time",
+        "auto_run_retry_times",
+        "auto_run_trigger_notification_enabled",
+        "duty_reminder_enabled",
+        "duty_reminder_times",
+        "last_auto_run_date",
+        "ai_consecutive_failures"
+    };
 
     private static Dictionary<string, object?> MergeProjectedHostConfigWithFile(string path, DutyConfig projected)
     {
@@ -832,11 +824,20 @@ public sealed partial class DutySettingsRepository : IDutySettingsRepository
         }
 
         // Projected (plugin-owned) fields overwrite; unknown keys survive.
+        // Backend-owned keys keep whatever the file already holds — even when the
+        // file was unreadable and we start from a clean projection (better to let
+        // the backend re-normalize its own keys than to inject stale host values).
         var serialized = JsonSerializer.SerializeToElement(projected);
         foreach (var property in serialized.EnumerateObject())
         {
+            if (BackendOwnedHostConfigKeys.Contains(property.Name))
+            {
+                continue;
+            }
+
             merged[property.Name] = JsonSerializer.Deserialize<object?>(property.Value.GetRawText());
         }
+
         return merged;
     }
 
@@ -888,6 +889,35 @@ public sealed partial class DutySettingsRepository : IDutySettingsRepository
         catch
         {
             return fallback;
+        }
+    }
+
+    /// <summary>
+    /// settings.json 写盘前调用：plan_presets[].api_key 存储即加密（契约 C2/D4，
+    /// "dpapi:v1:" 前缀，Python 侧 dpapi_compat.unprotect 解密）。
+    /// 已带前缀的密文原样保留（DPAPI 密文不确定，重复加密会破坏
+    /// "密文回读-保存" 的幂等性）；无前缀的旧明文键读取兼容原样使用，
+    /// 本次保存时升级为密文。单个键加密失败不阻断保存：保留明文并记日志。
+    /// </summary>
+    private static void EncryptBackendApiKeysInPlace(DutyEditableBackendSettingsDocument backend)
+    {
+        foreach (var preset in backend.PlanPresets)
+        {
+            var apiKey = preset.ApiKey;
+            if (string.IsNullOrWhiteSpace(apiKey) || SecurityHelper.IsDpapiProtected(apiKey))
+            {
+                continue;
+            }
+
+            try
+            {
+                preset.ApiKey = SecurityHelper.ProtectForCurrentUser(apiKey);
+            }
+            catch (Exception ex)
+            {
+                DutyDiagnosticsLogger.Warn("SettingsRepo", "Failed to DPAPI-protect plan api_key; keeping plaintext.",
+                    new { plan_id = preset.Id, error = ex.Message });
+            }
         }
     }
 
@@ -972,59 +1002,9 @@ public sealed partial class DutySettingsRepository : IDutySettingsRepository
         }
     }
 
-    private static List<DutyPlanPreset> CreateDefaultPlanPresets()
-    {
-        return
-        [
-            new DutyPlanPreset
-            {
-                Id = DutyBackendModeIds.Standard,
-                Name = "标准",
-                ModeId = DutyBackendModeIds.Standard,
-                BaseUrl = DefaultBaseUrl,
-                Model = DefaultModel,
-                ModelProfile = "auto",
-                MultiAgentExecutionMode = "auto"
-            },
-            new DutyPlanPreset
-            {
-                Id = DutyBackendModeIds.Agents,
-                Name = "Agents",
-                ModeId = DutyBackendModeIds.Agents,
-                BaseUrl = DefaultBaseUrl,
-                Model = DefaultModel,
-                ModelProfile = "auto",
-                MultiAgentExecutionMode = "auto"
-            },
-            new DutyPlanPreset
-            {
-                Id = DutyBackendModeIds.IncrementalSmall,
-                Name = "增量小模型",
-                ModeId = DutyBackendModeIds.IncrementalSmall,
-                BaseUrl = DefaultBaseUrl,
-                Model = DefaultModel,
-                ModelProfile = "auto",
-                MultiAgentExecutionMode = "auto"
-            }
-        ];
-    }
-
     private static List<DutyPlanPreset> ClonePlanPresets(IEnumerable<DutyPlanPreset>? presets)
     {
-        return (presets ?? [])
-            .Select(plan => new DutyPlanPreset
-            {
-                Id = plan.Id,
-                Name = plan.Name,
-                ModeId = plan.ModeId,
-                ApiKey = plan.ApiKey,
-                BaseUrl = plan.BaseUrl,
-                Model = plan.Model,
-                ModelProfile = plan.ModelProfile,
-                ProviderHint = plan.ProviderHint,
-                MultiAgentExecutionMode = plan.MultiAgentExecutionMode
-            })
-            .ToList();
+        return DutyBackendDocumentNormalizer.ClonePlanPresets(presets);
     }
 
     private static DutyPersistedHostSettings ClonePersistedHostSettings(DutyPersistedHostSettings host)
@@ -1097,41 +1077,6 @@ public sealed partial class DutySettingsRepository : IDutySettingsRepository
             "monthly" => "Monthly",
             "custom" => "Custom",
             _ => "Off"
-        };
-    }
-
-    private static string NormalizePlanModeId(string? modeId)
-    {
-        return (modeId ?? DutyBackendModeIds.Standard).Trim().ToLowerInvariant() switch
-        {
-            DutyBackendModeIds.Agents => DutyBackendModeIds.Agents,
-            "multi_agent" => DutyBackendModeIds.Agents,
-            DutyBackendModeIds.IncrementalSmall => DutyBackendModeIds.IncrementalSmall,
-            "incremental" => DutyBackendModeIds.IncrementalSmall,
-            "small_incremental" => DutyBackendModeIds.IncrementalSmall,
-            _ => DutyBackendModeIds.Standard
-        };
-    }
-
-    private static string NormalizeModelProfile(string? value)
-    {
-        return (value ?? "auto").Trim().ToLowerInvariant() switch
-        {
-            "cloud" => "cloud",
-            "campus_small" => "campus_small",
-            "edge" => "edge",
-            "custom" => "custom",
-            _ => "auto"
-        };
-    }
-
-    private static string NormalizeMultiAgentExecutionMode(string? value)
-    {
-        return (value ?? "auto").Trim().ToLowerInvariant() switch
-        {
-            "parallel" => "parallel",
-            "serial" => "serial",
-            _ => "auto"
         };
     }
 

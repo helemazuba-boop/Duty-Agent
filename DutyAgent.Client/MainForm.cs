@@ -1,4 +1,6 @@
+using System.Diagnostics;
 using System.Net.Http.Headers;
+using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json;
 using Microsoft.Web.WebView2.Core;
@@ -18,6 +20,8 @@ internal sealed class MainForm : Form
     private readonly WebView2 _webView = new()
     {
         Dock = DockStyle.Fill,
+        // 透明默认底色:页面加载前后由窗体 BackColor 兜底,杜绝导航间隙的白闪
+        DefaultBackgroundColor = Color.Transparent,
     };
     private readonly Label _statusLabel = new()
     {
@@ -26,7 +30,6 @@ internal sealed class MainForm : Form
         TextAlign = ContentAlignment.MiddleCenter,
     };
     private readonly BackendProcessManager _backend = new();
-    private readonly MenuStrip _menu = new() { Dock = DockStyle.Top };
     private readonly NotifyIcon _trayIcon;
     private readonly System.Windows.Forms.Timer _lifecycleDebounce = new() { Interval = 400 };
     private readonly RegisteredWaitHandle? _wakeRegistration;
@@ -41,6 +44,67 @@ internal sealed class MainForm : Form
     private bool _exitRequested;
     private bool _trayBalloonShown;
     private string _closeAction = "ask";
+    private bool _chromeDark;
+
+    // ======== 自定义窗口铬:web 画标题条与三键,宿主管窗口消息 ========
+    private bool _customChrome;
+    private int _titlebarCssHeight = 44;   // web 标题条高度(CSS px)
+    private int _controlsCssWidth = 138;   // 窗口三键总宽 3×46(CSS px)
+    private bool _lastMaximized;
+
+    private const int WM_NCCALCSIZE = 0x0083;
+    private const int WM_NCHITTEST = 0x0084;
+    private const int WM_NCLBUTTONDOWN = 0x00A1;
+    private const int WM_NCLBUTTONUP = 0x00A2;
+    private const int HTCLIENT = 1;
+    private const int HTCAPTION = 2;
+    private const int HTMAXBUTTON = 9;
+    private const int HTLEFT = 10;
+    private const int HTRIGHT = 11;
+    private const int HTTOP = 12;
+    private const int HTTOPLEFT = 13;
+    private const int HTTOPRIGHT = 14;
+    private const int HTBOTTOM = 15;
+    private const int HTBOTTOMLEFT = 16;
+    private const int HTBOTTOMRIGHT = 17;
+    private const int SM_CXSIZEFRAME = 32;
+    private const int SM_CXPADDEDBORDER = 92;
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct RECT
+    {
+        public int Left;
+        public int Top;
+        public int Right;
+        public int Bottom;
+    }
+
+    [DllImport("user32.dll")]
+    private static extern int GetSystemMetrics(int index);
+
+    [DllImport("user32.dll")]
+    private static extern bool ReleaseCapture();
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr SendMessage(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam);
+
+    // ======== 窗口镀铬跟随 web 主题(DWM) ========
+    private const int DWMWA_USE_IMMERSIVE_DARK_MODE = 20;
+    private const int DWMWA_USE_IMMERSIVE_DARK_MODE_LEGACY = 19; // Win10 旧版属性号
+    private const int DWMWA_BORDER_COLOR = 34;                   // Win11+
+    private const int DWMWA_CAPTION_COLOR = 35;                  // Win11+
+    private static readonly Color BgLight = Color.FromArgb(0xF6, 0xF7, 0xF9);   // tokens.json light.bg
+    private static readonly Color BgDark = Color.FromArgb(0x0F, 0x11, 0x15);    // tokens.json dark.bg
+    private static readonly Color TextLight = Color.FromArgb(0x11, 0x18, 0x27);
+    private static readonly Color TextDark = Color.FromArgb(0xE6, 0xE8, 0xEB);
+    private const uint CaptionColorLight = 0x00F9F7F6u; // COLORREF = 0x00BBGGRR
+    private const uint CaptionColorDark = 0x0015110Fu;
+
+    [DllImport("dwmapi.dll")]
+    private static extern int DwmSetWindowAttribute(IntPtr hwnd, int attribute, ref int value, int size);
+
+    [DllImport("dwmapi.dll")]
+    private static extern int DwmSetWindowAttribute(IntPtr hwnd, int attribute, ref uint value, int size);
 
     public MainForm(bool startSilent, EventWaitHandle wakeEvent)
     {
@@ -55,9 +119,14 @@ internal sealed class MainForm : Form
         var baseFont = SystemFonts.MessageBoxFont ?? Font;
         _statusLabel.Font = new Font(baseFont.FontFamily, 12f);
 
-        BuildMenu();
+        // 应用名与全部操作都在 web 内;原生层只留托盘,标题栏由 web 绘制(可经配置回退原生)
+        _customChrome = ReadCustomChromeEnabled();
         Controls.Add(_statusLabel);
-        Controls.Add(_menu);
+
+        // 首帧前先按系统深浅排好窗口底色,web 起来后由 theme-sync 消息纠正
+        _chromeDark = SystemPrefersDark();
+        ApplyWindowChrome(_chromeDark, _chromeDark ? CaptionColorDark : CaptionColorLight);
+
         _trayIcon = CreateTrayIcon();
         _lifecycleDebounce.Tick += (_, _) =>
         {
@@ -96,6 +165,8 @@ internal sealed class MainForm : Form
     protected override void OnHandleCreated(EventArgs e)
     {
         base.OnHandleCreated(e);
+        // DWM 属性要在窗口可见前设好,否则深色用户会先看到一帧亮色标题栏
+        ApplyWindowChrome(_chromeDark, _chromeDark ? CaptionColorDark : CaptionColorLight);
         if (_initializeQueued)
         {
             return;
@@ -105,13 +176,257 @@ internal sealed class MainForm : Form
         BeginInvoke(new Action(() => _ = InitializeAsync()));
     }
 
-    private void BuildMenu()
+    // ======== 自定义窗口铬:去原生标题栏,保留边框/阴影/缩放/贴靠 ========
+
+    /// <summary>
+    /// WM_NCCALCSIZE 吃掉默认处理:客户区 = 整个窗口矩形,原生标题栏不再存在。
+    /// 保留 WS_THICKFRAME/WS_CAPTION 样式,因此 DWM 阴影、缩放、Win+方向键贴靠、
+    /// Alt+F4、Win11 圆角全部继续由系统提供;最大化时按边框厚度内缩,防止内容压出屏幕。
+    /// </summary>
+    private bool HandleNcCalcSize(ref Message m)
     {
-        var toolsMenu = new ToolStripMenuItem("工具(&T)");
-        var installBridge = new ToolStripMenuItem("安装 ClassIsland 插件");
-        installBridge.Click += OnInstallBridgeClicked;
-        toolsMenu.DropDownItems.Add(installBridge);
-        _menu.Items.Add(toolsMenu);
+        if (!_customChrome || (int)m.WParam != 1)
+        {
+            return false;
+        }
+
+        if (WindowState == FormWindowState.Maximized)
+        {
+            var frame = GetResizeFrameThickness();
+            var rect = System.Runtime.InteropServices.Marshal.PtrToStructure<RECT>(m.LParam);
+            rect.Left += frame;
+            rect.Top += frame;
+            rect.Right -= frame;
+            rect.Bottom -= frame;
+            System.Runtime.InteropServices.Marshal.StructureToPtr(rect, m.LParam, false);
+        }
+
+        m.Result = IntPtr.Zero;
+        return true;
+    }
+
+    /// <summary>
+    /// 自绘铬下的非客户命中测试:边缘缩放热区、标题条拖拽区(HTCAPTION)、
+    /// 最大化按钮的 Win11 贴靠布局悬浮菜单(HTMAXBUTTON);三键区域返回 HTCLIENT 交给 web。
+    /// </summary>
+    private int? HitTestNonClient(IntPtr lParam)
+    {
+        if (!_customChrome)
+        {
+            return null;
+        }
+
+        // lParam = 屏幕坐标(负数按高位有符号数处理)
+        int x = (short)((long)lParam & 0xFFFF);
+        int y = (short)(((long)lParam >> 16) & 0xFFFF);
+        int winX = x - Location.X;
+        int winY = y - Location.Y;
+
+        double scale = DeviceDpi / 96.0;
+
+        // 缩放热区(最大化时系统不提供缩放)
+        if (WindowState != FormWindowState.Maximized)
+        {
+            int frame = GetResizeFrameThickness();
+            bool left = winX < frame;
+            bool right = winX >= Width - frame;
+            bool top = winY < frame;
+            bool bottom = winY >= Height - frame;
+            if (top && left) return HTTOPLEFT;
+            if (top && right) return HTTOPRIGHT;
+            if (bottom && left) return HTBOTTOMLEFT;
+            if (bottom && right) return HTBOTTOMRIGHT;
+            if (left) return HTLEFT;
+            if (right) return HTRIGHT;
+            if (top) return HTTOP;
+            if (bottom) return HTBOTTOM;
+        }
+
+        int titlebarHeight = (int)Math.Round(_titlebarCssHeight * scale);
+        int controlsWidth = (int)Math.Round(_controlsCssWidth * scale);
+        if (winY >= titlebarHeight)
+        {
+            return null;
+        }
+
+        if (winX >= Width - controlsWidth)
+        {
+            // Win11:悬停最大化按钮(三键中间那颗)时交给系统弹贴靠布局菜单
+            if (Environment.OSVersion.Version.Build >= 22000)
+            {
+                int buttonWidth = controlsWidth / 3;
+                int maxLeft = Width - controlsWidth + buttonWidth;
+                if (winX >= maxLeft && winX < maxLeft + buttonWidth)
+                {
+                    return HTMAXBUTTON;
+                }
+            }
+
+            return HTCLIENT;
+        }
+
+        return HTCAPTION;
+    }
+
+    private int GetResizeFrameThickness()
+    {
+        // SystemAware DPI 下 GetSystemMetrics 已按系统 DPI 缩放,与窗口 DPI 一致
+        return GetSystemMetrics(SM_CXSIZEFRAME) + GetSystemMetrics(SM_CXPADDEDBORDER);
+    }
+
+    private void ToggleMaximize()
+    {
+        WindowState = WindowState == FormWindowState.Maximized
+            ? FormWindowState.Normal
+            : FormWindowState.Maximized;
+    }
+
+    /// <summary>释放鼠标捕获后以指定 HT 值进入原生移动/缩放模态循环(拖拽、贴靠、双击全归系统)。</summary>
+    private void BeginNativeMove(int hitTest)
+    {
+        if (!_customChrome || !IsHandleCreated)
+        {
+            return;
+        }
+
+        ReleaseCapture();
+        SendMessage(Handle, WM_NCLBUTTONDOWN, (IntPtr)hitTest, IntPtr.Zero);
+    }
+
+    /// <summary>窗口命令由 web 标题条三键发起;close 走既有 FormClosing 策略(询问/驻留/退出)。</summary>
+    private void HandleWindowCommand(JsonElement root)
+    {
+        var command = root.TryGetProperty("command", out var cmdEl) && cmdEl.ValueKind == JsonValueKind.String
+            ? cmdEl.GetString()
+            : null;
+        switch (command)
+        {
+            case "minimize":
+                WindowState = FormWindowState.Minimized;
+                break;
+            case "maximize-toggle":
+                ToggleMaximize();
+                break;
+            case "close":
+                Close();
+                break;
+        }
+    }
+
+    private void HandleChromeGeometry(JsonElement root)
+    {
+        if (root.TryGetProperty("titlebarHeight", out var tbEl) && tbEl.ValueKind == JsonValueKind.Number)
+        {
+            _titlebarCssHeight = Math.Max(24, tbEl.GetInt32());
+        }
+
+        if (root.TryGetProperty("controlsWidth", out var cwEl) && cwEl.ValueKind == JsonValueKind.Number)
+        {
+            _controlsCssWidth = Math.Max(92, cwEl.GetInt32());
+        }
+    }
+
+    private void PostToWeb(object payload)
+    {
+        try
+        {
+            _webView.CoreWebView2?.PostWebMessageAsJson(JsonSerializer.Serialize(payload));
+        }
+        catch
+        {
+            // WebView 未就绪或已关闭:无处投递,忽略
+        }
+    }
+
+    private void PushHostInfo()
+    {
+        PostToWeb(new { type = "host-info", customChrome = _customChrome });
+        PushWindowState();
+    }
+
+    private void PushWindowState()
+    {
+        var maximized = WindowState == FormWindowState.Maximized;
+        if (maximized == _lastMaximized)
+        {
+            return;
+        }
+
+        _lastMaximized = maximized;
+        PostToWeb(new { type = "window-state", maximized });
+    }
+
+    /// <summary>host-config 的 client_custom_chrome(默认开):自定义铬异常时一行配置回退原生标题栏。</summary>
+    private bool ReadCustomChromeEnabled()
+    {
+        try
+        {
+            var path = Path.Combine(_backend.DataDirectory, "host-config.json");
+            if (File.Exists(path))
+            {
+                using var document = JsonDocument.Parse(File.ReadAllText(path, Encoding.UTF8));
+                var root = document.RootElement;
+                return !(root.TryGetProperty("client_custom_chrome", out var el)
+                    && el.ValueKind == JsonValueKind.False);
+            }
+        }
+        catch
+        {
+        }
+
+        return true;
+    }
+
+    protected override void WndProc(ref Message m)
+    {
+        switch (m.Msg)
+        {
+            case WM_NCCALCSIZE:
+                if (HandleNcCalcSize(ref m))
+                {
+                    return;
+                }
+
+                break;
+            case WM_NCHITTEST:
+            {
+                var hit = HitTestNonClient(m.LParam);
+                if (hit.HasValue)
+                {
+                    m.Result = (IntPtr)hit.Value;
+                    return;
+                }
+
+                break;
+            }
+            case WM_NCLBUTTONDOWN:
+                // 贴靠布局按钮的点击由我们接管(HTMAXBUTTON 区域不进 web)
+                if (_customChrome && (int)m.WParam == HTMAXBUTTON)
+                {
+                    return;
+                }
+
+                break;
+            case WM_NCLBUTTONUP:
+                if (_customChrome && (int)m.WParam == HTMAXBUTTON)
+                {
+                    ToggleMaximize();
+                    return;
+                }
+
+                break;
+        }
+
+        base.WndProc(ref m);
+    }
+
+    protected override void OnResize(EventArgs e)
+    {
+        base.OnResize(e);
+        if (IsHandleCreated && _webViewReady)
+        {
+            PushWindowState();
+        }
     }
 
     private NotifyIcon CreateTrayIcon()
@@ -140,18 +455,12 @@ internal sealed class MainForm : Form
         return icon;
     }
 
-    private void OnInstallBridgeClicked(object? sender, EventArgs e)
-    {
-        var result = BridgeInstaller.Install();
-        var icon = result.Success ? MessageBoxIcon.Information : MessageBoxIcon.Warning;
-        MessageBox.Show(this, result.Message, "安装 ClassIsland 插件", MessageBoxButtons.OK, icon);
-    }
-
     private async Task InitializeAsync()
     {
         try
         {
             await _backend.StartAsync(CancellationToken.None).ConfigureAwait(true);
+            _backend.BackendRestarted += OnBackendRestarted;
             _notificationService = new DesktopNotificationService(this);
             _notificationService.Initialize();
             _notificationService.NotificationActivated += OnNotificationActivated;
@@ -176,6 +485,44 @@ internal sealed class MainForm : Form
         catch (Exception ex)
         {
             await ShowFatalErrorAsync("启动失败", ex).ConfigureAwait(true);
+        }
+    }
+
+    /// <summary>
+    /// 后端 watchdog 自动重启成功后的恢复：旧 token/端口已失效，
+    /// 用新的 WebAppUrl（携带新 token）重新导航 WebView，并重启通知流订阅。
+    /// </summary>
+    private async void OnBackendRestarted(object? sender, EventArgs e)
+    {
+        if (InvokeRequired)
+        {
+            BeginInvoke(() => OnBackendRestarted(sender, e));
+            return;
+        }
+
+        if (_webViewReady)
+        {
+            try
+            {
+                _webView.Source = new Uri(_backend.WebAppUrl);
+            }
+            catch
+            {
+                // WebView 处于异常状态时忽略导航，下次 RestoreWindow 会重新加载。
+            }
+        }
+
+        if (_notificationStream is not null)
+        {
+            try
+            {
+                await _notificationStream.StopAsync().ConfigureAwait(true);
+            }
+            catch
+            {
+            }
+
+            _notificationStream.Start();
         }
     }
 
@@ -216,11 +563,186 @@ internal sealed class MainForm : Form
             var environment = await CoreWebView2Environment.CreateAsync(userDataFolder: userDataPath).ConfigureAwait(true);
             await _webView.EnsureCoreWebView2Async(environment).ConfigureAwait(true);
             _webView.CoreWebView2.Settings.AreDefaultContextMenusEnabled = true;
-            _webView.CoreWebView2.Settings.AreDevToolsEnabled = true;
+            // DevTools 默认关闭：仅调试器附加或显式设置 DUTY_WEBVIEW_DEVTOOLS=1 时开放，
+            // 避免最终用户（学生/值日生）误触右键检查元素。
+            _webView.CoreWebView2.Settings.AreDevToolsEnabled =
+                Debugger.IsAttached
+                || string.Equals(
+                    Environment.GetEnvironmentVariable("DUTY_WEBVIEW_DEVTOOLS"),
+                    "1",
+                    StringComparison.OrdinalIgnoreCase);
+            _webView.CoreWebView2.WebMessageReceived += OnWebMessageReceived;
+            // 网页刷新(F5)会丢掉 web 侧状态:每次导航完成后重推铬配置与窗口状态
+            _webView.CoreWebView2.NavigationCompleted += (_, _) => PushHostInfo();
         }
         catch (Exception ex)
         {
             throw new InvalidOperationException("WebView2 初始化失败。请确认系统已安装 Microsoft Edge WebView2 Runtime。", ex);
+        }
+    }
+
+    // ======== 窗口镀铬跟随 web 主题 ========
+
+    /// <summary>web 侧上报的消息:主题同步 / 插件安装 / 铬几何 / 窗口命令。</summary>
+    private void OnWebMessageReceived(object? sender, CoreWebView2WebMessageReceivedEventArgs e)
+    {
+        try
+        {
+            using var document = JsonDocument.Parse(e.WebMessageAsJson);
+            var root = document.RootElement;
+            if (root.ValueKind != JsonValueKind.Object
+                || !root.TryGetProperty("type", out var typeEl)
+                || typeEl.GetString() is not string messageType)
+            {
+                return;
+            }
+
+            switch (messageType)
+            {
+                case "theme-sync":
+                    HandleThemeSync(root);
+                    break;
+                case "install-bridge":
+                    HandleInstallBridge();
+                    break;
+                case "chrome-geometry":
+                    HandleChromeGeometry(root);
+                    break;
+                case "window-command":
+                    HandleWindowCommand(root);
+                    break;
+                case "get-host-info":
+                    PushHostInfo();
+                    break;
+                case "drag-window":
+                    // WebView2 子窗口会吞掉窗体级 WM_NCHITTEST,原生拖拽改由
+                    // web 按下后通知宿主,用 NCLBUTTONDOWN+HTCAPTION 拉起系统拖拽循环
+                    BeginNativeMove(HTCAPTION);
+                    break;
+                case "resize-window":
+                    // 同上:边缘热区按下后拉起原生缩放循环;最大化时忽略
+                    if (WindowState != FormWindowState.Maximized
+                        && root.TryGetProperty("hit", out var hitEl)
+                        && hitEl.ValueKind == JsonValueKind.Number)
+                    {
+                        BeginNativeMove(hitEl.GetInt32());
+                    }
+
+                    break;
+            }
+        }
+        catch (JsonException)
+        {
+            // 非 JSON 消息(如纯字符串)直接忽略
+        }
+    }
+
+    private void HandleThemeSync(JsonElement root)
+    {
+        var dark = root.TryGetProperty("dark", out var darkEl) && darkEl.ValueKind == JsonValueKind.True;
+        if (!root.TryGetProperty("bg", out var bgEl)
+            || bgEl.ValueKind != JsonValueKind.String
+            || !TryParseColorRef(bgEl.GetString(), out var captionColor))
+        {
+            captionColor = dark ? CaptionColorDark : CaptionColorLight;
+        }
+
+        _chromeDark = dark;
+        ApplyWindowChrome(dark, captionColor);
+    }
+
+    /// <summary>安装耗时且涉及文件 IO,放线程池;结果经 PostWebMessageAsJson 回传给设置页 toast。</summary>
+    private void HandleInstallBridge()
+    {
+        _ = Task.Run(() =>
+        {
+            var result = BridgeInstaller.Install();
+            BeginInvoke(() =>
+            {
+                try
+                {
+                    _webView.CoreWebView2?.PostWebMessageAsJson(JsonSerializer.Serialize(new
+                    {
+                        type = "install-bridge-result",
+                        ok = result.Success,
+                        message = result.Message,
+                    }));
+                }
+                catch
+                {
+                    // WebView 已关闭或未就绪:结果无处投递,忽略
+                }
+            });
+        });
+    }
+
+    /// <summary>
+    /// 把深浅主题落到窗口:标题栏/描边用 DWM 属性上色(旧系统忽略失败),
+    /// 窗体与菜单条配色同步,避免深色模式下残留一条浅色铬带。
+    /// </summary>
+    private void ApplyWindowChrome(bool dark, uint captionColor)
+    {
+        if (IsDisposed)
+        {
+            return;
+        }
+
+        var bg = dark ? BgDark : BgLight;
+        var text = dark ? TextDark : TextLight;
+        BackColor = bg;
+        _statusLabel.BackColor = bg;
+        _statusLabel.ForeColor = text;
+
+        if (!IsHandleCreated)
+        {
+            return;
+        }
+
+        var useDark = dark ? 1 : 0;
+        if (DwmSetWindowAttribute(Handle, DWMWA_USE_IMMERSIVE_DARK_MODE, ref useDark, sizeof(int)) != 0)
+        {
+            DwmSetWindowAttribute(Handle, DWMWA_USE_IMMERSIVE_DARK_MODE_LEGACY, ref useDark, sizeof(int));
+        }
+
+        DwmSetWindowAttribute(Handle, DWMWA_CAPTION_COLOR, ref captionColor, sizeof(uint));
+        var borderColor = captionColor; // 外圈描边与标题栏同色,去掉深色模式下的亮色边框
+        DwmSetWindowAttribute(Handle, DWMWA_BORDER_COLOR, ref borderColor, sizeof(uint));
+    }
+
+    /// <summary>#RRGGBB → COLORREF(0x00BBGGRR)。</summary>
+    private static bool TryParseColorRef(string? hex, out uint colorref)
+    {
+        colorref = 0;
+        if (hex is null)
+        {
+            return false;
+        }
+
+        var span = hex.Trim();
+        if (span.Length == 7 && span[0] == '#'
+            && byte.TryParse(span.AsSpan(1, 2), System.Globalization.NumberStyles.HexNumber, null, out var r)
+            && byte.TryParse(span.AsSpan(3, 2), System.Globalization.NumberStyles.HexNumber, null, out var g)
+            && byte.TryParse(span.AsSpan(5, 2), System.Globalization.NumberStyles.HexNumber, null, out var b))
+        {
+            colorref = (uint)((b << 16) | (g << 8) | r);
+            return true;
+        }
+
+        return false;
+    }
+
+    /// <summary>web 首帧消息到达前,用系统深浅设置兜底(与 useTheme 的 auto 默认一致)。</summary>
+    private static bool SystemPrefersDark()
+    {
+        try
+        {
+            using var key = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(
+                @"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize");
+            return key?.GetValue("AppsUseLightTheme") is int light && light == 0;
+        }
+        catch
+        {
+            return false;
         }
     }
 
