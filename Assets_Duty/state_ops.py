@@ -580,7 +580,14 @@ def acquire_file_lock(
                 lock_file.write(f"{os.getpid()}\n")
                 lock_file.write(f"{datetime.now().isoformat()}\n")
             return
-        except FileExistsError:
+        except (FileExistsError, PermissionError):
+            # Windows O_EXCL quirk: the loser of a create race can transiently
+            # receive ERROR_ACCESS_DENIED (PermissionError 13) instead of
+            # ERROR_FILE_EXISTS while the winner is still writing or a
+            # concurrent unlink is in flight — seen as claim storms fail on
+            # fast CI machines. Treat it as ordinary contention and retry; a
+            # genuinely denied directory just loops to the same TimeoutError
+            # contract as an un-released lock.
             if _clear_stale_lock_if_needed(lock_path, stale_after):
                 continue
             if time.monotonic() >= deadline:
