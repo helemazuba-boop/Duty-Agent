@@ -581,5 +581,193 @@ A = 教室
         self.assertIn("2026-04-07", dates)
 
 
+# ------------------------------------------------------------------------------
+# Tests: context engineering (delta echo, tool protocol pairing, area config)
+# ------------------------------------------------------------------------------
+
+class TestBuildResponseDelta(unittest.TestCase):
+
+    def _make_ctx(self, **overrides):
+        base = dict(
+            debt_counts={},
+            credit_counts={},
+            inactive_ids=set(),
+            last_pointer=0,
+            schedule_pool=[{"date": "2026-04-06", "area_ids": {"教室": [1001]}, "note": ""}],
+            remaining=[],
+            round_num=2,
+            flags=PollingFlags(hints_on=True, max_rounds=10),
+            start_date=date(2026, 4, 5),
+            accepted=[{"date": "2026-04-07", "area_ids": {"教室": [1002]}, "note": ""}],
+            rejected=[],
+            invalid_cmds=[],
+            finalized=False,
+            alias_map={"A": "教室"},
+            _valid_ids=set(),
+        )
+        base.update(overrides)
+        return ExecutionCtx(**base)
+
+    def test_delta_echo_hides_full_pool(self):
+        # Real flow merges this round's accepted entries into schedule_pool
+        # (parse_and_apply step 5) before build_response runs.
+        ctx = self._make_ctx(
+            schedule_pool=[
+                {"date": "2026-04-06", "area_ids": {"教室": [1001]}, "note": ""},
+                {"date": "2026-04-07", "area_ids": {"教室": [1002]}, "note": ""},
+            ],
+        )
+        resp = build_response(ctx=ctx, all_ids=[], id_to_name={}, pool_echo="delta")
+        self.assertIn("本轮新增:", resp)
+        self.assertIn("04-07 = A:1002", resp)
+        self.assertIn("已累计安排 2 个日期: 04-06, 04-07", resp)
+        # The old full-pool echo must not appear
+        self.assertNotIn("已安排的班次:", resp)
+        self.assertNotIn("04-06 = A:1001", resp)
+
+    def test_full_echo_keeps_pool(self):
+        resp = build_response(ctx=self._make_ctx(), all_ids=[], id_to_name={}, pool_echo="full")
+        self.assertIn("已安排的班次:", resp)
+        self.assertIn("04-06 = A:1001", resp)
+
+    def test_delta_echo_full_on_finalize(self):
+        resp = build_response(
+            ctx=self._make_ctx(finalized=True), all_ids=[], id_to_name={}, pool_echo="delta",
+        )
+        self.assertIn("已安排的班次:", resp)
+        self.assertIn("04-06 = A:1001", resp)
+
+
+class TestToolLoopProtocolE2E(unittest.TestCase):
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    @staticmethod
+    def _tool_call(schedule_ini: str) -> str:
+        return json.dumps({
+            "tool_calls": [{
+                "function": {
+                    "name": "fill_schedule",
+                    "arguments": json.dumps({"schedule": schedule_ini}),
+                }
+            }]
+        })
+
+    def test_assistant_tool_calls_paired_with_tool_messages(self):
+        ctx = make_ctx(Path(self.tmp))
+        plan = make_plan()
+
+        round1_ini = """[[#b1]]
+[areas]
+A = 教室
+
+[schedule]
+04-06 = A:1001
+"""
+        round2_ini = """[[#b2]]
+[areas]
+A = 教室
+
+[schedule]
+04-07 = A:1002
+
+@finalize
+"""
+        from tool_loop import executor as tool_loop_executor
+
+        # The executor mutates its messages list in place; snapshot each call
+        # eagerly or the recorded references all show the final state.
+        captured = []
+        responses = [self._tool_call(round1_ini), self._tool_call(round2_ini)]
+
+        def fake_llm(*args, **kwargs):
+            captured.append([dict(m) for m in kwargs["messages"]])
+            return responses[len(captured) - 1]
+
+        with patch("tool_loop.executor.call_llm_raw", side_effect=fake_llm), \
+             patch.object(tool_loop_executor, "datetime", FixedToolLoopDateTime):
+            result = tool_loop_executor.run_tool_loop_schedule(
+                ctx=ctx,
+                input_data={"instruction": "安排4月6日到4月7日"},
+                execution_plan=plan,
+            )
+
+        self.assertEqual(result["status"], "ok")
+        self.assertTrue(result["tool_loop_meta"]["finalized"])
+        self.assertEqual(len(captured), 2)
+
+        # Round 1: system prompt only
+        self.assertEqual([m["role"] for m in captured[0]], ["system"])
+
+        # Round 2: assistant(tool_calls) -> tool(paired id) sequence
+        second_messages = captured[1]
+        roles = [m["role"] for m in second_messages]
+        self.assertEqual(roles, ["system", "assistant", "tool"])
+
+        assistant1, tool_msg = second_messages[1], second_messages[2]
+        self.assertEqual(assistant1["tool_calls"][0]["id"], "call_1")
+        self.assertEqual(assistant1["tool_calls"][0]["function"]["name"], "fill_schedule")
+        self.assertEqual(tool_msg["tool_call_id"], "call_1")
+        # Delta echo: only the new entries, not the full pool
+        self.assertIn("本轮新增:", tool_msg["content"])
+        self.assertNotIn("已安排的班次:", tool_msg["content"])
+
+    def test_system_prompt_carries_configured_areas_and_note(self):
+        from state_ops import save_config
+
+        ctx = make_ctx(Path(self.tmp))
+        save_config(ctx, {
+            "version": 1,
+            "selected_plan_id": "standard",
+            "plan_presets": [{
+                "id": "standard", "name": "标准", "mode_id": "standard",
+                "api_key": "test-key", "base_url": "https://example.com/v1",
+                "model": "test-model", "model_profile": "cloud",
+            }],
+            "areas": ["教室", "清洁区"],
+            "area_per_day_counts": {"教室": 2, "清洁区": 1},
+            "polling": {"hints_on": True, "max_rounds": 10},
+        })
+        state_path = ctx.paths["state"]
+        state_data = json.loads(state_path.read_text(encoding="utf-8"))
+        state_data["next_run_note"] = "周三大扫除"
+        state_path.write_text(json.dumps(state_data, ensure_ascii=False), encoding="utf-8")
+
+        plan = make_plan()
+        llm_response = """[[#b1]]
+[areas]
+A = 教室
+B = 清洁区
+
+[schedule]
+04-06 = A:1001 1002 | B:1003
+
+@finalize
+"""
+        from tool_loop import executor as tool_loop_executor
+
+        system_prompts = []
+
+        def fake_llm(*args, **kwargs):
+            system_prompts.append(kwargs["messages"][0]["content"])
+            return self._tool_call(llm_response)
+
+        with patch("tool_loop.executor.call_llm_raw", side_effect=fake_llm), \
+             patch.object(tool_loop_executor, "datetime", FixedToolLoopDateTime):
+            result = tool_loop_executor.run_tool_loop_schedule(
+                ctx=ctx,
+                input_data={"instruction": "安排4月6日"},
+                execution_plan=plan,
+            )
+
+        self.assertEqual(result["status"], "ok")
+        self.assertIn("required_areas=教室:2/day, 清洁区:1/day", system_prompts[0])
+        self.assertIn("周三大扫除", system_prompts[0])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

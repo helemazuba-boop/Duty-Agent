@@ -97,6 +97,21 @@ def build_prompt_messages(
 
     methods_list: List[str] = []
 
+    # Configured areas/headcounts: previously accepted but never rendered, so
+    # single-pass prompts left the area template entirely to the model's guess.
+    area_names = [str(area).strip() for area in (area_names or []) if str(area).strip()]
+    if area_names:
+        counts = area_per_day_counts or {}
+        area_desc = ", ".join(
+            f"{area}:{int(counts.get(area, 1))}/day" for area in area_names
+        )
+        params_list.append(f"required_areas={area_desc}")
+        methods_list.append(
+            "Area requirement: cover every required area on every scheduled date "
+            "with exactly the required headcount per area per day. "
+            "Declare an alias for every required area in [areas] first."
+        )
+
     if is_module_active("debt", instruction, bool(debt_counts)):
         params_list.append(PROMPTS["param_debt"].format(debt_counts=_format_count_map(debt_counts)))
         methods_list.append(PROMPTS["rule_debt"])

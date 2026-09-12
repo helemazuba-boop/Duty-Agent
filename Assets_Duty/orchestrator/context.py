@@ -37,7 +37,6 @@ class OrchestratorContext:
     config: Dict[str, Any]
     state: Dict[str, Any]
     id_to_name: Dict[int, str]
-    id_to_area: Dict[int, str]
     all_ids: List[int]
     active_ids: List[int]
     inactive_ids: List[int]
@@ -52,10 +51,6 @@ class OrchestratorContext:
     hints_on: bool = True
     max_rounds: int = 15
     week_threshold_days: int = 7
-    model: str = "qwen3.5:9b"
-    temperature: float = 0.1
-    max_tokens: int = 4096
-    timeout_seconds: int = 120
 
     @classmethod
     def from_frozen_snapshot(
@@ -74,7 +69,6 @@ class OrchestratorContext:
             config=snapshot.config,
             state=snapshot.state,
             id_to_name=snapshot.id_to_name,
-            id_to_area={int(k): v for k, v in snapshot.id_to_active.items()},
             all_ids=snapshot.all_ids,
             active_ids=snapshot.active_ids,
             inactive_ids=snapshot.inactive_ids,
@@ -103,20 +97,12 @@ class OrchestratorContext:
     def format_debt_list(self) -> str:
         if not self.debt_list:
             return "无"
-        result = []
-        for pid in self.debt_list:
-            name = self.id_to_name.get(pid, str(pid))
-            result.append(f"{name}(ID={pid})")
-        return ", ".join(result)
+        return _format_id_list_with_counts(self.debt_list, self.id_to_name)
 
     def format_credit_list(self) -> str:
         if not self.credit_list:
             return "无"
-        result = []
-        for pid in self.credit_list:
-            name = self.id_to_name.get(pid, str(pid))
-            result.append(f"{name}(ID={pid})")
-        return ", ".join(result)
+        return _format_id_list_with_counts(self.credit_list, self.id_to_name)
 
     def format_person_pool(self) -> str:
         lines = []
@@ -128,12 +114,26 @@ class OrchestratorContext:
                 tags.append("债务")
             elif pid in self.credit_list:
                 tags.append("信用+")
-            if pid in self.id_to_area:
-                tags.append(f"{self.id_to_area[pid]}")
             tag_str = f" [{', '.join(tags)}]" if tags else ""
             name = self.id_to_name.get(pid, str(pid))
             lines.append(f"  {name} (ID={pid}){tag_str}")
         return "\n".join(lines)
+
+
+def _format_id_list_with_counts(pid_list: List[int], id_to_name: Dict[int, str]) -> str:
+    """Render an expanded ID list compactly with occurrence counts.
+
+    debt_list/credit_list carry one entry per owed/credited appearance
+    (e.g. [1004, 1004, 1002] = 1004 owes twice); display that as
+    "名字(ID=1004)*2, 名字(ID=1002)" instead of repeating the name."""
+    from collections import Counter
+
+    parts = []
+    for pid, cnt in Counter(pid_list).items():
+        name = id_to_name.get(pid, str(pid))
+        base = f"{name}(ID={pid})"
+        parts.append(f"{base}*{cnt}" if cnt > 1 else base)
+    return ", ".join(parts)
 
 
 @dataclass

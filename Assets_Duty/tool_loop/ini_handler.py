@@ -788,10 +788,18 @@ def build_response(
     all_ids: List[int],
     id_to_name: Dict[int, str],
     instructions: Optional[List[str]] = None,
+    pool_echo: str = "full",
 ) -> str:
     """
     Build the Python→LLM response INI text.
     Contains authoritative [state], finalized entries, and [remaining].
+
+    pool_echo:
+      - "full":  echo the entire accepted schedule every round (finalize,
+                 orchestrator direct mode).
+      - "delta": echo only this round's accepted entries plus a compact
+                 covered-dates line, so the polling conversation does not
+                 grow quadratically with the schedule size.
     """
     lines: List[str] = []
 
@@ -805,8 +813,40 @@ def build_response(
     lines.append(f"credit = {credit_str}")
     lines.append("")
 
-    # Finalized entries (merged accepted into pool)
-    if ctx.schedule_pool or ctx.accepted:
+    use_delta = pool_echo == "delta" and not ctx.finalized
+
+    if use_delta:
+        # Delta echo: entries accepted this round only, plus the covered-date
+        # manifest so the model can still tell what is done vs. remaining.
+        if ctx.accepted:
+            lines.append("; 本轮新增:")
+            by_date: Dict[str, dict] = {}
+            for e in ctx.accepted:
+                d = e.get("date", "")
+                if not d:
+                    continue
+                if d not in by_date:
+                    by_date[d] = {"area_ids": {}, "note": e.get("note", "")}
+                for area, ids in e.get("area_ids", {}).items():
+                    bucket = by_date[d]["area_ids"].setdefault(area, [])
+                    for pid in ids:
+                        if pid not in bucket:
+                            bucket.append(pid)
+            for date_iso in sorted(by_date.keys()):
+                parts = []
+                for area_name, ids in sorted(by_date[date_iso]["area_ids"].items()):
+                    alias = next((a for a, n in ctx.alias_map.items() if n == area_name), area_name)
+                    if ids:
+                        parts.append(f"{alias}:{' '.join(str(pid) for pid in ids)}")
+                if parts:
+                    lines.append(f"{date_iso[5:]} = {' | '.join(parts)}")
+        else:
+            lines.append("; 本轮无新增。")
+        covered = sorted({e.get("date", "") for e in ctx.schedule_pool if e.get("date", "")})
+        lines.append(f"; 已累计安排 {len(covered)} 个日期: {', '.join(d[5:] for d in covered) or '无'}")
+        lines.append("")
+    elif ctx.schedule_pool or ctx.accepted:
+        # Full echo (finalize round, or pool_echo="full")
         lines.append("; 已安排的班次:")
         all_entries = list(ctx.schedule_pool) + ctx.accepted
         # Merge by date
@@ -872,6 +912,7 @@ def parse_and_apply(
     flags: PollingFlags,
     round_num: int,
     alias_map: Optional[Dict[str, str]] = None,
+    pool_echo: str = "full",
 ) -> Tuple[str, ExecutionCtx]:
     """
     Top-level function called by the executor each polling round.
@@ -959,6 +1000,7 @@ def parse_and_apply(
         ctx=ctx,
         all_ids=all_ids,
         id_to_name={},  # will be filled by caller if needed
+        pool_echo=pool_echo,
     )
 
     return response, ctx

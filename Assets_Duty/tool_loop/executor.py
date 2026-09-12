@@ -22,6 +22,7 @@ from datetime import date, datetime, timedelta
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 from execution_profiles import ExecutionPlan
+from conversation import compact_conversation_history
 from llm_transport import (
     call_llm_raw,
     _normalize_structured_output,
@@ -31,6 +32,8 @@ from state_ops import (
     Context,
     DEFAULT_SINGLE_AREA_NAME,
     anonymize_instruction,
+    get_configured_area_names,
+    get_configured_area_per_day_counts,
     load_api_key_from_env,
     load_config,
     load_roster,
@@ -188,6 +191,39 @@ def _extract_tool_calls(ai_content: str) -> List[Dict[str, Any]]:
     return results
 
 
+def _is_tool_call_payload(raw_content: str) -> bool:
+    """True when raw content is the transport's JSON tool_calls wrapper (or the
+    streaming [TOOL_CALL] marker) rather than human-readable model text."""
+    stripped = str(raw_content or "").strip()
+    return stripped.startswith('{"tool_calls"') or stripped == "[TOOL_CALL]"
+
+
+def _serialize_tool_arguments(arguments: Any) -> str:
+    """OpenAI tool_calls carry arguments as a JSON string; accept both dict and
+    pre-serialized string inputs without double-encoding."""
+    if isinstance(arguments, str):
+        return arguments
+    return json.dumps(arguments or {}, ensure_ascii=False)
+
+
+def _build_tool_call_specs(tool_calls: List[Dict[str, Any]], start_seq: int) -> List[Dict[str, Any]]:
+    """Build OpenAI-format assistant.tool_calls entries with unique ids.
+
+    The id sequence is shared with the tool messages so each tool response is
+    paired with its assistant tool_call (required by OpenAI-strict endpoints)."""
+    specs: List[Dict[str, Any]] = []
+    for offset, tc in enumerate(tool_calls):
+        specs.append({
+            "id": f"call_{start_seq + offset + 1}",
+            "type": "function",
+            "function": {
+                "name": str(tc.get("name", "")),
+                "arguments": _serialize_tool_arguments(tc.get("arguments", {})),
+            },
+        })
+    return specs
+
+
 # ------------------------------------------------------------------------------
 # Snapshot reading
 # ------------------------------------------------------------------------------
@@ -208,6 +244,7 @@ def _read_snapshot(
     Dict[int, str],   # id_to_name
     List[dict],       # schedule_pool
     PollingFlags,
+    str,              # previous_note (state.next_run_note)
 ]:
     config = load_config(ctx)
     state_data = load_state(ctx.paths["state"])
@@ -218,6 +255,7 @@ def _read_snapshot(
     last_pointer = int(state_data.get("last_pointer", 0) or 0)
     inactive_ids = {pid for pid in all_ids if id_to_active.get(pid, 1) == 0}
     schedule_pool = list(state_data.get("schedule_pool", []) or [])
+    previous_note = str(state_data.get("next_run_note", "") or "").strip()
 
     instruction = str(input_data.get("instruction", "Generate duty schedule")).strip()
     instruction = anonymize_instruction(instruction, name_to_id)
@@ -248,6 +286,7 @@ def _read_snapshot(
         id_to_name,
         schedule_pool,
         flags,
+        previous_note,
     )
 
 
@@ -282,28 +321,17 @@ def _build_required_slots(
     id_to_name: Dict[int, str],
     schedule_pool: List[dict],
     area_names: List[str],
+    area_per_day_counts: Optional[Dict[str, int]] = None,
 ) -> List[ScheduleUnit]:
     """
     Compute all (date, area) slots that need to be filled.
 
     Parses date ranges from the instruction (e.g. "4月1日到4月7日",
     "04-01~04-07") and combines with area names to generate the slot list.
+    Each (date, area) yields area_per_day_counts[area] units so the remaining
+    manifest reflects the configured headcount (default 1 to keep the
+    single-area legacy behavior when counts are not provided).
     Already-scheduled dates (in schedule_pool) are excluded.
-    """
-def _build_required_slots(
-    instruction: str,
-    start_date: date,
-    id_to_name: Dict[int, str],
-    schedule_pool: List[dict],
-    area_names: List[str],
-) -> List[ScheduleUnit]:
-    """
-    Compute all (date, area) slots that need to be filled.
-
-    Parses date ranges from the instruction (e.g. "4月1日到4月7日",
-    "04-01~04-07") and combines with area names to generate the slot list.
-    Already-scheduled dates (in schedule_pool) are excluded.
-    Falls back to the next 7 days if no dates are specified.
     """
     filled_dates: Set[str] = set()
     for entry in schedule_pool:
@@ -313,6 +341,12 @@ def _build_required_slots(
 
     slots: List[ScheduleUnit] = []
     year = start_date.year
+
+    def _units_for_date(day: date) -> None:
+        for area in area_names:
+            need = (area_per_day_counts or {}).get(area, 1)
+            for _ in range(need):
+                slots.append(ScheduleUnit(date_iso=day.isoformat(), area_name=area, alias=""))
 
     # Try explicit date range first (e.g. "4月1日到4月3日", "04-01~04-07")
     range_match = _DATE_RANGE_RE.search(instruction or "")
@@ -331,8 +365,7 @@ def _build_required_slots(
             current = start_parsed
             while current <= end_parsed:
                 if current.isoformat() not in filled_dates:
-                    for area in area_names:
-                        slots.append(ScheduleUnit(date_iso=current.isoformat(), area_name=area, alias=""))
+                    _units_for_date(current)
                 current += timedelta(days=1)
             return slots
 
@@ -342,8 +375,7 @@ def _build_required_slots(
         try:
             d = _parse_date_from_tokens(year, single_match.group(1), single_match.group(2))
             if d.isoformat() not in filled_dates:
-                for area in area_names:
-                    slots.append(ScheduleUnit(date_iso=d.isoformat(), area_name=area, alias=""))
+                _units_for_date(d)
         except ValueError:
             pass
         if slots:
@@ -353,8 +385,7 @@ def _build_required_slots(
     for i in range(1, 8):
         d = start_date + timedelta(days=i)
         if d.isoformat() not in filled_dates:
-            for area in area_names:
-                slots.append(ScheduleUnit(date_iso=d.isoformat(), area_name=area, alias=""))
+            _units_for_date(d)
 
     return slots
 
@@ -386,6 +417,18 @@ def _detect_completion(raw_content: str) -> bool:
     """Check if LLM indicated schedule completion."""
     lower = raw_content.lower()
     return any(marker in lower for marker in SCHEDULE_DONE_MARKERS)
+
+
+def _build_history_summary(exec_ctx: ExecutionCtx, seen_dates: Set[str]) -> str:
+    """Summary replacing folded rounds in compact_conversation_history."""
+    covered = sorted(seen_dates)
+    covered_text = ", ".join(d[5:] for d in covered) or "none"
+    return (
+        "[History compacted] Earlier rounds' full INI exchanges were folded into this summary. "
+        f"Covered dates: {covered_text} ({len(covered)} total); "
+        f"pointer={exec_ctx.last_pointer}. "
+        "The recent rounds follow verbatim; continue the schedule from there."
+    )
 
 
 # ------------------------------------------------------------------------------
@@ -431,6 +474,7 @@ def run_tool_loop_schedule(
             id_to_name,
             schedule_pool,
             flags,
+            previous_note,
         ) = _read_snapshot(ctx, input_data)
 
         trace_id = str(input_data.get("trace_id", "")).strip() or ""
@@ -442,6 +486,11 @@ def run_tool_loop_schedule(
         config = dict(config)
         config["api_key"] = api_key
         duty_rule = str(config.get("duty_rule", "")).strip()
+
+        # Configured areas keep prompt requirement and slot validation on the
+        # same source of truth (legacy behavior: single default area).
+        area_names = get_configured_area_names(config) or list(DEFAULT_AREA_NAMES)
+        area_per_day_counts = get_configured_area_per_day_counts(config, area_names)
 
         _emit_progress(emit_progress_fn, "tool_loop_start", "Tool-loop executor started.", {
             "max_rounds": flags.max_rounds,
@@ -464,6 +513,9 @@ def run_tool_loop_schedule(
             last_pointer=last_pointer,
             start_date=start_date_iso,
             current_time=current_time,
+            area_names=area_names,
+            area_per_day_counts=area_per_day_counts,
+            previous_note=previous_note,
         )
 
         # Optional hints injection
@@ -486,7 +538,8 @@ def run_tool_loop_schedule(
             start_date=start_date,
             id_to_name=id_to_name,
             schedule_pool=schedule_pool,
-            area_names=DEFAULT_AREA_NAMES,
+            area_names=area_names,
+            area_per_day_counts=area_per_day_counts,
         )
 
         # --------------------------------------------------------------------------
@@ -495,12 +548,21 @@ def run_tool_loop_schedule(
         ctx_exec: Optional[ExecutionCtx] = None
         consecutive_no_tool = 0
         tool_call_count = 0
+        tool_call_seq = 0  # unique id source shared by assistant.tool_calls and tool messages
         seen_dates: Set[str] = set()
         alias_map: Dict[str, str] = {}
 
         for round_num in range(1, flags.max_rounds + 1):
             if stop_event is not None and getattr(stop_event, "is_set", lambda: False)():
                 raise InterruptedError("Cancelled during tool-loop execution.")
+
+            # Fold old rounds into a summary once the conversation grows past
+            # the char budget; the model keeps the latest rounds verbatim.
+            if ctx_exec is not None:
+                messages = compact_conversation_history(
+                    messages,
+                    _build_history_summary(ctx_exec, seen_dates),
+                )
 
             _emit_progress(emit_progress_fn, "tool_loop_round", f"Round {round_num}/{flags.max_rounds}", {
                 "round": round_num,
@@ -523,13 +585,24 @@ def run_tool_loop_schedule(
                 _emit_progress(emit_progress_fn, "tool_loop_error", f"LLM call failed: {ex}", {})
                 raise
 
-            assistant_msg = {"role": "assistant", "content": raw_content}
-            messages.append(assistant_msg)
-
             # --------------------------------------------------------------------------
             # Extract tool calls
             # --------------------------------------------------------------------------
             tool_calls = _extract_tool_calls(raw_content)
+
+            if tool_calls:
+                # OpenAI protocol: the assistant message must declare the
+                # tool_calls that the following tool messages answer. The
+                # transport's JSON wrapper is not model prose, so it is not
+                # duplicated into content.
+                assistant_content = "" if _is_tool_call_payload(raw_content) else raw_content
+                messages.append({
+                    "role": "assistant",
+                    "content": assistant_content,
+                    "tool_calls": _build_tool_call_specs(tool_calls, tool_call_seq),
+                })
+            else:
+                messages.append({"role": "assistant", "content": raw_content})
 
             if not tool_calls:
                 consecutive_no_tool += 1
@@ -571,14 +644,17 @@ def run_tool_loop_schedule(
             consecutive_no_tool = 0
 
             # --------------------------------------------------------------------------
-            # Process tool calls
+            # Process tool calls (each response is a tool message paired with
+            # the assistant tool_call id declared above)
             # --------------------------------------------------------------------------
-            for tc in tool_calls:
+            for offset, tc in enumerate(tool_calls):
+                call_id = f"call_{tool_call_seq + offset + 1}"
                 tc_name = tc.get("name", "")
                 if tc_name != TOOL_NAME:
                     messages.append({
-                        "role": "user",
+                        "role": "tool",
                         "content": f"Unknown tool '{tc_name}'. Only fill_schedule is available.",
+                        "tool_call_id": call_id,
                     })
                     continue
 
@@ -586,8 +662,9 @@ def run_tool_loop_schedule(
                 schedule_text = str(args.get("schedule", "")).strip()
                 if not schedule_text:
                     messages.append({
-                        "role": "user",
+                        "role": "tool",
                         "content": "fill_schedule called with empty schedule. Provide the INI template.",
+                        "tool_call_id": call_id,
                     })
                     continue
 
@@ -610,6 +687,7 @@ def run_tool_loop_schedule(
                         flags=flags,
                         round_num=round_num,
                         alias_map=alias_map,
+                        pool_echo="delta",
                     )
                 except Exception as ex:
                     tb = traceback.format_exc()
@@ -618,7 +696,7 @@ def run_tool_loop_schedule(
                         f"  {type(ex).__name__}: {ex}\n"
                         f"Please fix the INI and call fill_schedule again."
                     )
-                    messages.append({"role": "user", "content": error_msg})
+                    messages.append({"role": "tool", "content": error_msg, "tool_call_id": call_id})
                     _emit_progress(emit_progress_fn, "tool_loop_parse_error", str(ex), {
                         "error": tb,
                         "tool_call": tool_call_count,
@@ -678,7 +756,7 @@ def run_tool_loop_schedule(
                 messages.append({
                     "role": "tool",
                     "content": tool_result,
-                    "tool_call_id": f"call_{tool_call_count}",
+                    "tool_call_id": call_id,
                 })
 
                 _emit_progress(emit_progress_fn, "tool_loop_tool_processed", "Tool processed.", {
@@ -693,6 +771,9 @@ def run_tool_loop_schedule(
                 if ctx_exec.finalized:
                     _emit_progress(emit_progress_fn, "tool_loop_finalized", "Finalize confirmed.", {})
                     break
+
+            # Advance the shared id sequence past every call offered this round
+            tool_call_seq += len(tool_calls)
 
             # Check finalize after processing all tool calls in this round
             if ctx_exec is not None and ctx_exec.finalized:

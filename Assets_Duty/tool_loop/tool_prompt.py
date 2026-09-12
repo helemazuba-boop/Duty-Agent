@@ -4,7 +4,7 @@ System prompt builder and tool description for the tool-loop executor.
 from __future__ import annotations
 
 from datetime import date
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 
 # ------------------------------------------------------------------------------
@@ -78,6 +78,9 @@ def build_tool_system_prompt(
     last_pointer: int,
     start_date: str,
     current_time: str,
+    area_names: Optional[List[str]] = None,
+    area_per_day_counts: Optional[Dict[str, int]] = None,
+    previous_note: str = "",
 ) -> str:
     """
     Build the system prompt for the tool-loop AI session.
@@ -116,8 +119,21 @@ def build_tool_system_prompt(
     if credit_str:
         lines.append(f"  current_credit_counts={credit_str}")
 
+    if area_names:
+        counts = area_per_day_counts or {}
+        area_desc = ", ".join(
+            f"{area}:{counts.get(area, 1)}/day" for area in area_names
+        )
+        lines.append(f"  required_areas={area_desc}")
+
     lines.append(f"  user_instruction={instruction}")
     lines.append("")
+
+    previous_note = str(previous_note or "").strip()
+    if previous_note:
+        lines.append("Previous run note (carry-over context from the last schedule):")
+        lines.append(f"  {previous_note}")
+        lines.append("")
 
     # Rules
     lines.append("Scheduling rules:")
@@ -127,6 +143,13 @@ def build_tool_system_prompt(
     lines.append("  skip that ID once if possible. Credit is consumed only when that skip happens.")
     lines.append("- Inactive IDs are unavailable and must never be assigned.")
     lines.append("- Only generate the exact requested dates. Over-generation is fatal.")
+    if area_names:
+        counts = area_per_day_counts or {}
+        lines.append(
+            "- Area requirement: cover every required area for every scheduled date, "
+            "with exactly the required headcount per area per day. "
+            "Declare an alias for every required area in [areas] first."
+        )
 
     if duty_rule:
         lines.append(f"- User-defined rule: {duty_rule}")

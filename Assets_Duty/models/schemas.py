@@ -83,6 +83,9 @@ class DutyBackendConfigModel(BaseModel):
     polling: dict = {}
     offline_schedule_days: int = 7
     offline_skip_weekends: bool = True
+    # Optional multi-area template; empty list = legacy single default area.
+    areas: List[str] = []
+    area_per_day_counts: dict = {}
 
 
 class DutyBackendConfigPatch(BaseModel):
@@ -94,6 +97,8 @@ class DutyBackendConfigPatch(BaseModel):
     duty_rule: Optional[str] = None
     offline_schedule_days: Optional[int] = None
     offline_skip_weekends: Optional[bool] = None
+    areas: Optional[List[str]] = None
+    area_per_day_counts: Optional[dict] = None
 
 
 class DutyNotificationSettingsPatch(BaseModel):

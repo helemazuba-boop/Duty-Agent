@@ -57,9 +57,8 @@ def concatenate_ini_fragments(
     lines.append("; 可用人员:")
     for pid in ctx.active_ids:
         name = ctx.id_to_name.get(pid, str(pid))
-        area_tag = ctx.id_to_area.get(pid, "")
         debt_tag = " 债务" if pid in ctx.debt_list else ""
-        lines.append(f";   {name}(ID={pid}){debt_tag}{area_tag}")
+        lines.append(f";   {name}(ID={pid}){debt_tag}")
 
     return "\n".join(lines)
 

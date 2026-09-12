@@ -26,6 +26,7 @@ from datetime import date, datetime, timedelta
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 from execution_profiles import ExecutionPlan
+from conversation import compact_conversation_history
 from diagnostics import truncate_for_log
 from llm_transport import call_llm_raw
 from state_ops import load_api_key_from_env
@@ -35,6 +36,8 @@ from state_ops import (
     DEFAULT_SINGLE_AREA_NAME,
     anonymize_instruction,
     clone_count_map,
+    get_configured_area_names,
+    get_configured_area_per_day_counts,
     load_config,
     load_roster,
     load_state,
@@ -171,7 +174,7 @@ def _orchestrator_direct(
     _emit_progress(emit_progress_fn, "orchestrator_direct", "Direct mode (< 7 slots).", {})
 
     messages: List[dict] = []
-    system_prompt = build_orchestrator_system_prompt(orch_ctx, total_dates)
+    system_prompt = build_orchestrator_system_prompt(orch_ctx, total_dates, mode="direct")
     messages.append({"role": "system", "content": system_prompt})
     messages.append({
         "role": "user",
@@ -184,6 +187,13 @@ def _orchestrator_direct(
     for round_num in range(1, orch_ctx.max_rounds + 1):
         if stop_event is not None and getattr(stop_event, "is_set", lambda: False)():
             raise InterruptedError("Cancelled.")
+
+        # 早期轮次的完整 INI 对话折叠成摘要，防止小模型上下文被历史挤占。
+        if exec_ctx is not None:
+            messages = compact_conversation_history(
+                messages,
+                _build_history_summary(exec_ctx),
+            )
 
         _emit_progress(emit_progress_fn, "orchestrator_direct_round",
                        f"Round {round_num}", {"round": round_num})
@@ -246,7 +256,7 @@ def _orchestrator_poll_loop(
 
     # Orchestrator messages（包含对话历史）
     messages: List[dict] = []
-    system_prompt = build_orchestrator_system_prompt(orch_ctx, total_dates)
+    system_prompt = build_orchestrator_system_prompt(orch_ctx, total_dates, mode="poll")
     messages.append({"role": "system", "content": system_prompt})
     messages.append({
         "role": "user",
@@ -401,10 +411,11 @@ def _orchestrator_poll_loop(
             break
 
         # --------------------------------------------------------------------------
-        # 将 Python 响应和 hints 反馈给 Orchestrator
+        # 将 Python 反馈和 hints 交给 Orchestrator（poll 模式只要窗口指令，
+        # 不回传完整权威 INI，避免对话线性膨胀）
         # --------------------------------------------------------------------------
         round_prompt = build_orchestrator_round_prompt(
-            orch_ctx, total_dates, round_num, response_ini, hints
+            orch_ctx, round_num, hints, mode="poll"
         )
         messages.append({"role": "user", "content": round_prompt})
 
@@ -478,7 +489,10 @@ def _orchestrator_bootstrap(
 
     # 计算 required_slots
     area_names = _get_area_names(config)
-    required_slots = _build_required_slots(instruction, total_dates, id_to_name, area_names)
+    area_per_day_counts = _get_area_per_day_counts(config, area_names)
+    required_slots = _build_required_slots(
+        instruction, total_dates, id_to_name, area_names, area_per_day_counts,
+    )
 
     return snapshot, flags, config, total_dates, required_slots
 
@@ -518,6 +532,12 @@ def _get_state_snapshot(orch_ctx: OrchestratorContext, total_dates: List[date],
 # TimeWindow Agent 调用
 # ------------------------------------------------------------------------------
 
+TW_OVERRIDES = {
+    "temperature": TW_CONFIG["temperature"],
+    "max_tokens": TW_CONFIG["max_tokens"],
+}
+
+
 def _call_timewindow_agent(
     window: TimeWindow,
     orch_ctx: OrchestratorContext,
@@ -540,7 +560,8 @@ def _call_timewindow_agent(
     for attempt in range(TW_CONFIG["max_retries"] + 1):
         try:
             raw = _llm_call(messages, config, tools=None,
-                            stop_event=stop_event, emit_progress_fn=None)
+                            stop_event=stop_event, emit_progress_fn=None,
+                            transport_overrides=dict(TW_OVERRIDES))
             messages.append({"role": "assistant", "content": raw})
             ini = _extract_ini_text(raw)
             if ini:
@@ -580,7 +601,8 @@ def _call_timewindow_agent_retry(
     ]
     try:
         raw = _llm_call(messages, config, tools=None,
-                        stop_event=stop_event, emit_progress_fn=None)
+                        stop_event=stop_event, emit_progress_fn=None,
+                        transport_overrides=dict(TW_OVERRIDES))
         ini = _extract_ini_text(raw)
         return ini if ini else f"; [[#{window.name}]]\n; RETRY FAILED: no INI"
     except Exception as ex:
@@ -644,6 +666,7 @@ def _llm_call(
     tools: Optional[List[dict]],
     stop_event: Optional[object],
     emit_progress_fn: Optional[Callable],
+    transport_overrides: Optional[Dict[str, Any]] = None,
 ) -> str:
     api_key = str(config.get("api_key", "")).strip() or load_api_key_from_env()
     cfg = dict(config)
@@ -654,6 +677,7 @@ def _llm_call(
         progress_callback=emit_progress_fn,
         stop_event=stop_event,
         tools=tools,
+        transport_overrides=transport_overrides,
     )
 
 
@@ -685,7 +709,7 @@ def _build_initial_user_prompt(
         f"  - {w.name}: {w.dates[0].isoformat()} ~ {w.dates[-1].isoformat()} ({len(w.dates)}天)"
         for w in windows
     )
-    return f"""请为以下排班任务制定计划。
+    return f"""请为以下排班任务制定窗口分配指令。
 
 日期范围：{date_range}（共 {len(total_dates)} 天）
 区域：{', '.join(orch_ctx.all_areas)}
@@ -694,9 +718,21 @@ def _build_initial_user_prompt(
 已分解为 {len(windows)} 个时间窗口：
 {window_desc}
 
-请为每个窗口分配可用学生，并输出完整的 INI 格式排班方案。
-输出 @finalize 表示完成。
+请为每个窗口输出一个 [[#窗口名]] 指令块，写明该窗口的分配要点
+（债务优先名单、特殊日期注意事项等）。不要输出排班 INI，不要输出 @finalize。
 """.strip()
+
+
+def _build_history_summary(exec_ctx: ExecutionCtx) -> str:
+    """为对话压缩生成权威状态摘要（替代被折叠轮次里的重复信息）."""
+    covered_dates = sorted({entry.get("date", "") for entry in exec_ctx.schedule_pool if entry.get("date", "")})
+    covered_text = ", ".join(d[5:] for d in covered_dates) if covered_dates else "无"
+    return (
+        "[历史压缩] 以上早期轮次的完整 INI 对话已折叠为摘要。"
+        f"已覆盖日期: {covered_text}（共 {len(covered_dates)} 天）；"
+        f"pointer={exec_ctx.last_pointer}。"
+        "之后是最近几轮的完整对话，请从中继续。"
+    )
 
 
 def _finalize(
@@ -787,23 +823,11 @@ def _parse_date_ranges(text: str, default_year: int) -> List[Tuple[date, date]]:
 
 
 def _get_area_names(config: dict) -> List[str]:
-    areas = config.get("areas", [])
-    if areas:
-        return list(areas)
-    return [DEFAULT_SINGLE_AREA_NAME]
+    return get_configured_area_names(config) or [DEFAULT_SINGLE_AREA_NAME]
 
 
 def _get_area_per_day_counts(config: dict, area_names: List[str]) -> Dict[str, int]:
-    counts: Dict[str, int] = {}
-    area_counts_cfg = config.get("area_per_day_counts", {})
-    if isinstance(area_counts_cfg, dict):
-        for area in area_names:
-            counts[area] = int(area_counts_cfg.get(area, area_counts_cfg.get("default", 2)))
-    else:
-        default = int(area_counts_cfg or 2)
-        for area in area_names:
-            counts[area] = default
-    return counts
+    return get_configured_area_per_day_counts(config, area_names)
 
 
 def _build_required_slots(
@@ -811,8 +835,16 @@ def _build_required_slots(
     dates: List[date],
     id_to_name: Dict[int, str],
     area_names: List[str],
+    area_per_day_counts: Optional[Dict[str, int]] = None,
 ) -> List[ScheduleUnit]:
-    area_per_day = _get_area_per_day_counts_from_areas(area_names)
+    """每个 (日期, 区域) 生成 area_per_day_counts[area] 个 slot。
+
+    counts 与提示词同源（config），避免“提示词要 N 人、校验器按 2 人算”的
+    口径不一致。未传入时沿用旧默认值 2。"""
+    if area_per_day_counts is None:
+        area_per_day = {area: 2 for area in area_names}
+    else:
+        area_per_day = area_per_day_counts
     slots = []
     for d in dates:
         for area in area_names:
@@ -824,10 +856,6 @@ def _build_required_slots(
                     alias=area[:1].upper(),
                 ))
     return slots
-
-
-def _get_area_per_day_counts_from_areas(area_names: List[str]) -> Dict[str, int]:
-    return {area: 2 for area in area_names}
 
 
 def _expand_debt_counts(debt_counts: Dict[int, int]) -> List[int]:

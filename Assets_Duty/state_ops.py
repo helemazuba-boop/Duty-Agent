@@ -349,6 +349,8 @@ def _create_default_persisted_config() -> dict:
         "polling": {"hints_on": True, "max_rounds": 15},
         "offline_schedule_days": 7,
         "offline_skip_weekends": True,
+        "areas": [],
+        "area_per_day_counts": {},
     }
 
 
@@ -358,6 +360,24 @@ def _normalize_config_version(value: object) -> int:
     except (TypeError, ValueError):
         return DEFAULT_CONFIG_VERSION
     return max(DEFAULT_CONFIG_VERSION, parsed)
+
+
+def _normalize_config_areas(source: dict) -> Tuple[List[str], Dict[str, int]]:
+    """Normalize the optional areas/area_per_day_counts config pair.
+
+    Empty areas list means the legacy single default area. Headcounts default
+    to DEFAULT_ASSIGNMENTS_PER_AREA for any area without an explicit value."""
+    raw_names = source.get("areas")
+    area_names = normalize_area_names(raw_names) if isinstance(raw_names, list) else []
+    raw_counts = source.get("area_per_day_counts")
+    counts_source: Dict[str, int] = {}
+    if isinstance(raw_counts, dict):
+        for key, value in raw_counts.items():
+            name = str(key).strip()
+            if name:
+                counts_source[name] = parse_int(value, DEFAULT_ASSIGNMENTS_PER_AREA, 1, 30)
+    counts = {area: counts_source.get(area, DEFAULT_ASSIGNMENTS_PER_AREA) for area in area_names}
+    return area_names, counts
 
 
 def _normalize_persisted_config(config: dict | None) -> dict:
@@ -373,6 +393,8 @@ def _normalize_persisted_config(config: dict | None) -> dict:
         "max_rounds": max(1, min(int(raw_polling.get("max_rounds", 15) or 15), 100)),
     }
 
+    areas, area_per_day_counts = _normalize_config_areas(source)
+
     return {
         "version": _normalize_config_version(source.get("version", DEFAULT_CONFIG_VERSION)),
         "selected_plan_id": selected_plan_id,
@@ -381,6 +403,8 @@ def _normalize_persisted_config(config: dict | None) -> dict:
         "polling": polling,
         "offline_schedule_days": _parse_int_range(source.get("offline_schedule_days", 7), 7, 1, 60),
         "offline_skip_weekends": bool(source.get("offline_skip_weekends", True)),
+        "areas": areas,
+        "area_per_day_counts": area_per_day_counts,
     }
 
 
@@ -419,6 +443,8 @@ def _hydrate_runtime_config(persisted: dict, logger=None) -> dict:
         "polling": normalized["polling"],
         "offline_schedule_days": normalized.get("offline_schedule_days", 7),
         "offline_skip_weekends": normalized.get("offline_skip_weekends", True),
+        "areas": normalized["areas"],
+        "area_per_day_counts": normalized["area_per_day_counts"],
     }
 
 
@@ -864,6 +890,8 @@ def _persisted_config_body(config: dict | None) -> dict:
         "polling": normalized.get("polling", {}),
         "offline_schedule_days": normalized.get("offline_schedule_days", 7),
         "offline_skip_weekends": normalized.get("offline_skip_weekends", True),
+        "areas": normalized.get("areas", []),
+        "area_per_day_counts": normalized.get("area_per_day_counts", {}),
     }
 
 
@@ -872,7 +900,7 @@ def patch_config(ctx: Context, patch: dict) -> dict:
     unsupported_keys = sorted(
         str(key)
         for key, value in (patch or {}).items()
-        if value is not None and key not in {"expected_version", "selected_plan_id", "plan_presets", "duty_rule", "offline_schedule_days", "offline_skip_weekends"}
+        if value is not None and key not in {"expected_version", "selected_plan_id", "plan_presets", "duty_rule", "offline_schedule_days", "offline_skip_weekends", "areas", "area_per_day_counts"}
     )
     if unsupported_keys:
         raise ValueError(f"Unsupported config patch keys: {', '.join(unsupported_keys)}")
@@ -1932,6 +1960,23 @@ def normalize_area_per_day_counts(area_names: List[str], raw_counts, fallback_pe
             if area:
                 source[area] = parse_int(value, fallback, 1, 30)
     return {area: source.get(area, fallback) for area in area_names}
+
+
+def get_configured_area_names(config: dict) -> List[str]:
+    """Read the configured area list (deduped); empty when not configured."""
+    return normalize_area_names((config or {}).get("areas"))
+
+
+def get_configured_area_per_day_counts(config: dict, area_names: List[str]) -> Dict[str, int]:
+    """Read per-area daily headcount from config, defaulting to 2 like the
+    orchestrator settings UI. Keeps prompt requirement and slot validation
+    on the same source of truth."""
+    raw_counts = (config or {}).get("area_per_day_counts")
+    if isinstance(raw_counts, dict):
+        fallback = parse_int(raw_counts.get("default", 2), DEFAULT_ASSIGNMENTS_PER_AREA, 1, 30)
+    else:
+        fallback = parse_int(raw_counts, DEFAULT_ASSIGNMENTS_PER_AREA, 1, 30)
+    return normalize_area_per_day_counts(area_names, raw_counts, fallback)
 
 
 def get_pool_entries_with_date(state_data: dict) -> List[Tuple[dict, date]]:

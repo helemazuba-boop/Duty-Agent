@@ -1,8 +1,16 @@
 """
 System prompt builders for the Orchestrator and TimeWindow Agent.
+
+Orchestrator has two mutually exclusive contracts:
+  - direct  (total_slots < 7): Orchestrator itself outputs the full INI plan.
+  - poll    (total_slots >= 7): Orchestrator only writes per-window dispatch
+    directives ([[#window]] blocks); the actual INI comes from TimeWindow
+    agents and is validated by Python. Asking the Orchestrator for a full INI
+    here would waste generation tokens on output that is never parsed.
 """
 from __future__ import annotations
 
+from collections import Counter
 from datetime import date
 from typing import Dict, List
 
@@ -13,7 +21,11 @@ from .context import OrchestratorContext, TimeWindow
 # Orchestrator Agent
 # ------------------------------------------------------------------------------
 
-def build_orchestrator_system_prompt(ctx: OrchestratorContext, total_dates: List[date]) -> str:
+def build_orchestrator_system_prompt(
+    ctx: OrchestratorContext,
+    total_dates: List[date],
+    mode: str = "direct",
+) -> str:
     date_strs = [d.isoformat() for d in total_dates]
 
     debt_text = ctx.format_debt_list()
@@ -21,17 +33,12 @@ def build_orchestrator_system_prompt(ctx: OrchestratorContext, total_dates: List
     person_pool = ctx.format_person_pool()
 
     hints_directive = _hints_directive_block(ctx.hints_on)
-    command_directive = _command_directive_block(ctx.hints_on)
+    previous_note_block = _previous_note_block(ctx.previous_note)
 
-    return f"""你是排班调度 Orchestrator。你的职责是根据用户指令和当前状态，
-生成完整排班方案（INI 格式）并持久化。
-
-## 当前任务
+    shared_state = f"""## 当前任务
 - 请求时间：{ctx.request_time.isoformat()}
 - 开始日期：{ctx.start_date.isoformat()}
-- 轮次：1（所有学生轮完一次 = 一个完整轮次）
 - 日期范围：{date_strs[0]} ~ {date_strs[-1]}（共 {len(total_dates)} 天）
-- 轮询轮次：第 1 轮
 
 ## 当前状态
 - 债务人员（优先安排）：{debt_text}
@@ -43,7 +50,33 @@ def build_orchestrator_system_prompt(ctx: OrchestratorContext, total_dates: List
 
 ## 排班规则（严格遵守）
 {ctx.duty_rule}
+"""
 
+    if mode == "poll":
+        return f"""你是排班协调 Orchestrator。填充工作由按时间窗口分工的 Agent 完成，
+你负责：为每个窗口写下分配指令；收到 Python 反馈后修正有问题的窗口指令。
+你不直接生成排班 INI，也不负责持久化。
+
+{shared_state}
+## 输出格式：窗口指令（不是排班）
+
+为需要调整的窗口各写一个指令块，块内用简洁的中文列表描述分配要点：
+[[#phase1]]
+- 优先安排债务: 1001, 1002
+- 04-03 A区需要 3 人（班级活动）
+
+不要输出状态区块、待办清单或任何 @ 指令，
+也不要输出日期=人员的排班行——那由窗口 Agent 生成、Python 校验。
+
+{hints_directive}{previous_note_block}""".strip()
+
+    command_directive = _command_directive_block(ctx.hints_on)
+    remaining_manifest = _render_remaining_template(ctx, total_dates)
+
+    return f"""你是排班调度 Orchestrator。你的职责是根据用户指令和当前状态，
+直接生成完整排班方案（INI 格式），由 Python 校验并持久化。
+
+{shared_state}
 ## 输出格式：INI 文本
 
 使用 INI 格式输出排班方案。用 [[#batchname]] 标注批次，用 [state] 声明状态，
@@ -57,16 +90,13 @@ debt = {fmt_count_map(ctx.debt_list)}
 credit = {fmt_count_map(ctx.credit_list)}
 
 ### [[#batch]] 区块（你的主要输出）
-[[#batch1]]
-{_render_schedule_template(ctx, total_dates)}
+覆盖下面 [remaining] 清单中的每一个 (日期, 区域)。行格式示例：
+{total_dates[0].isoformat()} = {_area_alias(ctx.all_areas[0])}:ID1 ID2{_render_extra_area_example(ctx)}
 
-[remaining]
-{_render_remaining_template(ctx, total_dates)}
+### [remaining] 清单（每行 = 一个待填 (日期, 区域)，需 N 人 = 该区域每日人数）
+{remaining_manifest}
 
 {command_directive}
-
-{fmt_person_pool_for_remaining(ctx)}
-
 ## 注意事项
 
 1. 每天每个区域都需要安排 {fmt_areas_need(ctx)} 人
@@ -75,18 +105,20 @@ credit = {fmt_count_map(ctx.credit_list)}
 4. 遵守所有排班规则约束
 5. 如果某天某区域无法安排满，注明原因
 
-{hints_directive}
-""".strip()
+{hints_directive}{previous_note_block}""".strip()
 
 
 def build_orchestrator_round_prompt(
     ctx: OrchestratorContext,
-    total_dates: List[date],
     round_num: int,
-    python_response_ini: str,
     hints: List[object],
+    python_response_ini: str = "",
+    mode: str = "direct",
 ) -> str:
-    """Orchestrator 第 N 轮的系统提示词（含 Python 反馈和 hints）."""
+    """Orchestrator 第 N 轮反馈提示词（含 Python 反馈和 hints）.
+
+    poll 模式下不回传完整权威 INI（Orchestrator 不排班，只需要 hints），
+    以免每轮对话线性膨胀。"""
     hint_lines = []
     for h in hints:
         level = getattr(h, "level", "INFO")
@@ -97,6 +129,12 @@ def build_orchestrator_round_prompt(
     if hints_block:
         hints_block = f"; hints:\n{hints_block}\n"
 
+    if mode == "poll":
+        return f"""; === 第 {round_num} 轮 Python 反馈 ===
+{hints_block}
+; 请只更新被 hints 点名窗口的 [[#窗口名]] 指令块；其余窗口不要重复输出。
+""".strip()
+
     return f"""; === 第 {round_num} 轮 ===
 {python_response_ini}
 
@@ -105,13 +143,6 @@ def build_orchestrator_round_prompt(
 ; 输出完整的 [state] + [[#batch]] + [remaining]。
 ; 使用 @keep/@drop/@replace 调整已有批次。
 ; 确认无误后输出 @finalize。
-""".strip()
-
-
-def build_orchestrator_finalize_prompt(ctx: OrchestratorContext) -> str:
-    """Orchestrator 输出 @finalize 后的确认提示词."""
-    return """; @finalize 已收到。INI 解析器正在持久化。
-; 排班完成。
 """.strip()
 
 
@@ -139,7 +170,7 @@ def build_timewindow_system_prompt(window: TimeWindow, ctx: OrchestratorContext)
 ## 可用学生
 {person_pool}
 
-## 优先债务（必须优先安排这些学生）
+## 优先债务（必须优先安排这些学生，N*表示需安排 N 次）
 {debt_text}
 
 ## 排班规则
@@ -199,22 +230,17 @@ def fmt_count_map(pid_list: List[int]) -> str:
     """将 [1004, 1004, 1002] 格式化为 '1004*2 1002'."""
     if not pid_list:
         return ""
-    from collections import Counter
     parts = []
     for pid, cnt in Counter(pid_list).items():
         parts.append(f"{pid}*{cnt}" if cnt > 1 else str(pid))
     return " ".join(parts)
 
 
-def _render_schedule_template(ctx: OrchestratorContext, dates: List[date]) -> str:
-    lines = []
-    for d in dates:
-        date_str = d.isoformat()
-        areas_part = " | ".join(
-            f"{_area_alias(area)}:?" for area in ctx.all_areas
-        )
-        lines.append(f"{date_str} = {areas_part}")
-    return "\n".join(lines)
+def _render_extra_area_example(ctx: OrchestratorContext) -> str:
+    if len(ctx.all_areas) < 2:
+        return ""
+    second = ctx.all_areas[1]
+    return f" | {_area_alias(second)}:ID3 ID4"
 
 
 def _render_remaining_template(ctx: OrchestratorContext, dates: List[date]) -> str:
@@ -246,24 +272,6 @@ def fmt_areas_need_from_window(window: TimeWindow) -> str:
     return ", ".join(parts)
 
 
-def fmt_person_pool_for_remaining(ctx: OrchestratorContext) -> str:
-    lines = ["; 可用人员:"]
-    for pid in ctx.all_ids:
-        if pid in ctx.inactive_ids:
-            continue
-        tags = []
-        if pid in ctx.debt_list:
-            tags.append("债务")
-        if pid in ctx.credit_list:
-            tags.append("信用+")
-        if pid in ctx.id_to_area:
-            tags.append(ctx.id_to_area[pid])
-        tag_str = f" [{', '.join(tags)}]" if tags else ""
-        name = ctx.id_to_name.get(pid, str(pid))
-        lines.append(f";   {name} (ID={pid}){tag_str}")
-    return "\n".join(lines)
-
-
 def _area_alias(area_name: str) -> str:
     aliases = {"A区": "A", "B区": "B", "C区": "C", "教室": "A", "操场": "B", "图书馆": "C"}
     return aliases.get(area_name, area_name[:1].upper())
@@ -286,8 +294,6 @@ def _format_timewindow_pool(window: TimeWindow, ctx: OrchestratorContext) -> str
             tags.append("债务")
         if pid in window.credit_ids:
             tags.append("信用+")
-        if pid in ctx.id_to_area:
-            tags.append(ctx.id_to_area[pid])
         tag_str = f" [{', '.join(tags)}]" if tags else ""
         name = ctx.id_to_name.get(pid, str(pid))
         lines.append(f"  {name} (ID={pid}){tag_str}")
@@ -295,9 +301,13 @@ def _format_timewindow_pool(window: TimeWindow, ctx: OrchestratorContext) -> str
 
 
 def _format_window_debt(window: TimeWindow) -> str:
+    """债务 ID 列表带出现次数（列表里每个条目 = 需安排一次）。"""
     if not window.debt_ids:
         return "无"
-    return ", ".join(f"ID={pid}" for pid in window.debt_ids)
+    parts = []
+    for pid, cnt in Counter(window.debt_ids).items():
+        parts.append(f"ID={pid}*{cnt}" if cnt > 1 else f"ID={pid}")
+    return ", ".join(parts)
 
 
 def render_window_remaining(window: TimeWindow, ctx: OrchestratorContext) -> str:
@@ -317,6 +327,16 @@ def _hints_directive_block(hints_on: bool) -> str:
     return """
 ## Hints 修正指令（可选）
 如有冲突或警告，Orchestrator 会在下一轮告知你（Hints 模式已开启）。
+"""
+
+
+def _previous_note_block(previous_note: str) -> str:
+    note = str(previous_note or "").strip()
+    if not note:
+        return ""
+    return f"""
+## 上一轮备注（来自上次排班的遗留说明）
+{note}
 """
 
 

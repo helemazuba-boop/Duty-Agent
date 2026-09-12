@@ -18,8 +18,11 @@ from postprocess import (
 from prompt_gateway import build_single_pass_prompt_messages
 from state_ops import (
     Context,
+    DEFAULT_SINGLE_AREA_NAME,
     anonymize_instruction,
     clone_count_map,
+    get_configured_area_names,
+    get_configured_area_per_day_counts,
     load_api_key_from_env,
     load_config,
     load_roster,
@@ -66,8 +69,6 @@ def build_single_pass_request(
     ctx.config["api_key"] = api_key
     ctx.config["llm_stream"] = True
 
-    area_names: list[str] = []
-    area_per_day_counts: dict[str, int] = {}
     if emit_progress_fn:
         emit_progress_fn(
             "planning",
@@ -81,6 +82,14 @@ def build_single_pass_request(
 
     start_date = run_now.date()
 
+    # Configured areas/headcounts now reach the prompt (previously hardcoded
+    # empty, leaving the area template to the model's guess); the settle half
+    # re-derives the same values from config.
+    area_names = get_configured_area_names(ctx.config) or [DEFAULT_SINGLE_AREA_NAME]
+    area_per_day_counts = get_configured_area_per_day_counts(ctx.config, area_names)
+    previous_note = str(state_data.get("next_run_note", "") or "").strip()
+    previous_context = f"Previous run note (carry-over from the last schedule): {previous_note}" if previous_note else ""
+
     messages, prompt_metadata = build_single_pass_prompt_messages(
         execution_plan,
         all_ids=all_ids,
@@ -93,7 +102,7 @@ def build_single_pass_request(
         debt_counts=debt_counts,
         credit_counts=credit_counts,
         start_date=start_date.isoformat(),
-        previous_context="",
+        previous_context=previous_context,
         last_pointer=int(state_data.get("last_pointer", 0) or 0),
     )
 
@@ -144,8 +153,9 @@ def apply_single_pass_completion(
     name_to_id, id_to_name, all_ids, id_to_active = load_roster(ctx.paths["roster"])
     state_data = load_state(ctx.paths["state"])
 
-    area_names: list[str] = []
-    area_per_day_counts: dict[str, int] = {}
+    config = load_config(ctx)
+    area_names = get_configured_area_names(config) or [DEFAULT_SINGLE_AREA_NAME]
+    area_per_day_counts = get_configured_area_per_day_counts(config, area_names)
 
     debt_counts = clone_count_map(state_data.get("debt_counts", {}), set(all_ids))
     credit_counts = clone_count_map(state_data.get("credit_counts", {}), set(all_ids))

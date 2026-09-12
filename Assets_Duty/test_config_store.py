@@ -42,7 +42,7 @@ class TestConfigStore(unittest.TestCase):
             persisted = json.loads(config_path.read_text(encoding="utf-8"))
 
         self.assertEqual(runtime_config["model"], "llama3")
-        self.assertEqual(sorted(persisted.keys()), ["duty_rule", "offline_schedule_days", "offline_skip_weekends", "plan_presets", "polling", "selected_plan_id", "version"])
+        self.assertEqual(sorted(persisted.keys()), ["area_per_day_counts", "areas", "duty_rule", "offline_schedule_days", "offline_skip_weekends", "plan_presets", "polling", "selected_plan_id", "version"])
         self.assertEqual(persisted["polling"], {"hints_on": True, "max_rounds": 15})
         self.assertNotIn("api_key", persisted)
         self.assertNotIn("model_presets", persisted)
@@ -84,7 +84,7 @@ class TestConfigStore(unittest.TestCase):
             persisted = json.loads((data_dir / "config.json").read_text(encoding="utf-8"))
 
         self.assertEqual(runtime_config["model"], "llama3")
-        self.assertEqual(sorted(persisted.keys()), ["duty_rule", "offline_schedule_days", "offline_skip_weekends", "plan_presets", "polling", "selected_plan_id", "version"])
+        self.assertEqual(sorted(persisted.keys()), ["area_per_day_counts", "areas", "duty_rule", "offline_schedule_days", "offline_skip_weekends", "plan_presets", "polling", "selected_plan_id", "version"])
         self.assertEqual(persisted["polling"], {"hints_on": True, "max_rounds": 15})
         self.assertEqual(persisted["duty_rule"], "rule")
         self.assertEqual(persisted["version"], 1)
