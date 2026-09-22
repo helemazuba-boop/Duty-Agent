@@ -25,18 +25,21 @@ import appLogo from '@/assets/icon.png';
 const { mode, resolved, cycleMode } = useTheme();
 const { customChrome, maximized } = useHostChrome();
 
-/** 标题条按下:非三键区域(左键)交给宿主发起原生拖拽;双击最大化在 dblclick 里处理 */
+/** 标题条按下:鼠标走宿主回退通道(WebView2 非客户区支持未启用时的旧运行时);
+ *  触摸/触控笔交给 WebView2 的 app-region 原生处理,这里直接跳过 */
 const onTitlebarPointerDown = (e: PointerEvent) => {
+  if (e.pointerType !== 'mouse') return;
   if (e.button !== 0) return;
   if ((e.target as HTMLElement).closest('.wtc-btn')) return;
-  sendToHost({ type: 'drag-window' });
+  sendToHost({ type: 'drag-window', x: e.screenX, y: e.screenY });
 };
 
-/** 边缘缩放:宿主用 WM_NCLBUTTONDOWN + 边缘 HT 值拉起原生缩放循环 */
+/** 边缘缩放:宿主用 WM_NCLBUTTONDOWN + 边缘 HT 值拉起原生缩放循环(仅鼠标;触摸不支持边缘缩放) */
 const EDGE_HIT: Record<string, number> = { top: 12, bottom: 15, left: 10, right: 11, nw: 13, ne: 14, sw: 16, se: 17 };
 const onEdgePointerDown = (e: PointerEvent, edge: string) => {
+  if (e.pointerType !== 'mouse') return;
   if (e.button !== 0) return;
-  sendToHost({ type: 'resize-window', hit: EDGE_HIT[edge] });
+  sendToHost({ type: 'resize-window', hit: EDGE_HIT[edge], x: e.screenX, y: e.screenY });
 };
 const route = useRoute();
 const activeKey = computed(() => route.path.split('/')[1] || 'dashboard');
@@ -453,12 +456,18 @@ html[data-theme='dark'] .app-canvas::after {
 }
 
 /* 标题条:除三键外都是宿主的原生拖拽区。背景是 .app-canvas 光晕的延续
-   (同参数、中心上移一个标题条高度),让顶部与页面光晕无缝衔接 */
+   (同参数、中心上移一个标题条高度),让顶部与页面光晕无缝衔接。
+   app-region 交由 WebView2 非客户区支持原生处理(含触摸);
+   touch-action 禁掉浏览器平窗口势,user-select 防止按住拖动变成选中内容 */
 .app-titlebar {
   flex: 0 0 44px;
   display: flex;
   align-items: center;
   justify-content: flex-end;
+  -webkit-app-region: drag;
+  app-region: drag;
+  touch-action: none;
+  user-select: none;
   background:
     radial-gradient(1400px 560px at 22% -124px, color-mix(in srgb, var(--dt-primary) 11%, transparent), transparent 72%),
     radial-gradient(900px 460px at 90% -184px, color-mix(in srgb, var(--dt-live) 7%, transparent), transparent 74%);
@@ -467,6 +476,8 @@ html[data-theme='dark'] .app-canvas::after {
 .app-titlebar__controls {
   display: flex;
   align-self: stretch;
+  -webkit-app-region: no-drag;
+  app-region: no-drag;
 }
 
 .wtc-btn {
@@ -496,10 +507,12 @@ html[data-theme='dark'] .app-canvas::after {
   color: #fff;
 }
 
-/* 窗口边缘缩放热区:细条贴边,四角稍大;按下即把控制权交给宿主 */
+/* 窗口边缘缩放热区:细条贴边,四角稍大;按下即把控制权交给宿主(触摸不支持边缘缩放) */
 .win-edge {
   position: fixed;
   z-index: 40;
+  user-select: none;
+  touch-action: none;
 }
 
 .win-edge--top { top: 0; left: 0; right: 0; height: 5px; cursor: ns-resize; }

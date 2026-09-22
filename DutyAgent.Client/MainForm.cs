@@ -281,16 +281,35 @@ internal sealed class MainForm : Form
             : FormWindowState.Maximized;
     }
 
-    /// <summary>释放鼠标捕获后以指定 HT 值进入原生移动/缩放模态循环(拖拽、贴靠、双击全归系统)。</summary>
-    private void BeginNativeMove(int hitTest)
+    /// <summary>释放鼠标捕获后以指定 HT 值进入原生移动/缩放模态循环(拖拽、贴靠、双击全归系统)。
+    /// lParam 必须携带光标屏幕物理坐标:Win10 的拖拽循环严格按该点计算锚点,传 0 会直接失效。
+    /// web 传来的 screenX/Y 是 CSS 坐标,按 DPI 换算;缺省时退回 Cursor.Position。</summary>
+    private void BeginNativeMove(JsonElement root, int hitTest)
     {
         if (!_customChrome || !IsHandleCreated)
         {
             return;
         }
 
+        int x;
+        int y;
+        if (root.TryGetProperty("x", out var xe) && xe.ValueKind == JsonValueKind.Number
+            && root.TryGetProperty("y", out var ye) && ye.ValueKind == JsonValueKind.Number)
+        {
+            double scale = DeviceDpi / 96.0;
+            x = (int)Math.Round(xe.GetDouble() * scale);
+            y = (int)Math.Round(ye.GetDouble() * scale);
+        }
+        else
+        {
+            var pt = Cursor.Position;
+            x = pt.X;
+            y = pt.Y;
+        }
+
+        var lParam = (IntPtr)((y << 16) | (x & 0xFFFF));
         ReleaseCapture();
-        SendMessage(Handle, WM_NCLBUTTONDOWN, (IntPtr)hitTest, IntPtr.Zero);
+        SendMessage(Handle, WM_NCLBUTTONDOWN, (IntPtr)hitTest, lParam);
     }
 
     /// <summary>窗口命令由 web 标题条三键发起;close 走既有 FormClosing 策略(询问/驻留/退出)。</summary>
@@ -574,6 +593,16 @@ internal sealed class MainForm : Form
             _webView.CoreWebView2.WebMessageReceived += OnWebMessageReceived;
             // 网页刷新(F5)会丢掉 web 侧状态:每次导航完成后重推铬配置与窗口状态
             _webView.CoreWebView2.NavigationCompleted += (_, _) => PushHostInfo();
+            // 触摸屏兼容:启用非客户区支持后,-webkit-app-region:drag 由 WebView2 原生处理
+            // (触摸/鼠标/双击最大化/系统菜单);旧运行时无此能力时静默降级到消息桥回退
+            try
+            {
+                _webView.CoreWebView2.Settings.IsNonClientRegionSupportEnabled = true;
+            }
+            catch
+            {
+                // 旧 WebView2 Runtime 不具备该能力:鼠标走消息桥回退,触摸拖拽不可用
+            }
         }
         catch (Exception ex)
         {
@@ -615,9 +644,8 @@ internal sealed class MainForm : Form
                     PushHostInfo();
                     break;
                 case "drag-window":
-                    // WebView2 子窗口会吞掉窗体级 WM_NCHITTEST,原生拖拽改由
-                    // web 按下后通知宿主,用 NCLBUTTONDOWN+HTCAPTION 拉起系统拖拽循环
-                    BeginNativeMove(HTCAPTION);
+                    // 鼠标回退通道(触摸走 WebView2 的 app-region 原生处理)
+                    BeginNativeMove(root, HTCAPTION);
                     break;
                 case "resize-window":
                     // 同上:边缘热区按下后拉起原生缩放循环;最大化时忽略
@@ -625,7 +653,7 @@ internal sealed class MainForm : Form
                         && root.TryGetProperty("hit", out var hitEl)
                         && hitEl.ValueKind == JsonValueKind.Number)
                     {
-                        BeginNativeMove(hitEl.GetInt32());
+                        BeginNativeMove(root, hitEl.GetInt32());
                     }
 
                     break;
