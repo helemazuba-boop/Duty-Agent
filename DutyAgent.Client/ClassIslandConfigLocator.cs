@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Text.Json;
+using Microsoft.Win32;
 
 namespace DutyAgent.Client;
 
@@ -28,14 +29,14 @@ internal static class ClassIslandConfigLocator
             AddCandidate(candidates, processPath, "running-process");
         }
 
+        foreach (var autostartPath in EnumerateAutoStartClassIslandPaths())
+        {
+            AddCandidate(candidates, autostartPath, "autostart");
+        }
+
         foreach (var configuredPath in ReadConfiguredClassIslandPaths())
         {
             AddCandidate(candidates, configuredPath, "client-settings");
-        }
-
-        foreach (var localPath in EnumerateConfigCandidatesFromPath(AppContext.BaseDirectory))
-        {
-            AddCandidate(candidates, localPath, "client-location");
         }
 
         AddCandidate(candidates, GetAppDataConfigFolder(), "appdata");
@@ -58,8 +59,8 @@ internal static class ClassIslandConfigLocator
         var selected =
             normalized.FirstOrDefault(candidate => candidate.Source == EnvVarName) ??
             normalized.FirstOrDefault(candidate => candidate.Source == "running-process") ??
+            normalized.FirstOrDefault(candidate => candidate.Source == "autostart") ??
             normalized.FirstOrDefault(candidate => candidate.Source == "client-settings") ??
-            normalized.FirstOrDefault(candidate => candidate.Source == "client-location" && candidate.Exists) ??
             normalized.FirstOrDefault(candidate => candidate.Source == "appdata") ??
             normalized.FirstOrDefault(candidate => candidate.Exists) ??
             normalized[0];
@@ -141,27 +142,140 @@ internal static class ClassIslandConfigLocator
             "client-settings.json");
     }
 
-    private static IEnumerable<string> EnumerateConfigCandidatesFromPath(string? startPath)
+    private static IEnumerable<string> EnumerateAutoStartClassIslandPaths()
     {
-        if (string.IsNullOrWhiteSpace(startPath))
-        {
-            yield break;
-        }
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var results = new List<string>();
 
-        var current = new DirectoryInfo(startPath);
-        while (current is not null)
+        foreach (var (key, _) in new[] { (Registry.CurrentUser, "HKCU"), (Registry.LocalMachine, "HKLM") })
         {
-            yield return Path.Combine(current.FullName, "data", "Config");
-
-            if (Directory.Exists(Path.Combine(current.FullName, "Plugins")) ||
-                Directory.Exists(Path.Combine(current.FullName, "Config")) ||
-                File.Exists(Path.Combine(current.FullName, "Settings.json")))
+            using var runKey = key.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Run");
+            if (runKey == null)
             {
-                yield return Path.Combine(current.FullName, "Config");
+                continue;
             }
 
-            current = current.Parent;
+            foreach (var valueName in runKey.GetValueNames())
+            {
+                try
+                {
+                    var value = runKey.GetValue(valueName);
+                    if (value is not string raw || !raw.Contains("ClassIsland", StringComparison.OrdinalIgnoreCase))
+                    {
+                        continue;
+                    }
+
+                    if (TryExtractExeDirectory(raw, out var exeDir) && seen.Add(exeDir))
+                    {
+                        results.Add(exeDir);
+                    }
+                }
+                catch
+                {
+                }
+            }
         }
+
+        foreach (var startupDir in new[]
+        {
+            Environment.GetFolderPath(Environment.SpecialFolder.Startup),
+            Environment.GetFolderPath(Environment.SpecialFolder.CommonStartup)
+        })
+        {
+            if (string.IsNullOrEmpty(startupDir) || !Directory.Exists(startupDir))
+            {
+                continue;
+            }
+
+            foreach (var lnkFile in Directory.EnumerateFiles(startupDir, "*.lnk"))
+            {
+                try
+                {
+                    if (!Path.GetFileName(lnkFile).Contains("ClassIsland", StringComparison.OrdinalIgnoreCase))
+                    {
+                        continue;
+                    }
+
+                    var shellType = Type.GetTypeFromProgID("WScript.Shell");
+                    if (shellType == null)
+                    {
+                        continue;
+                    }
+
+                    var shell = Activator.CreateInstance(shellType);
+                    var shortcut = shellType.InvokeMember(
+                        "CreateShortcut",
+                        System.Reflection.BindingFlags.InvokeMethod,
+                        null,
+                        shell,
+                        new object[] { lnkFile });
+                    var target = shellType.InvokeMember(
+                        "TargetPath",
+                        System.Reflection.BindingFlags.GetProperty,
+                        null,
+                        shortcut,
+                        null) as string;
+
+                    if (!string.IsNullOrEmpty(target))
+                    {
+                        var exeDir = Path.GetDirectoryName(target);
+                        if (!string.IsNullOrEmpty(exeDir) && seen.Add(exeDir))
+                        {
+                            results.Add(exeDir);
+                        }
+                    }
+                }
+                catch
+                {
+                }
+            }
+        }
+
+        foreach (var item in results)
+        {
+            yield return item;
+        }
+    }
+
+    private static bool TryExtractExeDirectory(string commandLine, out string exeDir)
+    {
+        exeDir = string.Empty;
+        commandLine = commandLine.Trim();
+        if (string.IsNullOrEmpty(commandLine))
+        {
+            return false;
+        }
+
+        try
+        {
+            string exePath;
+            if (commandLine.StartsWith("\""))
+            {
+                var endQuote = commandLine.IndexOf('"', 1);
+                if (endQuote <= 1)
+                {
+                    return false;
+                }
+                exePath = commandLine.Substring(1, endQuote - 1);
+            }
+            else
+            {
+                var firstSpace = commandLine.IndexOf(' ');
+                exePath = firstSpace > 0 ? commandLine.Substring(0, firstSpace) : commandLine;
+            }
+
+            exePath = Environment.ExpandEnvironmentVariables(exePath.Trim());
+            if (File.Exists(exePath))
+            {
+                exeDir = Path.GetDirectoryName(exePath) ?? string.Empty;
+                return !string.IsNullOrEmpty(exeDir);
+            }
+        }
+        catch
+        {
+        }
+
+        return false;
     }
 
     private static string NormalizeConfigFolder(string rawPath)

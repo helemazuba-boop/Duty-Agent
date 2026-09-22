@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, onBeforeUnmount, onMounted } from 'vue';
+import { computed, ref, watch, onBeforeUnmount, onMounted } from 'vue';
 import {
   Input, Button, Space, Divider, Alert, message, Select, Switch, Slider, Tag, InputNumber,
 } from 'ant-design-vue';
@@ -10,6 +10,7 @@ import Panel from '@/components/ui/Panel.vue';
 import StatusDot from '@/components/ui/StatusDot.vue';
 import { api, type NotificationSettings } from '@/api/http';
 import { useBackendConnection } from '@/composables/useBackendConnection';
+import { useModelList } from '@/composables/useModelList';
 import { hasHost, onHostMessage, sendToHost } from '@/utils/hostBridge';
 
 const activeTab = ref('ai-schedule');
@@ -101,6 +102,10 @@ const currentPlanLabel = computed(
 const currentModeLabel = computed(() => modeLabels[orchestrationMode.value] || orchestrationMode.value || '—');
 const currentAgentOrderLabel = computed(() => agentOrderLabels[agentExecutionOrder.value] || agentExecutionOrder.value || '—');
 const currentModelProfileLabel = computed(() => modelProfileLabels[modelProfile.value] || modelProfile.value || '—');
+
+const { models: presetModels, loading: presetModelsLoading, fetchModels: fetchPresetModels, reset: resetPresetModels } = useModelList();
+
+watch(() => selectedPlanId.value, () => resetPresetModels());
 
 const applyConfig = (config: any, opts: { keepDutyRuleDraft?: boolean } = {}) => {
   configVersion.value = typeof config.version === 'number' ? config.version : null;
@@ -199,6 +204,7 @@ const notificationSettingsVersion = ref<number | null>(null);
 const reminderEnabled = ref(false);
 const reminderTimes = ref('07:40, 12:10');
 const notificationDuration = ref(8);
+const componentRefreshTime = ref('08:00');
 const notificationEntry = ref<'system' | 'classisland' | 'both' | 'off'>('system');
 const systemNotificationsEnabled = ref(true);
 const scheduleCompletionNotificationEnabled = ref(true);
@@ -303,6 +309,7 @@ const applyNotificationSettings = (settings: NotificationSettings) => {
   reminderEnabled.value = settings.duty_reminder_enabled;
   reminderTimes.value = (settings.duty_reminder_times || []).join(', ');
   notificationDuration.value = settings.notification_duration_seconds || 8;
+  componentRefreshTime.value = settings.component_refresh_time || '08:00';
   clientAutoStart.value = settings.client_auto_start !== false;
   clientCloseAction.value = (['ask', 'tray', 'exit'] as const).includes(settings.client_close_action as any)
     ? settings.client_close_action
@@ -352,6 +359,7 @@ const saveNotificationSettings = async () => {
       duty_reminder_enabled: reminderEnabled.value,
       duty_reminder_times: times,
       notification_duration_seconds: notificationDuration.value,
+      component_refresh_time: componentRefreshTime.value,
     });
     applyNotificationSettings(settings);
     message.success('通知设置已保存');
@@ -559,6 +567,22 @@ onMounted(async () => {
                     placeholder="moonshotai/kimi-k2-thinking"
                     class="config-control"
                     @input="markPlanDirty"
+                  />
+                  <Button
+                    size="small"
+                    :loading="presetModelsLoading"
+                    @click="fetchPresetModels(currentPreset.base_url, currentPreset.api_key)"
+                    style="margin-top: 8px"
+                  >
+                    获取模型列表
+                  </Button>
+                  <Select
+                    v-if="presetModels.length"
+                    v-model:value="currentPreset.model"
+                    :options="presetModels.map(m => ({ value: m.id, label: m.id }))"
+                    placeholder="选择模型"
+                    style="width: 100%; margin-top: 8px"
+                    @change="markPlanDirty"
                   />
                 </div>
 
@@ -777,6 +801,17 @@ onMounted(async () => {
                 />
                 <Tag color="purple" class="da-tnum">{{ notificationDuration }} 秒</Tag>
               </div>
+            </div>
+
+            <div class="config-item full-row">
+              <div class="config-label">值日日期切换时间</div>
+              <div class="config-desc">到达此时间后,"今日值日"自动推进到下一天(与 ClassIsland 插件行为一致)</div>
+              <Input
+                v-model:value="componentRefreshTime"
+                placeholder="08:00"
+                class="config-control config-control--narrow"
+                :maxlength="5"
+              />
             </div>
           </div>
         </Panel>

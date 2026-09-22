@@ -164,6 +164,32 @@ A = Duty
         self.assertEqual(parsed["schedule"][1]["date"], "2027-01-02")
 
     @patch("llm_transport.call_llm_raw")
+    def test_call_llm_handles_zero_debt_and_credit_tokens(self, mock_call_llm_raw):
+        mock_call_llm_raw.return_value = """
+[areas]
+A = Duty
+
+[schedule]
+03-24 = A:1001 1002
+
+[state]
+debt = 0
+credit = 0
+pointer = 5
+"""
+
+        parsed, _ = call_llm(
+            [{"role": "user", "content": "Return V2"}],
+            TEST_CONFIG,
+            start_date_value=date(2026, 3, 24),
+        )
+
+        self.assertEqual(parsed["schedule"][0]["date"], "2026-03-24")
+        self.assertEqual(parsed["state_delta"]["debt_counts"], {})
+        self.assertEqual(parsed["state_delta"]["credit_counts"], {})
+        self.assertEqual(parsed["state_delta"]["pointer_after"], 5)
+
+    @patch("llm_transport.call_llm_raw")
     def test_call_llm_uses_last_complete_plan_when_multiple_plans_exist(self, mock_call_llm_raw):
         mock_call_llm_raw.return_value = """
 Draft plan:

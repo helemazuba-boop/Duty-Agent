@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import time
 
-from state_ops import Context, load_config, load_host_config, load_roster_entries, load_state
+from state_ops import Context, compute_current_duty_date, load_config, load_host_config, load_roster_entries, load_state
 
 try:
     from readiness import evaluate_readiness, probe_model
@@ -97,6 +97,7 @@ class QueryService:
             "auto_run_retry_times": int(host_config.get("auto_run_retry_times", 3) or 0),
             "client_auto_start": bool(host_config.get("client_auto_start", True)),
             "client_close_action": str(host_config.get("client_close_action", "ask") or "ask"),
+            "component_refresh_time": str(host_config.get("component_refresh_time", "08:00") or "08:00"),
         }
         self._runtime.logger.info(
             "QueryService",
@@ -168,6 +169,10 @@ class QueryService:
         card 'test connection' button."""
         return probe_model(base_url, model, api_key)
 
+    def list_models(self, base_url: str, api_key: str) -> dict:
+        """Return the model IDs exposed by an OpenAI-compatible provider."""
+        return list_models(base_url, api_key)
+
     def get_snapshot(self, trace_id: str | None = None, request_source: str = "api") -> dict:
         effective_trace_id = trace_id or self._runtime.new_trace_id()
         self._runtime.logger.info(
@@ -188,10 +193,13 @@ class QueryService:
         except (FileNotFoundError, ValueError):
             roster = []
 
+        host_config = load_host_config(context)
         snapshot = {
             "config": load_config(context),
             "roster": roster,
             "state": load_state(context.paths["state"]),
+            "current_duty_date": compute_current_duty_date(host_config),
+            "component_refresh_time": str(host_config.get("component_refresh_time", "08:00") or "08:00"),
         }
         self._runtime.logger.info(
             "QueryService",

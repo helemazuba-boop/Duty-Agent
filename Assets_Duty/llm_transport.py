@@ -720,9 +720,10 @@ def _parse_schedule_section(lines: List[str], alias_map: Dict[str, str], start_d
 
 def _parse_count_tokens(raw_value: str, *, field_name: str) -> Dict[int, int]:
     counts: Dict[int, int] = {}
-    if not raw_value.strip():
+    stripped = raw_value.strip()
+    if not stripped or stripped == "0":
         return counts
-    for token in raw_value.split():
+    for token in stripped.split():
         match = _COUNT_TOKEN_PATTERN.fullmatch(token)
         if not match:
             raise ValueError(f"invalid {field_name} token: {token}")

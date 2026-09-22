@@ -9,7 +9,7 @@ import re
 import shutil
 import sys
 import time
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from ctypes import wintypes
 from pathlib import Path
 from typing import Callable, Dict, Iterable, List, Optional, Tuple
@@ -41,6 +41,27 @@ DEFAULT_AUTO_RUN_PARAMETER = "Monday"
 DEFAULT_AUTO_RUN_TIME = "08:00"
 DEFAULT_ACCESS_TOKEN_MODE = "dynamic"
 DEFAULT_COMPONENT_REFRESH_TIME = "08:00"
+
+
+def compute_current_duty_date(host_config: dict, now: datetime | None = None) -> str:
+    """Compute the effective "current duty date" from the component refresh time.
+
+    If the current time is at or past the configured refresh time, the duty
+    date advances by one day.  This mirrors the C# DutyScheduleOrchestrator
+    GetCurrentScheduleDate() logic so that all three layers (Python backend,
+    Vue frontend, C# Bridge) share the same definition.
+    """
+    refresh = str(host_config.get("component_refresh_time", DEFAULT_COMPONENT_REFRESH_TIME) or DEFAULT_COMPONENT_REFRESH_TIME)
+    if now is None:
+        now = datetime.now()
+    try:
+        h, m = map(int, refresh.split(":"))
+        refresh_time = now.replace(hour=h, minute=m, second=0, microsecond=0)
+    except (ValueError, TypeError):
+        refresh_time = now.replace(hour=8, minute=0, second=0, microsecond=0)
+    target = now.date() if now.time() < refresh_time.time() else now.date() + timedelta(days=1)
+    return target.strftime("%Y-%m-%d")
+
 DEFAULT_NOTIFICATION_DURATION_SECONDS = 8
 DEFAULT_NOTIFICATION_ENTRY = "system"
 DEFAULT_DUTY_REMINDER_TIME = "07:40"
@@ -1326,6 +1347,8 @@ def patch_host_config(ctx: Context, patch: dict) -> dict:
         "auto_run_parameter",
         "auto_run_time",
         "auto_run_retry_times",
+        # Duty display boundary.
+        "component_refresh_time",
     }
     unsupported_keys = sorted(
         str(key)

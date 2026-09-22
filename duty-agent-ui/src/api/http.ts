@@ -51,6 +51,8 @@ export interface NotificationSettings {
   auto_run_retry_times: number;
   client_auto_start: boolean;
   client_close_action: 'ask' | 'tray' | 'exit';
+  /** component_refresh_time (HH:MM): after this time, "today" shifts to tomorrow for duty display. */
+  component_refresh_time: string;
 }
 
 export type NotificationSettingsPatch = Partial<Omit<NotificationSettings, 'version'>> & {
@@ -156,6 +158,10 @@ export const api = {
   },
   async probeModel(payload: { base_url: string; model: string; api_key?: string }): Promise<ModelProbeResult> {
     const { data } = await http.post<ModelProbeResult>('/api/v1/duty/model-probe', payload);
+    return data;
+  },
+  async fetchModelList(payload: { base_url: string; api_key?: string }): Promise<{ models: string[]; detail?: string }> {
+    const { data } = await http.post<{ models: string[]; detail?: string }>('/api/v1/duty/model-list', payload);
     return data;
   },
   async getNotificationSettings(): Promise<NotificationSettings> {

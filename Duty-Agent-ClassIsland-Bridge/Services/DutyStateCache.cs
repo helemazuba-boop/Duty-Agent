@@ -71,8 +71,20 @@ public sealed class DutyStateCache : IDisposable
         }
     }
 
-    /// <summary>按精确时间服务取"今天"；未解析到宿主服务时回退本机时钟。</summary>
-    public DateTime Today => Now.Date;
+    private string _componentRefreshTime = "08:00";
+
+    /// <summary>按精确时间服务取"今天"（受 component_refresh_time 影响：过了刷新时间推进到下一天）；未解析到宿主服务时回退本机时钟。</summary>
+    public DateTime Today
+    {
+        get
+        {
+            var now = Now;
+            var refreshTime = TimeSpan.TryParse(_componentRefreshTime, out var parsed)
+                ? parsed
+                : new TimeSpan(8, 0, 0);
+            return now.TimeOfDay >= refreshTime ? now.Date.AddDays(1) : now.Date;
+        }
+    }
 
     private DateTime Now => _exactTimeService?.GetCurrentLocalDateTime() ?? DateTime.Now;
 
@@ -159,6 +171,7 @@ public sealed class DutyStateCache : IDisposable
             lock (_gate)
             {
                 _state = snapshot.State;
+                _componentRefreshTime = snapshot.ComponentRefreshTime ?? snapshot.Config.ComponentRefreshTime ?? "08:00";
                 _lastRefreshUtc = DateTimeOffset.UtcNow;
             }
             Diagnostics.Log("DutyStateCache", $"Snapshot refreshed ({reason}).", "DEBUG",

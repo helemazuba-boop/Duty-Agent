@@ -93,6 +93,67 @@ def probe_model(base_url: str, model: str, api_key: str, timeout: float = PROBE_
         }
 
 
+def list_models(base_url: str, api_key: str, timeout: float = PROBE_TIMEOUT_SECONDS) -> dict:
+    """Call the OpenAI-compatible ``/v1/models`` endpoint and return model IDs.
+
+    The caller passes the raw ``base_url`` the user configured (e.g.
+    ``http://localhost:1234/v1`` or ``https://api.example.com/v1``).  We
+    normalize it to a models URL the same way ``_build_llm_target`` normalizes
+    the chat completions URL, so providers that expose only a prefix work too.
+    """
+    base_url = str(base_url or "").strip()
+    if not base_url:
+        return {
+            "ok": False,
+            "status": "unconfigured",
+            "detail": "base_url 为空。",
+            "models": [],
+        }
+
+    normalized = base_url.rstrip("/")
+    if normalized.lower().endswith("/chat/completions"):
+        normalized = normalized[: -len("/chat/completions")]
+    if normalized.lower().endswith("/v1"):
+        url = f"{normalized}/models"
+    else:
+        url = f"{normalized}/v1/models"
+
+    headers = {"Accept": "application/json"}
+    resolved_key = (api_key or "").strip()
+    if resolved_key:
+        headers["Authorization"] = f"Bearer {resolved_key}"
+
+    request = urllib.request.Request(url=url, headers=headers, method="GET")
+    is_loopback = "127.0.0.1" in base_url or "localhost" in base_url or "::1" in base_url
+    opener = _loopback_opener() if is_loopback else urllib.request.build_opener()
+    try:
+        with opener.open(request, timeout=timeout) as response:
+            body = json.loads(response.read().decode("utf-8"))
+        raw = body.get("data") or body.get("models") or []
+        if isinstance(raw, list):
+            ids = [m.get("id", "") for m in raw if isinstance(m, dict) and m.get("id")]
+        else:
+            ids = []
+        return {
+            "ok": True,
+            "status": "ok",
+            "detail": f"获取到 {len(ids)} 个模型。",
+            "models": ids,
+        }
+    except urllib.error.HTTPError as ex:
+        code = ex.code
+        if code in (401, 403):
+            return {"ok": False, "status": str(code), "detail": "鉴权失败。", "models": []}
+        if code == 404:
+            return {"ok": False, "status": "404", "detail": "端点不存在，请检查 base_url 路径。", "models": []}
+        return {"ok": False, "status": str(code), "detail": f"HTTP {code}。", "models": []}
+    except urllib.error.URLError as ex:
+        reason = str(getattr(ex, "reason", ex))
+        return {"ok": False, "status": "unreachable", "detail": f"无法连接：{reason}", "models": []}
+    except Exception as ex:
+        return {"ok": False, "status": "error", "detail": f"获取模型失败：{ex}", "models": []}
+
+
 def evaluate_readiness(config: dict, roster: list, state: dict, probe: bool = False) -> dict:
     """Assemble the readiness report from already-loaded config/roster/state.
 

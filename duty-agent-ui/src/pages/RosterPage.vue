@@ -4,10 +4,10 @@ import { Table, Drawer, Input, Switch, Space, message, Popconfirm, Tooltip, Empt
 import {
   DeleteOutlined,
   EditOutlined,
+  HolderOutlined,
   UserAddOutlined,
   ReloadOutlined,
   UserSwitchOutlined,
-  CopyOutlined,
 } from '@ant-design/icons-vue';
 import { api } from '@/api/http';
 import type { RosterPerson, ScheduleEntry } from '@/types';
@@ -19,6 +19,19 @@ const roster = ref<RosterPerson[]>([]);
 const pool = ref<ScheduleEntry[]>([]);
 const loading = ref(false);
 const updatedAt = ref(0);
+const pageSize = ref(15);
+
+/** 前端私有的显示顺序（后端 API schema extra="forbid"，不能传 order 字段） */
+const orderMap = ref<Map<number, number>>(new Map());
+
+/** 从后端返回的数组顺序同步 orderMap */
+const syncOrderFromBackend = () => {
+  const map = new Map<number, number>();
+  roster.value.forEach((p, idx) => {
+    map.set(p.id, idx * 10);
+  });
+  orderMap.value = map;
+};
 
 const fetchAll = async () => {
   loading.value = true;
@@ -27,6 +40,7 @@ const fetchAll = async () => {
     roster.value = snapshot.roster ?? [];
     pool.value = snapshot.state?.schedule_pool ?? [];
     updatedAt.value = Date.now();
+    syncOrderFromBackend();
   } catch (e) {
     console.error('[RosterPage] fetch failed:', e);
   } finally {
@@ -60,27 +74,39 @@ const lastDutyDate = (name: string): string | null => {
   return last;
 };
 
-const contactOf = (person: RosterPerson) =>
-  String(person.contact ?? person.phone ?? person.contact_info ?? '').trim();
-
 const activeCount = computed(() => roster.value.filter((p) => p.active).length);
 const inactiveCount = computed(() => roster.value.length - activeCount.value);
 
-const dataSource = computed(() =>
-  roster.value.map((r) => ({
-    ...r,
-    key: r.name,
-    dutyCount: dutyCountOfMonth(r.name),
-    lastDuty: lastDutyDate(r.name),
-  })),
+interface RosterRow extends RosterPerson {
+  key: number | string;
+  dutyCount: number;
+  lastDuty: string | null;
+}
+
+const dataSource = computed<RosterRow[]>(() =>
+  roster.value
+    .slice()
+    .sort((a, b) => (orderMap.value.get(a.id) ?? 9999) - (orderMap.value.get(b.id) ?? 9999))
+    .map((r) => ({
+      ...r,
+      key: r.id,
+      dutyCount: dutyCountOfMonth(r.name),
+      lastDuty: lastDutyDate(r.name),
+    })),
 );
 
 const columns = [
-  { title: '成员', dataIndex: 'name', key: 'name', minWidth: 180 },
-  { title: '状态', dataIndex: 'active', width: 90, align: 'center' as const },
-  { title: '本月值班', dataIndex: 'dutyCount', width: 100, align: 'center' as const, key: 'dutyCount' },
-  { title: '上次值班', dataIndex: 'lastDuty', width: 120, key: 'lastDuty' },
-  { title: '联系方式', key: 'contact', minWidth: 160 },
+  {
+    title: '',
+    key: 'drag',
+    width: 36,
+    customCell: () => ({ class: 'roster-drag-handle' }),
+  },
+  { title: 'ID', dataIndex: 'id', key: 'id', width: 80 },
+  { title: '成员', dataIndex: 'name', key: 'name', minWidth: 180, sorter: (a: any, b: any) => a.name.localeCompare(b.name) },
+  { title: '状态', dataIndex: 'active', width: 90, align: 'center' as const, sorter: (a: any, b: any) => Number(b.active) - Number(a.active) },
+  { title: '本月值班', dataIndex: 'dutyCount', width: 100, align: 'center' as const, key: 'dutyCount', sorter: (a: any, b: any) => a.dutyCount - b.dutyCount },
+  { title: '上次值班', dataIndex: 'lastDuty', width: 120, key: 'lastDuty', sorter: (a: any, b: any) => (a.lastDuty || '').localeCompare(b.lastDuty || '') },
   { title: '操作', width: 130, align: 'center' as const, key: 'action' },
 ];
 
@@ -127,6 +153,7 @@ const handleSave = async () => {
     updated = [...roster.value, { name, active: formActive.value }];
   }
   await persist(updated);
+  syncOrderFromBackend();
   drawerOpen.value = false;
   message.success(editingOriginal.value ? '修改成功' : '添加成功');
 };
@@ -145,17 +172,19 @@ const toggleActive = async (person: RosterPerson) => {
 };
 
 const persist = async (updated: RosterPerson[]) => {
-  roster.value = await api.updateRoster(updated);
+  const payload = updated.map(({ id, name, active }) => ({ id, name, active }));
+  roster.value = await api.updateRoster(payload);
 };
 
-const copyContact = async (person: RosterPerson) => {
-  const contact = contactOf(person);
-  if (!contact) return;
-  try {
-    await navigator.clipboard.writeText(contact);
-    message.success('已复制联系方式');
-  } catch {
-    message.warning('复制失败,请手动复制');
+const handleTableChange = () => {
+  const ordered = dataSource.value.map((r) => ({ id: r.id, name: r.name, active: r.active }));
+  const oldIds = roster.value.map((r) => r.id).join(',');
+  const newIds = ordered.map((r) => r.id).join(',');
+  if (oldIds !== newIds) {
+    persist(ordered);
+    const map = new Map<number, number>();
+    ordered.forEach((p, idx) => map.set(p.id, idx * 10));
+    orderMap.value = map;
   }
 };
 </script>
@@ -187,12 +216,21 @@ const copyContact = async (person: RosterPerson) => {
         :columns="columns"
         :data-source="dataSource"
         :loading="loading"
-        :pagination="{ pageSize: 15, showSizeChanger: true, pageSizeOptions: ['10', '15', '30'], showTotal: (total: number) => `共 ${total} 人` }"
-        row-key="name"
+        :pagination="{ showSizeChanger: true, pageSizeOptions: ['10', '15', '30'], showTotal: (total: number) => `共 ${total} 人` }"
+        v-model:pageSize="pageSize"
+        row-key="id"
+        :row-config="{ drag: true }"
+        @change="handleTableChange"
         size="middle"
       >
         <template #bodyCell="{ column, record }">
-          <template v-if="column.key === 'name'">
+          <template v-if="column.key === 'drag'">
+            <span class="roster-drag-handle">
+              <HolderOutlined />
+            </span>
+          </template>
+
+          <template v-else-if="column.key === 'name'">
             <PersonChip :name="record.name" avatar class="roster-name" />
           </template>
 
@@ -209,18 +247,6 @@ const copyContact = async (person: RosterPerson) => {
           <template v-else-if="column.key === 'lastDuty'">
             <span v-if="record.lastDuty" class="da-tnum roster-lastduty">{{ record.lastDuty }}</span>
             <span v-else class="roster-lastduty roster-lastduty--none">从未值班</span>
-          </template>
-
-          <template v-else-if="column.key === 'contact'">
-            <span v-if="contactOf(record as RosterPerson)" class="roster-contact">
-              {{ contactOf(record as RosterPerson) }}
-              <Tooltip title="复制">
-                <a-button size="small" type="text" @click="copyContact(record as RosterPerson)">
-                  <template #icon><CopyOutlined /></template>
-                </a-button>
-              </Tooltip>
-            </span>
-            <span v-else class="roster-contact roster-contact--none">—</span>
           </template>
 
           <template v-else-if="column.key === 'action'">
@@ -346,16 +372,19 @@ const copyContact = async (person: RosterPerson) => {
   font-size: 12px;
 }
 
-.roster-contact {
+.roster-drag-handle {
   display: inline-flex;
   align-items: center;
-  gap: 2px;
-  font-size: 13px;
-  color: var(--dt-text-2);
+  justify-content: center;
+  width: 100%;
+  color: var(--dt-text-3);
+  cursor: grab;
+  font-size: 14px;
+  line-height: 1;
 }
 
-.roster-contact--none {
-  color: var(--dt-text-3);
+.roster-drag-handle:active {
+  cursor: grabbing;
 }
 
 .roster-empty-hint {

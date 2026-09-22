@@ -290,6 +290,17 @@ Invoke-Tool `
     -WorkingDirectory $root
 
 if (-not $SkipWebBuild) {
+    $uiIcon = Join-Path $uiDir "src\assets\icon.png"
+    if (-not (Test-Path -LiteralPath $uiIcon)) {
+        Write-Host "[pre] Copying icon.png to UI assets..."
+        Copy-Item -LiteralPath (Join-Path $root "icon.png") -Destination $uiIcon -Force
+    }
+
+    if (-not (Test-Path -LiteralPath (Join-Path $uiDir "node_modules"))) {
+        Write-Host "[pre] UI dependencies not found, running npm install..."
+        Invoke-Tool -FilePath "npm.cmd" -Arguments @("install") -WorkingDirectory $uiDir
+    }
+
     Write-Host "[1/7] Building web UI..."
     Invoke-Tool -FilePath "npm.cmd" -Arguments @("run", "build") -WorkingDirectory $uiDir
 }

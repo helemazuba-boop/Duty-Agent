@@ -5,10 +5,10 @@ import asyncio
 from fastapi import APIRouter, HTTPException, Request
 
 try:
-    from models.schemas import DutyModelProbeRequest
+    from models.schemas import DutyModelListRequest, DutyModelProbeRequest
     from state_ops import sanitize_error_for_client
 except ImportError:
-    from ..models.schemas import DutyModelProbeRequest
+    from ..models.schemas import DutyModelListRequest, DutyModelProbeRequest
     from ..state_ops import sanitize_error_for_client
 
 router = APIRouter(prefix="/api/v1", tags=["Readiness"])
@@ -64,5 +64,19 @@ async def model_probe(request_data: DutyModelProbeRequest, request: Request):
             runtime.query_service.probe_model_connectivity,
             request_data.base_url,
             request_data.model,
+            request_data.api_key or "",
+        )
+
+
+@router.post("/duty/model-list")
+async def model_list(request_data: DutyModelListRequest, request: Request):
+    runtime = getattr(request.app.state, "runtime", None)
+    if runtime is None:
+        raise HTTPException(status_code=503, detail="Runtime is not initialized.")
+    trace_id, request_source = _resolve_request_meta(request, runtime)
+    async with _probe_lock:
+        return await asyncio.to_thread(
+            runtime.query_service.list_models,
+            request_data.base_url,
             request_data.api_key or "",
         )

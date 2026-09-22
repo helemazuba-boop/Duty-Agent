@@ -1,12 +1,13 @@
 <script setup lang="ts">
 import { ref } from 'vue';
 import {
-  Modal, Steps, Step, Input, Button, Space, message, Alert, Table,
+  Modal, Steps, Step, Input, Button, Space, message, Alert, Table, Select,
 } from 'ant-design-vue';
 import { api, getToken } from '@/api/http';
 import type { RosterPerson } from '@/types';
 import { API_BASE_URL } from '@/api/baseUrl';
 import { useScheduleSSE } from '@/composables/useScheduleSSE';
+import { useModelList } from '@/composables/useModelList';
 
 const props = defineProps<{ open: boolean }>();
 const emit = defineEmits<{ (e: 'update:open', v: boolean): void; (e: 'completed'): void }>();
@@ -56,9 +57,12 @@ const probing = ref(false);
 const probeResult = ref<{ ok: boolean; detail: string; fix: string } | null>(null);
 const modelSaving = ref(false);
 
+const { models: wizardModels, loading: wizardModelsLoading, fetchModels: fetchWizardModels, reset: resetWizardModels } = useModelList();
+
 const applyPreset = (p: typeof MODEL_PRESETS[number]) => {
   baseUrl.value = p.base_url || baseUrl.value;
   probeResult.value = null;
+  resetWizardModels();
 };
 
 const testConnection = async () => {
@@ -184,7 +188,22 @@ const finish = () => {
       </div>
       <div class="wizard-field">
         <label>模型名称 (model)</label>
-        <Input v-model:value="modelName" placeholder="qwen3.6-35b-a3b-imatrix" />
+        <Input v-model:value="modelName" placeholder="点击下方按钮从服务端获取" />
+        <Button
+          size="small"
+          :loading="wizardModelsLoading"
+          @click="fetchWizardModels(baseUrl, apiKey)"
+          style="margin-top: 8px"
+        >
+          获取模型列表
+        </Button>
+        <Select
+          v-if="wizardModels.length"
+          v-model:value="modelName"
+          :options="wizardModels.map(m => ({ value: m.id, label: m.id }))"
+          placeholder="选择模型"
+          style="width: 100%; margin-top: 8px"
+        />
       </div>
       <div class="wizard-field">
         <label>API Key（本地模型可留空）</label>

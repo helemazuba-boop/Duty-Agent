@@ -42,6 +42,9 @@ from .validators import (
 
 AGENT_JSON_RETRIES = 2
 
+# Match orchestrator timeout pattern (TW_CONFIG["timeout"] + 10)
+AGENT_TIMEOUT_SECONDS = 70
+
 
 def _check_capacity(snapshot: FrozenSnapshot, barrier1: Dict[str, Any], barrier2: Dict[str, Any]) -> None:
     """Fail fast with a human-readable message when the active roster (minus
@@ -200,7 +203,7 @@ def _run_batch(
             for future in as_completed(future_map):
                 agent_id = future_map[future]
                 try:
-                    _, payload = future.result()
+                    _, payload = future.result(timeout=AGENT_TIMEOUT_SECONDS)
                 except Exception as ex:
                     _emit_progress(
                         emit_progress_fn,

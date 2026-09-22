@@ -31,10 +31,8 @@ def decompose_round(
         return []
 
     days = len(total_dates)
-    if total <= 21:
-        chunk_size = 3
-    else:
-        chunk_size = 3
+    # ≤21 slots → 3-day windows; >21 → 4-day windows (docstring: 3-4 days per segment)
+    chunk_size = 4 if total > 21 else 3
 
     windows: List[TimeWindow] = []
     available_pool = set(ctx.active_ids)

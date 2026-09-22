@@ -13,7 +13,7 @@ import PersonChip from '@/components/ui/PersonChip.vue';
 import ArrangementEditor from '@/components/schedule/ArrangementEditor.vue';
 import FirstRunWizard from '@/components/onboarding/FirstRunWizard.vue';
 import { useTheme } from '@/theme/useTheme';
-import { useToday } from '@/composables/useToday';
+import { useToday, useDutyToday } from '@/composables/useToday';
 import { useBackendConnection } from '@/composables/useBackendConnection';
 import { personChipStyle } from '@/utils/personColor';
 import {
@@ -30,6 +30,7 @@ import {
 const router = useRouter();
 const { resolved } = useTheme();
 const today = useToday();
+const { dutyToday, setWorkspace } = useDutyToday();
 
 /** Hero 头像用人员色板的 solid/onSolid 变量 */
 const personVars = (name: string) => personChipStyle(name, resolved.value);
@@ -71,6 +72,7 @@ const refresh = async () => {
   error.value = null;
   try {
     workspace.value = await api.getSnapshot();
+    setWorkspace(workspace.value);
   } catch (e) {
     error.value = String(e);
   } finally {
@@ -105,10 +107,10 @@ const contactByName = computed(() => {
 });
 
 // ---- Hero:今日值班 ----
-const todayEntry = computed(() => poolByDate.value.get(today.value));
+const todayEntry = computed(() => poolByDate.value.get(dutyToday.value));
 const todayPersons = computed(() => personsOf(todayEntry.value).slice(0, 3));
 const todayOverflow = computed(() => Math.max(0, personsOf(todayEntry.value).length - 3));
-const todayIsWorkday = computed(() => isWorkday(new Date(`${today.value}T00:00:00`)));
+const todayIsWorkday = computed(() => isWorkday(new Date(`${dutyToday.value}T00:00:00`)));
 
 /** Hero 的内容签名:数据变了才 flash,而不是"刷新了"就闪 */
 const todaySig = computed(() => todayPersons.value.join('|'));
@@ -116,7 +118,7 @@ const todaySig = computed(() => todayPersons.value.join('|'));
 // ---- 接下来 3 天:所有工作日缺口都标出来,周末显示"休" ----
 const next3Days = computed(() => {
   const days: { iso: string; persons: string[]; missed: boolean; rest: boolean }[] = [];
-  const cursor = new Date(`${today.value}T00:00:00`);
+  const cursor = new Date(`${dutyToday.value}T00:00:00`);
   for (let i = 1; i <= 3; i += 1) {
     cursor.setDate(cursor.getDate() + 1);
     const iso = fmtDate(cursor);
@@ -134,7 +136,7 @@ const next3Days = computed(() => {
 // ---- 未来 7 天(工作日口径):覆盖 / 缺口 ----
 const next7Workdays = computed(() => {
   const list: string[] = [];
-  const cursor = new Date(`${today.value}T00:00:00`);
+  const cursor = new Date(`${dutyToday.value}T00:00:00`);
   for (let i = 0; i < 7; i += 1) {
     if (isWorkday(cursor)) list.push(fmtDate(cursor));
     cursor.setDate(cursor.getDate() + 1);
@@ -147,7 +149,7 @@ const coveredCount = computed(() => next7Workdays.value.length - gapCount.value)
 
 // ---- 本月负载差(公平性:最多 vs 最少) ----
 const monthLoad = computed(() => {
-  const monthPrefix = today.value.slice(0, 7);
+  const monthPrefix = dutyToday.value.slice(0, 7);
   const counts = new Map<string, number>();
   for (const person of roster.value) counts.set(person.name, 0);
   for (const entry of pool.value) {
@@ -179,7 +181,7 @@ const rosterInactive = computed(() => rosterTotal.value - roster.value.length);
 
 // ---- 本周条带(周一起,与 KPI 同口径) ----
 const weekStrip = computed(() => {
-  const monday = startOfWeek(new Date(`${today.value}T00:00:00`), 1);
+  const monday = startOfWeek(new Date(`${dutyToday.value}T00:00:00`), 1);
   const days: { iso: string; label: string; monthDay: string; persons: string[]; isToday: boolean; isWeekend: boolean; isPast: boolean }[] = [];
   const cursor = new Date(monday);
   for (let i = 0; i < 7; i += 1) {
@@ -189,9 +191,9 @@ const weekStrip = computed(() => {
       label: `周${'一二三四五六日'[cursor.getDay()]}`,
       monthDay: monthDayLabel(iso),
       persons: personsOf(poolByDate.value.get(iso)),
-      isToday: iso === today.value,
+      isToday: iso === dutyToday.value,
       isWeekend: !isWorkday(cursor),
-      isPast: iso < today.value,
+      isPast: iso < dutyToday.value,
     });
     cursor.setDate(cursor.getDate() + 1);
   }
@@ -264,7 +266,7 @@ const copyContact = async (name: string) => {
       <Panel class="hero-grid__main" padded v-flash="todaySig">
         <template #title>今日值班</template>
         <template #actions>
-          <span class="hero-date">{{ cnDateLabel(today) }}</span>
+          <span class="hero-date">{{ cnDateLabel(dutyToday) }}</span>
         </template>
 
         <div v-if="todayPersons.length" class="hero-duty">
@@ -293,13 +295,13 @@ const copyContact = async (name: string) => {
 
         <!-- 周末无人值班不是事故,不做警告样式 -->
         <div v-else-if="!todayIsWorkday" class="hero-duty__empty hero-duty__empty--rest">
-          <span class="hero-duty__empty-text">今天休息</span>
-          <a-button @click="openEditor(today)">安排值班</a-button>
+          <span class="hero-duty__empty-text">{{ dutyToday === today ? '今天' : '明日' }}休息</span>
+          <a-button @click="openEditor(dutyToday)">安排值班</a-button>
         </div>
 
         <div v-else class="hero-duty__empty">
-          <span class="hero-duty__empty-text">今天无人值班</span>
-          <a-button danger @click="openEditor(today)">补排今天</a-button>
+          <span class="hero-duty__empty-text">{{ dutyToday === today ? '今天' : '明天' }}无人值班</span>
+          <a-button danger @click="openEditor(dutyToday)">补排{{ dutyToday === today ? '今天' : '明天' }}</a-button>
         </div>
       </Panel>
 

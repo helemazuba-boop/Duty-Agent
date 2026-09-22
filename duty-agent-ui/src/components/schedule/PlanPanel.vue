@@ -10,12 +10,12 @@ import { RouterLink } from 'vue-router';
 import Panel from '@/components/ui/Panel.vue';
 import PersonChip from '@/components/ui/PersonChip.vue';
 import { useScheduleChat } from '@/composables/useScheduleChat';
-import { useToday } from '@/composables/useToday';
+import { useDutyToday } from '@/composables/useToday';
 import { personsOf, isWorkday } from '@/utils/date';
 import type { ScheduleEntry } from '@/types';
 
 const { workspace, planUpdatedAt, planBefore } = useScheduleChat();
-const today = useToday();
+const { dutyToday } = useDutyToday();
 
 const pool = computed<ScheduleEntry[]>(() => workspace.value?.state?.schedule_pool ?? []);
 const poolByDate = computed(() => {
@@ -24,7 +24,7 @@ const poolByDate = computed(() => {
   return map;
 });
 
-const todayIso = computed(() => today.value);
+const todayIso = computed(() => dutyToday.value);
 
 /** 迷你两周视图:今天起的 14 天 */
 const miniDays = computed(() => {

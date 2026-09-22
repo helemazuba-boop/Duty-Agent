@@ -153,6 +153,9 @@ class DutyNotificationSettingsPatch(BaseModel):
     # Standalone-client lifecycle switches (Web settings "系统与自启" tab).
     client_auto_start: Optional[bool] = None
     client_close_action: Optional[Literal["ask", "tray", "exit"]] = None
+    # Duty display boundary (HH:MM), stored in host-config.json.
+    # After this time, the effective "today" shifts to tomorrow.
+    component_refresh_time: Optional[str] = None
 
 
 class DutyModelProbeRequest(BaseModel):
@@ -160,6 +163,13 @@ class DutyModelProbeRequest(BaseModel):
 
     base_url: str
     model: str
+    api_key: Optional[str] = None
+
+
+class DutyModelListRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    base_url: str
     api_key: Optional[str] = None
 
 

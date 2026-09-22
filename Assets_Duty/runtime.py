@@ -15,7 +15,7 @@ from application.command_service import CommandService
 from application.query_service import QueryService
 from auth import normalize_access_token_mode, verify_pbkdf2_sha256_token
 from diagnostics import DutyDiagnosticsLogger
-from state_ops import Context, claim_auto_run_today, load_host_config, load_state, update_host_runtime_fields
+from state_ops import Context, claim_auto_run_today, compute_current_duty_date, load_host_config, load_state, update_host_runtime_fields
 from version import APP_VERSION
 
 # A1 provides ``auto_run`` (trigger + catch-up pure functions). It is an optional
@@ -488,6 +488,15 @@ class DutyRuntime:
         status = str((result or {}).get("status") or "").strip().lower()
         success = status in {"success", "ok"}
         message = str((result or {}).get("message") or "").strip()
+
+        # Look up the effective duty date and area assignments so the
+        # notification carries the same richness as the old plugin's
+        # PublishRunCompletionNotification (who is on duty per area).
+        host_config = self._load_host_config()
+        duty_date = compute_current_duty_date(host_config)
+        duty_item = self._get_duty_schedule_item(duty_date)
+        assignments_text = self._format_duty_reminder_body(duty_item, duty_date)
+
         self.publish_notification(
             "schedule_completed" if success else "schedule_failed",
             "排班完成" if success else "排班失败",
@@ -496,7 +505,11 @@ class DutyRuntime:
             route="/schedule",
             source="schedule",
             targets=targets,
-            data={"status": status or "unknown"},
+            data={
+                "status": status or "unknown",
+                "duty_date": duty_date,
+                "assignments": assignments_text,
+            },
         )
 
     def publish_snapshot_changed(self, reason: str, trace_id: str | None = None) -> None:
@@ -521,9 +534,8 @@ class DutyRuntime:
             try:
                 self.check_due_duty_reminders()
             except Exception as ex:
-                # Never let the handler raise: see _auto_run_loop.
                 try:
-                    self.logger.error("NotificationReminder", "Duty reminder check failed.", exc=ex)
+                    self.logger.warn("Runtime", f"check_due_duty_reminders tick failed: {ex}")
                 except Exception:
                     pass
             self.notification_reminder_stop.wait(NOTIFICATION_REMINDER_POLL_SECONDS)
@@ -541,7 +553,7 @@ class DutyRuntime:
             return
 
         now = datetime.now()
-        today_text = now.strftime("%Y-%m-%d")
+        duty_date = compute_current_duty_date(host_config, now)
 
         for raw_time in reminder_times:
             target_time = self._parse_auto_run_time(raw_time)
@@ -557,17 +569,17 @@ class DutyRuntime:
                 continue
 
             minute_text = target_dt.strftime("%H:%M")
-            key = f"{today_text}|{minute_text}"
+            key = f"{duty_date}|{minute_text}"
             with self.notification_reminder_sent_lock:
                 if key in self.notification_reminder_sent_keys:
                     continue
-                today_prefix = f"{today_text}|"
+                duty_prefix = f"{duty_date}|"
                 self.notification_reminder_sent_keys = {
-                    sent_key for sent_key in self.notification_reminder_sent_keys if sent_key.startswith(today_prefix)
+                    sent_key for sent_key in self.notification_reminder_sent_keys if sent_key.startswith(duty_prefix)
                 }
 
-            today_item = self._get_today_schedule_item(today_text)
-            body = self._format_duty_reminder_body(today_item, today_text)
+            today_item = self._get_duty_schedule_item(duty_date)
+            body = self._format_duty_reminder_body(today_item, duty_date)
             self.publish_notification(
                 "duty_reminder",
                 f"当前值日提醒 {minute_text}",
@@ -576,7 +588,7 @@ class DutyRuntime:
                 route="/schedule",
                 source="reminder",
                 targets=targets,
-                data={"time": minute_text, "date": today_text, "schedule": today_item or {}},
+                data={"time": minute_text, "date": duty_date, "schedule": today_item or {}},
             )
             # Mark as sent only after a successful publish: if publishing
             # throws, the next tick can still retry within the catch-up window
@@ -585,13 +597,13 @@ class DutyRuntime:
             with self.notification_reminder_sent_lock:
                 self.notification_reminder_sent_keys.add(key)
 
-    def _get_today_schedule_item(self, today: str) -> dict | None:
+    def _get_duty_schedule_item(self, duty_date: str) -> dict | None:
         try:
             state = load_state(self.data_dir / "state.json")
         except Exception:
             return None
         for item in state.get("schedule_pool", []) if isinstance(state, dict) else []:
-            if isinstance(item, dict) and str(item.get("date", "") or "").strip() == today:
+            if isinstance(item, dict) and str(item.get("date", "") or "").strip() == duty_date:
                 return item
         return None
 

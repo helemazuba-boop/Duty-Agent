@@ -508,7 +508,7 @@ def _orchestrator_bootstrap(
         credit_list=credit_list,
         last_pointer=int(state_data.get("last_pointer", 0) or 0),
         previous_note=compose_run_notes(state_data, today=start_date),
-        duty_rule=str(config.get("duty_rule", "")).strip(),
+        duty_rule=anonymize_instruction(str(config.get("duty_rule", "") or ""), name_to_id),
         absent_ids=absent_ids,
         day_overrides=day_overrides,
     )
@@ -844,7 +844,10 @@ def _parse_date_ranges(text: str, default_year: int) -> List[Tuple[date, date]]:
     results: List[Tuple[date, date]] = []
     for m in _DATE_RANGE_RE.finditer(text):
         mm1, dd1 = int(m.group(1)), int(m.group(2))
-        mm2, dd2 = int(m.group(3)), int(m.group(4))
+        g3, g4 = m.group(3), m.group(4)
+        if not g3 or not g4:
+            continue
+        mm2, dd2 = int(g3), int(g4)
         try:
             d1 = date(default_year, mm1, dd1)
             d2 = date(default_year, mm2, dd2)

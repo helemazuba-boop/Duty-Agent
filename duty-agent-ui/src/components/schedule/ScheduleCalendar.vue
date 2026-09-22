@@ -4,7 +4,7 @@ import { Tooltip } from 'ant-design-vue';
 import { LeftOutlined, RightOutlined } from '@ant-design/icons-vue';
 import type { ScheduleEntry } from '@/types';
 import PersonChip from '@/components/ui/PersonChip.vue';
-import { useToday } from '@/composables/useToday';
+import { useDutyToday } from '@/composables/useToday';
 import { personsOf, isWorkday } from '@/utils/date';
 
 interface Props {
@@ -40,7 +40,7 @@ const backToToday = () => {
 const fmtIso = (y: number, m: number, day: number) =>
   `${y}-${String(m + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
 
-const today = useToday();
+const { dutyToday } = useDutyToday();
 
 // ======== 排班索引 ========
 const scheduleMap = computed(() => {
@@ -64,11 +64,11 @@ const conflictNames = (entry: ScheduleEntry | undefined): string[] => {
 
 /** 未来 7 天内未排的工作日 → 虚线警告边(周末不告警) */
 const isWarningGap = (iso: string): boolean => {
-  if (iso <= today.value) return false;
+  if (iso <= dutyToday.value) return false;
   if (scheduleMap.value.has(iso) && personsOf(scheduleMap.value.get(iso)).length > 0) return false;
   const cursor = new Date(`${iso}T00:00:00`);
   if (!isWorkday(cursor)) return false;
-  const diff = (cursor.getTime() - new Date(`${today.value}T00:00:00`).getTime()) / 86400000;
+  const diff = (cursor.getTime() - new Date(`${dutyToday.value}T00:00:00`).getTime()) / 86400000;
   return diff <= 7;
 };
 
@@ -97,8 +97,8 @@ const cells = computed<CalendarCell[]>(() => {
     result.push({
       iso,
       day: cursor.getDate(),
-      isToday: iso === today.value,
-      isPast: iso < today.value,
+      isToday: iso === dutyToday.value,
+      isPast: iso < dutyToday.value,
       isWeekend: !isWorkday(cursor),
       warning: isWarningGap(iso),
       conflicts: conflictNames(entry),

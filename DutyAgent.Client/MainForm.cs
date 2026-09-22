@@ -56,6 +56,9 @@ internal sealed class MainForm : Form
     private const int WM_NCHITTEST = 0x0084;
     private const int WM_NCLBUTTONDOWN = 0x00A1;
     private const int WM_NCLBUTTONUP = 0x00A2;
+    private const int WM_SYSCOMMAND = 0x0112;
+    private const int SC_MOVE = 0xF010;
+    private const int SC_SIZE = 0xF000;
     private const int HTCLIENT = 1;
     private const int HTCAPTION = 2;
     private const int HTMAXBUTTON = 9;
@@ -84,6 +87,9 @@ internal sealed class MainForm : Form
 
     [DllImport("user32.dll")]
     private static extern bool ReleaseCapture();
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr SetCapture(IntPtr hWnd);
 
     [DllImport("user32.dll")]
     private static extern IntPtr SendMessage(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam);
@@ -281,35 +287,31 @@ internal sealed class MainForm : Form
             : FormWindowState.Maximized;
     }
 
-    /// <summary>释放鼠标捕获后以指定 HT 值进入原生移动/缩放模态循环(拖拽、贴靠、双击全归系统)。
-    /// lParam 必须携带光标屏幕物理坐标:Win10 的拖拽循环严格按该点计算锚点,传 0 会直接失效。
-    /// web 传来的 screenX/Y 是 CSS 坐标,按 DPI 换算;缺省时退回 Cursor.Position。</summary>
-    private void BeginNativeMove(JsonElement root, int hitTest)
+    /// <summary>释放鼠标捕获后以指定 HT 值进入原生缩放模态循环(边缘拖拽缩放由系统处理)。</summary>
+    private void BeginNativeResize(int hitTest)
     {
         if (!_customChrome || !IsHandleCreated)
         {
             return;
         }
 
-        int x;
-        int y;
-        if (root.TryGetProperty("x", out var xe) && xe.ValueKind == JsonValueKind.Number
-            && root.TryGetProperty("y", out var ye) && ye.ValueKind == JsonValueKind.Number)
+        ReleaseCapture();
+        SetCapture(Handle);
+        SendMessage(Handle, WM_NCLBUTTONDOWN, (IntPtr)hitTest, IntPtr.Zero);
+    }
+
+    /// <summary>触摸屏专用：通过 WM_SYSCOMMAND + SC_SIZE 进入原生缩放循环。</summary>
+    private void BeginNativeResizeTouch(int hitTest)
+    {
+        if (!_customChrome || !IsHandleCreated)
         {
-            double scale = DeviceDpi / 96.0;
-            x = (int)Math.Round(xe.GetDouble() * scale);
-            y = (int)Math.Round(ye.GetDouble() * scale);
-        }
-        else
-        {
-            var pt = Cursor.Position;
-            x = pt.X;
-            y = pt.Y;
+            return;
         }
 
-        var lParam = (IntPtr)((y << 16) | (x & 0xFFFF));
         ReleaseCapture();
-        SendMessage(Handle, WM_NCLBUTTONDOWN, (IntPtr)hitTest, lParam);
+        SetCapture(Handle);
+        int sc = hitTest == HTCAPTION ? SC_MOVE : SC_SIZE;
+        SendMessage(Handle, WM_SYSCOMMAND, (IntPtr)(sc | hitTest), IntPtr.Zero);
     }
 
     /// <summary>窗口命令由 web 标题条三键发起;close 走既有 FormClosing 策略(询问/驻留/退出)。</summary>
@@ -582,6 +584,13 @@ internal sealed class MainForm : Form
             var environment = await CoreWebView2Environment.CreateAsync(userDataFolder: userDataPath).ConfigureAwait(true);
             await _webView.EnsureCoreWebView2Async(environment).ConfigureAwait(true);
             _webView.CoreWebView2.Settings.AreDefaultContextMenusEnabled = true;
+            // 启用 app-region CSS 支持：让 WebView2 内部处理窗口拖拽/缩放，
+            // 避免 Web 层 postMessage → C# SendMessage 路径下的鼠标捕获竞争。
+            // 该属性在下次导航后生效；页面需配合 CSS app-region: drag/no-drag 使用。
+            _webView.CoreWebView2.Settings.IsNonClientRegionSupportEnabled = true;
+            // 关闭触摸滑动导航手势：桌面应用不需要浏览器前进/后退手势，
+            // 且该手势会吞掉侧栏区域的 pointermove，干扰自绘铬下的窗口拖拽。
+            _webView.CoreWebView2.Settings.IsSwipeNavigationEnabled = false;
             // DevTools 默认关闭：仅调试器附加或显式设置 DUTY_WEBVIEW_DEVTOOLS=1 时开放，
             // 避免最终用户（学生/值日生）误触右键检查元素。
             _webView.CoreWebView2.Settings.AreDevToolsEnabled =
@@ -593,16 +602,6 @@ internal sealed class MainForm : Form
             _webView.CoreWebView2.WebMessageReceived += OnWebMessageReceived;
             // 网页刷新(F5)会丢掉 web 侧状态:每次导航完成后重推铬配置与窗口状态
             _webView.CoreWebView2.NavigationCompleted += (_, _) => PushHostInfo();
-            // 触摸屏兼容:启用非客户区支持后,-webkit-app-region:drag 由 WebView2 原生处理
-            // (触摸/鼠标/双击最大化/系统菜单);旧运行时无此能力时静默降级到消息桥回退
-            try
-            {
-                _webView.CoreWebView2.Settings.IsNonClientRegionSupportEnabled = true;
-            }
-            catch
-            {
-                // 旧 WebView2 Runtime 不具备该能力:鼠标走消息桥回退,触摸拖拽不可用
-            }
         }
         catch (Exception ex)
         {
@@ -643,20 +642,28 @@ internal sealed class MainForm : Form
                 case "get-host-info":
                     PushHostInfo();
                     break;
-                case "drag-window":
-                    // 鼠标回退通道(触摸走 WebView2 的 app-region 原生处理)
-                    BeginNativeMove(root, HTCAPTION);
-                    break;
                 case "resize-window":
-                    // 同上:边缘热区按下后拉起原生缩放循环;最大化时忽略
+                {
                     if (WindowState != FormWindowState.Maximized
                         && root.TryGetProperty("hit", out var hitEl)
                         && hitEl.ValueKind == JsonValueKind.Number)
                     {
-                        BeginNativeMove(root, hitEl.GetInt32());
+                        BeginNativeResize(hitEl.GetInt32());
                     }
 
                     break;
+                }
+                case "resize-window-touch":
+                {
+                    if (WindowState != FormWindowState.Maximized
+                        && root.TryGetProperty("hit", out var hitEl2)
+                        && hitEl2.ValueKind == JsonValueKind.Number)
+                    {
+                        BeginNativeResizeTouch(hitEl2.GetInt32());
+                    }
+
+                    break;
+                }
             }
         }
         catch (JsonException)

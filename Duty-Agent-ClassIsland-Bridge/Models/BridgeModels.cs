@@ -164,6 +164,12 @@ public sealed class DutyNotificationEvent
     [JsonPropertyName("created_at_iso")]
     public string? CreatedAtIso { get; set; }
 
+    [JsonPropertyName("duration_seconds")]
+    public int? DurationSeconds { get; set; }
+
+    [JsonPropertyName("date")]
+    public string? Date { get; set; }
+
     [JsonPropertyName("data")]
     public Dictionary<string, object?>? Data { get; set; }
 }
@@ -204,6 +210,9 @@ public sealed class DutyBackendConfig
 
     [JsonPropertyName("duty_rule")]
     public string DutyRule { get; set; } = "";
+
+    [JsonPropertyName("component_refresh_time")]
+    public string ComponentRefreshTime { get; set; } = "08:00";
 }
 
 /// <summary>
@@ -324,6 +333,13 @@ public sealed class DutyBackendSnapshot
 
     [JsonPropertyName("state")]
     public DutyState State { get; set; } = new();
+
+    /// <summary>
+    /// component_refresh_time from host-config.json (HH:MM).
+    /// Used by Bridge rules to determine the effective "today" for duty display.
+    /// </summary>
+    [JsonPropertyName("component_refresh_time")]
+    public string ComponentRefreshTime { get; set; } = "08:00";
 }
 
 /// <summary>

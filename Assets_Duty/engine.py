@@ -92,6 +92,6 @@ def run_schedule(ctx: Context, input_data: dict, emit_progress_fn=None, stop_eve
             )
         return {
             "status": "error",
-            "message": _sanitize_error_message(str(ex)),
+            "message": sanitize_error_for_client(str(ex)),
             "trace_id": str(payload.get("trace_id", "")).strip() if isinstance(payload, dict) else "",
         }

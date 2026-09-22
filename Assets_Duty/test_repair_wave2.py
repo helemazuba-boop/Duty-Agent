@@ -504,7 +504,7 @@ class CommandServiceAdjustmentTests(unittest.TestCase):
 
     def test_absence_add_by_name_and_clear(self):
         service = self._service()
-        result = service.manage_absences({"action": "add", "person": "王五", "days": 3})
+        result = service.manage_absences({"action": "add", "person": "王五", "from_date": "2026-09-12", "days": 3})
         self.assertEqual(result["absences"][0]["id"], 1005)
         self.assertEqual(result["absences"][0]["to"], "2026-09-14")
         service.manage_absences({"action": "clear", "person": "王五"})
