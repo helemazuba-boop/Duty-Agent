@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue';
+import { computed, ref, watch, nextTick, onBeforeUnmount, onMounted } from 'vue';
+import Sortable from 'sortablejs';
 import { Table, Drawer, Input, Switch, Space, message, Popconfirm, Tooltip, Empty } from 'ant-design-vue';
 import {
   DeleteOutlined,
@@ -63,6 +64,65 @@ watch(
 const fetchAll = async () => {
   await snapshotQuery.refetch();
 };
+
+/** 当前页可见行：与 Table 的 current/pageSize 切片保持一致 */
+const pagedRows = computed(() => {
+  const start = (currentPage.value - 1) * pageSize.value;
+  return dataSource.value.slice(start, start + pageSize.value);
+});
+
+/** 手柄拖拽（SortableJS pointer/touch）：只读写 orderMap，落点复用按钮通道的 persist */
+const tableWrapRef = ref<HTMLElement | null>(null);
+let sortable: Sortable | null = null;
+
+const destroySortable = () => {
+  sortable?.destroy();
+  sortable = null;
+};
+
+const handleDragEnd = async (evt: { oldIndex?: number; newIndex?: number }) => {
+  const { oldIndex, newIndex } = evt;
+  if (oldIndex === undefined || newIndex === undefined || oldIndex === newIndex) return;
+  const pageIds = pagedRows.value.map((r) => r.id);
+  if (oldIndex < 0 || oldIndex >= pageIds.length || newIndex < 0 || newIndex >= pageIds.length) return;
+  const [moved] = pageIds.splice(oldIndex, 1);
+  pageIds.splice(newIndex, 0, moved);
+  const full = orderedIds();
+  const pageSet = new Set(pagedRows.value.map((r) => r.id));
+  const rest = full.filter((id) => !pageSet.has(id));
+  const anchor = full.findIndex((id) => pageSet.has(id));
+  rest.splice(anchor < 0 ? rest.length : anchor, 0, ...pageIds);
+  await setOrderByIds(rest);
+};
+
+const initSortable = () => {
+  destroySortable();
+  const tbody = tableWrapRef.value?.querySelector('.ant-table-tbody');
+  if (!tbody || pagedRows.value.length === 0) return;
+  sortable = new Sortable(tbody as HTMLElement, {
+    handle: '.roster-drag-handle',
+    draggable: 'tr.ant-table-row',
+    animation: 150,
+    delay: 120,
+    delayOnTouchOnly: true,
+    touchStartThreshold: 4,
+    onEnd: (evt) => void handleDragEnd(evt),
+  });
+};
+
+watch(
+  [() => pagedRows.value.map((r) => r.key).join(','), currentPage, pageSize],
+  () => {
+    void nextTick(() => initSortable());
+  },
+  { immediate: false },
+);
+
+onBeforeUnmount(destroySortable);
+
+onMounted(() => {
+  void nextTick(() => initSortable());
+});
 
 const todayIso = (() => {
   const n = new Date();
@@ -264,6 +324,7 @@ const handleTableChange = (pagination?: { current?: number; pageSize?: number })
     </PageHeader>
 
     <Panel :padded="false" v-flash="updatedAt">
+      <div ref="tableWrapRef">
       <Table
         :columns="columns"
         :data-source="dataSource"
@@ -368,6 +429,7 @@ const handleTableChange = (pagination?: { current?: number; pageSize?: number })
           </Empty>
         </template>
       </Table>
+      </div>
     </Panel>
 
     <!-- 添加/编辑 Drawer -->
@@ -457,7 +519,10 @@ const handleTableChange = (pagination?: { current?: number; pageSize?: number })
   cursor: grab;
   font-size: 16px;
   line-height: 1;
-  touch-action: pan-x pan-y;
+  /* 手柄是拖拽起点：不抢滚动，只有手柄禁掉触屏滚动 */
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
 }
 
 .roster-drag-handle:active {
