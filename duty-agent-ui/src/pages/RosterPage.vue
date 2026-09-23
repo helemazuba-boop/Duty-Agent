@@ -1,4 +1,10 @@
 <script setup lang="ts">
+/**
+ * RosterPage 排序规则（触屏优先）：
+ * - 手动顺序（orderMap，后端数组顺序）是唯一持久化语义：上/下移按钮 + 手柄拖拽都写它。
+ * - 列 sorter 是纯视图排序：激活时禁用拖拽与上下移（避免“看到的顺序”与“存的顺序”打架），清空后回到手动顺序。
+ * - persist 失败回滚：refetch 快照，用后端真源重建 roster/orderMap。
+ */
 import { computed, ref, watch, nextTick, onBeforeUnmount, onMounted } from 'vue';
 import Sortable from 'sortablejs';
 import { Table, Drawer, Input, Switch, Space, message, Popconfirm, Tooltip, Empty } from 'ant-design-vue';
@@ -28,6 +34,10 @@ const loading = ref(false);
 const updatedAt = ref(0);
 const pageSize = ref(15);
 const currentPage = ref(1);
+
+/** 列 sorter 是纯视图排序：激活期间禁用一切手动调序入口 */
+const sorterState = ref<{ columnKey?: string; order?: 'ascend' | 'descend' | null }>({});
+const isSortedView = computed(() => sorterState.value.order === 'ascend' || sorterState.value.order === 'descend');
 
 /** 前端私有的显示顺序（后端 API schema extra="forbid"，不能传 order 字段） */
 const orderMap = ref<Map<number, number>>(new Map());
@@ -81,6 +91,7 @@ const destroySortable = () => {
 };
 
 const handleDragEnd = async (evt: { oldIndex?: number; newIndex?: number }) => {
+  if (isSortedView.value) return;
   const { oldIndex, newIndex } = evt;
   if (oldIndex === undefined || newIndex === undefined || oldIndex === newIndex) return;
   const pageIds = pagedRows.value.map((r) => r.id);
@@ -97,6 +108,8 @@ const handleDragEnd = async (evt: { oldIndex?: number; newIndex?: number }) => {
 
 const initSortable = () => {
   destroySortable();
+  // 列排序视图下看到的顺序≠存的顺序：禁用拖拽，避免“拖的”与“存的”打架
+  if (isSortedView.value) return;
   const tbody = tableWrapRef.value?.querySelector('.ant-table-tbody');
   if (!tbody || pagedRows.value.length === 0) return;
   sortable = new Sortable(tbody as HTMLElement, {
@@ -111,7 +124,7 @@ const initSortable = () => {
 };
 
 watch(
-  [() => pagedRows.value.map((r) => r.key).join(','), currentPage, pageSize],
+  [() => pagedRows.value.map((r) => r.key).join(','), currentPage, pageSize, isSortedView],
   () => {
     void nextTick(() => initSortable());
   },
@@ -232,14 +245,22 @@ const handleSave = async () => {
     }
     updated = [...roster.value, { name, active: formActive.value }];
   }
-  await persist(updated);
+  try {
+    await persist(updated);
+  } catch {
+    return;
+  }
   syncOrderFromBackend();
   drawerOpen.value = false;
   message.success(editingOriginal.value ? '修改成功' : '添加成功');
 };
 
 const handleDelete = async (name: string) => {
-  await persist(roster.value.filter((r) => r.name !== name));
+  try {
+    await persist(roster.value.filter((r) => r.name !== name));
+  } catch {
+    return;
+  }
   message.success('删除成功');
 };
 
@@ -247,14 +268,24 @@ const toggleActive = async (person: RosterPerson) => {
   const updated = roster.value.map((r) =>
     r.name === person.name ? { ...r, active: !r.active } : r,
   );
-  await persist(updated);
+  try {
+    await persist(updated);
+  } catch {
+    return;
+  }
   message.success(updated.find((r) => r.name === person.name)?.active ? '已设为在职' : '已设为离职');
 };
 
 const persist = async (updated: RosterPerson[]) => {
-  const payload = updated.map(({ id, name, active }) => ({ id, name, active }));
-  roster.value = await api.updateRoster(payload);
-  await queryClient.invalidateQueries({ queryKey: snapshotKey });
+  try {
+    const payload = updated.map(({ id, name, active }) => ({ id, name, active }));
+    roster.value = await api.updateRoster(payload);
+    await queryClient.invalidateQueries({ queryKey: snapshotKey });
+  } catch (e) {
+    message.error('保存失败，已恢复为服务器顺序');
+    await snapshotQuery.refetch();
+    throw e;
+  }
 };
 
 /** 手动顺序唯一真源：按 id 序列重写 orderMap 并持久化 */
@@ -271,12 +302,17 @@ const setOrderByIds = async (ids: number[]) => {
   const map = new Map<number, number>();
   ordered.forEach((p, idx) => map.set(p.id, idx * 10));
   orderMap.value = map;
-  await persist(ordered.map(({ id, name, active }) => ({ id, name, active })));
+  try {
+    await persist(ordered.map(({ id, name, active }) => ({ id, name, active })));
+  } catch {
+    /* persist 内已回滚 + toast，这里吞掉避免按钮点击产生未处理 rejection */
+  }
 };
 
 const orderedIds = () => dataSource.value.map((r) => r.id);
 
 const moveUp = async (id: number) => {
+  if (isSortedView.value) return;
   const ids = orderedIds();
   const i = ids.indexOf(id);
   if (i <= 0) return;
@@ -285,6 +321,7 @@ const moveUp = async (id: number) => {
 };
 
 const moveDown = async (id: number) => {
+  if (isSortedView.value) return;
   const ids = orderedIds();
   const i = ids.indexOf(id);
   if (i < 0 || i >= ids.length - 1) return;
@@ -295,9 +332,15 @@ const moveDown = async (id: number) => {
 const isFirst = (id: number) => orderedIds()[0] === id;
 const isLast = (id: number) => orderedIds()[orderedIds().length - 1] === id;
 
-const handleTableChange = (pagination?: { current?: number; pageSize?: number }) => {
+const handleTableChange = (
+  pagination?: { current?: number; pageSize?: number },
+  _filters?: unknown,
+  sorter?: { columnKey?: string | number; order?: 'ascend' | 'descend' | null } | Array<{ columnKey?: string | number; order?: 'ascend' | 'descend' | null }>,
+) => {
   if (pagination?.current) currentPage.value = pagination.current;
   if (pagination?.pageSize) pageSize.value = pagination.pageSize;
+  const s = Array.isArray(sorter) ? sorter[0] : sorter;
+  sorterState.value = s ? { columnKey: s.columnKey !== undefined ? String(s.columnKey) : undefined, order: s.order ?? null } : {};
 };
 </script>
 
@@ -337,27 +380,31 @@ const handleTableChange = (pagination?: { current?: number; pageSize?: number })
       >
         <template #bodyCell="{ column, record }">
           <template v-if="column.key === 'drag'">
-            <span class="roster-drag-handle">
+            <span
+              class="roster-drag-handle"
+              :class="{ 'roster-drag-handle--disabled': isSortedView }"
+              :title="isSortedView ? '列排序时不可拖拽，清空排序后恢复' : '按住拖拽排序'"
+            >
               <HolderOutlined />
             </span>
           </template>
 
           <template v-else-if="column.key === 'sort'">
             <Space size="small" style="justify-content: center; display: flex">
-              <Tooltip title="上移">
+              <Tooltip :title="isSortedView ? '列排序时不可调序' : '上移'">
                 <a-button
                   type="text"
-                  :disabled="isFirst((record as RosterPerson).id)"
+                  :disabled="isSortedView || isFirst((record as RosterPerson).id)"
                   @click="moveUp((record as RosterPerson).id)"
                   aria-label="上移"
                 >
                   <template #icon><ArrowUpOutlined /></template>
                 </a-button>
               </Tooltip>
-              <Tooltip title="下移">
+              <Tooltip :title="isSortedView ? '列排序时不可调序' : '下移'">
                 <a-button
                   type="text"
-                  :disabled="isLast((record as RosterPerson).id)"
+                  :disabled="isSortedView || isLast((record as RosterPerson).id)"
                   @click="moveDown((record as RosterPerson).id)"
                   aria-label="下移"
                 >
@@ -527,6 +574,11 @@ const handleTableChange = (pagination?: { current?: number; pageSize?: number })
 
 .roster-drag-handle:active {
   cursor: grabbing;
+}
+
+.roster-drag-handle--disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
 }
 
 .roster-empty-hint {
