@@ -57,8 +57,12 @@ node_modules
 .release/
 PublishOutput/
 
-# Qoder / tool artifacts
+#  tool artifacts
 .qoder/
 .tmp-run/
 data/state.prev.json
 *.bak_a6
+.zcode
+.cursor
+.release
+
