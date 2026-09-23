@@ -8,6 +8,8 @@ import {
   UserAddOutlined,
   ReloadOutlined,
   UserSwitchOutlined,
+  ArrowUpOutlined,
+  ArrowDownOutlined,
 } from '@ant-design/icons-vue';
 import { api } from '@/api/http';
 import { useSnapshotQuery } from '@/queries/useSnapshot';
@@ -24,6 +26,7 @@ const pool = ref<ScheduleEntry[]>([]);
 const loading = ref(false);
 const updatedAt = ref(0);
 const pageSize = ref(15);
+const currentPage = ref(1);
 
 /** 前端私有的显示顺序（后端 API schema extra="forbid"，不能传 order 字段） */
 const orderMap = ref<Map<number, number>>(new Map());
@@ -110,8 +113,14 @@ const columns = [
   {
     title: '',
     key: 'drag',
-    width: 36,
+    width: 44,
     customCell: () => ({ class: 'roster-drag-handle' }),
+  },
+  {
+    title: '顺序',
+    key: 'sort',
+    width: 100,
+    align: 'center' as const,
   },
   { title: 'ID', dataIndex: 'id', key: 'id', width: 80 },
   { title: '成员', dataIndex: 'name', key: 'name', minWidth: 180, sorter: (a: any, b: any) => a.name.localeCompare(b.name) },
@@ -188,16 +197,47 @@ const persist = async (updated: RosterPerson[]) => {
   await queryClient.invalidateQueries({ queryKey: snapshotKey });
 };
 
-const handleTableChange = () => {
-  const ordered = dataSource.value.map((r) => ({ id: r.id, name: r.name, active: r.active }));
-  const oldIds = roster.value.map((r) => r.id).join(',');
-  const newIds = ordered.map((r) => r.id).join(',');
-  if (oldIds !== newIds) {
-    persist(ordered);
-    const map = new Map<number, number>();
-    ordered.forEach((p, idx) => map.set(p.id, idx * 10));
-    orderMap.value = map;
+/** 手动顺序唯一真源：按 id 序列重写 orderMap 并持久化 */
+const setOrderByIds = async (ids: number[]) => {
+  const byId = new Map(roster.value.map((r) => [r.id, r]));
+  const ordered: RosterPerson[] = [];
+  for (const id of ids) {
+    const p = byId.get(id);
+    if (p) ordered.push(p);
   }
+  for (const r of roster.value) {
+    if (!ids.includes(r.id)) ordered.push(r);
+  }
+  const map = new Map<number, number>();
+  ordered.forEach((p, idx) => map.set(p.id, idx * 10));
+  orderMap.value = map;
+  await persist(ordered.map(({ id, name, active }) => ({ id, name, active })));
+};
+
+const orderedIds = () => dataSource.value.map((r) => r.id);
+
+const moveUp = async (id: number) => {
+  const ids = orderedIds();
+  const i = ids.indexOf(id);
+  if (i <= 0) return;
+  [ids[i - 1], ids[i]] = [ids[i], ids[i - 1]];
+  await setOrderByIds(ids);
+};
+
+const moveDown = async (id: number) => {
+  const ids = orderedIds();
+  const i = ids.indexOf(id);
+  if (i < 0 || i >= ids.length - 1) return;
+  [ids[i], ids[i + 1]] = [ids[i + 1], ids[i]];
+  await setOrderByIds(ids);
+};
+
+const isFirst = (id: number) => orderedIds()[0] === id;
+const isLast = (id: number) => orderedIds()[orderedIds().length - 1] === id;
+
+const handleTableChange = (pagination?: { current?: number; pageSize?: number }) => {
+  if (pagination?.current) currentPage.value = pagination.current;
+  if (pagination?.pageSize) pageSize.value = pagination.pageSize;
 };
 </script>
 
@@ -228,10 +268,9 @@ const handleTableChange = () => {
         :columns="columns"
         :data-source="dataSource"
         :loading="loading"
-        :pagination="{ showSizeChanger: true, pageSizeOptions: ['10', '15', '30'], showTotal: (total: number) => `共 ${total} 人` }"
+        :pagination="{ current: currentPage, showSizeChanger: true, pageSizeOptions: ['10', '15', '30'], showTotal: (total: number) => `共 ${total} 人` }"
         v-model:pageSize="pageSize"
         row-key="id"
-        :row-config="{ drag: true }"
         @change="handleTableChange"
         size="middle"
       >
@@ -242,6 +281,30 @@ const handleTableChange = () => {
             </span>
           </template>
 
+          <template v-else-if="column.key === 'sort'">
+            <Space size="small" style="justify-content: center; display: flex">
+              <Tooltip title="上移">
+                <a-button
+                  type="text"
+                  :disabled="isFirst((record as RosterPerson).id)"
+                  @click="moveUp((record as RosterPerson).id)"
+                  aria-label="上移"
+                >
+                  <template #icon><ArrowUpOutlined /></template>
+                </a-button>
+              </Tooltip>
+              <Tooltip title="下移">
+                <a-button
+                  type="text"
+                  :disabled="isLast((record as RosterPerson).id)"
+                  @click="moveDown((record as RosterPerson).id)"
+                  aria-label="下移"
+                >
+                  <template #icon><ArrowDownOutlined /></template>
+                </a-button>
+              </Tooltip>
+            </Space>
+          </template>
           <template v-else-if="column.key === 'name'">
             <PersonChip :name="record.name" avatar class="roster-name" />
           </template>
@@ -388,11 +451,13 @@ const handleTableChange = () => {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 100%;
+  width: 44px;
+  height: 44px;
   color: var(--dt-text-3);
   cursor: grab;
-  font-size: 14px;
+  font-size: 16px;
   line-height: 1;
+  touch-action: pan-x pan-y;
 }
 
 .roster-drag-handle:active {
