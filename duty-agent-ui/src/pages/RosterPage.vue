@@ -27,6 +27,7 @@ import { moveId, mergePageOrder, buildOrderMap } from '@/utils/rosterOrder';
 import PageHeader from '@/components/ui/PageHeader.vue';
 import Panel from '@/components/ui/Panel.vue';
 import PersonChip from '@/components/ui/PersonChip.vue';
+import VirtualRosterList from '@/components/roster/VirtualRosterList.vue';
 
 const snapshotQuery = useSnapshotQuery();
 const roster = ref<RosterPerson[]>([]);
@@ -72,6 +73,23 @@ const fetchAll = async () => {
   await snapshotQuery.refetch();
 };
 
+/** 超过该行数切虚拟滚动；常规规模走 antd Table（拖拽/排序完整） */
+const VIRTUALIZE_THRESHOLD = 100;
+const useVirtual = computed(() => dataSource.value.length > VIRTUALIZE_THRESHOLD);
+
+/** 虚拟列表行源：id 缺失的本地行不进虚拟视图 */
+const virtualSource = computed(() =>
+  dataSource.value
+    .filter((r) => r.id !== undefined)
+    .map((r) => ({
+      id: r.id as number,
+      name: r.name,
+      active: r.active,
+      dutyCount: r.dutyCount,
+      lastDuty: r.lastDuty,
+    })),
+);
+
 /** 当前页可见行：与 Table 的 current/pageSize 切片保持一致 */
 const pagedRows = computed(() => {
   const start = (currentPage.value - 1) * pageSize.value;
@@ -101,7 +119,7 @@ const handleDragEnd = async (evt: { oldIndex?: number; newIndex?: number }) => {
 const initSortable = () => {
   destroySortable();
   // 列排序视图下看到的顺序≠存的顺序：禁用拖拽，避免“拖的”与“存的”打架
-  if (isSortedView.value) return;
+  if (isSortedView.value || useVirtual.value) return;
   const tbody = tableWrapRef.value?.querySelector('.ant-table-tbody');
   if (!tbody || pagedRows.value.length === 0) return;
   sortable = new Sortable(tbody as HTMLElement, {
@@ -116,7 +134,7 @@ const initSortable = () => {
 };
 
 watch(
-  [() => pagedRows.value.map((r) => r.key).join(','), currentPage, pageSize, isSortedView],
+  [() => pagedRows.value.map((r) => r.key).join(','), currentPage, pageSize, isSortedView, useVirtual],
   () => {
     void nextTick(() => initSortable());
   },
@@ -349,7 +367,16 @@ const handleTableChange = (
     </PageHeader>
 
     <Panel :padded="false" v-flash="updatedAt">
-      <div ref="tableWrapRef">
+      <VirtualRosterList
+        v-if="useVirtual"
+        :rows="virtualSource"
+        :disabled="isSortedView"
+        :first-id="orderedIds()[0]"
+        :last-id="orderedIds()[orderedIds().length - 1]"
+        @move-up="moveUp"
+        @move-down="moveDown"
+      />
+      <div v-else ref="tableWrapRef">
       <Table
         :columns="columns"
         :data-source="dataSource"
