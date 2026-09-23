@@ -23,6 +23,7 @@ import { useSnapshotQuery } from '@/queries/useSnapshot';
 import { queryClient } from '@/queries/client';
 import { snapshotKey } from '@/queries/keys';
 import type { RosterPerson, ScheduleEntry } from '@/types';
+import { moveId, mergePageOrder, buildOrderMap } from '@/utils/rosterOrder';
 import PageHeader from '@/components/ui/PageHeader.vue';
 import Panel from '@/components/ui/Panel.vue';
 import PersonChip from '@/components/ui/PersonChip.vue';
@@ -44,11 +45,7 @@ const orderMap = ref<Map<number, number>>(new Map());
 
 /** 从后端返回的数组顺序同步 orderMap */
 const syncOrderFromBackend = () => {
-  const map = new Map<number, number>();
-  roster.value.forEach((p, idx) => {
-    map.set(p.id, idx * 10);
-  });
-  orderMap.value = map;
+  orderMap.value = buildOrderMap(roster.value.map((p) => p.id));
 };
 
 watch(
@@ -98,12 +95,7 @@ const handleDragEnd = async (evt: { oldIndex?: number; newIndex?: number }) => {
   if (oldIndex < 0 || oldIndex >= pageIds.length || newIndex < 0 || newIndex >= pageIds.length) return;
   const [moved] = pageIds.splice(oldIndex, 1);
   pageIds.splice(newIndex, 0, moved);
-  const full = orderedIds();
-  const pageSet = new Set(pagedRows.value.map((r) => r.id));
-  const rest = full.filter((id) => !pageSet.has(id));
-  const anchor = full.findIndex((id) => pageSet.has(id));
-  rest.splice(anchor < 0 ? rest.length : anchor, 0, ...pageIds);
-  await setOrderByIds(rest);
+  await setOrderByIds(mergePageOrder(orderedIds(), pagedRows.value.map((r) => r.id), pageIds));
 };
 
 const initSortable = () => {
@@ -299,9 +291,7 @@ const setOrderByIds = async (ids: number[]) => {
   for (const r of roster.value) {
     if (!ids.includes(r.id)) ordered.push(r);
   }
-  const map = new Map<number, number>();
-  ordered.forEach((p, idx) => map.set(p.id, idx * 10));
-  orderMap.value = map;
+  orderMap.value = buildOrderMap(ordered.map((p) => p.id));
   try {
     await persist(ordered.map(({ id, name, active }) => ({ id, name, active })));
   } catch {
@@ -313,20 +303,12 @@ const orderedIds = () => dataSource.value.map((r) => r.id);
 
 const moveUp = async (id: number) => {
   if (isSortedView.value) return;
-  const ids = orderedIds();
-  const i = ids.indexOf(id);
-  if (i <= 0) return;
-  [ids[i - 1], ids[i]] = [ids[i], ids[i - 1]];
-  await setOrderByIds(ids);
+  await setOrderByIds(moveId(orderedIds(), id, -1));
 };
 
 const moveDown = async (id: number) => {
   if (isSortedView.value) return;
-  const ids = orderedIds();
-  const i = ids.indexOf(id);
-  if (i < 0 || i >= ids.length - 1) return;
-  [ids[i], ids[i + 1]] = [ids[i + 1], ids[i]];
-  await setOrderByIds(ids);
+  await setOrderByIds(moveId(orderedIds(), id, 1));
 };
 
 const isFirst = (id: number) => orderedIds()[0] === id;
