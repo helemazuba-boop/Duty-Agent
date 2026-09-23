@@ -24,6 +24,8 @@ public class Plugin : PluginBase
 {
     public BridgeSettings Settings { get; private set; } = new();
 
+    private bool _powerEventSubscribed;
+
     public override void Initialize(HostBuilderContext context, IServiceCollection services)
     {
         // 官方设置模式（ExamplePlugins/PluginWithSettingsPage）：设置存放在宿主分配的
@@ -66,18 +68,33 @@ public class Plugin : PluginBase
             }
             IAppHost.GetService<IHealthMonitorService>().Start();
             IAppHost.GetService<DutyRuleHandlerService>().Register();
+
+            // 系统从睡眠/休眠恢复时，到独立软件的 TCP 连接大概率已失效；
+            // 立即重建而不是等健康检查/空闲超时逐级兜底。
+            // 必须在 AppStarted 订阅：Initialize 阶段线程无消息泵，
+            // SystemEvents 会抛 ExternalException "Failed to create system events window thread"。
+            try
+            {
+                SystemEvents.PowerModeChanged += OnPowerModeChanged;
+                _powerEventSubscribed = true;
+            }
+            catch (Exception ex)
+            {
+                // 订阅失败仅失去“立即重连”优化；HealthMonitor 5s 节拍仍会兜底重连。
+                Diagnostics.Log("Plugin", $"PowerModeChanged subscription skipped: {ex.Message}", "WARN");
+            }
         };
 
         AppBase.Current.AppStopping += (_, _) =>
         {
-            SystemEvents.PowerModeChanged -= OnPowerModeChanged;
+            if (_powerEventSubscribed)
+            {
+                SystemEvents.PowerModeChanged -= OnPowerModeChanged;
+                _powerEventSubscribed = false;
+            }
             IAppHost.GetService<IHealthMonitorService>().Stop();
             IAppHost.GetService<IIpcBridgeService>().Disconnect();
         };
-
-        // 系统从睡眠/休眠恢复时，到独立软件的 TCP 连接大概率已失效；
-        // 立即重建而不是等健康检查/空闲超时逐级兜底。
-        SystemEvents.PowerModeChanged += OnPowerModeChanged;
     }
 
     private void OnPowerModeChanged(object? sender, PowerModeChangedEventArgs e)
