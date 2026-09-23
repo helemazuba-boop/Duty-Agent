@@ -13,6 +13,8 @@
   "dependencies": {
     "@ant-design/icons-vue": "^7.0.1",
     "@modelcontextprotocol/sdk": "^1.29.0",
+    "@tanstack/vue-query": "^5.103.2",
+    "@vueuse/core": "^15.0.0",
     "ant-design-vue": "^4.2.6",
     "axios": "^1.14.0",
     "pinia": "^3.0.4",

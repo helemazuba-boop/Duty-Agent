@@ -6,6 +6,7 @@
 import { ref } from 'vue';
 import { apiUrl, wsUrl } from '@/api/baseUrl';
 import { getToken } from '@/api/http';
+import { splitSSEChunk, parseEventName, parseEventData, safeParse } from '@/utils/sseParser';
 
 export interface ScheduleProgress {
   phase: string;
@@ -82,26 +83,22 @@ async function runScheduleSSE(
       if (done) break;
 
       buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split('\n');
-      buffer = lines.pop()!;
+      const { lines, rest } = splitSSEChunk(buffer);
+      buffer = rest;
 
       for (const line of lines) {
         const trimmed = line.trim();
         if (!trimmed) {
           if (currentEvent === 'complete') {
             if (dataBuffer) {
-              try {
-                finalResult = JSON.parse(dataBuffer) as ScheduleResult;
-              } catch { /* ignore parse error */ }
+              finalResult = safeParse<ScheduleResult>(dataBuffer) ?? finalResult;
             }
             return finalResult ?? { status: 'error', message: 'No result from SSE stream' };
           }
           if (currentEvent === 'message' || currentEvent === '') {
             if (dataBuffer) {
-              try {
-                const evt = JSON.parse(dataBuffer);
-                onProgress?.({ phase: evt.phase ?? '', message: evt.message ?? '' });
-              } catch { /* ignore */ }
+              const evt = safeParse<{ phase?: string; message?: string }>(dataBuffer);
+              if (evt) onProgress?.({ phase: evt.phase ?? '', message: evt.message ?? '' });
             }
           }
           currentEvent = '';
@@ -109,13 +106,15 @@ async function runScheduleSSE(
           continue;
         }
 
-        if (trimmed.startsWith('event: ')) {
-          currentEvent = trimmed.slice(7).trim();
+        const evtName = parseEventName(trimmed);
+        if (evtName !== null) {
+          currentEvent = evtName;
           continue;
         }
 
-        if (trimmed.startsWith('data: ')) {
-          dataBuffer = trimmed.slice(6);
+        const evtData = parseEventData(trimmed);
+        if (evtData !== null) {
+          dataBuffer = evtData;
           continue;
         }
       }

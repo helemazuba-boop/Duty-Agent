@@ -1,12 +1,13 @@
 <script setup lang="ts">
 /**
- * Panel — 三层卡片体系的第二层:浅色模式靠柔和阴影浮出画布(无边框),
- * 深色模式靠 8% 白细线;面板内分区用 surface-2 底,禁止卡中套卡。
- *
- * padded 默认 true。注意:Vue 的 boolean prop 缺省值是 false 而不是 undefined,
- * 不写默认值时"没传 padded"的面板会全部变成 flush,内容直接贴边。
+ * Panel — antd Card 薄封装（收敛线）。
+ * props/slots 与旧自绘版兼容：title/subtitle/actions/padded。
+ * 容器（背景/描边/圆角/阴影）走 ConfigProvider theme/tokens.ts，
+ * 只保留 subtitle 排版与 actions 布局两段定制 CSS。
  */
-withDefaults(
+import { computed } from 'vue';
+
+const props = withDefaults(
   defineProps<{
     title?: string;
     subtitle?: string;
@@ -14,80 +15,52 @@ withDefaults(
   }>(),
   { padded: true },
 );
+
+const bodyStyle = computed(() =>
+  props.padded === false ? { padding: 0 } : { padding: '16px 20px 20px' },
+);
 </script>
 
 <template>
-  <section class="da-panel">
-    <header v-if="title || $slots.title || $slots.actions" class="da-panel__header">
-      <div class="da-panel__heading">
-        <slot name="title">
-          <h3 class="da-panel__title">{{ title }}</h3>
-        </slot>
-        <p v-if="subtitle" class="da-panel__subtitle">{{ subtitle }}</p>
-      </div>
-      <div v-if="$slots.actions" class="da-panel__actions">
+  <a-card class="da-panel" :bordered="true" :body-style="bodyStyle">
+    <template v-if="title || $slots.title" #title>
+      <slot name="title">
+        <span class="da-panel__title">{{ title }}</span>
+      </slot>
+      <p v-if="subtitle" class="da-panel__subtitle">{{ subtitle }}</p>
+    </template>
+    <template v-if="$slots.actions" #extra>
+      <div class="da-panel__actions">
         <slot name="actions" />
       </div>
-    </header>
-    <div class="da-panel__body" :class="{ 'da-panel__body--flush': padded === false }">
-      <slot />
-    </div>
-  </section>
+    </template>
+    <slot />
+  </a-card>
 </template>
 
 <style scoped>
 .da-panel {
-  background: var(--dt-surface);
-  border: 1px solid var(--dt-card-border);
-  border-radius: var(--dt-radius-lg);
-  box-shadow: var(--dt-shadow-card);
-  min-width: 0;
-}
-
-.da-panel__header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 14px 20px 0;
-}
-
-.da-panel__heading {
   min-width: 0;
 }
 
 .da-panel__title {
-  margin: 0;
   font-size: 16px;
   line-height: 24px;
   font-weight: 600;
-  color: var(--dt-text);
 }
 
 .da-panel__subtitle {
   margin: 2px 0 0;
   font-size: 12px;
   line-height: 16px;
+  font-weight: 400;
   color: var(--dt-text-2);
+  white-space: normal;
 }
 
 .da-panel__actions {
   display: flex;
   align-items: center;
   gap: 8px;
-  flex-shrink: 0;
-}
-
-.da-panel__body {
-  padding: 16px 20px 20px;
-}
-
-.da-panel__body--flush {
-  padding: 0;
-}
-
-/* 无 header 时给 body 一个等距上边距 */
-.da-panel__header + .da-panel__body {
-  padding-top: 12px;
 }
 </style>

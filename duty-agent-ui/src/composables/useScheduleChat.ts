@@ -7,6 +7,8 @@
 import { ref } from 'vue';
 import { message as antdMessage } from 'ant-design-vue';
 import { api, getToken } from '@/api/http';
+import { queryClient } from '@/queries/client';
+import { snapshotKey } from '@/queries/keys';
 import { useScheduleWebSocket } from './useScheduleWebSocket';
 import { personsOf } from '@/utils/date';
 import type { ScheduleEntry, Workspace } from '@/types';
@@ -84,8 +86,9 @@ export function scheduleSignature(entries: ScheduleEntry[]): Map<string, string>
 
 export async function fetchPlan() {
   try {
-    workspace.value = await api.getSnapshot();
+    workspace.value = await api.getSnapshot({ silent: true });
     planUpdatedAt.value = Date.now();
+    await queryClient.invalidateQueries({ queryKey: snapshotKey });
   } catch {
     /* 方案面板刷新失败不影响对话 */
   }

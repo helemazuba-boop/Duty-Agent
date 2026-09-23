@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, watch } from 'vue';
+import { ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { Segmented, Spin, Space } from 'ant-design-vue';
 import { PlusOutlined, ReloadOutlined } from '@ant-design/icons-vue';
@@ -8,6 +8,7 @@ import ScheduleTable from '@/components/schedule/ScheduleTable.vue';
 import ArrangementEditor from '@/components/schedule/ArrangementEditor.vue';
 import PageHeader from '@/components/ui/PageHeader.vue';
 import { api } from '@/api/http';
+import { useSnapshotQuery } from '@/queries/useSnapshot';
 import type { Workspace, ScheduleEntry } from '@/types';
 
 type ViewMode = 'calendar' | 'table';
@@ -34,26 +35,33 @@ const switchView = (value: ViewMode) => {
 const editorOpen = ref(false);
 const selectedDate = ref<string | null>(null);
 
+const snapshotQuery = useSnapshotQuery();
 const workspace = ref<Workspace | null>(null);
 const loading = ref(false);
 const updatedAt = ref(0);
 
-const refresh = async () => {
-  loading.value = true;
-  try {
-    workspace.value = await api.getSnapshot();
-    updatedAt.value = Date.now();
-  } catch (e) {
-    console.error('[ArrangementPage] refresh failed:', e);
-    workspace.value = null;
-  } finally {
-    loading.value = false;
-  }
-};
+watch(
+  () => snapshotQuery.data.value,
+  (ws) => {
+    if (ws) {
+      workspace.value = ws;
+      updatedAt.value = Date.now();
+    }
+  },
+  { immediate: true },
+);
+loading.value = snapshotQuery.isPending.value;
+watch(
+  () => snapshotQuery.isPending.value || snapshotQuery.isFetching.value,
+  (v) => {
+    loading.value = v;
+  },
+  { immediate: true },
+);
 
-onMounted(() => {
-  refresh();
-});
+const refresh = async () => {
+  await snapshotQuery.refetch();
+};
 
 const pool = () => workspace.value?.state?.schedule_pool;
 

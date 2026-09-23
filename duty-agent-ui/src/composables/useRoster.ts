@@ -1,34 +1,20 @@
-import { ref } from 'vue';
-import { api } from '@/api/http';
+import { useRosterQuery, useUpdateRoster } from '@/queries/useSnapshot';
 import type { RosterPerson } from '@/types';
 
 export function useRoster() {
-  const roster = ref<RosterPerson[]>([]);
-  const loading = ref(false);
-  const error = ref<string | null>(null);
-
-  const fetch = async () => {
-    loading.value = true;
-    error.value = null;
-    try {
-      roster.value = await api.getRoster();
-    } catch (e) {
-      error.value = String(e);
-    } finally {
-      loading.value = false;
-    }
-  };
+  const rosterQuery = useRosterQuery();
+  const updateMutation = useUpdateRoster();
 
   const update = async (persons: RosterPerson[]) => {
-    await api.updateRoster(persons);
-    roster.value = persons;
+    await updateMutation.mutateAsync(persons);
   };
 
   return {
-    roster,
-    loading,
-    error,
-    fetch,
+    roster: rosterQuery.data,
+    loading: rosterQuery.isPending,
+    error: rosterQuery.error,
+    fetch: () => rosterQuery.refetch(),
     update,
+    isFetching: rosterQuery.isFetching,
   };
 }

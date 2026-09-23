@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, onMounted } from 'vue';
+import { computed, ref, watch } from 'vue';
 import { Table, Drawer, Input, Switch, Space, message, Popconfirm, Tooltip, Empty } from 'ant-design-vue';
 import {
   DeleteOutlined,
@@ -10,11 +10,15 @@ import {
   UserSwitchOutlined,
 } from '@ant-design/icons-vue';
 import { api } from '@/api/http';
+import { useSnapshotQuery } from '@/queries/useSnapshot';
+import { queryClient } from '@/queries/client';
+import { snapshotKey } from '@/queries/keys';
 import type { RosterPerson, ScheduleEntry } from '@/types';
 import PageHeader from '@/components/ui/PageHeader.vue';
 import Panel from '@/components/ui/Panel.vue';
 import PersonChip from '@/components/ui/PersonChip.vue';
 
+const snapshotQuery = useSnapshotQuery();
 const roster = ref<RosterPerson[]>([]);
 const pool = ref<ScheduleEntry[]>([]);
 const loading = ref(false);
@@ -33,22 +37,29 @@ const syncOrderFromBackend = () => {
   orderMap.value = map;
 };
 
-const fetchAll = async () => {
-  loading.value = true;
-  try {
-    const snapshot = await api.getSnapshot();
-    roster.value = snapshot.roster ?? [];
-    pool.value = snapshot.state?.schedule_pool ?? [];
-    updatedAt.value = Date.now();
-    syncOrderFromBackend();
-  } catch (e) {
-    console.error('[RosterPage] fetch failed:', e);
-  } finally {
-    loading.value = false;
-  }
-};
+watch(
+  () => snapshotQuery.data.value,
+  (ws) => {
+    if (ws) {
+      roster.value = ws.roster ?? [];
+      pool.value = ws.state?.schedule_pool ?? [];
+      updatedAt.value = Date.now();
+      syncOrderFromBackend();
+    }
+  },
+  { immediate: true },
+);
+watch(
+  () => snapshotQuery.isPending.value || snapshotQuery.isFetching.value,
+  (v) => {
+    loading.value = v;
+  },
+  { immediate: true },
+);
 
-onMounted(fetchAll);
+const fetchAll = async () => {
+  await snapshotQuery.refetch();
+};
 
 const todayIso = (() => {
   const n = new Date();
@@ -174,6 +185,7 @@ const toggleActive = async (person: RosterPerson) => {
 const persist = async (updated: RosterPerson[]) => {
   const payload = updated.map(({ id, name, active }) => ({ id, name, active }));
   roster.value = await api.updateRoster(payload);
+  await queryClient.invalidateQueries({ queryKey: snapshotKey });
 };
 
 const handleTableChange = () => {

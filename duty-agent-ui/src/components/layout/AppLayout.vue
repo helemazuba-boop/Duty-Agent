@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
+import { computed, ref } from 'vue';
 import { RouterLink, RouterView, useRoute } from 'vue-router';
 import { Tooltip } from 'ant-design-vue';
 import {
@@ -54,8 +54,8 @@ const navItems = [
 ];
 
 // ======== 连接状态:常驻侧栏底部,断线变红;点击=重新检测 ========
-// 数据源统一走 useBackendConnection 单例（20s 轮询在 composable 内）。
-const { status: connStatus, checking, errorKind, checkNow, start, stop } = useBackendConnection();
+// 数据源统一走 useBackendConnection（TanStack Query 20s refetchInterval 派生）。
+const { status: connStatus, checking, errorKind, checkNow } = useBackendConnection();
 
 /* pending 只在首次未知时出现,轮询期间不让状态点闪灰 */
 const connectionStatus = computed<'ok' | 'error' | 'pending'>(() => connStatus.value);
@@ -87,14 +87,6 @@ const themeIcon = computed(() => {
 const themeTooltip = computed(() => {
   const labels: Record<ThemeMode, string> = { light: '浅色', dark: '深色', auto: '跟随系统' };
   return `主题:${labels[mode.value]}(点击切换)`;
-});
-
-onMounted(() => {
-  start();
-});
-
-onBeforeUnmount(() => {
-  stop();
 });
 </script>
 

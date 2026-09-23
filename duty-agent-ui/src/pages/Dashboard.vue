@@ -1,9 +1,10 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue';
+import { computed, onMounted, ref, watch } from 'vue';
 import { useRouter } from 'vue-router';
 import { Empty, message } from 'ant-design-vue';
 import { ReloadOutlined, CopyOutlined } from '@ant-design/icons-vue';
 import { api } from '@/api/http';
+import { useSnapshotQuery } from '@/queries/useSnapshot';
 import type { Workspace, ScheduleEntry, RosterPerson } from '@/types';
 import PageHeader from '@/components/ui/PageHeader.vue';
 import Panel from '@/components/ui/Panel.vue';
@@ -35,9 +36,18 @@ const { dutyToday, setWorkspace } = useDutyToday();
 /** Hero 头像用人员色板的 solid/onSolid 变量 */
 const personVars = (name: string) => personChipStyle(name, resolved.value);
 
-const workspace = ref<Workspace | null>(null);
-const loading = ref(false);
-const error = ref<string | null>(null);
+const snapshotQuery = useSnapshotQuery();
+const workspace = computed<Workspace | null>(() => snapshotQuery.data.value ?? null);
+const loading = computed(() => snapshotQuery.isPending.value || snapshotQuery.isFetching.value);
+const error = computed<string | null>(() =>
+  snapshotQuery.isError.value ? String(snapshotQuery.error.value) : null,
+);
+
+watch(
+  () => snapshotQuery.data.value,
+  (ws) => setWorkspace(ws ?? null),
+  { immediate: true },
+);
 
 // 后端连接状态统一消费 useBackendConnection 单例（数据源单一化）。
 const { status: connStatus, errorKind: connErrorKind } = useBackendConnection();
@@ -68,20 +78,10 @@ const onWizardCompleted = () => {
 };
 
 const refresh = async () => {
-  loading.value = true;
-  error.value = null;
-  try {
-    workspace.value = await api.getSnapshot();
-    setWorkspace(workspace.value);
-  } catch (e) {
-    error.value = String(e);
-  } finally {
-    loading.value = false;
-  }
+  await snapshotQuery.refetch();
 };
 
 onMounted(() => {
-  refresh();
   maybeOpenWizard();
 });
 
