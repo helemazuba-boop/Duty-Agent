@@ -1,0 +1,2 @@
+function e(e){let t=e.split(`
+`);return{lines:t,rest:t.pop()??``}}function t(e){return e.startsWith(`event: `)?e.slice(7).trim():null}function n(e){return e.startsWith(`data: `)?e.slice(6):null}function r(e){try{return JSON.parse(e)}catch{return null}}export{e as i,t as n,r,n as t};
