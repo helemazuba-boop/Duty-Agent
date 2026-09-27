@@ -39,6 +39,12 @@ export default defineConfig({
   build: {
     outDir: 'dist',
     emptyOutDir: true,
+    // 桌面 WebView2 本地加载,分包毫无收益;且 rolldown 跨 chunk 初始化顺序
+    // 会产生 "Cannot access 'X' before initialization"(RosterPage 实测),
+    // 单 bundle 一次性消灭这一类 TDZ 问题。
+    rolldownOptions: {
+      output: { codeSplitting: false },
+    },
     rollupOptions: {
       input: resolve(__dirname, 'index.html'),
     },

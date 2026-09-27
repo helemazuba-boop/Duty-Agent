@@ -34,6 +34,15 @@ const onEdgePointerDown = (e: PointerEvent, edge: string) => {
     hit: EDGE_HIT[edge],
   });
 };
+// Tauri drag.js 同款兜底:WebView2 原生 app-region 路径(Settings9)未生效的
+// 运行时上,由宿主 GetCursorPos + PostMessage(WM_NCLBUTTONDOWN) 拉起系统移动
+// 循环。原生路径生效时页面收不到 pointerdown,因此不会双触发。
+const onChromeDragPointerDown = (e: PointerEvent) => {
+  if (e.button !== 0) return;
+  const el = e.target as HTMLElement | null;
+  if (el?.closest('button, a, input, select, textarea, label, [role="button"]')) return;
+  sendToHost({ type: 'drag-window' });
+};
 const route = useRoute();
 const activeKey = computed(() => route.path.split('/')[1] || 'dashboard');
 
@@ -105,7 +114,7 @@ const themeTooltip = computed(() => {
     </template>
 
     <!-- ======== 全高侧栏(icon rail) ======== -->
-    <aside class="app-sidebar">
+    <aside class="app-sidebar" @pointerdown="onChromeDragPointerDown">
       <!-- 品牌:收起只留 logo,展开显示名称 -->
       <div class="app-brand" title="Duty-Agent">
         <img class="app-brand__logo" :src="appLogo" alt="Duty-Agent" />
@@ -162,6 +171,7 @@ const themeTooltip = computed(() => {
       <div
         v-if="customChrome"
         class="app-titlebar"
+        @pointerdown="onChromeDragPointerDown"
         @dblclick="sendWindowCommand('maximize-toggle')"
       >
         <div class="app-titlebar__controls">
@@ -460,6 +470,8 @@ html[data-theme='dark'] .app-canvas::after {
   /* WebView2 app-region: 将此区域标记为原生拖拽区(双击最大化、右键系统菜单)。
      existing JS pointerdown handler 作为 fallback 保留。 */
   app-region: drag;
+  /* 触摸按下时不让浏览器接管手势,pointerdown 兜底才能收到事件 */
+  touch-action: none;
 }
 
 .app-titlebar__controls {

@@ -73,6 +73,54 @@ const fetchAll = async () => {
   await snapshotQuery.refetch();
 };
 
+// ======== 数据源:必须在 useVirtual/pagedRows 之前声明 ========
+// 下方 watch 的 source getter 在 watch 创建时急切求值,整条依赖链
+// (pagedRows/useVirtual → dataSource)若晚于声明点会触发 TDZ ReferenceError。
+const todayIso = (() => {
+  const n = new Date();
+  return `${n.getFullYear()}-${String(n.getMonth() + 1).padStart(2, '0')}-${String(n.getDate()).padStart(2, '0')}`;
+})();
+
+const monthPrefix = todayIso.slice(0, 7);
+
+/** 本月值班次数 / 上次值班日期:花名册的核心价值是公平性 */
+const dutyCountOfMonth = (name: string): number =>
+  pool.value.filter(
+    (entry) => entry.date.startsWith(monthPrefix)
+      && Object.values(entry.area_assignments ?? {}).flat().includes(name),
+  ).length;
+
+const lastDutyDate = (name: string): string | null => {
+  let last: string | null = null;
+  for (const entry of pool.value) {
+    if (Object.values(entry.area_assignments ?? {}).flat().includes(name)) {
+      if (!last || entry.date > last) last = entry.date;
+    }
+  }
+  return last;
+};
+
+const activeCount = computed(() => roster.value.filter((p) => p.active).length);
+const inactiveCount = computed(() => roster.value.length - activeCount.value);
+
+interface RosterRow extends RosterPerson {
+  key: number | string;
+  dutyCount: number;
+  lastDuty: string | null;
+}
+
+const dataSource = computed<RosterRow[]>(() =>
+  roster.value
+    .slice()
+    .sort((a, b) => (orderMap.value.get(a.id) ?? 9999) - (orderMap.value.get(b.id) ?? 9999))
+    .map((r) => ({
+      ...r,
+      key: r.id,
+      dutyCount: dutyCountOfMonth(r.name),
+      lastDuty: lastDutyDate(r.name),
+    })),
+);
+
 /** 超过该行数切虚拟滚动；常规规模走 antd Table（拖拽/排序完整） */
 const VIRTUALIZE_THRESHOLD = 100;
 const useVirtual = computed(() => dataSource.value.length > VIRTUALIZE_THRESHOLD);
@@ -146,51 +194,6 @@ onBeforeUnmount(destroySortable);
 onMounted(() => {
   void nextTick(() => initSortable());
 });
-
-const todayIso = (() => {
-  const n = new Date();
-  return `${n.getFullYear()}-${String(n.getMonth() + 1).padStart(2, '0')}-${String(n.getDate()).padStart(2, '0')}`;
-})();
-
-const monthPrefix = todayIso.slice(0, 7);
-
-/** 本月值班次数 / 上次值班日期:花名册的核心价值是公平性 */
-const dutyCountOfMonth = (name: string): number =>
-  pool.value.filter(
-    (entry) => entry.date.startsWith(monthPrefix)
-      && Object.values(entry.area_assignments ?? {}).flat().includes(name),
-  ).length;
-
-const lastDutyDate = (name: string): string | null => {
-  let last: string | null = null;
-  for (const entry of pool.value) {
-    if (Object.values(entry.area_assignments ?? {}).flat().includes(name)) {
-      if (!last || entry.date > last) last = entry.date;
-    }
-  }
-  return last;
-};
-
-const activeCount = computed(() => roster.value.filter((p) => p.active).length);
-const inactiveCount = computed(() => roster.value.length - activeCount.value);
-
-interface RosterRow extends RosterPerson {
-  key: number | string;
-  dutyCount: number;
-  lastDuty: string | null;
-}
-
-const dataSource = computed<RosterRow[]>(() =>
-  roster.value
-    .slice()
-    .sort((a, b) => (orderMap.value.get(a.id) ?? 9999) - (orderMap.value.get(b.id) ?? 9999))
-    .map((r) => ({
-      ...r,
-      key: r.id,
-      dutyCount: dutyCountOfMonth(r.name),
-      lastDuty: lastDutyDate(r.name),
-    })),
-);
 
 const columns = [
   {

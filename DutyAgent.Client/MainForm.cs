@@ -94,6 +94,9 @@ internal sealed class MainForm : Form
     [DllImport("user32.dll")]
     private static extern IntPtr SendMessage(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam);
 
+    [DllImport("user32.dll")]
+    private static extern bool PostMessage(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam);
+
     // ======== 窗口镀铬跟随 web 主题(DWM) ========
     private const int DWMWA_USE_IMMERSIVE_DARK_MODE = 20;
     private const int DWMWA_USE_IMMERSIVE_DARK_MODE_LEGACY = 19; // Win10 旧版属性号
@@ -298,6 +301,25 @@ internal sealed class MainForm : Form
         ReleaseCapture();
         SetCapture(Handle);
         SendMessage(Handle, WM_NCLBUTTONDOWN, (IntPtr)hitTest, IntPtr.Zero);
+    }
+
+    /// <summary>
+    /// 拖拽移动兜底(对齐 tao 的 drag_window):坐标取 GetCursorPos 的 OS 实时光标,
+    /// 不做 web 坐标换算;ReleaseCapture 后 PostMessage 异步进入移动循环,
+    /// 避免在 WebMessageReceived 回调内 SendMessage 重入消息泵。原生 app-region
+    /// 路径生效时页面收不到 pointerdown,本兜底不会被触发。
+    /// </summary>
+    private void BeginNativeMove()
+    {
+        if (!_customChrome || !IsHandleCreated)
+        {
+            return;
+        }
+
+        ReleaseCapture();
+        var p = Cursor.Position;
+        PostMessage(Handle, WM_NCLBUTTONDOWN, (IntPtr)HTCAPTION,
+            (IntPtr)(((p.Y & 0xFFFF) << 16) | (p.X & 0xFFFF)));
     }
 
     /// <summary>触摸屏专用：通过 WM_SYSCOMMAND + SC_SIZE 进入原生缩放循环。</summary>
@@ -641,6 +663,9 @@ internal sealed class MainForm : Form
                     break;
                 case "get-host-info":
                     PushHostInfo();
+                    break;
+                case "drag-window":
+                    BeginNativeMove();
                     break;
                 case "resize-window":
                 {
