@@ -23,7 +23,7 @@ import { useSnapshotQuery } from '@/queries/useSnapshot';
 import { queryClient } from '@/queries/client';
 import { snapshotKey } from '@/queries/keys';
 import type { RosterPerson, ScheduleEntry } from '@/types';
-import { moveId, mergePageOrder, buildOrderMap } from '@/utils/rosterOrder';
+import { moveId, buildOrderMap } from '@/utils/rosterOrder';
 import PageHeader from '@/components/ui/PageHeader.vue';
 import Panel from '@/components/ui/Panel.vue';
 import PersonChip from '@/components/ui/PersonChip.vue';
@@ -34,8 +34,6 @@ const roster = ref<RosterPerson[]>([]);
 const pool = ref<ScheduleEntry[]>([]);
 const loading = ref(false);
 const updatedAt = ref(0);
-const pageSize = ref(15);
-const currentPage = ref(1);
 
 /** 列 sorter 是纯视图排序：激活期间禁用一切手动调序入口 */
 const sorterState = ref<{ columnKey?: string; order?: 'ascend' | 'descend' | null }>({});
@@ -73,9 +71,9 @@ const fetchAll = async () => {
   await snapshotQuery.refetch();
 };
 
-// ======== 数据源:必须在 useVirtual/pagedRows 之前声明 ========
-// 下方 watch 的 source getter 在 watch 创建时急切求值,整条依赖链
-// (pagedRows/useVirtual → dataSource)若晚于声明点会触发 TDZ ReferenceError。
+// ======== 数据源:必须在 useVirtual 之前声明 ========
+// 下方 watch 的 source getter 在 watch 创建时急切求值,依赖链
+// (useVirtual → dataSource)若晚于声明点会触发 TDZ ReferenceError。
 const todayIso = (() => {
   const n = new Date();
   return `${n.getFullYear()}-${String(n.getMonth() + 1).padStart(2, '0')}-${String(n.getDate()).padStart(2, '0')}`;
@@ -138,12 +136,6 @@ const virtualSource = computed(() =>
     })),
 );
 
-/** 当前页可见行：与 Table 的 current/pageSize 切片保持一致 */
-const pagedRows = computed(() => {
-  const start = (currentPage.value - 1) * pageSize.value;
-  return dataSource.value.slice(start, start + pageSize.value);
-});
-
 /** 手柄拖拽（SortableJS pointer/touch）：只读写 orderMap，落点复用按钮通道的 persist */
 const tableWrapRef = ref<HTMLElement | null>(null);
 let sortable: Sortable | null = null;
@@ -157,11 +149,12 @@ const handleDragEnd = async (evt: { oldIndex?: number; newIndex?: number }) => {
   if (isSortedView.value) return;
   const { oldIndex, newIndex } = evt;
   if (oldIndex === undefined || newIndex === undefined || oldIndex === newIndex) return;
-  const pageIds = pagedRows.value.map((r) => r.id);
-  if (oldIndex < 0 || oldIndex >= pageIds.length || newIndex < 0 || newIndex >= pageIds.length) return;
-  const [moved] = pageIds.splice(oldIndex, 1);
-  pageIds.splice(newIndex, 0, moved);
-  await setOrderByIds(mergePageOrder(orderedIds(), pagedRows.value.map((r) => r.id), pageIds));
+  // 全量列表:Sortable 行索引即全局顺序索引,无需页内/全局两套顺序缝合
+  const ids = orderedIds();
+  if (oldIndex < 0 || oldIndex >= ids.length || newIndex < 0 || newIndex >= ids.length) return;
+  const [moved] = ids.splice(oldIndex, 1);
+  ids.splice(newIndex, 0, moved);
+  await setOrderByIds(ids);
 };
 
 const initSortable = () => {
@@ -169,7 +162,7 @@ const initSortable = () => {
   // 列排序视图下看到的顺序≠存的顺序：禁用拖拽，避免“拖的”与“存的”打架
   if (isSortedView.value || useVirtual.value) return;
   const tbody = tableWrapRef.value?.querySelector('.ant-table-tbody');
-  if (!tbody || pagedRows.value.length === 0) return;
+  if (!tbody || dataSource.value.length === 0) return;
   sortable = new Sortable(tbody as HTMLElement, {
     handle: '.roster-drag-handle',
     draggable: 'tr.ant-table-row',
@@ -181,13 +174,9 @@ const initSortable = () => {
   });
 };
 
-watch(
-  [() => pagedRows.value.map((r) => r.key).join(','), currentPage, pageSize, isSortedView, useVirtual],
-  () => {
-    void nextTick(() => initSortable());
-  },
-  { immediate: false },
-);
+watch([dataSource, isSortedView, useVirtual], () => {
+  void nextTick(() => initSortable());
+});
 
 onBeforeUnmount(destroySortable);
 
@@ -336,12 +325,10 @@ const isFirst = (id: number) => orderedIds()[0] === id;
 const isLast = (id: number) => orderedIds()[orderedIds().length - 1] === id;
 
 const handleTableChange = (
-  pagination?: { current?: number; pageSize?: number },
-  _filters?: unknown,
+  _pagination: unknown,
+  _filters: unknown,
   sorter?: { columnKey?: string | number; order?: 'ascend' | 'descend' | null } | Array<{ columnKey?: string | number; order?: 'ascend' | 'descend' | null }>,
 ) => {
-  if (pagination?.current) currentPage.value = pagination.current;
-  if (pagination?.pageSize) pageSize.value = pagination.pageSize;
   const s = Array.isArray(sorter) ? sorter[0] : sorter;
   sorterState.value = s ? { columnKey: s.columnKey !== undefined ? String(s.columnKey) : undefined, order: s.order ?? null } : {};
 };
@@ -384,8 +371,7 @@ const handleTableChange = (
         :columns="columns"
         :data-source="dataSource"
         :loading="loading"
-        :pagination="{ current: currentPage, showSizeChanger: true, pageSizeOptions: ['10', '15', '30'], showTotal: (total: number) => `共 ${total} 人` }"
-        v-model:pageSize="pageSize"
+        :pagination="false"
         row-key="id"
         @change="handleTableChange"
         size="middle"
