@@ -1,7 +1,7 @@
 <script setup lang="ts">
 /**
  * RosterPage 排序规则（触屏优先）：
- * - 手动顺序（orderMap，后端数组顺序）是唯一持久化语义：上/下移按钮 + 手柄拖拽都写它。
+ * - 手动顺序（orderMap，后端数组顺序）是唯一持久化语义：常规视图手柄拖拽、虚拟列表上下移都写它。
  * - 列 sorter 是纯视图排序：激活时禁用拖拽与上下移（避免“看到的顺序”与“存的顺序”打架），清空后回到手动顺序。
  * - persist 失败回滚：refetch 快照，用后端真源重建 roster/orderMap。
  */
@@ -15,8 +15,6 @@ import {
   UserAddOutlined,
   ReloadOutlined,
   UserSwitchOutlined,
-  ArrowUpOutlined,
-  ArrowDownOutlined,
 } from '@ant-design/icons-vue';
 import { api } from '@/api/http';
 import { useSnapshotQuery } from '@/queries/useSnapshot';
@@ -191,12 +189,6 @@ const columns = [
     width: 44,
     customCell: () => ({ class: 'roster-drag-handle' }),
   },
-  {
-    title: '顺序',
-    key: 'sort',
-    width: 100,
-    align: 'center' as const,
-  },
   { title: 'ID', dataIndex: 'id', key: 'id', width: 80 },
   { title: '成员', dataIndex: 'name', key: 'name', minWidth: 180, sorter: (a: any, b: any) => a.name.localeCompare(b.name) },
   { title: '状态', dataIndex: 'active', width: 90, align: 'center' as const, sorter: (a: any, b: any) => Number(b.active) - Number(a.active) },
@@ -321,9 +313,6 @@ const moveDown = async (id: number) => {
   await setOrderByIds(moveId(orderedIds(), id, 1));
 };
 
-const isFirst = (id: number) => orderedIds()[0] === id;
-const isLast = (id: number) => orderedIds()[orderedIds().length - 1] === id;
-
 const handleTableChange = (
   _pagination: unknown,
   _filters: unknown,
@@ -387,30 +376,6 @@ const handleTableChange = (
             </span>
           </template>
 
-          <template v-else-if="column.key === 'sort'">
-            <Space size="small" style="justify-content: center; display: flex">
-              <Tooltip :title="isSortedView ? '列排序时不可调序' : '上移'">
-                <a-button
-                  type="text"
-                  :disabled="isSortedView || isFirst((record as RosterPerson).id)"
-                  @click="moveUp((record as RosterPerson).id)"
-                  aria-label="上移"
-                >
-                  <template #icon><ArrowUpOutlined /></template>
-                </a-button>
-              </Tooltip>
-              <Tooltip :title="isSortedView ? '列排序时不可调序' : '下移'">
-                <a-button
-                  type="text"
-                  :disabled="isSortedView || isLast((record as RosterPerson).id)"
-                  @click="moveDown((record as RosterPerson).id)"
-                  aria-label="下移"
-                >
-                  <template #icon><ArrowDownOutlined /></template>
-                </a-button>
-              </Tooltip>
-            </Space>
-          </template>
           <template v-else-if="column.key === 'name'">
             <PersonChip :name="record.name" avatar class="roster-name" />
           </template>
