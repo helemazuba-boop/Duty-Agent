@@ -81,4 +81,8 @@ public static class DutyAutomationIds
 {
     public const string RunScheduleActionId = "duty-bridge.run-schedule-action";
     public const string TodayAssignedRule = "duty-bridge.today-assigned-rule";
+
+    public const string ScheduleRunSucceededTriggerId = "duty-bridge.schedule-run-succeeded-trigger";
+    public const string ScheduleRunFailedTriggerId = "duty-bridge.schedule-run-failed-trigger";
+    public const string ScheduleUpdatedTriggerId = "duty-bridge.schedule-updated-trigger";
 }
