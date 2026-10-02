@@ -13,6 +13,7 @@ using DutyAgentBridge.Controls.RuleSettingsControls;
 using DutyAgentBridge.Models;
 using DutyAgentBridge.Services;
 using DutyAgentBridge.Services.Automations.Actions;
+using DutyAgentBridge.Services.Automations.Triggers;
 using DutyAgentBridge.Views;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -46,11 +47,15 @@ public class Plugin : PluginBase
         services.AddSingleton<IHealthMonitorService, HealthMonitorService>();
         services.AddSingleton<DutyStateCache>();
         services.AddSingleton<DutyRuleHandlerService>();
+        services.AddSingleton<DutyAutomationBridgeService>();
 
         services.AddNotificationProvider<DutyNotificationProvider>();
         services.AddComponent<DutyComponent, DutyComponentSettingsControl>();
         services.AddSettingsPage<DutyBridgeSettingsPage>();
         services.AddAction<DutyRunScheduleAction, DutyRunScheduleActionSettingsControl>();
+        services.AddTrigger<DutyScheduleRunSucceededTrigger>();
+        services.AddTrigger<DutyScheduleRunFailedTrigger>();
+        services.AddTrigger<DutyScheduleUpdatedTrigger>();
         services.AddRule<DutyAssignedStudentRuleSettings, DutyAssignedStudentRuleSettingsControl>(
             DutyAutomationIds.TodayAssignedRule,
             "\u4ECA\u65E5\u503C\u65E5\u5339\u914D",
@@ -68,6 +73,11 @@ public class Plugin : PluginBase
             }
             IAppHost.GetService<IHealthMonitorService>().Start();
             IAppHost.GetService<DutyRuleHandlerService>().Register();
+
+            // 主动解析一次：单例只在被解析时才构造，而自动化触发器可能一个都没被
+            // 用户配置。没有这一步，规则集的 NotifyStatusChanged 就不会被触发，
+            // "今日值日匹配"规则会停在上一次评估结果上。
+            _ = IAppHost.GetService<DutyAutomationBridgeService>();
 
             // 系统从睡眠/休眠恢复时，到独立软件的 TCP 连接大概率已失效；
             // 立即重建而不是等健康检查/空闲超时逐级兜底。

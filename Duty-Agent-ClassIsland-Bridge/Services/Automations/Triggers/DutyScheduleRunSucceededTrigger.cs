@@ -1,9 +1,13 @@
 using ClassIsland.Core.Abstractions.Automation;
 using ClassIsland.Core.Attributes;
 
-namespace DutyAgent.Services.Automations.Triggers;
+namespace DutyAgentBridge.Services.Automations.Triggers;
 
-[TriggerInfo(DutyAutomationIds.ScheduleRunSucceededTrigger, "\u503c\u65e5\u6392\u73ed\u6267\u884c\u6210\u529f\u65f6", "\uE73E")]
+/// <summary>值日排班执行成功时触发。</summary>
+[TriggerInfo(
+    DutyAutomationIds.ScheduleRunSucceededTriggerId,
+    "\u503C\u65E5\u6392\u73ED\u6267\u884C\u6210\u529F\u65F6",
+    "\uE73E")]
 public sealed class DutyScheduleRunSucceededTrigger(DutyAutomationBridgeService automationBridge) : TriggerBase
 {
     public override void Loaded()

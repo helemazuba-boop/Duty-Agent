@@ -33,12 +33,10 @@ if ($proc) {
 
 Write-Host "[3/4] Deploying to $target ..."
 New-Item -ItemType Directory -Force -Path $target | Out-Null
-Copy-Item (Join-Path $outDir "DutyAgentBridge.dll") $target -Force
-Copy-Item (Join-Path $outDir "DutyAgentBridge.deps.json") $target -Force
-Copy-Item (Join-Path $outDir "DutyAgentBridge.runtimeconfig.json") $target -Force
-Copy-Item (Join-Path $outDir "icon.png") $target -Force
-Copy-Item (Join-Path $repoRoot "Duty-Agent-ClassIsland-Bridge\manifest.yml") $target -Force
-Copy-Item (Join-Path $repoRoot "Duty-Agent-ClassIsland-Bridge\README.md") $target -Force
+# 整个构建输出目录一起拷：插件除主 dll 外还带托管依赖（Microsoft.Win32.SystemEvents.dll）
+# 与 runtimes\ 原生子目录，逐文件白名单曾在增删依赖时漏拷（部署后 SystemEvents
+# 订阅静默失效）。这里与 release 打包保持同一口径——构建输出即插件内容。
+Copy-Item (Join-Path $outDir "*") $target -Recurse -Force
 
 Write-Host "[4/4] Done."
 if (-not $NoStart) {

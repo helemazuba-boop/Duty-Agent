@@ -88,9 +88,6 @@ jobs:
         with:
           dotnet-version: "8.0.x"
 
-      - name: Build ClassIsland plugin (Duty-Agent.csproj)
-        run: dotnet build Duty-Agent.csproj -c Release --nologo
-
       - name: Build standalone client (DutyAgent.Client)
         run: dotnet build DutyAgent.Client/DutyAgent.Client.csproj -c Release --nologo
 

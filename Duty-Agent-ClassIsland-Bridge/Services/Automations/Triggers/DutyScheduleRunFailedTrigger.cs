@@ -1,9 +1,13 @@
 using ClassIsland.Core.Abstractions.Automation;
 using ClassIsland.Core.Attributes;
 
-namespace DutyAgent.Services.Automations.Triggers;
+namespace DutyAgentBridge.Services.Automations.Triggers;
 
-[TriggerInfo(DutyAutomationIds.ScheduleRunFailedTrigger, "\u503c\u65e5\u6392\u73ed\u6267\u884c\u5931\u8d25\u65f6", "\uEA39")]
+/// <summary>值日排班执行失败时触发。</summary>
+[TriggerInfo(
+    DutyAutomationIds.ScheduleRunFailedTriggerId,
+    "\u503C\u65E5\u6392\u73ED\u6267\u884C\u5931\u8D25\u65F6",
+    "\uEA39")]
 public sealed class DutyScheduleRunFailedTrigger(DutyAutomationBridgeService automationBridge) : TriggerBase
 {
     public override void Loaded()

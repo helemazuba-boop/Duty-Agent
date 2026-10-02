@@ -1,9 +1,13 @@
 using ClassIsland.Core.Abstractions.Automation;
 using ClassIsland.Core.Attributes;
 
-namespace DutyAgent.Services.Automations.Triggers;
+namespace DutyAgentBridge.Services.Automations.Triggers;
 
-[TriggerInfo(DutyAutomationIds.ScheduleUpdatedTrigger, "\u4eca\u65e5\u503c\u65e5\u5b89\u6392\u53d1\u751f\u53d8\u66f4\u65f6", "\uE70F")]
+/// <summary>今日值日安排发生变更时触发（保存、回滚、登记缺席、名单调整等）。</summary>
+[TriggerInfo(
+    DutyAutomationIds.ScheduleUpdatedTriggerId,
+    "\u4ECA\u65E5\u503C\u65E5\u5B89\u6392\u53D1\u751F\u53D8\u66F4\u65F6",
+    "\uE70F")]
 public sealed class DutyScheduleUpdatedTrigger(DutyAutomationBridgeService automationBridge) : TriggerBase
 {
     public override void Loaded()
