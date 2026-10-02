@@ -61,7 +61,9 @@ PublishOutput/
 .qoder/
 .tmp-run/
 data/state.prev.json
-*.bak_a6
+# 本地开发态令牌：后端 --skip-auth 模式生成的临时 token，绝不能入库
+data/.dev-token
+*.dev-token
 .zcode
 .cursor
 .release
