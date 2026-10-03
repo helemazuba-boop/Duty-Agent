@@ -107,13 +107,25 @@ internal sealed class BackendProcessManager : IDisposable
             startInfo.EnvironmentVariables.Remove(key);
         }
 
+        // 端口：host-config 的 server_port > 0 时优先固定（MCP 等外部接入需要稳定
+        // 地址）；端口被占则回退随机，避免固定端口冲突把后端拖进"启动即崩溃 →
+        // watchdog 重启"的循环。
+        var configuredPort = ReadConfiguredServerPort();
+        var port = configuredPort > 0 && IsPortAvailable(configuredPort) ? configuredPort : 0;
+        if (configuredPort > 0 && port == 0)
+        {
+            ClientLog.Warn($"固定端口 {configuredPort} 不可用，本次回退随机端口。");
+        }
+
         startInfo.ArgumentList.Add(corePy);
         startInfo.ArgumentList.Add("--server");
         startInfo.ArgumentList.Add("--port");
-        startInfo.ArgumentList.Add("0");
+        startInfo.ArgumentList.Add(port.ToString());
         startInfo.ArgumentList.Add("--data-dir");
         startInfo.ArgumentList.Add(DataDirectory);
-        startInfo.ArgumentList.Add("--disable-mcp-runtime");
+        // 不传 --disable-mcp-runtime：MCP 运行时是否挂载由 host-config 的
+        // enable_mcp 决定（后端 enable_mcp = enable_mcp_configured and not
+        // disable_mcp_runtime）。传了它就等于无条件关掉 MCP。
 
         _process = Process.Start(startInfo)
             ?? throw new InvalidOperationException("无法启动后端进程。");
@@ -382,12 +394,63 @@ internal sealed class BackendProcessManager : IDisposable
         hostConfig.TryAdd("enable_webview_debug_layer", false);
         // web 自绘标题栏(窗口三键/拖拽在 web,缩放贴靠仍归系统);异常时置 false 回退原生标题栏
         hostConfig.TryAdd("client_custom_chrome", true);
+        // 0 = 随机端口；>0 时尝试固定该端口（MCP 等外部接入需要稳定地址）。
+        hostConfig.TryAdd("server_port", 0);
 
         var json = JsonSerializer.Serialize(
             hostConfig,
             new JsonSerializerOptions { WriteIndented = true });
 
         File.WriteAllText(hostConfigPath, json, new UTF8Encoding(false));
+    }
+
+    /// <summary>
+    /// host-config.json 的可选固定端口（<c>server_port</c>）。0 / 缺失 / 非法值 = 随机端口。
+    /// </summary>
+    private int ReadConfiguredServerPort()
+    {
+        try
+        {
+            var path = Path.Combine(DataDirectory, "host-config.json");
+            if (!File.Exists(path))
+            {
+                return 0;
+            }
+
+            using var document = JsonDocument.Parse(File.ReadAllText(path, Encoding.UTF8));
+            if (document.RootElement.TryGetProperty("server_port", out var element) &&
+                element.TryGetInt32(out var port) &&
+                port is > 0 and <= 65535)
+            {
+                return port;
+            }
+        }
+        catch (Exception ex)
+        {
+            ClientLog.Warn($"读取 server_port 失败，本次使用随机端口：{ex.Message}");
+        }
+
+        return 0;
+    }
+
+    /// <summary>
+    /// 固定端口预检：能绑定 127.0.0.1:port 才认为可用（与后端监听地址一致）。
+    /// 仅用于降低"固定端口被占 → 后端 bind 失败 → watchdog 重启"的概率；
+    /// 预检与实际 bind 之间仍有 TOCTOU 窗口，属可接受风险。
+    /// </summary>
+    private static bool IsPortAvailable(int port)
+    {
+        try
+        {
+            var listener = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, port);
+            listener.Start();
+            listener.Stop();
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     private void WriteBridgeMetaFile()
