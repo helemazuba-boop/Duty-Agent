@@ -26,6 +26,8 @@ public sealed class HealthMonitorService : IHealthMonitorService
     private readonly IIpcBridgeService _bridge;
 
     private System.Timers.Timer? _timer;
+    private FileSystemWatcher? _metaWatcher;
+    private CancellationTokenSource? _metaWatcherDebounce;
     private DateTime _lastMetaWriteTime = DateTime.MinValue;
     private StandaloneMeta? _lastMeta;
     private bool _isRunning;
@@ -51,6 +53,24 @@ public sealed class HealthMonitorService : IHealthMonitorService
 
     private readonly BridgeSettings _settings;
 
+    // Heartbeat tolerance: a single failed heartbeat (system resume, backend
+    // mid-write of state.json, antivirus disk scan) must NOT tear the bridge
+    // down and flash the component red. Only after this many consecutive
+    // failures do we degrade; before that we retry in place with backoff.
+    // Budget check: 3 failures at the 5s cadence plus 1s/2s backoff ≈ 18s,
+    // still under the backend's 20s bridge-heartbeat TTL.
+    private const int HeartbeatFailureThreshold = 3;
+    private static readonly TimeSpan[] HeartbeatRetryBackoff =
+    {
+        TimeSpan.FromSeconds(1),
+        TimeSpan.FromSeconds(2),
+    };
+
+    private int _consecutiveHeartbeatFailures;
+    private int _heartbeatRetryInFlight;
+    private bool _heartbeatDegraded;
+    private int _staleReconnectInFlight;
+
     public bool IsRunning => _isRunning;
     public StandaloneMeta? CurrentMeta => _lastMeta;
 
@@ -74,12 +94,16 @@ public sealed class HealthMonitorService : IHealthMonitorService
 
             Diagnostics.Info("HealthMonitor", "Health monitor started.", new { intervalMs = IntervalMs });
 
+            // 定时器只负责心跳节拍 + meta 兜底复查；meta 的存在性/变更交给
+            // FileSystemWatcher 即时感知，故节拍可比纯轮询时代放宽。
             _timer = new System.Timers.Timer(IntervalMs)
             {
                 AutoReset = true,
                 Enabled = true
             };
             _timer.Elapsed += OnTimerElapsed;
+
+            StartMetaWatcher();
 
             // 立即执行一次
             CheckMetaFile();
@@ -101,8 +125,97 @@ public sealed class HealthMonitorService : IHealthMonitorService
                 _timer = null;
             }
 
+            StopMetaWatcher();
+            _metaWatcherDebounce?.Dispose();
+            _metaWatcherDebounce = null;
+
             Diagnostics.Info("HealthMonitor", "Health monitor stopped.");
         }
+    }
+
+    /// <summary>
+    /// meta 文件观察：新实例/重启会重写 meta（Changed/Created/Renamed），
+    /// 客户端退出会删除（Deleted）。即时感知后走 200ms 去抖再复查，
+    /// 免去 5s 一次的无谓 stat + GetProcessById。
+    /// </summary>
+    private void StartMetaWatcher()
+    {
+        try
+        {
+            var directory = Path.GetDirectoryName(_paths.MetaFilePath);
+            if (string.IsNullOrWhiteSpace(directory))
+            {
+                return;
+            }
+
+            Directory.CreateDirectory(directory);
+            _metaWatcher = new FileSystemWatcher(directory, Path.GetFileName(_paths.MetaFilePath))
+            {
+                NotifyFilter = NotifyFilters.LastWrite | NotifyFilters.FileName
+                    | NotifyFilters.CreationTime | NotifyFilters.Size,
+            };
+            _metaWatcher.Changed += OnMetaFileChanged;
+            _metaWatcher.Created += OnMetaFileChanged;
+            _metaWatcher.Deleted += OnMetaFileChanged;
+            _metaWatcher.Renamed += OnMetaFileChanged;
+            _metaWatcher.EnableRaisingEvents = true;
+        }
+        catch (Exception ex)
+        {
+            // 观察失败仅退化为纯定时器节拍，不影响功能。
+            Diagnostics.Warn("HealthMonitor", $"Meta file watcher unavailable: {ex.Message}");
+        }
+    }
+
+    private void StopMetaWatcher()
+    {
+        if (_metaWatcher == null)
+        {
+            return;
+        }
+
+        try
+        {
+            _metaWatcher.EnableRaisingEvents = false;
+            _metaWatcher.Changed -= OnMetaFileChanged;
+            _metaWatcher.Created -= OnMetaFileChanged;
+            _metaWatcher.Deleted -= OnMetaFileChanged;
+            _metaWatcher.Renamed -= OnMetaFileChanged;
+            _metaWatcher.Dispose();
+        }
+        catch
+        {
+        }
+        finally
+        {
+            _metaWatcher = null;
+        }
+    }
+
+    private void OnMetaFileChanged(object? sender, FileSystemEventArgs e)
+    {
+        ScheduleMetaRecheck();
+    }
+
+    private void ScheduleMetaRecheck()
+    {
+        // 去抖：meta 写入可能触发多条事件（temp 写 + rename），合并为一次复查。
+        var cts = new CancellationTokenSource();
+        var previous = Interlocked.Exchange(ref _metaWatcherDebounce, cts);
+        previous?.Cancel();
+
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await Task.Delay(200, cts.Token);
+            }
+            catch (OperationCanceledException)
+            {
+                return;
+            }
+            CheckMetaFile();
+        });
     }
 
     private void OnTimerElapsed(object? sender, ElapsedEventArgs e)
@@ -219,10 +332,18 @@ public sealed class HealthMonitorService : IHealthMonitorService
         {
             Diagnostics.Warn("HealthMonitor", "Meta file disappeared, requesting disconnect.");
             _bridge.Disconnect();
+            // 报 Disconnected（而非 Error）让组件走"离线但有缓存"的灰字分支；
+            // 若从未拉到过数据，组件仍会因无缓存而显示红色"未连接"。
             BridgeStateRequested?.Invoke(this, IpcBridgeState.Disconnected);
         }
         else if (currentState == IpcBridgeState.Initial || currentState == IpcBridgeState.Checking)
         {
+            BridgeStateRequested?.Invoke(this, IpcBridgeState.NotInstalled);
+        }
+        else
+        {
+            // 已处于 Error/Disconnected 等终态：meta 消失说明软件已退出，
+            // 收敛到 NotInstalled，避免组件停在陈旧的错误文案上。
             BridgeStateRequested?.Invoke(this, IpcBridgeState.NotInstalled);
         }
     }
@@ -242,14 +363,47 @@ public sealed class HealthMonitorService : IHealthMonitorService
 
         Diagnostics.Warn("HealthMonitor", "Standalone process died.", new { pid = _lastMeta?.ProcessId, streak = _staleMetaStreak });
 
-        // Only the first detections actively tear down and surface the error.
-        // Once the limit is hit against an unchanged meta file, stay quiet —
-        // the next instance will rewrite the meta file and reset this state.
+        // 前几次立即拆连并暴露错误态（用户能马上看到"未连接/错误"）。
         if (_staleMetaStreak <= StaleMetaDetectionLimit)
         {
             _bridge.Disconnect();
             BridgeStateRequested?.Invoke(this, IpcBridgeState.Error);
+            return;
         }
+
+        // 超过阈值仍指向同一份未变更的 meta：不再无限重连（PID 复用场景下会
+        // 打成"注定失败"的请求风暴），但也**不永久停连**——按指数退避重试，
+        // 上限 5min。新实例重写 meta 会由签名变化自动重置节奏。
+        ScheduleStaleReconnectBackoff();
+    }
+
+    private void ScheduleStaleReconnectBackoff()
+    {
+        if (Interlocked.CompareExchange(ref _staleReconnectInFlight, 1, 0) != 0)
+        {
+            return;
+        }
+
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                var exponent = Math.Min(_staleMetaStreak - StaleMetaDetectionLimit, 4);
+                var delaySeconds = Math.Min(300, 5 * Math.Pow(2, exponent - 1));
+                await Task.Delay(TimeSpan.FromSeconds(delaySeconds)).ConfigureAwait(false);
+
+                // meta 已被重写（签名变化）时无需在此重连：下一次检查会正常走
+                // Checking → Connect。这里只处理"仍是同一份坏 meta"的兜底重试。
+                if (_bridge.State is IpcBridgeState.Error or IpcBridgeState.Disconnected)
+                {
+                    _ = ConnectBridgeAsync();
+                }
+            }
+            finally
+            {
+                Interlocked.Exchange(ref _staleReconnectInFlight, 0);
+            }
+        });
     }
 
     private long ComputeMetaSignature()
@@ -388,30 +542,113 @@ public sealed class HealthMonitorService : IHealthMonitorService
         try
         {
             await _bridge.SendHeartbeatAsync();
-            ResetConnectFailures();
+            OnHeartbeatSucceeded();
         }
         catch (Exception ex)
         {
-            // 连接中断期间每个节拍都会到这里：同一原因 30s 内只记一次，
-            // 避免故障窗口把日志刷成心跳失败流水账。
-            var now = Environment.TickCount64;
-            if (now - _lastHeartbeatErrorLogTick >= 30_000)
-            {
-                _lastHeartbeatErrorLogTick = now;
-                Diagnostics.Error("HealthMonitor", "Bridge heartbeat failed.", ex);
-            }
+            OnHeartbeatFailed(ex);
+        }
+    }
+
+    private void OnHeartbeatSucceeded()
+    {
+        _consecutiveHeartbeatFailures = 0;
+
+        if (_heartbeatDegraded)
+        {
+            // Recovered: clear the red state and rebuild the connection/SSE.
+            _heartbeatDegraded = false;
+            Diagnostics.Info("HealthMonitor", "Bridge heartbeat recovered; clearing degraded state.");
+            BridgeStateRequested?.Invoke(this, IpcBridgeState.Checking);
+            _ = ConnectBridgeAsync();
+        }
+
+        ResetConnectFailures();
+    }
+
+    private void OnHeartbeatFailed(Exception ex)
+    {
+        _consecutiveHeartbeatFailures++;
+
+        // Connection-tearing failures during a genuine outage every tick: keep
+        // the 30s log dedup so a fault window doesn't flood the log.
+        var now = Environment.TickCount64;
+        if (now - _lastHeartbeatErrorLogTick >= 30_000)
+        {
+            _lastHeartbeatErrorLogTick = now;
+            Diagnostics.Error(
+                "HealthMonitor",
+                $"Bridge heartbeat failed (consecutive {_consecutiveHeartbeatFailures}/{HeartbeatFailureThreshold}).",
+                ex);
+        }
+
+        if (_consecutiveHeartbeatFailures < HeartbeatFailureThreshold)
+        {
+            // Under threshold: retry in place, no disconnect, no red.
+            ScheduleHeartbeatRetry();
+            return;
+        }
+
+        // Threshold reached: this is a real outage. Degrade once.
+        if (!_heartbeatDegraded)
+        {
+            _heartbeatDegraded = true;
+            Diagnostics.Warn("HealthMonitor", "Bridge heartbeat degraded after repeated failures.");
             _bridge.Disconnect();
             BridgeStateRequested?.Invoke(this, IpcBridgeState.Error);
             NoteConnectFailure();
-
-            // Stale-meta guard: if the meta file has already been flagged as
-            // orphaned and has not changed since, do not schedule another
-            // doomed reconnect every heartbeat tick.
-            if (_staleMetaStreak < StaleMetaDetectionLimit && _connectFailureCount < StaleMetaDetectionLimit)
-            {
-                _ = ConnectBridgeAsync();
-            }
         }
+
+        if (_staleMetaStreak < StaleMetaDetectionLimit && _connectFailureCount < StaleMetaDetectionLimit)
+        {
+            _ = ConnectBridgeAsync();
+        }
+    }
+
+    private void ScheduleHeartbeatRetry()
+    {
+        // Single-flight: at most one retry loop is in flight; the timer tick
+        // may fire again before the backoff completes.
+        if (Interlocked.CompareExchange(ref _heartbeatRetryInFlight, 1, 0) != 0)
+        {
+            return;
+        }
+
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                for (var attempt = 0; attempt < HeartbeatRetryBackoff.Length; attempt++)
+                {
+                    if (_bridge.State != IpcBridgeState.Connected)
+                    {
+                        return;
+                    }
+
+                    await Task.Delay(HeartbeatRetryBackoff[attempt]).ConfigureAwait(false);
+
+                    try
+                    {
+                        await _bridge.SendHeartbeatAsync().ConfigureAwait(false);
+                        OnHeartbeatSucceeded();
+                        return;
+                    }
+                    catch (Exception ex)
+                    {
+                        _consecutiveHeartbeatFailures++;
+                        if (_consecutiveHeartbeatFailures >= HeartbeatFailureThreshold)
+                        {
+                            OnHeartbeatFailed(ex);
+                            return;
+                        }
+                    }
+                }
+            }
+            finally
+            {
+                Interlocked.Exchange(ref _heartbeatRetryInFlight, 0);
+            }
+        });
     }
 
     public void Dispose()

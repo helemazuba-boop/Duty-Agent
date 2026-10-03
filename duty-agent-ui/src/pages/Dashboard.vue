@@ -251,14 +251,17 @@ const copyContact = async (name: string) => {
       </template>
     </PageHeader>
 
-    <div v-if="error || connUnreachable" class="da-error-tip">
-      {{
-        connErrorKind === 'unauthorized'
-          ? '登录状态已失效，请重启 Duty-Agent 客户端或在设置页重新检测连接。'
-          : connUnreachable
-            ? '后端未连接，数据加载失败。请确认 Duty-Agent 客户端正在运行。'
-            : '数据加载失败，请点击右上角"刷新"重试。'
-      }}
+    <div v-if="error || connUnreachable" class="da-offline-bar">
+      <span class="da-offline-bar__dot" aria-hidden="true"></span>
+      <span>
+        {{
+          connErrorKind === 'unauthorized'
+            ? '登录状态已失效，请重启 Duty-Agent 客户端或在设置页重新检测连接。'
+            : connUnreachable
+              ? '后端未连接，正在展示上次同步的排班数据（可能不是最新）。请确认 Duty-Agent 客户端正在运行。'
+              : '数据刷新失败，正在展示上次同步的排班数据（可能不是最新）。'
+        }}
+      </span>
     </div>
 
     <!-- ======== Hero 行:今日值班 + 接下来 3 天 ======== -->
@@ -299,9 +302,10 @@ const copyContact = async (name: string) => {
           <a-button @click="openEditor(dutyToday)">安排值班</a-button>
         </div>
 
+        <!-- 工作日暂无安排:提示性文案 + 常规按钮,不用红色告警(未排是正常待办,不是故障) -->
         <div v-else class="hero-duty__empty">
           <span class="hero-duty__empty-text">{{ dutyToday === today ? '今天' : '明天' }}无人值班</span>
-          <a-button danger @click="openEditor(dutyToday)">补排{{ dutyToday === today ? '今天' : '明天' }}</a-button>
+          <a-button @click="openEditor(dutyToday)">安排{{ dutyToday === today ? '今天' : '明天' }}</a-button>
         </div>
       </Panel>
 
@@ -430,13 +434,25 @@ const copyContact = async (name: string) => {
   text-decoration: underline;
 }
 
-.da-error-tip {
+/* 离线/降级提示:数据仍然是"上次同步"的,用中性提示条而非红色告警 */
+.da-offline-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   padding: 8px 12px;
-  border: 1px solid color-mix(in srgb, var(--dt-danger) 35%, transparent);
-  background: color-mix(in srgb, var(--dt-danger) 8%, transparent);
-  color: var(--dt-danger);
+  border: 1px solid var(--dt-border);
+  background: var(--dt-bg-2);
+  color: var(--dt-text-2);
   border-radius: var(--dt-radius);
   font-size: 13px;
+}
+
+.da-offline-bar__dot {
+  flex: 0 0 auto;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--dt-warning);
 }
 
 .hero-date {

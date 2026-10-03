@@ -1,4 +1,4 @@
-import { useQuery, useMutation, useQueryClient } from '@tanstack/vue-query';
+import { useQuery, useMutation, useQueryClient, keepPreviousData } from '@tanstack/vue-query';
 import { api } from '@/api/http';
 import type { RosterPerson, Workspace } from '@/types';
 import { snapshotKey, rosterKey } from './keys';
@@ -12,6 +12,9 @@ export function useSnapshotQuery(pollMs: number = SNAPSHOT_POLL_MS) {
     queryFn: () => api.getSnapshot({ silent: true }),
     refetchInterval: pollMs,
     refetchIntervalInBackground: true,
+    // 刷新/路由切换时保留上一份数据，避免闪空白再把"今天无人值班"
+    // 当成事故渲染成红色告警。
+    placeholderData: keepPreviousData,
   });
 }
 

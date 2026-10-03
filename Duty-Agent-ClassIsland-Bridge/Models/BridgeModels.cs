@@ -335,11 +335,34 @@ public sealed class DutyBackendSnapshot
     public DutyState State { get; set; } = new();
 
     /// <summary>
+    /// 后端计算出的权威"当前值日日期"（YYYY-MM-DD）。
+    /// 语义：当前时间早于 component_refresh_time 时取今天，否则回退到今天
+    /// （后端 state_ops.compute_current_duty_date，与 Web UI 共用同一定义）。
+    /// 桥接不再自行重算，避免与后端出现"今天/明天"分歧。
+    /// </summary>
+    [JsonPropertyName("current_duty_date")]
+    public string CurrentDutyDate { get; set; } = "";
+
+    /// <summary>
     /// component_refresh_time from host-config.json (HH:MM).
-    /// Used by Bridge rules to determine the effective "today" for duty display.
+    /// 仅作为 current_duty_date 缺失时的本地回退依据。
     /// </summary>
     [JsonPropertyName("component_refresh_time")]
     public string ComponentRefreshTime { get; set; } = "08:00";
+}
+
+/// <summary>
+/// 轻量状态端点响应（GET /api/v1/state）：只含排班状态 + 文件 mtime。
+/// 安全轮询先用 <see cref="MtimeNs"/> 比对，变了才拉全量 snapshot。
+/// </summary>
+public sealed class DutyStateResponse
+{
+    [JsonPropertyName("state")]
+    public DutyState State { get; set; } = new();
+
+    /// <summary>state.json 的 st_mtime_ns；文件不存在时为 null。</summary>
+    [JsonPropertyName("mtime_ns")]
+    public long? MtimeNs { get; set; }
 }
 
 /// <summary>

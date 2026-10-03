@@ -115,7 +115,7 @@ public class Plugin : PluginBase
         }
 
         Diagnostics.Log("Plugin", "System resumed; reconnecting bridge.", "INFO");
-        IAppHost.GetService<IIpcBridgeService>()?.Reconnect();
+        IAppHost.GetService<IIpcBridgeService>()?.ReconnectAfterResume();
     }
 
     /// <summary>

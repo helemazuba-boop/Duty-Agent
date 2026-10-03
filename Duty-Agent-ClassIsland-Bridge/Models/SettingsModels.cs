@@ -26,7 +26,10 @@ public sealed class BridgeSettings : INotifyPropertyChanged
 {
     private bool _autoConnect = true;
     private int _connectTimeoutSeconds = 15;
-    private int _healthCheckIntervalMs = 5000;
+
+    // meta 变更由 FileSystemWatcher 即时感知，定时器只做心跳节拍与兜底复查，
+    // 因此默认放宽到 15s；用户仍可在设置页调小（1s-60s）。
+    private int _healthCheckIntervalMs = 15000;
 
     /// <summary>自动连接（ClassIsland 启动后自动连接独立软件）</summary>
     [JsonPropertyName("auto_connect")]

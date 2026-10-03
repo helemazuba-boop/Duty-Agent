@@ -20,6 +20,10 @@ public interface IIpcBridgeService : IDisposable
     Task ConnectAsync(CancellationToken cancellationToken = default);
     void Disconnect();
     void Reconnect();
+
+    /// <summary>系统唤醒后重建连接与通知长连接（SSE 在 Resume 后大概率已静默失效）。</summary>
+    void ReconnectAfterResume();
+
     Task SendHeartbeatAsync(CancellationToken cancellationToken = default);
 
     Task<CoreRunResult> RunScheduleAsync(
@@ -31,6 +35,7 @@ public interface IIpcBridgeService : IDisposable
     Task CancelAsync(CancellationToken cancellationToken = default);
 
     Task<DutyBackendSnapshot> GetSnapshotAsync(CancellationToken cancellationToken = default);
+    Task<DutyStateResponse> GetStateAsync(CancellationToken cancellationToken = default);
     Task<DutyBackendConfig> GetConfigAsync(CancellationToken cancellationToken = default);
     Task<DutyBackendConfig> UpdateConfigAsync(DutyBackendConfigPatch patch, CancellationToken cancellationToken = default);
     Task SaveScheduleEntryAsync(DutyScheduleEntrySaveRequest request, CancellationToken cancellationToken = default);
@@ -143,6 +148,22 @@ public sealed class IpcBridgeService : IIpcBridgeService
 
             _currentMeta = meta;
 
+            // meta 文件可能刚被客户端重写（重启 / 端口重新分配），而我们读到的是
+            // 文件系统缓存的旧副本。这里做一次带校验的重读：token_mode=static 时
+            // token 随客户端进程派生，端口也可能重新分配，用旧值连必然 401/超时。
+            var freshMeta = ReloadFreshMeta(meta);
+            if (freshMeta != null)
+            {
+                _currentMeta = meta = freshMeta;
+            }
+
+            // Token：仅在本次读取确实拿到（含重读结果）时覆盖。
+            // 若 meta 未带 token，保留上一次已知值，避免把已有凭据清空。
+            if (!string.IsNullOrWhiteSpace(_currentMeta.Token))
+            {
+                _accessToken = _currentMeta.Token;
+            }
+
             // 等待端口分配（独立软件启动时 port=0，分配后写入）
             var port = meta.Port;
             var timeoutAt = DateTime.UtcNow.Add(ConnectTimeout);
@@ -150,11 +171,15 @@ public sealed class IpcBridgeService : IIpcBridgeService
             while (port <= 0 && DateTime.UtcNow < timeoutAt && !linkedCt.IsCancellationRequested)
             {
                 await Task.Delay(500, linkedCt);
-                var reloaded = ReloadMeta();
+                var reloaded = ReloadFreshMeta(null);
                 if (reloaded != null && reloaded.Port > 0)
                 {
                     port = reloaded.Port;
                     _currentMeta = reloaded;
+                    if (!string.IsNullOrWhiteSpace(reloaded.Token))
+                    {
+                        _accessToken = reloaded.Token;
+                    }
                     break;
                 }
             }
@@ -164,16 +189,6 @@ public sealed class IpcBridgeService : IIpcBridgeService
                 SetState(IpcBridgeState.Error);
                 SetError("独立软件启动超时（未分配端口）。请检查独立软件是否正常运行。");
                 return;
-            }
-
-            // 读取 Token
-            if (!string.IsNullOrWhiteSpace(_currentMeta.Token))
-            {
-                _accessToken = _currentMeta.Token;
-            }
-            else
-            {
-                _accessToken = "";
             }
 
             SetState(IpcBridgeState.Connecting);
@@ -229,6 +244,18 @@ public sealed class IpcBridgeService : IIpcBridgeService
     {
         Disconnect();
         _ = ConnectAsync();
+    }
+
+    /// <summary>
+    /// 系统从睡眠/休眠恢复后调用：到独立软件的 TCP 连接与通知长连接大概率已失效。
+    /// 先显式停掉 SSE（避免残留任务与新连接竞争），再重建连接；连接进入
+    /// Connected 时 State setter 会重新拉起始通知流。
+    /// </summary>
+    public void ReconnectAfterResume()
+    {
+        Diagnostics.Log("IpcBridge", "Resume detected; rebuilding bridge connection and notification stream.", "INFO");
+        StopNotificationStream();
+        Reconnect();
     }
 
     public async Task SendHeartbeatAsync(CancellationToken cancellationToken = default)
@@ -451,6 +478,33 @@ public sealed class IpcBridgeService : IIpcBridgeService
         {
             return false;
         }
+    }
+
+    /// <summary>
+    /// 重读 meta 并做新鲜度校验，用于连接建立阶段消除"旧副本"竞态。
+    /// <paramref name="previous"/> 非空时，仅当重读结果更新（started_at / pid / port / token 有变）
+    /// 才返回，否则返回 null 表示"无需覆盖"；为空时直接返回读到的结果。
+    /// </summary>
+    private StandaloneMeta? ReloadFreshMeta(StandaloneMeta? previous)
+    {
+        var candidate = ReloadMeta();
+        if (candidate == null)
+        {
+            return null;
+        }
+
+        if (previous == null)
+        {
+            return candidate;
+        }
+
+        var changed =
+            !string.Equals(candidate.StartedAt, previous.StartedAt, StringComparison.Ordinal) ||
+            candidate.ProcessId != previous.ProcessId ||
+            candidate.Port != previous.Port ||
+            !string.Equals(candidate.Token, previous.Token, StringComparison.Ordinal);
+
+        return changed ? candidate : null;
     }
 
     #endregion
@@ -691,6 +745,11 @@ public sealed class IpcBridgeService : IIpcBridgeService
     public async Task<DutyBackendSnapshot> GetSnapshotAsync(CancellationToken cancellationToken = default)
     {
         return await SendJsonAsync<DutyBackendSnapshot>(HttpMethod.Get, "/api/v1/snapshot", null, cancellationToken);
+    }
+
+    public async Task<DutyStateResponse> GetStateAsync(CancellationToken cancellationToken = default)
+    {
+        return await SendJsonAsync<DutyStateResponse>(HttpMethod.Get, "/api/v1/state", null, cancellationToken);
     }
 
     public async Task<DutyBackendConfig> GetConfigAsync(CancellationToken cancellationToken = default)

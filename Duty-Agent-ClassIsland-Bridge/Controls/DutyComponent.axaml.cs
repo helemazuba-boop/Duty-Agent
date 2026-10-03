@@ -90,43 +90,45 @@ public partial class DutyComponent : ComponentBase<DutyComponentSettings>
 
     private void OnBridgeStateChanged(object? sender, IpcBridgeState state)
     {
-        Dispatcher.UIThread.Post(() =>
-        {
-            if (state is IpcBridgeState.Disconnected or IpcBridgeState.NotInstalled)
-            {
-                RenderRows(["\u672A\u8FDE\u63A5\u72B6\u6001"], isError: true);
-            }
-            else
-            {
-                RefreshContent();
-            }
-        });
+        Dispatcher.UIThread.Post(RefreshContent);
     }
 
     private void RefreshContent()
     {
-        if (_bridge.State != IpcBridgeState.Connected)
+        var connected = _bridge.State == IpcBridgeState.Connected;
+        var hasData = _cache.State != null;
+
+        if (!connected && !hasData)
         {
+            // 从未成功拉取过、且当前断连：这才是真正的"未连接"错误态。
             RenderRows(["\u672A\u8FDE\u63A5\u72B6\u6001"], isError: true);
             return;
         }
 
         var todayItem = _cache.GetTodayItem();
+
         if (todayItem == null)
         {
-            // 缓存为空且从未成功拉取过：提示刷新中；确认今天无排班：给出明确文案。
-            RenderRows([_cache.State == null ? "\u6B63\u5728\u83B7\u53D6\u6392\u73ED\u6570\u636E\u2026" : "\u8BE5\u65E5\u6682\u65E0\u503C\u65E5\u5B89\u6392"]);
+            if (!hasData)
+            {
+                // 已连接但首拉未完成。
+                RenderRows(["\u6B63\u5728\u83B7\u53D6\u6392\u73ED\u6570\u636E\u2026"]);
+                return;
+            }
+
+            // 有缓存但该日无条目：正常业务状态（周末/假期/未排）。
+            RenderRows(["\u8BE5\u65E5\u6682\u65E0\u503C\u65E5\u5B89\u6392"], isStale: !connected);
             return;
         }
 
         var areaOrder = todayItem.AreaAssignments.Keys.ToList();
         if (areaOrder.Count == 0)
         {
-            RenderRows(["\u8BE5\u65E5\u6682\u65E0\u503C\u65E5\u5B89\u6392"]);
+            RenderRows(["\u8BE5\u65E5\u6682\u65E0\u503C\u65E5\u5B89\u6392"], isStale: !connected);
             return;
         }
 
-        RenderRows(BuildLines(areaOrder, todayItem.AreaAssignments));
+        RenderRows(BuildLines(areaOrder, todayItem.AreaAssignments), isStale: !connected);
     }
 
     /// <summary>按设置的三种换行模式产出显示行。</summary>
@@ -215,7 +217,7 @@ public partial class DutyComponent : ComponentBase<DutyComponentSettings>
         return string.Join("\uFF1B", segments);
     }
 
-    private void RenderRows(IReadOnlyList<string> lines, bool isError = false)
+    private void RenderRows(IReadOnlyList<string> lines, bool isError = false, bool isStale = false)
     {
         RowsHost.Children.Clear();
         foreach (var line in lines)
@@ -226,12 +228,12 @@ public partial class DutyComponent : ComponentBase<DutyComponentSettings>
                 TextWrapping = TextWrapping.Wrap,
                 HorizontalAlignment = Avalonia.Layout.HorizontalAlignment.Center
             };
-            ApplyTextStyle(textBlock, isError);
+            ApplyTextStyle(textBlock, isError, isStale);
             RowsHost.Children.Add(textBlock);
         }
     }
 
-    private void ApplyTextStyle(TextBlock textBlock, bool isError)
+    private void ApplyTextStyle(TextBlock textBlock, bool isError, bool isStale = false)
     {
         // 先清除上一轮遗留的本地值（例如错误态的红色），恢复继承的主题前景色；
         // 之后仅在用户显式配置了覆盖色时写 Foreground。否则错误红会永久卡死。
@@ -239,7 +241,13 @@ public partial class DutyComponent : ComponentBase<DutyComponentSettings>
 
         if (isError)
         {
+            // 只有"断连且无任何缓存"才是红。
             textBlock.Foreground = new SolidColorBrush(Color.Parse("#f44336"));
+        }
+        else if (isStale)
+        {
+            // 离线但仍有旧数据：灰字提示，不判死。
+            textBlock.Foreground = new SolidColorBrush(Color.Parse("#9e9e9e"));
         }
         else if (!string.IsNullOrWhiteSpace(Settings?.FontColor))
         {
