@@ -47,16 +47,69 @@
   与 `BridgeMetaPaths`（去重后的完整候选列表）。
 - `WriteBridgeMetaFile()` 改为按候选列表逐个写入：**至少一处成功即算成功**，
   单处失败只记 Warn 不抛（宿主布局目录在包身份下可能不可写）。
+  写入后**逐个读回校验**（pid/port 一致），并把每个路径实际解析到的完整物理位置
+  打进客户端 INFO 日志 —— 这是商店版上线后唯一能证明"桥接看到的是同一个目录"的对账依据。
 - `DeleteBridgeMetaFile()` 同样按候选列表清理，保留 `MetaFileBelongsToCurrentProcess` 归属校验。
 
 桥接侧：
-- `IBridgePaths` / `BridgePaths` 增加 `AlternateMetaFilePath`。
-- `IpcBridgeService.ReloadMeta()`：主路径不存在时回退备路径。
-- `HealthMonitorService`：`FileSystemWatcher` 同时监听两处目录，`CheckMetaFile()` 按候选列表
-  取第一个存在的文件（主路径优先）。
+- `IBridgePaths` / `BridgePaths` 增加 `AlternateMetaFilePath`、`MetaFilePaths`、
+  以及兜底层 `FallbackMetaFilePaths`（扫描 `%LOCALAPPDATA%\Packages\<任意包>\{LocalCache\Local,LocalState}\
+  ClassIsland\Config\DutyAgentBridge`）。
+- `IpcBridgeService.ReloadMeta()`：主层 → 兜底层，主层有结果就不碰兜底层。
+- `HealthMonitorService`：`FileSystemWatcher` 同时监听两处目录，`CheckMetaFile()` 从全部候选中
+  选**最应该连的那一个**（见下方修正）。
 
 **验收**：制造"只写备路径"场景（把宿主布局目录置为只读或临时改指向），桥接仍能连接；
-反向（只写主路径）行为与现在完全一致。
+反向（只写主路径）行为与现在完全一致。回归覆盖见 `Duty-Agent-ClassIsland-Bridge.Tests`。
+
+### 批次 1 修正 A：选取规则不能是"第一个存在的"
+
+> 落地后复盘发现的缺陷，已连同下方修正 B 一起修复并有测试钉住。
+
+初版实现是"遍历候选路径，取第一个文件存在且进程活着的"。这在多写方案下不成立：
+旧路径完全可能留着**昨天**的握手文件。两种都满足"文件存在"：
+1. 昨天那次非正常退出没删掉（进程已死）；
+2. 昨天那个客户端还在跑 —— zip 版与商店版同机并存时**真的会发生**。
+
+`ReloadMeta` 当时还有 `continue` 兜底，但 `HealthMonitorService.CheckMetaFile()` /
+`ComputeMetaSignature()` 用的是 `FirstOrDefault(File.Exists)`，**完全没有有效性检查**，
+会直接拿旧文件的 mtime/pid 去驱动连接决策，把桥接引向一个早已失效的端口。
+
+**修正后的规则**（收敛在 `BridgeMetaResolver`，一处定义三处复用，避免再漂移）：
+1. **有效性**：文件存在 → 能解析 → `pid > 0` → 该 pid 活着**且进程名是 `duty-agent`**
+   （顺带修掉更隐蔽的一个 bug：PID 复用时 `GetProcessById(pid)` 会返回"活着"的假象，
+   `IsProcessAlive` 会把陈旧 meta 当成有效实例）；
+2. **新鲜度**：全部有效候选中取 `started_at` 最新的；相同取文件 mtime 更新的；
+   再相同取候选列表更靠前的（更"正统"的路径）；
+3. 返回"最应该连的那一个"，而不是"最先看到的那一个"。
+
+同时删除了 `HealthMonitorService.IsProcessAlive` 与 `IpcBridgeService.IsProcessRunning`
+两个只被旧逻辑使用的私有方法 —— 留着就会成为第二个真相源。
+
+### 批次 1 修正 B：MSIX 的 AppData 隔离不是"路径字符串相同"就等同
+
+> 这条是**未实证**的。明确说明：MSIX 的目录重定向在不同运行模式（完全信任 / 应用容器 /
+> 以及对 LocalAppData 使用 Win32 API 还是 WinRT API）下行为不同，而本机没有 Windows Kits，
+> 无法在本机打包验证。因此**不能假设**"客户端和桥接进程看到同一个实际目录"。
+
+实际采取的是"两头都写 + 桥接能发现"的冗余策略，而不是赌某一种语义：
+
+客户端 `BridgeMetaPaths` 现在写三处（去重后）：
+1. 宿主布局路径（便携部署的真实落点，非包身份下唯一落点）；
+2. Win32 `%LOCALAPPDATA%\ClassIsland\Config\DutyAgentBridge`；
+3. 包身份下额外写一份到 `Windows.Storage.ApplicationData.Current.LocalFolder.Path`
+   （即 `Packages\<PFN>\LocalState`）下的同一相对路径。
+
+桥接侧对应能发现三处：
+1. `MetaFilePaths` = 宿主布局 + Win32 LocalAppData；
+2. `FallbackMetaFilePaths` = 通配扫描 `Packages\<任意包>\LocalCache\Local\...` 与
+   `Packages\<任意包>\LocalState\...`；
+3. 主层解析出结果时**完全不碰**兜底层，所以非商店部署零额外开销。
+
+**验证要求（上线前必须做，本机做不到）**：在真实的 MSIX 构建上启动客户端后，
+比对客户端 INFO 日志里的"桥接 meta 已写入 N 个路径"物理落点，与桥接侧
+设置页诊断 / DEBUG 日志里 "Multiple bridge handshake files resolved" 显示的解析结果。
+若两者完全没有交集，再把第 3 个候选路径加进桥接的 `FallbackMetaFilePaths`。
 
 ### 批次 2 —— MSIX 打包工程（B）
 
@@ -113,8 +166,11 @@
 
 每个批次一个提交，可独立回退：
 
-1. `feat(client): 握手目录双写 + 桥接 meta 双读`
+1. `feat(client): 握手目录双写 + 桥接 meta 双读`（含修正 A / B）
 2. `feat(client): 新增 MSIX 打包工程`
 3. `feat(client): 包身份下的自启/快捷方式/通知适配`
 4. `fix(client): Python 子进程只读目录与并发命名加固`
 5. `docs: 上架微软商店适配说明`
+
+> 批次 1 的修正 A/B 与 `Duty-Agent-ClassIsland-Bridge.Tests`（9 个用例，覆盖
+> "旧路径残留"、"PID 复用"、"主层优先"等）在同一批追加提交。

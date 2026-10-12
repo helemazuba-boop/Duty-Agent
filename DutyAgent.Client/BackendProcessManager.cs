@@ -348,6 +348,32 @@ internal sealed class BackendProcessManager : IDisposable
         return Path.Combine(root, "DutyAgentBridge", BridgeMetaFileName);
     }
 
+    /// <summary>
+    /// LocalState 变体：MSIX 下 <see cref="Windows.Storage.ApplicationData.Current.LocalFolder"/>
+    /// 落在 Packages\&lt;PFN&gt;\LocalState，与 Win32 的 %LOCALAPPDATA% 不是同一个物理目录。
+    /// 包身份下额外写一份，确保"桥接能读到的那个物理位置"一定有文件。
+    /// </summary>
+    private static string ResolveLocalStateBridgeMetaPath()
+    {
+        try
+        {
+            if (!PackageIdentityHelper.IsPackaged)
+            {
+                return string.Empty;
+            }
+
+            var root = Path.Combine(
+                Windows.Storage.ApplicationData.Current.LocalFolder.Path,
+                "ClassIsland",
+                "Config");
+            return Path.Combine(root, "DutyAgentBridge", BridgeMetaFileName);
+        }
+        catch
+        {
+            return string.Empty;
+        }
+    }
+
     /// <summary>备用 meta 路径（包身份下的安全写入点）。</summary>
     public string AlternateBridgeMetaPath { get; } = ResolveAlternateBridgeMetaPath();
 
@@ -358,13 +384,26 @@ internal sealed class BackendProcessManager : IDisposable
     {
         get
         {
-            var primary = BridgeMetaPath;
-            if (string.Equals(primary, AlternateBridgeMetaPath, StringComparison.OrdinalIgnoreCase))
+            var candidates = new List<string> { BridgeMetaPath, AlternateBridgeMetaPath };
+
+            // LocalState 变体（仅包身份）：与 Win32 LocalAppData 可能是两个物理目录。
+            var localState = ResolveLocalStateBridgeMetaPath();
+            if (!string.IsNullOrWhiteSpace(localState))
             {
-                return new[] { primary };
+                candidates.Add(localState);
             }
 
-            return new[] { primary, AlternateBridgeMetaPath };
+            var result = new List<string>(candidates.Count);
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var candidate in candidates)
+            {
+                if (!string.IsNullOrWhiteSpace(candidate) && seen.Add(candidate))
+                {
+                    result.Add(candidate);
+                }
+            }
+
+            return result;
         }
     }
 
@@ -516,9 +555,14 @@ internal sealed class BackendProcessManager : IDisposable
 
         var json = JsonSerializer.Serialize(payload, new JsonSerializerOptions { WriteIndented = true });
 
-        // 双写：宿主布局路径（便携部署的真实落点）+ LocalAppData 安全路径（包身份下必可写）。
+        // 多写：宿主布局路径（便携部署的真实落点）+ LocalAppData 安全路径 +
+        // LocalState 变体（包身份下 Win32 LocalAppData 可能被重定向到别处）。
         // 前者在包身份下可能不可写，因此单处失败只告警；只要有一处成功，桥接就能握手。
-        var succeeded = 0;
+        //
+        // 写完后**逐个读回校验**：MSIX 的目录重定向让"我以为写到了 X"和"物理上落在 X"
+        // 不一定是同一件事。读回拿到的完整路径才是真实落点，记进日志供对账——
+        // 这是商店版上线后唯一能证明"桥接进程看到的是同一个目录"的手段。
+        var verified = new List<string>();
         var failures = new List<string>();
         foreach (var metaPath in BridgeMetaPaths)
         {
@@ -533,7 +577,12 @@ internal sealed class BackendProcessManager : IDisposable
                 var tempPath = metaPath + ".tmp";
                 File.WriteAllText(tempPath, json, new UTF8Encoding(false));
                 File.Move(tempPath, metaPath, overwrite: true);
-                succeeded++;
+                var roundTripped = VerifyMetaRoundTrip(metaPath);
+                verified.Add(metaPath);
+                if (!roundTripped)
+                {
+                    failures.Add($"{metaPath}: 写后读回校验失败");
+                }
             }
             catch (Exception ex)
             {
@@ -541,15 +590,43 @@ internal sealed class BackendProcessManager : IDisposable
             }
         }
 
-        if (succeeded == 0)
+        if (verified.Count == 0)
         {
             ClientLog.Error(
                 $"写入桥接 meta 文件失败（{failures.Count} 个候选路径均失败）：{string.Join("; ", failures)}");
         }
-        else if (failures.Count > 0)
+        else
         {
-            ClientLog.Warn(
-                $"桥接 meta 仅写入 {succeeded}/{BridgeMetaPaths.Count} 个路径：{string.Join("; ", failures)}");
+            // 物理落点是排查"桥接为什么不握手"的第一手证据，任何时候都值得 INFO。
+            ClientLog.Info(
+                $"桥接 meta 已写入 {verified.Count} 个路径：" +
+                string.Join("; ", verified.Select(p => Path.GetFullPath(p))));
+            var roundTripFailed = failures.Where(f => f.Contains("读回校验失败", StringComparison.Ordinal)).ToList();
+            if (roundTripFailed.Count > 0)
+            {
+                ClientLog.Warn($"meta 读回校验异常：{string.Join("; ", roundTripFailed)}");
+            }
+        }
+    }
+
+    /// <summary>
+    /// 写入后立即读回，确认文件内容可解析且 pid/port 与本次一致。
+    /// 顺带暴露"路径看似相同、物理位置却不同"的重定向问题。
+    /// </summary>
+    private bool VerifyMetaRoundTrip(string metaPath)
+    {
+        try
+        {
+            using var document = JsonDocument.Parse(File.ReadAllText(metaPath, Encoding.UTF8));
+            var root = document.RootElement;
+            return root.TryGetProperty("pid", out var pidElement) &&
+                   pidElement.GetInt32() == Environment.ProcessId &&
+                   root.TryGetProperty("port", out var portElement) &&
+                   portElement.GetInt32() == Port;
+        }
+        catch
+        {
+            return false;
         }
     }
 

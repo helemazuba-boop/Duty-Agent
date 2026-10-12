@@ -344,7 +344,11 @@ powershell -ExecutionPolicy Bypass -File scripts\Build-MsixPackage.ps1 -ReleaseV
 | 通知 AUMID | 自建 `.lnk 上的硬编码 ID` | `<PackageFamilyName>!App` |
 | 单实例互斥体 | `Local\DutyAgent.Client.*` | 同上加 `PackageFamilyName\` 前缀，可与 zip 版并存 |
 | 数据与日志 | `%LOCALAPPDATA%\DutyAgent` | 同一路径，两种形态共用同一份数据 |
-| 与 ClassIsland 握手 | 写宿主配置目录 | 宿主目录 + `%LOCALAPPDATA%\ClassIsland\Config` 双写，桥接双读 |
+| 与 ClassIsland 握手 | 写宿主配置目录 | 宿主目录 + `%LOCALAPPDATA%\ClassIsland\Config` + `LocalState` 三处，桥接按"新鲜度优先"取最应连接的一个，并兜底扫描 `Packages\<包>\...` |
+
+> 握手目录的 MSIX 隔离语义**尚未在真实商店构建上实证**：`Packages\<PFN>\LocalCache\Local`
+> 与 `LocalState` 是否被客户端写到、桥接能否发现，需要在 MSIX 构建上启动后比对
+> 客户端 INFO 日志与桥接 DEBUG 日志。本机没有 Windows Kits，无法自证。
 
 约束：仅 x64；未接 Store 商业化与增量更新通道；同机同时只应运行一个实例
 （否则会抢后端端口）。

@@ -437,52 +437,22 @@ public sealed class IpcBridgeService : IIpcBridgeService
 
     private StandaloneMeta? ReloadMeta()
     {
-        try
+        // 多个候选物理路径下，选"最应该连的那一个"：新鲜度/有效期优先，
+        // 而不是"最先看到的"。旧路径残留的握手文件必须被排除。
+        var best = BridgeMetaResolver.ResolveWithFallback(
+            _paths.MetaFilePaths,
+            _paths.FallbackMetaFilePaths,
+            out var allValid,
+            out _);
+        if (allValid.Count > 1)
         {
-            // 多候选路径：主路径优先，其次包身份下的安全路径。
-            foreach (var metaPath in _paths.MetaFilePaths)
-            {
-                if (!File.Exists(metaPath))
-                {
-                    continue;
-                }
-
-                // 检查进程是否存活
-                var json = File.ReadAllText(metaPath);
-                var meta = JsonSerializer.Deserialize<StandaloneMeta>(json, JsonOptions);
-                if (meta == null || meta.ProcessId <= 0)
-                {
-                    continue;
-                }
-
-                // 验证进程存活
-                if (!IsProcessRunning(meta.ProcessId))
-                {
-                    continue;
-                }
-
-                return meta;
-            }
-
-            return null;
+            Diagnostics.Log(
+                "IpcBridge",
+                $"Multiple bridge handshake files resolved; using the freshest. {BridgeMetaResolver.Describe(allValid)}",
+                "DEBUG");
         }
-        catch
-        {
-            return null;
-        }
-    }
 
-    private static bool IsProcessRunning(int pid)
-    {
-        try
-        {
-            using var process = Process.GetProcessById(pid);
-            return !process.HasExited;
-        }
-        catch
-        {
-            return false;
-        }
+        return best?.Meta;
     }
 
     /// <summary>

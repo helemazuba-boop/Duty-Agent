@@ -27,9 +27,11 @@ public sealed class HealthMonitorService : IHealthMonitorService
 
     private System.Timers.Timer? _timer;
     private readonly List<FileSystemWatcher> _metaWatchers = new();
+    private readonly HashSet<string> _watchedDirectories = new(StringComparer.OrdinalIgnoreCase);
     private CancellationTokenSource? _metaWatcherDebounce;
     private DateTime _lastMetaWriteTime = DateTime.MinValue;
     private StandaloneMeta? _lastMeta;
+    private string? _lastMetaPath;
     private bool _isRunning;
     private readonly object _lock = new();
     private int _checkInFlight;
@@ -136,18 +138,25 @@ public sealed class HealthMonitorService : IHealthMonitorService
     /// <summary>
     /// meta 文件观察：新实例/重启会重写 meta（Changed/Created/Renamed），
     /// 客户端退出会删除（Deleted）。即时感知后走 200ms 去抖再复查，
-    /// 免去 5s 一次的无谓 stat + GetProcessById。
-    /// 对每个候选路径都建一个观察器：包身份客户端只写 LocalAppData 备路径，
-    /// 便携部署只写宿主布局主路径，两者都必须被感知。
+    /// 免去每次定时器节拍都做无谓的 stat + 进程查询。
+    /// 对每个候选路径都建一个观察器：便携部署写宿主布局主路径，包身份客户端写
+    /// LocalAppData 备路径或被重定向到 Packages\&lt;PFN&gt;\... 下，都必须被感知。
     /// </summary>
     private void StartMetaWatcher()
     {
-        foreach (var metaPath in _paths.MetaFilePaths)
+        var watched = 0;
+        foreach (var metaPath in _paths.MetaFilePaths.Concat(_paths.FallbackMetaFilePaths))
         {
             try
             {
                 var directory = Path.GetDirectoryName(metaPath);
                 if (string.IsNullOrWhiteSpace(directory))
+                {
+                    continue;
+                }
+
+                // 同目录只挂一个观察器。
+                if (_watchedDirectories.Add(directory) == false)
                 {
                     continue;
                 }
@@ -164,12 +173,18 @@ public sealed class HealthMonitorService : IHealthMonitorService
                 watcher.Renamed += OnMetaFileChanged;
                 watcher.EnableRaisingEvents = true;
                 _metaWatchers.Add(watcher);
+                watched++;
             }
             catch (Exception ex)
             {
                 // 观察失败仅退化为纯定时器节拍，不影响功能。
                 Diagnostics.Warn("HealthMonitor", $"Meta file watcher unavailable: {ex.Message}");
             }
+        }
+
+        if (watched > 0)
+        {
+            Diagnostics.Info("HealthMonitor", "Meta file watchers started.", new { directories = watched });
         }
     }
 
@@ -237,20 +252,34 @@ public sealed class HealthMonitorService : IHealthMonitorService
 
         try
         {
-            // 主路径优先；不存在时回退到包身份下的安全路径。
-            var metaPath = _paths.MetaFilePaths.FirstOrDefault(File.Exists);
-            if (metaPath is null)
+            // 从全部候选物理路径里挑"最应该连的那一个"（有效期 + 新鲜度），
+            // 而不是"最先看到的"。旧路径残留的握手文件必须被排除——
+            // 否则桥接会连到昨天那个早已失效的端口上。
+            var best = BridgeMetaResolver.ResolveWithFallback(
+                _paths.MetaFilePaths,
+                _paths.FallbackMetaFilePaths,
+                out var allValid,
+                out _);
+            if (allValid.Count > 1)
+            {
+                Diagnostics.Log(
+                    "HealthMonitor",
+                    $"Multiple bridge handshake files resolved; using the freshest. {BridgeMetaResolver.Describe(allValid)}",
+                    "DEBUG");
+            }
+
+            if (best is null)
             {
                 HandleMissingMeta();
                 return;
             }
 
-            // 检查文件写入时间（通过变化检测独立软件是否重启）
+            var metaPath = best.Path;
             var writeTime = File.GetLastWriteTime(metaPath);
             if (writeTime == _lastMetaWriteTime && _lastMeta != null)
             {
                 // 文件未变化，检查进程是否存活
-                if (_lastMeta.ProcessId > 0 && !IsProcessAlive(_lastMeta.ProcessId))
+                if (_lastMeta.ProcessId > 0 && !BridgeMetaResolver.IsExpectedProcess(_lastMeta.ProcessId))
                 {
                     HandleProcessDied();
                 }
@@ -262,41 +291,20 @@ public sealed class HealthMonitorService : IHealthMonitorService
             }
 
             _lastMetaWriteTime = writeTime;
+            _lastMetaPath = metaPath;
 
-            // 读取并解析元数据
-            var json = File.ReadAllText(metaPath);
-            var meta = JsonSerializer.Deserialize<StandaloneMeta>(json, new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
-
-            if (meta == null || meta.ProcessId <= 0)
+            // PID 变化 = 新的客户端实例：重置连接失败计数，恢复默认重连节奏。
+            var previousPid = _lastMeta?.ProcessId ?? 0;
+            _lastMeta = best.Meta;
+            if (previousPid != best.Meta.ProcessId)
             {
-                HandleMissingMeta();
-                return;
-            }
-
-            // 检查进程是否存活
-            if (!IsProcessAlive(meta.ProcessId))
-            {
-                HandleProcessDied();
-                return;
+                ResetConnectFailures();
             }
 
             // 进程恢复存活：清除孤儿-meta 计数，恢复正常重连节奏。
             _staleMetaSignature = 0;
             _staleMetaStreak = 0;
-            if (_lastMeta != null && _lastMeta.ProcessId == meta.ProcessId)
-            {
-                // Same PID alive again — keep failure counters; they reset on
-                // a successful heartbeat. A new PID means a fresh instance.
-                _lastMeta = meta;
-            }
-            else
-            {
-                ResetConnectFailures();
-                _lastMeta = meta;
-            }
-
-            // 根据当前状态和元数据决定下一步动作
-            OnMetaLoaded(meta);
+            OnMetaLoaded(best.Meta);
         }
         catch (Exception ex)
         {
@@ -305,22 +313,6 @@ public sealed class HealthMonitorService : IHealthMonitorService
         finally
         {
             Interlocked.Exchange(ref _checkInFlight, 0);
-        }
-    }
-
-    private static bool IsProcessAlive(int pid)
-    {
-        if (pid <= 0) return false;
-        try
-        {
-            // Dispose the probe handle: this runs every heartbeat tick, so
-            // leaked Process objects pile up finalizer pressure over weeks.
-            using var process = System.Diagnostics.Process.GetProcessById(pid);
-            return !process.HasExited;
-        }
-        catch
-        {
-            return false;
         }
     }
 
@@ -412,14 +404,18 @@ public sealed class HealthMonitorService : IHealthMonitorService
     {
         try
         {
-            // 与 CheckMetaFile 同一取舍：主路径优先，缺失时用备路径。
-            var metaPath = _paths.MetaFilePaths.FirstOrDefault(File.Exists);
-            if (metaPath is null)
+            // 与 CheckMetaFile 同一取舍：从全部候选中取最应连接的那一个。
+            var best = BridgeMetaResolver.ResolveWithFallback(
+                _paths.MetaFilePaths,
+                _paths.FallbackMetaFilePaths,
+                out _,
+                out _);
+            if (best is null)
             {
                 return 0;
             }
 
-            var info = new FileInfo(metaPath);
+            var info = new FileInfo(best.Path);
             if (!info.Exists)
             {
                 return 0;
@@ -427,7 +423,7 @@ public sealed class HealthMonitorService : IHealthMonitorService
 
             unchecked
             {
-                return info.LastWriteTimeUtc.Ticks * 397L ^ info.Length ^ (_lastMeta?.ProcessId ?? 0);
+                return info.LastWriteTimeUtc.Ticks * 397L ^ info.Length ^ best.Meta.ProcessId;
             }
         }
         catch

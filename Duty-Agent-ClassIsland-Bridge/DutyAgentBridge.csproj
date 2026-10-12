@@ -34,4 +34,11 @@
     </Content>
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- BridgeMetaResolver 等内部类型需要被单元测试覆盖（握手文件选取规则） -->
+    <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleTo">
+      <_Parameter1>DutyAgentBridge.Tests</_Parameter1>
+    </AssemblyAttribute>
+  </ItemGroup>
+
 </Project>
