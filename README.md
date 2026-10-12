@@ -312,6 +312,43 @@ build_client.bat                                                                
 
 更详细的开发者说明（架构、数据分层、进程生命周期、ClassIsland 集成点）见 `CLAUDE.md`。
 
+## 上架微软商店（MSIX）
+
+代码层的包身份适配已完成，打包骨架见 `DutyAgent.Client.Package/`。完整改造计划、
+分批记录与尚未闭环的事项见 `docs/msix-store-adaptation-plan.md`。
+
+前置条件：
+
+- 装有 "Desktop Bridge" 工作负载的 Visual Studio（或独立 Windows SDK）——
+  MSIX 只能用 VS 自带的 MSBuild 构建，.NET SDK 的 MSBuild 没有 DesktopBridge 目标
+- Partner Center 开发者账号
+
+构建：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\Build-MsixPackage.ps1 -ReleaseVersion 1.2.3
+```
+
+产物在 `DutyAgent.Client.Package\AppPackages\`。提交商店前必须替换两处占位：
+
+1. `Package.appxmanifest` 与 `DutyAgent.Client.Package.wapproj` 里的
+   `CN=REPLACE_WITH_PARTNER_CENTER_PUBLISHER_ID`
+2. `DutyAgent.Client.Package/Assets\*.png` 商店图标（缺省会用根目录 `icon.png` 缩放占位，不合规）
+
+行为差异（包身份 vs zip 分发）：
+
+| 能力 | zip 分发 | MSIX |
+|---|---|---|
+| 开机自启 | 写 `HKCU\...\Run` | 系统 `StartupTask`（设置 → 应用 → 启动），卸载自动清理 |
+| 开始菜单快捷方式 | 客户端自建 `.lnk` | 平台托管，客户端不再自建 |
+| 通知 AUMID | 自建 `.lnk 上的硬编码 ID` | `<PackageFamilyName>!App` |
+| 单实例互斥体 | `Local\DutyAgent.Client.*` | 同上加 `PackageFamilyName\` 前缀，可与 zip 版并存 |
+| 数据与日志 | `%LOCALAPPDATA%\DutyAgent` | 同一路径，两种形态共用同一份数据 |
+| 与 ClassIsland 握手 | 写宿主配置目录 | 宿主目录 + `%LOCALAPPDATA%\ClassIsland\Config` 双写，桥接双读 |
+
+约束：仅 x64；未接 Store 商业化与增量更新通道；同机同时只应运行一个实例
+（否则会抢后端端口）。
+
 ## 许可证
 
 MIT License
