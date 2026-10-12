@@ -70,9 +70,12 @@ internal sealed class DesktopNotificationService : IDisposable
             };
             toast.Activated += (_, _) => _owner.BeginInvoke(() => NotificationActivated?.Invoke(this, route));
 
-            ToastNotificationManager
-                .CreateToastNotifier(WindowsShortcutActivator.AppUserModelId)
-                .Show(toast);
+            // 包身份下不指定 AUMID，让通知走当前包的 AppId（<PFN>!App）；
+            // 传统桌面形态下沿用自建 .lnk 上写入的那个 ID。
+            var notifier = PackageIdentityHelper.IsPackaged
+                ? ToastNotificationManager.CreateToastNotifier()
+                : ToastNotificationManager.CreateToastNotifier(WindowsShortcutActivator.AppUserModelId);
+            notifier.Show(toast);
             return true;
         }
         catch

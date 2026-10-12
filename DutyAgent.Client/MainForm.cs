@@ -987,7 +987,15 @@ internal sealed class MainForm : Form
     {
         var (autoStart, closeAction) = ReadLifecycleSettings();
         _closeAction = closeAction;
-        AutoStartManager.Apply(autoStart);
+        if (!AutoStartManager.Apply(autoStart) && autoStart)
+        {
+            // 系统拒绝了自启（组策略禁用 StartupTask）：提示但不阻塞主流程。
+            _trayIcon?.ShowBalloonTip(
+                4000,
+                "自启未生效",
+                "系统禁用了本应用的开机自启，可到系统「设置 → 应用 → 启动」中查看。",
+                System.Windows.Forms.ToolTipIcon.Warning);
+        }
     }
 
     private (bool AutoStart, string CloseAction) ReadLifecycleSettings()
