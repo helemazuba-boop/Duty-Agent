@@ -32,7 +32,9 @@ Duty-Agent **不要求注册 Duty-Agent 云端账号**。正常的名单和排�
 
 **云端 AI 模型：** 当用户配置并调用云端 AI 服务时，Duty-Agent 会向用户设定的模型 API 地址发送生成排班所需的消息、提示词和相关参数，并向该地址提交相应的 API 凭据。模型服务商会收到这些请求，可能根据其自身条款、隐私政策、保留期限及所在地区处理数据。
 
-程序包含以数字 ID 替换已知花名册姓名的处理逻辑，旨在减少模型请求中直接出现真实姓名；**这不构成彻底去标识化保证**。例如，用户自行填写的备注、地点、规则或其他自由文本仍可能识别个人。发送前请勿输入不必要的敏感信息。
+**Duty-Agent 的正常内置排班流程不会直接将完整花名册文件（`roster.csv`）或姓名与 ID 的映射表发送给云端 AI。** 程序在生成模型请求前，将排班指令和规则中与本地花名册匹配的姓名替换为数字 ID；模型返回数字 ID 后，再在用户设备上恢复对应姓名。这是有意设计的本地匿名化边界。
+
+**匿名化仍有实现边界：** 当前代码合并进提示词的「上次运行备注 / 用户备注」未统一经过同一姓名替换函数，部分其他自定义文本（例如区域名称）也可能含识别信息。如果用户在这些字段填写真实姓名，相关文字存在随模型请求发送的可能性。此项是代码审查发现的潜在风险，**不表示已经发生过学生姓名外传**。请避免在备注及其他自由文本中填写不必要的敏感信息。
 
 **本地模型/离线模式：** 当用户选择真正运行在本机的模型端点或无需模型的离线算法，并且未启用其他外部集成时，排班推理可以不向云端模型发送请求。是否发生网络传输还取决于所配置端点和使用的其他工具。
 
@@ -72,9 +74,9 @@ Duty-Agent 开发者通常无法直接读取或删除仅保存在用户设备上
 
 ### 9. 联系方式
 
-开发者与隐私事项联系入口：**[Duty-Agent GitHub Issues](https://github.com/helemazuba-boop/Duty-Agent/issues/new)**。
+开发者与隐私事项联系邮箱：**[helemazuba@gmail.com](mailto:helemazuba@gmail.com)**。
 
-请勿在公开 Issue 中粘贴真实花名册、个人信息、访问令牌、API Key 或含敏感信息的日志。如需非公开处理个人资料，应先通过项目页面寻找可用的非公开联系渠道；若尚未提供，请不要公开发送敏感材料。
+一般功能建议或公开问题可以使用 [Duty-Agent GitHub Issues](https://github.com/helemazuba-boop/Duty-Agent/issues/new)。请勿在公开 Issue 中粘贴真实花名册、个人信息、访问令牌、API Key 或含敏感信息的日志。发送邮件时也请尽量脱敏，并避免提供不必要的学生个人信息。
 
 ---
 
@@ -102,7 +104,9 @@ This information is processed to manage rosters, generate and display schedules,
 
 **Cloud AI providers:** When you configure and use a remote AI service, the app submits relevant prompts, messages, parameters and the associated API credential to the endpoint you selected. That provider may process and retain requests under its own privacy policy, terms, and jurisdiction.
 
-Duty-Agent has logic that replaces known roster names with numeric IDs before generating certain prompts. **This does not guarantee complete anonymization.** Free-form instructions, notes, location names or rules may still include identifying information. Do not include unnecessary sensitive details.
+**Duty-Agent's normal built-in scheduling flow does not directly upload the complete roster file (`roster.csv`) or the name-to-ID mapping to a cloud AI provider.** When constructing model prompts, it replaces names matching the local roster in scheduling instructions and rules with numeric member IDs. The numeric IDs are mapped back to names locally after the model responds.
+
+**Limitations:** Previously saved run notes and user notes included in prompts are not consistently passed through the same name-replacement function in the current implementation. Other user-defined text, such as area names, may also contain identifying information. Consequently, names entered into those fields could be transmitted in model requests. This is a potential code-path limitation, **not evidence that any real student names have been transmitted**. Avoid entering unnecessary personal or sensitive details in free-text fields.
 
 **Local and offline processing:** A genuinely local model endpoint or the built-in model-free scheduling mode can avoid sending scheduling prompts to a cloud AI service, provided no other external integration transmits them. Network behavior also depends on your chosen configuration.
 
@@ -142,6 +146,6 @@ The maintainer may update this policy and its effective date when features, inte
 
 ### 9. Contact
 
-For project and privacy inquiries, use **[Duty-Agent GitHub Issues](https://github.com/helemazuba-boop/Duty-Agent/issues/new)**.
+For privacy inquiries, contact the developer at **[helemazuba@gmail.com](mailto:helemazuba@gmail.com)**.
 
-Do **not** post personal rosters, private contact details, access tokens, API keys or sensitive logs in public issues. Seek a private contact channel on the project page before sharing sensitive information; if none is available, do not post it publicly.
+For general issues, you may use [Duty-Agent GitHub Issues](https://github.com/helemazuba-boop/Duty-Agent/issues/new). Do **not** post personal rosters, private contact details, access tokens, API keys or sensitive logs in public issues. Minimize or redact any personal information you send by email, especially student data.
