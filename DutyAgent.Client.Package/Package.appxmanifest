@@ -1,0 +1,80 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Package xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
+         xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
+         xmlns:uap3="http://schemas.microsoft.com/appx/manifest/uap/windows10/3"
+         xmlns:desktop="http://schemas.microsoft.com/appx/manifest/desktop/windows10"
+         xmlns:desktop6="http://schemas.microsoft.com/appx/manifest/desktop/windows10/6"
+         xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
+         IgnorableNamespaces="uap uap3 desktop desktop6 rescap">
+
+  <!--
+    包身份占位说明：
+      Publisher 必须在最终构建时替换为 Partner Center 分配的原始发布者标识
+      （形如 CN=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx，共 32 位十六进制）。
+      WAP 工程会用 DutyAgent.Client.Package.wapproj 里的同名属性覆盖此处，
+      直接改这里的值只对“SDK MSIX 工具链”路径生效。
+  -->
+  <Identity Name="DutyAgent"
+            Publisher="CN=REPLACE_WITH_PARTNER_CENTER_PUBLISHER_ID"
+            Version="1.0.0.0"
+            ProcessorArchitecture="x64" />
+
+  <Properties>
+    <DisplayName>Duty-Agent 值日排班</DisplayName>
+    <PublisherDisplayName>Duty-Agent</PublisherDisplayName>
+    <Logo>Assets\StoreLogo.png</Logo>
+    <Description>班级值日排班助手：LLM 柔性排班 + 确定性兜底引擎，为 ClassIsland 桌面组件供数。</Description>
+  </Properties>
+
+  <Dependencies>
+    <TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.17763.0" MaxVersionTested="10.0.19041.0" />
+  </Dependencies>
+
+  <Resources>
+    <Resource Language="zh-CN" />
+    <Resource Language="en-US" />
+  </Resources>
+
+  <Applications>
+    <Application Id="App"
+                 Executable="duty-agent.exe"
+                 EntryPoint="Windows.FullTrustApplication">
+      <uap:VisualElements DisplayName="Duty-Agent"
+                          Description="班级值日排班助手"
+                          Square150x150Logo="Assets\Square150x150Logo.png"
+                          Square44x44Logo="Assets\Square44x44Logo.png"
+                          BackgroundColor="transparent">
+        <!--
+          AppListEntry 默认显示。若希望应用只活在托盘、不进开始菜单应用列表,
+          可改为 AppListEntry="none"。
+        -->
+      </uap:VisualElements>
+    </Application>
+  </Applications>
+
+  <Capabilities>
+    <!--
+      全信任桌面应用必需。注意：本应用不需要 broadFileSystemAccess —— 所有数据
+      都写在 %LOCALAPPDATA%\DutyAgent，与 ClassIsland 的握手文件走双写（含
+      LocalAppData 备路径），经典 Win32 I/O 在全信任下可读写用户有权限的路径。
+    -->
+    <rescap:Capability Name="runFullTrust" />
+  </Capabilities>
+
+  <Extensions>
+    <!-- 自启：AutoStartManager 在包身份下走 StartupTask API，声明必须与之对应 -->
+    <desktop6:Extension Category="windows.startupTask" Executable="duty-agent.exe"
+                        EntryPoint="Windows.FullTrustApplication">
+      <desktop6:StartupTask TaskId="DutyAgentStartup"
+                            Enabled="true"
+                            DisplayName="Duty-Agent 值日排班" />
+    </desktop6:Extension>
+
+    <!--
+      Python 后端子进程。全信任打包应用启动的额外可执行文件需在此声明，
+      否则子进程可能拿不到包身份。
+    -->
+    <desktop:Extension Category="windows.fullTrustProcess"
+                       Executable="Assets_Duty\python-embed\python.exe" />
+  </Extensions>
+</Package>

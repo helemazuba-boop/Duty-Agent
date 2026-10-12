@@ -5,6 +5,17 @@ obj/
 *.userosscache
 *.sln.docstates
 
+# MSIX / Desktop Bridge 构建产物
+DutyAgent.Client.Package/AppPackages/
+DutyAgent.Client.Package/staging/
+DutyAgent.Client.Package/publish/
+DutyAgent.Client.Package/Assets/*.png
+*.msix
+*.msixupload
+*.appx
+*.appxupload
+Package.StoreAssociation.txt
+
 # Python
 __pycache__/
 *.py[cod]
