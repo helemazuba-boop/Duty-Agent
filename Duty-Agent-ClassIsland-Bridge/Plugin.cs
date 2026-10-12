@@ -177,6 +177,16 @@ public interface IBridgePaths
     /// <summary>独立软件写入的 meta 文件完整路径。</summary>
     string MetaFilePath { get; }
 
+    /// <summary>
+    /// meta 备用路径：%LOCALAPPDATA%\ClassIsland\Config\DutyAgentBridge\.duty-agent-meta.json。
+    /// 带包身份的客户端（微软商店 MSIX）无法可靠写入宿主布局目录，会退到这里；
+    /// 桥接对两条路径都读都监听，主路径优先。
+    /// </summary>
+    string AlternateMetaFilePath { get; }
+
+    /// <summary>全部 meta 候选路径（主路径在前，已去重）。</summary>
+    IReadOnlyList<string> MetaFilePaths { get; }
+
     /// <summary>插件日志目录（PluginConfigFolder\logs）。</summary>
     string LogsDirectory { get; }
 
@@ -196,6 +206,8 @@ public sealed class BridgePaths : IBridgePaths
     public string PluginConfigFolder { get; }
     public string SharedConfigFolder { get; }
     public string MetaFilePath { get; }
+    public string AlternateMetaFilePath { get; }
+    public IReadOnlyList<string> MetaFilePaths { get; } = Array.Empty<string>();
     public string LogsDirectory { get; }
     public string MetaSource { get; }
 
@@ -229,5 +241,14 @@ public sealed class BridgePaths : IBridgePaths
         LogsDirectory = Path.Combine(PluginConfigFolder, "logs");
         Directory.CreateDirectory(PluginConfigFolder);
         Directory.CreateDirectory(LogsDirectory);
+
+        AlternateMetaFilePath = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "ClassIsland", "Config", SharedFolderName, MetaFileName);
+
+        // 候选列表：主路径优先；与主路径相同（软链接/极端部署）时不去重造成两个相同监听。
+        MetaFilePaths = string.Equals(MetaFilePath, AlternateMetaFilePath, StringComparison.OrdinalIgnoreCase)
+            ? new[] { MetaFilePath }
+            : new[] { MetaFilePath, AlternateMetaFilePath };
     }
 }

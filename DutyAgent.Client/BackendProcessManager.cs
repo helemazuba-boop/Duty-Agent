@@ -328,6 +328,40 @@ internal sealed class BackendProcessManager : IDisposable
         return Path.Combine(ClassIslandConfig.ConfigFolder, "DutyAgentBridge", BridgeMetaFileName);
     }
 
+    /// <summary>
+    /// Store / 包身份场景下的安全 meta 路径：固定在 %LOCALAPPDATA%\ClassIsland\Config 下，
+    /// 不依赖 ClassIsland 是否便携安装、装在哪个盘。桥接侧会同时读取这里，
+    /// 因此该路径与宿主布局路径互为冗余，任一可用即可握手成功。
+    /// </summary>
+    private static string ResolveAlternateBridgeMetaPath()
+    {
+        var root = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "ClassIsland",
+            "Config");
+        return Path.Combine(root, "DutyAgentBridge", BridgeMetaFileName);
+    }
+
+    /// <summary>备用 meta 路径（包身份下的安全写入点）。</summary>
+    public string AlternateBridgeMetaPath { get; } = ResolveAlternateBridgeMetaPath();
+
+    /// <summary>
+    /// 全部 meta 候选路径（去重）。宿主布局路径在前——非包身份与旧部署下它是唯一落点。
+    /// </summary>
+    public IReadOnlyList<string> BridgeMetaPaths
+    {
+        get
+        {
+            var primary = BridgeMetaPath;
+            if (string.Equals(primary, AlternateBridgeMetaPath, StringComparison.OrdinalIgnoreCase))
+            {
+                return new[] { primary };
+            }
+
+            return new[] { primary, AlternateBridgeMetaPath };
+        }
+    }
+
     private void EnsureRequiredFiles()
     {
         var pythonExe = Path.Combine(AssetsDirectory, "python-embed", "python.exe");
@@ -460,13 +494,6 @@ internal sealed class BackendProcessManager : IDisposable
             return;
         }
 
-        var metaPath = BridgeMetaPath;
-        var directory = Path.GetDirectoryName(metaPath);
-        if (!string.IsNullOrWhiteSpace(directory))
-        {
-            Directory.CreateDirectory(directory);
-        }
-
         var payload = new Dictionary<string, object?>
         {
             ["version"] = "0.50.0",
@@ -482,30 +509,66 @@ internal sealed class BackendProcessManager : IDisposable
         };
 
         var json = JsonSerializer.Serialize(payload, new JsonSerializerOptions { WriteIndented = true });
-        var tempPath = metaPath + ".tmp";
-        File.WriteAllText(tempPath, json, new UTF8Encoding(false));
-        File.Move(tempPath, metaPath, overwrite: true);
+
+        // 双写：宿主布局路径（便携部署的真实落点）+ LocalAppData 安全路径（包身份下必可写）。
+        // 前者在包身份下可能不可写，因此单处失败只告警；只要有一处成功，桥接就能握手。
+        var succeeded = 0;
+        var failures = new List<string>();
+        foreach (var metaPath in BridgeMetaPaths)
+        {
+            try
+            {
+                var directory = Path.GetDirectoryName(metaPath);
+                if (!string.IsNullOrWhiteSpace(directory))
+                {
+                    Directory.CreateDirectory(directory);
+                }
+
+                var tempPath = metaPath + ".tmp";
+                File.WriteAllText(tempPath, json, new UTF8Encoding(false));
+                File.Move(tempPath, metaPath, overwrite: true);
+                succeeded++;
+            }
+            catch (Exception ex)
+            {
+                failures.Add($"{metaPath}: {ex.Message}");
+            }
+        }
+
+        if (succeeded == 0)
+        {
+            ClientLog.Error(
+                $"写入桥接 meta 文件失败（{failures.Count} 个候选路径均失败）：{string.Join("; ", failures)}");
+        }
+        else if (failures.Count > 0)
+        {
+            ClientLog.Warn(
+                $"桥接 meta 仅写入 {succeeded}/{BridgeMetaPaths.Count} 个路径：{string.Join("; ", failures)}");
+        }
     }
 
     private void DeleteBridgeMetaFile()
     {
-        var metaPath = BridgeMetaPath;
-        if (!File.Exists(metaPath))
+        // 与 WriteBridgeMetaFile 对称：清理所有候选路径。
+        foreach (var metaPath in BridgeMetaPaths)
         {
-            return;
-        }
-
-        try
-        {
-            if (!MetaFileBelongsToCurrentProcess(metaPath))
+            if (!File.Exists(metaPath))
             {
-                return;
+                continue;
             }
 
-            File.Delete(metaPath);
-        }
-        catch
-        {
+            try
+            {
+                if (!MetaFileBelongsToCurrentProcess(metaPath))
+                {
+                    continue;
+                }
+
+                File.Delete(metaPath);
+            }
+            catch
+            {
+            }
         }
     }
 

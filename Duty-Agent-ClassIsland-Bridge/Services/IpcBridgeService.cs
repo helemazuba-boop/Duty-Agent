@@ -439,27 +439,32 @@ public sealed class IpcBridgeService : IIpcBridgeService
     {
         try
         {
-            var metaPath = _paths.MetaFilePath;
-            if (!File.Exists(metaPath))
+            // 多候选路径：主路径优先，其次包身份下的安全路径。
+            foreach (var metaPath in _paths.MetaFilePaths)
             {
-                return null;
+                if (!File.Exists(metaPath))
+                {
+                    continue;
+                }
+
+                // 检查进程是否存活
+                var json = File.ReadAllText(metaPath);
+                var meta = JsonSerializer.Deserialize<StandaloneMeta>(json, JsonOptions);
+                if (meta == null || meta.ProcessId <= 0)
+                {
+                    continue;
+                }
+
+                // 验证进程存活
+                if (!IsProcessRunning(meta.ProcessId))
+                {
+                    continue;
+                }
+
+                return meta;
             }
 
-            // 检查进程是否存活
-            var json = File.ReadAllText(metaPath);
-            var meta = JsonSerializer.Deserialize<StandaloneMeta>(json, JsonOptions);
-            if (meta == null || meta.ProcessId <= 0)
-            {
-                return null;
-            }
-
-            // 验证进程存活
-            if (!IsProcessRunning(meta.ProcessId))
-            {
-                return null;
-            }
-
-            return meta;
+            return null;
         }
         catch
         {

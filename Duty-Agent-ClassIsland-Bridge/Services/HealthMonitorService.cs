@@ -26,7 +26,7 @@ public sealed class HealthMonitorService : IHealthMonitorService
     private readonly IIpcBridgeService _bridge;
 
     private System.Timers.Timer? _timer;
-    private FileSystemWatcher? _metaWatcher;
+    private readonly List<FileSystemWatcher> _metaWatchers = new();
     private CancellationTokenSource? _metaWatcherDebounce;
     private DateTime _lastMetaWriteTime = DateTime.MinValue;
     private StandaloneMeta? _lastMeta;
@@ -137,59 +137,61 @@ public sealed class HealthMonitorService : IHealthMonitorService
     /// meta 文件观察：新实例/重启会重写 meta（Changed/Created/Renamed），
     /// 客户端退出会删除（Deleted）。即时感知后走 200ms 去抖再复查，
     /// 免去 5s 一次的无谓 stat + GetProcessById。
+    /// 对每个候选路径都建一个观察器：包身份客户端只写 LocalAppData 备路径，
+    /// 便携部署只写宿主布局主路径，两者都必须被感知。
     /// </summary>
     private void StartMetaWatcher()
     {
-        try
+        foreach (var metaPath in _paths.MetaFilePaths)
         {
-            var directory = Path.GetDirectoryName(_paths.MetaFilePath);
-            if (string.IsNullOrWhiteSpace(directory))
+            try
             {
-                return;
-            }
+                var directory = Path.GetDirectoryName(metaPath);
+                if (string.IsNullOrWhiteSpace(directory))
+                {
+                    continue;
+                }
 
-            Directory.CreateDirectory(directory);
-            _metaWatcher = new FileSystemWatcher(directory, Path.GetFileName(_paths.MetaFilePath))
+                Directory.CreateDirectory(directory);
+                var watcher = new FileSystemWatcher(directory, Path.GetFileName(metaPath))
+                {
+                    NotifyFilter = NotifyFilters.LastWrite | NotifyFilters.FileName
+                        | NotifyFilters.CreationTime | NotifyFilters.Size,
+                };
+                watcher.Changed += OnMetaFileChanged;
+                watcher.Created += OnMetaFileChanged;
+                watcher.Deleted += OnMetaFileChanged;
+                watcher.Renamed += OnMetaFileChanged;
+                watcher.EnableRaisingEvents = true;
+                _metaWatchers.Add(watcher);
+            }
+            catch (Exception ex)
             {
-                NotifyFilter = NotifyFilters.LastWrite | NotifyFilters.FileName
-                    | NotifyFilters.CreationTime | NotifyFilters.Size,
-            };
-            _metaWatcher.Changed += OnMetaFileChanged;
-            _metaWatcher.Created += OnMetaFileChanged;
-            _metaWatcher.Deleted += OnMetaFileChanged;
-            _metaWatcher.Renamed += OnMetaFileChanged;
-            _metaWatcher.EnableRaisingEvents = true;
-        }
-        catch (Exception ex)
-        {
-            // 观察失败仅退化为纯定时器节拍，不影响功能。
-            Diagnostics.Warn("HealthMonitor", $"Meta file watcher unavailable: {ex.Message}");
+                // 观察失败仅退化为纯定时器节拍，不影响功能。
+                Diagnostics.Warn("HealthMonitor", $"Meta file watcher unavailable: {ex.Message}");
+            }
         }
     }
 
     private void StopMetaWatcher()
     {
-        if (_metaWatcher == null)
+        foreach (var watcher in _metaWatchers)
         {
-            return;
+            try
+            {
+                watcher.EnableRaisingEvents = false;
+                watcher.Changed -= OnMetaFileChanged;
+                watcher.Created -= OnMetaFileChanged;
+                watcher.Deleted -= OnMetaFileChanged;
+                watcher.Renamed -= OnMetaFileChanged;
+                watcher.Dispose();
+            }
+            catch
+            {
+            }
         }
 
-        try
-        {
-            _metaWatcher.EnableRaisingEvents = false;
-            _metaWatcher.Changed -= OnMetaFileChanged;
-            _metaWatcher.Created -= OnMetaFileChanged;
-            _metaWatcher.Deleted -= OnMetaFileChanged;
-            _metaWatcher.Renamed -= OnMetaFileChanged;
-            _metaWatcher.Dispose();
-        }
-        catch
-        {
-        }
-        finally
-        {
-            _metaWatcher = null;
-        }
+        _metaWatchers.Clear();
     }
 
     private void OnMetaFileChanged(object? sender, FileSystemEventArgs e)
@@ -235,9 +237,9 @@ public sealed class HealthMonitorService : IHealthMonitorService
 
         try
         {
-            var metaPath = _paths.MetaFilePath;
-
-            if (!File.Exists(metaPath))
+            // 主路径优先；不存在时回退到包身份下的安全路径。
+            var metaPath = _paths.MetaFilePaths.FirstOrDefault(File.Exists);
+            if (metaPath is null)
             {
                 HandleMissingMeta();
                 return;
@@ -410,7 +412,13 @@ public sealed class HealthMonitorService : IHealthMonitorService
     {
         try
         {
-            var metaPath = _paths.MetaFilePath;
+            // 与 CheckMetaFile 同一取舍：主路径优先，缺失时用备路径。
+            var metaPath = _paths.MetaFilePaths.FirstOrDefault(File.Exists);
+            if (metaPath is null)
+            {
+                return 0;
+            }
+
             var info = new FileInfo(metaPath);
             if (!info.Exists)
             {
