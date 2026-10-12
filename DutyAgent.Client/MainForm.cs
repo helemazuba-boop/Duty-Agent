@@ -597,10 +597,20 @@ internal sealed class MainForm : Form
     {
         try
         {
-            var userDataPath = Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                "DutyAgent",
-                "WebView2");
+            string userDataPath;
+            if (PackageIdentityHelper.IsPackaged)
+            {
+                // 包身份下用平台托管的 LocalFolder：卸载时随包一起清理，
+                // 不会在 %LOCALAPPDATA% 留下孤儿缓存目录。
+                userDataPath = Windows.Storage.ApplicationData.Current.LocalFolder.Path;
+            }
+            else
+            {
+                userDataPath = Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                    "DutyAgent",
+                    "WebView2");
+            }
             Directory.CreateDirectory(userDataPath);
 
             var environment = await CoreWebView2Environment.CreateAsync(userDataFolder: userDataPath).ConfigureAwait(true);

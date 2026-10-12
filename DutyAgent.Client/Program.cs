@@ -6,8 +6,12 @@ internal static class Program
 {
     // 单实例互斥与唤醒事件：开机自启驻留托盘后，用户再次双击快捷方式
     // 只应唤醒既有窗口，而不是再拉起一套后端。
-    private const string InstanceMutexName = @"Local\DutyAgent.Client.SingleInstance";
-    private const string WakeEventName = @"Local\DutyAgent.Client.Wake";
+    // 名称经 ScopeName 加包前缀：商店版（MSIX）与 zip 版同机并存时不会把对方
+    // 当成"已有实例"，也就不会出现双后端抢端口。
+    private static readonly string InstanceMutexName =
+        PackageIdentityHelper.ScopeName(@"Local\DutyAgent.Client.SingleInstance");
+    private static readonly string WakeEventName =
+        PackageIdentityHelper.ScopeName(@"Local\DutyAgent.Client.Wake");
 
     [STAThread]
     private static void Main(string[] args)

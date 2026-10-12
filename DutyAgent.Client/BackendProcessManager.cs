@@ -107,6 +107,12 @@ internal sealed class BackendProcessManager : IDisposable
             startInfo.EnvironmentVariables.Remove(key);
         }
 
+        // 安装目录（Assets_Duty 所在）在 MSIX 下是只读的，而发布产物刻意删掉了全部
+        // .pyc，Python 运行期会尝试写 __pycache__ 并在日志里刷一串 Access denied。
+        // 关掉字节码缓存：只影响启动略慢，不影响功能。
+        startInfo.EnvironmentVariables["PYTHONDONTWRITEBYTECODE"] = "1";
+        startInfo.EnvironmentVariables["PYTHONUNBUFFERED"] = "1";
+
         // 端口：host-config 的 server_port > 0 时优先固定（MCP 等外部接入需要稳定
         // 地址）；端口被占则回退随机，避免固定端口冲突把后端拖进"启动即崩溃 →
         // watchdog 重启"的循环。
