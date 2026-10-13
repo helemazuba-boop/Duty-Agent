@@ -1,8 +1,8 @@
 # Duty-Agent 隐私政策 / Privacy Policy
 
-**生效日期 / Effective date：2026-10-13**  
-**适用范围 / Scope：Duty-Agent Windows 独立客户端、Python 后端及可选的 ClassIsland 桥接插件**  
-**项目维护者 / Maintainer：Duty-Agent 项目维护者（GitHub：helemazuba-boop）**
+**更新日期 / Last updated: 2026-10-13**  
+**适用产品 / Product: Duty-Agent**  
+**隐私联系邮箱 / Privacy contact: [helemazuba@gmail.com](mailto:helemazuba@gmail.com)**
 
 [简体中文](#简体中文) | [English](#english)
 
@@ -10,142 +10,164 @@
 
 ## 简体中文
 
-### 1. 产品及数据处理方式
+### 1. 适用范围与产品简介
 
-Duty-Agent 是一款 Windows 本地智能排班工具，可管理成员名单、值日及工作排班、请假与替班记录，并可选用用户配置的 AI 模型提供商生成排班建议。本政策说明应用在设备上读取、保存、处理和可能传输的信息。
+欢迎使用 Duty-Agent。本隐私政策说明 Duty-Agent 在提供排班管理服务时如何处理信息，以及您可以作出的选择。
 
-Duty-Agent **不要求注册 Duty-Agent 云端账号**。正常的名单和排班管理主要在用户设备上的客户端与本地 Python 后端进行。**但使用云端 AI 模型并非纯离线处理：排班提示词和相关内容会发送到用户选择的服务商。** 还可以由用户自行启用 API、MCP 和第三方集成。
+Duty-Agent 是一款以本地运行为主的 Windows 排班工具，可管理人员名单、排班规则、请假与替班安排、排班结果及提醒。其组成包括桌面客户端、本地排班引擎，以及可选的 ClassIsland 桥接和 API/MCP 集成。
 
-### 2. 处理的信息与用途
+使用 Duty-Agent **不需要注册由 Duty-Agent 开发者运营的云端账户**。通常，名单、排班状态及配置由您自己的设备保存。您可以根据需要选择无需模型的离线排班、本地模型，或自行配置在线模型服务。
 
-为实现排班及相关功能，应用可能处理：
+本政策适用于 Duty-Agent 软件本身的数据处理。对于您选择连接的独立模型服务商及第三方工具，其数据处理还受相应服务商的政策约束。
 
-- **成员及排班数据**：用户导入或输入的姓名、编号、启用状态、排班日期、区域、人员分配、轮换/补偿状态，以及请假、替班、备注和相关日期。
-- **用户输入与 AI 内容**：自然语言排班指令、规则、偏好、提示词、模型生成的内容及排班结果。
-- **配置及凭据**：所选执行模式、模型名称、服务商 API 地址、API Key、宿主设置，以及供本地 API、MCP、桥接组件使用的端口和访问令牌。
-- **诊断信息**：运行时间、错误、请求追踪标识、组件状态及故障排查日志。某些异常信息或用户输入可能意外包含个人信息，请在分享日志前检查和脱敏。
-- **本地 WebView2 数据**：嵌入式界面可能在设备上产生缓存及其他浏览器运行数据。
+### 2. 本软件使用的信息
 
-这些信息用于显示和编辑名单、计算与生成排班、保存执行状态、提供提醒和通知、支持用户启用的集成，以及诊断应用错误。
+为提供您启用的功能，Duty-Agent 在本机处理以下信息：
 
-### 3. 何时向第三方发送信息
+- **名单与排班信息：** 您录入的姓名、人员编号及启用状态、日期、值日区域、任务分配、请假、替班、历史排班状态和备注。
+- **用户输入及运行结果：** 自然语言排班指令、用户定义的规则、偏好设置、模型输出以及生成的排班安排。
+- **服务配置：** 您选择的执行模式、模型名称、模型服务地址、访问凭据及集成设置。
+- **运行诊断信息：** 用于故障排查与运行维护的本地日志，例如时间、组件状态和错误信息。
+- **界面运行数据：** 为正常显示桌面内嵌界面而产生的本地缓存和必要设置。
 
-**云端 AI 模型：** 当用户配置并调用云端 AI 服务时，Duty-Agent 会向用户设定的模型 API 地址发送生成排班所需的消息、提示词和相关参数，并向该地址提交相应的 API 凭据。模型服务商会收到这些请求，可能根据其自身条款、隐私政策、保留期限及所在地区处理数据。
+这些信息用于管理人员、计算和保存排班结果、显示提醒、连接您启用的服务，以及协助排查软件运行问题。Duty-Agent 不要求用户为普通排班功能提供身份证号码、健康信息或其他与排班无关的敏感资料。
 
-**Duty-Agent 的正常内置排班流程不会直接将完整花名册文件（`roster.csv`）或姓名与 ID 的映射表发送给云端 AI。** 程序在生成模型请求前，将排班指令和规则中与本地花名册匹配的姓名替换为数字 ID；模型返回数字 ID 后，再在用户设备上恢复对应姓名。这是有意设计的本地匿名化边界。
+### 3. 在线模型与第三方服务
 
-**匿名化仍有实现边界：** 当前代码合并进提示词的「上次运行备注 / 用户备注」未统一经过同一姓名替换函数，部分其他自定义文本（例如区域名称）也可能含识别信息。如果用户在这些字段填写真实姓名，相关文字存在随模型请求发送的可能性。此项是代码审查发现的潜在风险，**不表示已经发生过学生姓名外传**。请避免在备注及其他自由文本中填写不必要的敏感信息。
+#### 3.1 离线排班及本地模型
 
-**本地模型/离线模式：** 当用户选择真正运行在本机的模型端点或无需模型的离线算法，并且未启用其他外部集成时，排班推理可以不向云端模型发送请求。是否发生网络传输还取决于所配置端点和使用的其他工具。
+当您使用无需模型的离线排班功能时，排班计算在本机执行，不需要将排班提示词发送至在线 AI 服务。
 
-**ClassIsland、API、MCP 与其他工具：** 用户主动安装或启用集成后，相关组件或获授权的客户端可以访问为执行其功能所需的排班、配置或状态信息。对于用户自行连接的外部 AI、网络服务或自动化工具，其后续数据使用受相应工具及服务的政策约束。
+当您连接实际运行在本机的模型时，请求由该本地模型处理。是否涉及其他网络通信取决于您所选择的模型程序及额外启用的集成。
 
-项目维护者不会仅因用户在本机安装或使用 Duty-Agent，就自动收到上述名单或排班数据库。本政策不代表第三方模型提供商承诺不留存或不训练数据。
+#### 3.2 用户配置的在线模型
 
-### 4. 存储地点与保留时间
+当您配置在线模型服务并发起相关操作（包括模型连接测试及 AI 排班）时，Duty-Agent 会向您指定的模型服务地址发送完成相应请求所需的信息，例如模型名称、排班指令、日期、人员编号、排班规则、区域和与任务有关的上下文；同时按照该服务的要求使用相应访问凭据。
 
-应用默认将后端配置、名单及排班状态等保存在本机，常见路径为 `%LOCALAPPDATA%\DutyAgent\data\`（例如 `config.json`、`roster.csv`、`state.json` 和 `host-config.json`）。日志、WebView2 用户数据与 ClassIsland 插件配置可能位于其他本地目录。MSIX 安装、便携模式或用户调整配置后，实际路径可能不同。
+Duty-Agent 的排班处理采用**人员编号与本地姓名对应**的方式：在主要排班指令处理过程中，将与本地名单匹配的姓名转换为编号，并在本机将排班结果还原为人员姓名。**完整的本地花名册及姓名与编号的对应表不是内置模型排班请求所需的上传内容。**
 
-名单、排班记录和配置通常保留至用户修改或删除它们；卸载程序**不一定**删除所有本地数据、缓存、日志或备份。
+您自行输入的规则、备注、区域名称或其他自由文本可能用于构建模型请求。请避免在这些内容中填写完成排班任务不需要的个人信息，尤其是其他人的敏感信息。
 
-Python 后端诊断日志实施约 **14 天**的过期清理，通常在启动及跨日写入时执行；该期限不适用于全部客户端日志、用户数据或由用户/第三方制作的备份。清理可能因程序未启动、文件权限或文件被占用而延迟。
+在线模型由您选择的服务商提供。该服务商对其接收的数据、存储期限及其他处理活动承担相应责任，并适用其隐私政策和服务条款。Duty-Agent 开发者无法代替该服务商管理其独立保存的请求数据。
 
-### 5. 安全措施与限制
+#### 3.3 可选集成
 
-通过 Windows 客户端保存的模型 API Key 支持使用当前 Windows 用户范围的 DPAPI 加密，然后再保存至配置文件；部分旧配置、外部工具或环境变量提供的密钥可能采用其他保存方式。**这不表示所有本地文件都经过加密。**
+如您启用 ClassIsland 桥接、API、MCP 或其他连接工具，Duty-Agent 可按照相应功能及授权向这些组件提供必要的排班信息或状态。ClassIsland 等本机组件可以在设备上显示人员姓名及排班安排。
 
-默认后端服务监听本机回环地址（`127.0.0.1`）；受保护的 API/MCP 操作使用访问令牌控制。用户应保护自己的 Windows 账户、访问令牌、API Key 和数据文件，不应将服务暴露到不可信网络，也应优先使用 HTTPS 模型服务端点。任何安全措施都不能保证绝对安全。
+您自行连接的外部工具或服务可能依其权限读取或处理相关数据。建议仅连接可信工具，并按需要配置和关闭相应集成。
 
-### 6. 用户选择、访问与删除
+在常规本地使用过程中，**Duty-Agent 开发者不会仅因您安装、管理名单或执行本地排班，就自动接收到您设备中的完整名单或排班数据库**。模型服务商接收的在线请求不等于将这些数据提交给 Duty-Agent 开发者。
 
-用户可以在应用中查看或修改名单、配置及排班数据；可以删除不再需要的信息、停止使用云端 AI、改用本地模型或离线方案，或关闭不需要的 MCP 与其他集成。
+### 4. 本地存储、保留与安全
 
-如需清除本地留存数据，请先退出 Duty-Agent 及相关后端/桥接进程，按需备份，然后检查并删除对应的 Duty-Agent 数据目录、日志、WebView2 数据及 ClassIsland 插件数据。删除前请确认路径，避免误删 ClassIsland 的其他配置。卸载本身不保证清除这些文件。对已发送给第三方模型或工具的内容，需向相应服务商依据其政策提出访问或删除请求。
+Duty-Agent 默认把名单、配置、排班状态和运行数据保存在您的设备上。不同安装形式及组件可能使用不同的应用数据、日志或缓存目录。
 
-Duty-Agent 开发者通常无法直接读取或删除仅保存在用户设备上的数据。若您管理包含其他人的名单（特别是未成年人的名单），您应具有合法、适当的使用依据，并告知相关人员，不应向未经授权的第三方共享这些信息。
+名单和排班记录通常保留到您修改或删除相应数据。本地后端诊断日志设有约 14 天的过期清理机制；其他本地文件、客户端日志、系统缓存和用户自行保留的备份并不统一适用该期限。卸载应用不一定同时移除全部用户数据和备份。
 
-### 7. 未成年人及敏感信息
+Duty-Agent 对模型凭据和本地服务访问采取适当的保护措施；通过 Windows 客户端保存的模型密钥支持使用操作系统的数据保护机制。本地 API 等受保护功能使用访问控制。您也应保护设备账户、模型密钥与授权令牌，避免向不可信的服务或人员提供访问权限。
 
-本产品可用于校园场景，因此排班名单可能涉及未成年人。请由有权限的教师、管理员或其他负责人管理这些资料，依据适用法律和所在组织的规则取得必要授权或同意。除排班必需的信息外，不应输入身份证号、联系方式、健康状况等敏感信息，也不应将其发送至云端模型。
+### 5. 您的选择与数据管理
 
-### 8. 本政策的变化
+您可以根据所使用的功能：
 
-产品功能、第三方服务或数据处理方式发生重大变化时，项目维护者会更新本政策及生效日期。请以公开发布的最新版本为准。
+- 在本机查看、修改或删除名单、排班信息及设置；
+- 选择离线排班或本地模型，或者更换、停止使用在线模型服务；
+- 配置或关闭可选的 ClassIsland、API、MCP 等集成；
+- 备份或清理相关应用数据与日志。
 
-### 9. 联系方式
+如需彻底清理本地数据，请先退出 Duty-Agent 及相关组件，确认并移除相应的数据、缓存和备份文件。请注意，应用卸载与清除用户数据并非始终是同一操作。
 
-开发者与隐私事项联系邮箱：**[helemazuba@gmail.com](mailto:helemazuba@gmail.com)**。
+您通过第三方模型或工具提交的内容，如需访问、更正或删除，应同时参考该服务商提供的处理方式与相应政策。Duty-Agent 开发者一般无法直接访问或删除仅存储在您的设备或第三方服务商系统中的内容。
 
-一般功能建议或公开问题可以使用 [Duty-Agent GitHub Issues](https://github.com/helemazuba-boop/Duty-Agent/issues/new)。请勿在公开 Issue 中粘贴真实花名册、个人信息、访问令牌、API Key 或含敏感信息的日志。发送邮件时也请尽量脱敏，并避免提供不必要的学生个人信息。
+如果您在名单中录入其他人的信息，应确保您有适当的使用依据与权限；对于未成年人信息，请遵守适用的法律及学校或组织的相关要求，并避免将不必要的个人信息提交给外部服务。
+
+### 6. 隐私政策更新与联系我们
+
+当产品功能或数据处理方式发生重要变化时，我们会更新本政策并注明更新日期。
+
+如果您对 Duty-Agent 的隐私处理有疑问，可通过 **[helemazuba@gmail.com](mailto:helemazuba@gmail.com)** 联系项目维护者。一般产品问题亦可通过 [Duty-Agent GitHub 仓库](https://github.com/helemazuba-boop/Duty-Agent) 提出。
+
+请勿在公开讨论区张贴真实花名册、模型密钥、访问令牌或其他敏感资料；联系支持时，建议先对诊断资料进行必要的脱敏。
 
 ---
 
 ## English
 
-### 1. About Duty-Agent
+### 1. Scope and overview
 
-Duty-Agent is a Windows scheduling application for managing rosters, duty assignments, absences, substitutions, and reminders. It runs a local client and Python backend, can integrate with ClassIsland, and optionally uses an AI model endpoint chosen by the user.
+This Privacy Policy explains how Duty-Agent processes information when providing its scheduling features and what choices you have.
 
-No Duty-Agent cloud account is required. Ordinary roster and schedule management is primarily local. **When a user runs scheduling through a cloud AI provider, the application transmits relevant prompts and request data to that provider.** Optional API, MCP and third-party integrations may also exchange data when enabled by the user.
+Duty-Agent is a primarily local Windows scheduling application. It manages rosters, scheduling rules, absences, substitutions, schedules, and reminders. Its components include the desktop client, a local scheduling engine, and optional ClassIsland, API, and MCP integrations.
 
-### 2. Information processed and why
+**A cloud account operated by the Duty-Agent developer is not required.** Rosters, schedule state, and settings are ordinarily stored on your device. You may choose model-free offline scheduling, a locally hosted model, or an online model endpoint that you configure.
 
-To provide its functions, Duty-Agent may process:
+Third-party model providers and connected tools have their own data handling practices and policies.
 
-- **Roster and scheduling information:** names, member IDs, enabled status, dates, assignments, duty areas, rotation state, absence and substitution records, and notes.
-- **Instructions and generated content:** user-provided scheduling instructions, rules, preferences, prompts, AI responses and generated schedules.
-- **Settings and credentials:** selected models and modes, provider endpoint URLs, API keys, local service ports, access tokens and integration configuration.
-- **Diagnostics:** timestamps, request trace identifiers, errors, component status and local logs. Exception messages or user input may incidentally contain personal information.
-- **Local WebView2 data:** caches or browser runtime data created by the embedded interface.
+### 2. Information used by the application
 
-This information is processed to manage rosters, generate and display schedules, retain scheduling state, send reminders, enable integrations selected by users, and troubleshoot faults.
+Duty-Agent processes the following information on your device to deliver the features you use:
 
-### 3. Disclosures and third-party services
+- **Roster and schedule information:** Names, member IDs, active status, dates, assigned areas and tasks, absences, substitutions, historical schedule state, and notes.
+- **Inputs and results:** Natural-language scheduling instructions, custom rules, preferences, model responses, and generated schedules.
+- **Service configuration:** Scheduling modes, selected models, provider endpoint addresses, credentials, and integration settings.
+- **Diagnostics:** Local operational logs, such as timestamps, component status, and errors used for troubleshooting.
+- **Interface data:** Local caches and settings needed by the embedded desktop interface.
 
-**Cloud AI providers:** When you configure and use a remote AI service, the app submits relevant prompts, messages, parameters and the associated API credential to the endpoint you selected. That provider may process and retain requests under its own privacy policy, terms, and jurisdiction.
+This information is used to manage assignments, calculate and save schedules, display reminders, connect enabled services, and diagnose operational issues. Ordinary scheduling does not require identity document numbers, medical information, or other unrelated sensitive details.
 
-**Duty-Agent's normal built-in scheduling flow does not directly upload the complete roster file (`roster.csv`) or the name-to-ID mapping to a cloud AI provider.** When constructing model prompts, it replaces names matching the local roster in scheduling instructions and rules with numeric member IDs. The numeric IDs are mapped back to names locally after the model responds.
+### 3. AI processing and third-party connections
 
-**Limitations:** Previously saved run notes and user notes included in prompts are not consistently passed through the same name-replacement function in the current implementation. Other user-defined text, such as area names, may also contain identifying information. Consequently, names entered into those fields could be transmitted in model requests. This is a potential code-path limitation, **not evidence that any real student names have been transmitted**. Avoid entering unnecessary personal or sensitive details in free-text fields.
+#### 3.1 Offline scheduling and local models
 
-**Local and offline processing:** A genuinely local model endpoint or the built-in model-free scheduling mode can avoid sending scheduling prompts to a cloud AI service, provided no other external integration transmits them. Network behavior also depends on your chosen configuration.
+Model-free offline scheduling runs on your device and does not require prompts to be sent to an online AI provider.
 
-**User-enabled integrations:** ClassIsland, authorized API/MCP clients and other connected tools may receive relevant scheduling or configuration data as needed for the operations you enable. Any onward use by third-party tools or providers is governed by their own policies.
+When you select a model actually hosted on your own device, model requests are processed through that local endpoint. Other network behavior depends on the model software and optional integrations you choose.
 
-Installing or using Duty-Agent locally does not, by itself, send roster databases to the project's maintainer. Duty-Agent cannot promise that a third-party AI provider will refrain from retaining requests or using them for model improvement.
+#### 3.2 Online model endpoints you configure
 
-### 4. Local storage and retention
+When you configure an online model and initiate a related operation, such as a connection test or AI scheduling, Duty-Agent sends the information necessary for that request to the endpoint you selected. This can include model identifiers, scheduling instructions, dates, member IDs, rules, areas, and task context. The corresponding provider credential is used to authenticate requests as required.
 
-Configuration, roster and scheduling state are normally stored on your device, typically under `%LOCALAPPDATA%\DutyAgent\data\` (including `config.json`, `roster.csv`, `state.json` and `host-config.json`). Logs, WebView2 data, ClassIsland configuration, portable installations and MSIX installations may use other directories.
+Duty-Agent uses **member IDs with a local name mapping** for scheduling. Known roster names in primary scheduling instructions are converted to IDs, and generated schedules are mapped back to names locally. The complete local roster file and name-to-ID mapping are not required uploads for built-in model scheduling.
 
-Roster data, state and configuration ordinarily remain until you modify or remove them. **Uninstalling may not delete all local data, caches, logs or backups.**
+Rules, notes, area labels, and other free-form text that you enter may form part of a model request. Avoid placing unnecessary personal information about yourself or others, especially sensitive information, in such fields.
 
-The Python backend implements a roughly **14-day** cleanup policy for its diagnostic logs, generally applied at startup and on the first log write of a new day. This is not a universal retention period for client logs, saved roster data, third-party services or backups. Cleanup may be delayed by access or file-locking issues.
+The online service you select independently governs its handling and retention of requests under its own terms and privacy policy. The Duty-Agent developer cannot manage information separately retained by that provider.
 
-### 5. Security
+#### 3.3 Optional integrations
 
-API keys saved through the Windows client support Windows Data Protection API (DPAPI) encryption scoped to the current Windows user. Older configurations, external clients or environment variables may handle credentials differently. **Not every locally stored file is encrypted.**
+If you enable ClassIsland, API, MCP, or other connected tools, relevant schedule information and status may be made available to those components according to their functionality and access permissions. Local integrations, including ClassIsland, may display names and assignments on your device.
 
-The backend normally listens on the local loopback address (`127.0.0.1`), and protected API/MCP operations require access tokens. Protect your Windows account and credentials, avoid exposing the service to untrusted networks, and prefer HTTPS for remote model endpoints. No security mechanism is infallible.
+External tools you connect may process information under their own policies. Connect only trusted tools and disable integrations you no longer need.
 
-### 6. Your choices, access and deletion
+**Installing Duty-Agent, managing a local roster, or running offline schedules does not, by itself, transfer your complete roster or schedule database to the Duty-Agent developer.** Requests sent to a model provider are separate from data received by the Duty-Agent developer.
 
-You may view or edit information in the application, remove entries, stop using a remote AI provider, choose a local/offline mode, and disable optional integrations.
+### 4. Storage, retention, and security
 
-To remove local data, exit Duty-Agent and its backend/bridge processes, make any backup you need, and carefully delete the relevant Duty-Agent data, logs, WebView2 profile and ClassIsland plugin files. Confirm directories before deleting to avoid removing unrelated ClassIsland settings. Uninstalling alone does not guarantee deletion. For requests already submitted to a third-party AI provider or integration, contact that provider to exercise applicable access or deletion rights.
+Duty-Agent ordinarily stores roster information, configuration, schedule state, and operational data on your device. Storage locations may vary by installation format and component.
 
-The project maintainer generally cannot access or delete files that remain solely on your device. If you manage other people's roster information, including children's data, ensure you have an appropriate lawful basis and permission, and do not disclose their information to unauthorized parties.
+Roster and schedule records generally remain until you change or delete them. Local backend diagnostic logs have an approximately 14-day expiry cleanup policy. Other client logs, files, system caches, and user-created backups are not necessarily subject to that same period. Uninstalling the application may not remove all user data and backups.
 
-### 7. Children and sensitive data
+Duty-Agent uses appropriate safeguards for model credentials and local service access. Model keys saved through the Windows client support protection using operating-system data protection mechanisms. Protected local API features use access controls. You should also secure your device account, model credentials, and authorization tokens.
 
-Duty-Agent may be used in schools and may therefore process information about minors. Authorized teachers or administrators should follow applicable laws and institutional requirements and obtain any required permission or consent. Do not enter or transmit identity document numbers, contact details, health information or other sensitive details unless strictly necessary and lawfully permitted.
+### 5. Your choices and controls
 
-### 8. Changes to this policy
+Depending on the features you use, you can:
 
-The maintainer may update this policy and its effective date when features, integrations or data practices change. The latest published version applies.
+- View, edit, or remove local roster, schedule, and settings data;
+- Use offline scheduling or a local model, or change or stop using an online model provider;
+- Configure or disable optional ClassIsland, API, MCP, and other integrations;
+- Back up or clear relevant application data and local logs.
 
-### 9. Contact
+To clear local data, first close Duty-Agent and related components, then carefully identify and delete applicable data, caches, and backups. Uninstalling the application and deleting stored user data are not always the same operation.
 
-For privacy inquiries, contact the developer at **[helemazuba@gmail.com](mailto:helemazuba@gmail.com)**.
+For information already provided to a third-party model provider or tool, consult that provider's procedures and policies for access, correction, or deletion. The Duty-Agent developer generally cannot directly access or delete information that remains solely on your device or in an independent provider's systems.
 
-For general issues, you may use [Duty-Agent GitHub Issues](https://github.com/helemazuba-boop/Duty-Agent/issues/new). Do **not** post personal rosters, private contact details, access tokens, API keys or sensitive logs in public issues. Minimize or redact any personal information you send by email, especially student data.
+If you manage other individuals' information, ensure you have an appropriate basis and permission to do so. When handling minors' information, follow applicable law and relevant school or organizational policies, and avoid sending unnecessary personal information to external services.
+
+### 6. Updates and contact
+
+We may update this policy when the product or its data practices materially change. The updated policy will state its revision date.
+
+For privacy questions, contact the maintainer at **[helemazuba@gmail.com](mailto:helemazuba@gmail.com)**. For general product questions, see the [Duty-Agent GitHub repository](https://github.com/helemazuba-boop/Duty-Agent).
+
+Do not post private rosters, model credentials, access tokens, or other sensitive information in public discussions. Review and redact diagnostic information before sharing it for support.
