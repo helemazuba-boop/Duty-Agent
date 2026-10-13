@@ -113,15 +113,20 @@ if (-not (Test-Assert ($null -ne $identity) "存在 <Identity>")) { exit 1 }
 
 $idName = $identity.GetAttribute("Name")
 Test-Assert (-not [string]::IsNullOrWhiteSpace($idName)) "Identity.Name 非空" $idName
+# MSIX Identity.Name 只允许 字母/数字/./-（Store 同样限制）；出现下划线或中划线以外的
+# 符号会在提交时被拒。本仓库 2026-10-14 从 DutyAgent 改成 HelemaZuba.Duty-Agent。
+Test-Assert ($idName -match '^[A-Za-z0-9][A-Za-z0-9.\-]*$') "Identity.Name 只含 字母/数字/./- " $idName
 
 $publisher = $identity.GetAttribute("Publisher")
 Test-Assert ($publisher -like "CN=*") "Publisher 形如 CN=..." $publisher
+# 两种形式都接受：Partner Center 有的账户显示 32 位十六进制，有的显示带连字符的 GUID。
+$storePublisherPattern = '^CN=([0-9A-Fa-f]{32}|[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12})$'
 if ($EnforceStorePublisher) {
-    Test-Assert ($publisher -match "^CN=[0-9A-Fa-f]{32}$") "Publisher 是 Partner Center 的 32 位十六进制发布者 ID" $publisher
+    Test-Assert ($publisher -match $storePublisherPattern) "Publisher 是 Partner Center 发布者 ID" $publisher
 }
 else {
-    if ($publisher -match "^CN=[0-9A-Fa-f]{32}$") {
-        Test-Warn "Publisher 看起来像商店 ID，但没加 -EnforceStorePublisher（正式提交时必须加）。"
+    if ($publisher -match $storePublisherPattern) {
+        Test-Warn "Publisher 是商店 ID。正式提交时请加 -EnforceStorePublisher 打开这条硬校验。"
     }
     else {
         Test-Warn "Publisher 是开发用 DN（侧载可，商店不可）。上架前换成 Partner Center 发布者 ID。"

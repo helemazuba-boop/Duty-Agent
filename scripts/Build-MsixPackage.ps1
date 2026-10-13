@@ -115,6 +115,9 @@ $preNsm.AddNamespace("x", "http://schemas.microsoft.com/appx/manifest/foundation
 $preIdentity = $preXml.SelectSingleNode("/x:Package/x:Identity", $preNsm)
 if ($null -eq $preIdentity) { throw "清单里找不到 <Identity>，无法处理版本。" }
 $manifestVersion = $preIdentity.GetAttribute("Version")
+# Publisher 也要读出来：下面签证书要以它为准。Publisher 一变，旧开发证书立刻作废。
+$publisher = $preIdentity.GetAttribute("Publisher")
+$identityName = $preIdentity.GetAttribute("Name")
 $preMinVersion = $preXml.SelectSingleNode("/x:Package/x:Dependencies/x:TargetDeviceFamily", $preNsm).GetAttribute("MinVersion")
 
 if ([string]::IsNullOrWhiteSpace($ReleaseVersion)) {
@@ -144,31 +147,53 @@ else {
 }
 
 # ---------- 5. 打包 ----------
-$packageArgs = @("package", $pkgDir, "--manifest", $stagedManifest, "--name", "DutyAgent")
+$packageArgs = @("package", $pkgDir, "--manifest", $stagedManifest, "--name", $identityName)
 if ($ForStore) {
     $packageArgs += "--no-sign"
-    Write-Warning "ForStore 模式：包未本地签名，交给 Partner Center 签名。提交前必须把 Package.appxmanifest 的 Publisher 换成账户里的 32 位十六进制发布者 ID。"
+    Write-Host "[msix] ForStore 模式：包不本地签名，交给 Partner Center 签名。"
+    Write-Host "[msix] 当前 Publisher: $publisher"
+    Write-Warning "提交前请确认这个 Publisher 与 Partner Center → 账户设置里给出的发布者 ID 完全一致（含连字符），否则商店会拒绝。"
 } else {
+    # 开发证书：Publisher 必须与清单 Identity.Publisher 完全一致，否则 winapp
+    # 打包传 --cert 时会因为"签名者与包身份不匹配"而失败（报错还不明显）。
+    # 换 Name/Publisher（2026-10-14 从开发 DN 换成正式发布者 ID）后旧证书即作废，
+    # 所以这里按 publisher.txt 里的记录核对，不一致就重新生成。
     $certDir = Join-Path $workRoot "cert"
     $devCert = Join-Path $certDir "devcert.pfx"
-    if (-not (Test-Path -LiteralPath $devCert)) {
+    $devCer = Join-Path $certDir "devcert.cer"
+    $certPublisherFile = Join-Path $certDir "publisher.txt"
+
+    $certPublisher = $null
+    if (Test-Path -LiteralPath $certPublisherFile) {
+        $certPublisher = [System.IO.File]::ReadAllText($certPublisherFile, [System.Text.Encoding]::UTF8).Trim()
+    }
+
+    $needCert = (-not (Test-Path -LiteralPath $devCert)) -or ($certPublisher -ne $publisher)
+    if ($needCert) {
         New-Item -ItemType Directory -Force -Path $certDir | Out-Null
-        Write-Host "[msix] 生成开发证书（Publisher 从清单推断）..."
+        if ($null -ne $certPublisher) {
+            Write-Host "[msix] 开发证书 Publisher 已变（$certPublisher -> $publisher），重新生成。"
+        } else {
+            Write-Host "[msix] 生成开发证书（Publisher 从清单推断）..."
+        }
         Push-Location $certDir
         try {
             # --export-cer：同时导出只含公钥的 .cer。侧载/CI 装包只需要 .cer，
             # 不必把带私钥的 .pfx（口令是 winapp 默认的 "password"）拷来拷去。
-            & $winappCmd cert generate --manifest $stagedManifest --export-cer -v
+            # --if-exists overwrite：覆盖而不是先删（本机对仓库内文件删除会挂起）。
+            & $winappCmd cert generate --manifest $stagedManifest --export-cer --output $devCert --if-exists overwrite -v
             if ($LASTEXITCODE -ne 0) { throw "生成开发证书失败" }
-            & $winappCmd cert install (Join-Path $certDir "devcert.pfx") -v
+            & $winappCmd cert install $devCert -v
             if ($LASTEXITCODE -ne 0) { Write-Warning "证书安装失败，侧载时可能需要手动信任。" }
         } finally {
             Pop-Location
         }
-        $devCer = Join-Path $certDir "devcert.cer"
+        [System.IO.File]::WriteAllText($certPublisherFile, $publisher, (New-Object System.Text.UTF8Encoding($false)))
         if (Test-Path -LiteralPath $devCer) {
             Write-Host "[msix] 开发证书公钥: $devCer"
         }
+    } else {
+        Write-Host "[msix] 复用已有开发证书（Publisher 与清单一致）。"
     }
     $packageArgs += @("--cert", $devCert)
 }

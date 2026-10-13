@@ -32,9 +32,15 @@ powershell -ExecutionPolicy Bypass -File scripts\Build-MsixPackage.ps1 -ForStore
 
 ## 提交商店前必须做的事
 
-1. **替换发布者标识**。打开 `Package.appxmanifest`，把 `Publisher="CN=Duty-Agent Dev"`
-   换成 Partner Center → 账户设置里给出的发布者 ID（形如 `CN=` + 32 位十六进制），
-   并用 `-ForStore`（`--no-sign`）交付由商店签名。开发 DN 只用于本地侧载签名。
+> ✅ **包身份已换成正式上架配置**（2026-10-14）：
+> `Identity Name="HelemaZuba.Duty-Agent"` / `Publisher="CN=B4407923-BF46-468D-B8F8-549EDD96BDC3"`。
+> **PFN 随之改变**（不再是 `DutyAgent_3ecm5aq137n80`），AUMID = 新 `<PFN>!App`。
+> 本地签名用的开发证书会自动按新 Publisher 重新生成（`Build-MsixPackage.ps1` 会核对）。
+> 提交前请确认这个 Publisher 与 Partner Center → 账户设置里给出的发布者 ID **逐字符一致**
+> （含连字符），否则商店会拒。
+
+1. **核对发布者 ID 与应用名**：确认上面的 `Name` / `Publisher` 与 Partner Center 里预留的
+   完全一致，然后用 `-ForStore` 交付（打包时不本地签名，由商店签名）。
 2. **检查商店图标资产**。`Assets\*.png` 已由 `winapp manifest update-assets <仓库根>\icon.png`
    生成 49 张（MedTile / AppList / WideTile / StoreLogo 全尺寸），已入库；
    换图标后重跑该命令即可，无需手工缩放。

@@ -106,6 +106,12 @@
 冗余策略保留不变（三写 + 桥接三处能发现），因为它同时覆盖"宿主布局目录不可写"的降级
 场景；但语义疑云已消除：**Win32 LocalAppData 路径就是桥接与客户端共享的真实目录**。
 
+> ⚠️ **2026-10-14 起上表里的 `DutyAgent_3ecm5aq137n80` 已作废。** `Identity` 换成
+> `Name="HelemaZuba.Duty-Agent"` / `Publisher="CN=B4407923-BF46-468D-B8F8-549EDD96BDC3"`
+> 后 PFN 变为新值（由 Name + Publisher 决定），AUMID 随之改变。
+> 上表是 2026-10-13 用旧身份实测的记录，结论（不重定向、AUMID 可拉起）与身份无关仍成立，
+> 但所有具体 PFN 字符串都需要按新身份重取。
+
 ### 批次 1 修正 B 附带发现：本机 MSIX 工具链无法校验任何 desktop 扩展
 
 同一轮实测暴露了一个工具链硬限制，它直接改写了自启方案（见批次 3 修正）：
@@ -216,7 +222,7 @@
 >
 > 批次 6 是实测批：修正 B 的五项实测、工具链 desktop schema 缺失的发现、清单去掉
 > `<Extensions>`、`AutoStartManager` 的 Run 键回退（`ScopeName` 前缀崩溃的修复 +
-> `DutyAgent.Client.Tests` 11 例）、`.wapproj` 删除、`Build-MsisxPackage.ps1` 重写为
+> `DutyAgent.Client.Tests` 11 例）、`.wapproj` 删除、`Build-MsixPackage.ps1` 重写为
 > winapp 流程、本机 107MB .msix 产出与解包校验，全部在同一批。
 
 ### 批次 7 —— 风险收口 + 生命周期验收 + CI（2026-10-14）

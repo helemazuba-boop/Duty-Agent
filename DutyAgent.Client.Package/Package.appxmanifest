@@ -11,21 +11,24 @@
   IgnorableNamespaces="uap uap3 uap10 desktop desktop6 rescap">
 
   <!--
-    包身份。Publisher 注意：
-      - 本仓库检入的是"开发用" DN，仅用于本地 MSIX 签名与侧载。
-        由 scripts\Build-MsixPackage.ps1 的 -Publisher 参数覆盖。
-      - 上架 Partner Center 时，必须替换为账户设置里给出的原始发布者 ID
-        （形如 CN=<32 位十六进制>），并以「不本地签名」的方式交付给商店签名。
+    包身份。2026-10-14 起正式上架配置：
+      - Name / Publisher 已换成 Partner Center 账户里的预留应用名与发布者 ID。
+        **PFN 会随之改变**（旧: DutyAgent_3ecm5aq137n80），AUMID 变成本身 <PFN>!App，
+        影响 HKCU Run 键自启值、桥接握手诊断、以及各处硬编码 "%LOCALAPPDATA%..."
+      - 本地签名给侧载用的开发证书，Publisher 必须与这里的 Identity.Publisher 一致，
+        否则 winapp 打包传证书时会因签名者不匹配而失败。
+        scripts\Build-MsixPackage.ps1 会核对这一点并在 Publisher 变化时自动重新生成证书。
+      - 商店提交用 -ForStore 交付：打包时不本地签名，由 Partner Center 签名。
   -->
   <Identity
-    Name="DutyAgent"
-    Publisher="CN=Duty-Agent Dev"
+    Name="HelemaZuba.Duty-Agent"
+    Publisher="CN=B4407923-BF46-468D-B8F8-549EDD96BDC3"
     Version="1.0.0.0"
     ProcessorArchitecture="x64" />
 
   <Properties>
     <DisplayName>Duty-Agent 值日排班</DisplayName>
-    <PublisherDisplayName>Duty-Agent</PublisherDisplayName>
+    <PublisherDisplayName>Helema Zuba</PublisherDisplayName>
     <Logo>Assets\StoreLogo.png</Logo>
     <Description>班级值日排班助手：LLM 柔性排班 + 确定性兜底引擎，为 ClassIsland 桌面组件供数。</Description>
     <uap10:PackageIntegrity>

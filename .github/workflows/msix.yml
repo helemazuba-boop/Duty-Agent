@@ -19,7 +19,7 @@ on:
       - "Duty-Agent-ClassIsland-Bridge.Tests/**"
       - "Assets_Duty/**"
       - "duty-agent-ui/**"
-      - "scripts/Build-MsisxPackage.ps1"
+      - "scripts/Build-MsixPackage.ps1"
       - "scripts/New-DutyAgentClientRelease.ps1"
       - "scripts/MSIX-CertificationTest.ps1"
       - "scripts/MSIX-LifecycleTest.ps1"
@@ -33,7 +33,7 @@ on:
       - "Duty-Agent-ClassIsland-Bridge.Tests/**"
       - "Assets_Duty/**"
       - "duty-agent-ui/**"
-      - "scripts/Build-MsisxPackage.ps1"
+      - "scripts/Build-MsixPackage.ps1"
       - "scripts/New-DutyAgentClientRelease.ps1"
       - "scripts/MSIX-CertificationTest.ps1"
       - "scripts/MSIX-LifecycleTest.ps1"
@@ -56,12 +56,15 @@ jobs:
         uses: actions/checkout@v4
 
       # 只读、秒级、不需要管理员。任何 PR 都能跑，最早失败也最便宜。
+      # -EnforceStorePublisher：清单现在放的就是 Partner Center 发布者 ID，硬校验它，
+      # 谁不小心改回开发 DN 立刻在 CI 暴露。
       - name: Certification checks against the checked-in manifest
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
           ./scripts/MSIX-CertificationTest.ps1 `
-            -ManifestPath "DutyAgent.Client-Package\Package.appxmanifest"
+            -ManifestPath "DutyAgent.Client-Package\Package.appxmanifest" `
+            -EnforceStorePublisher
 
   package:
     name: Build + verify + install smoke
@@ -97,7 +100,7 @@ jobs:
           $ErrorActionPreference = "Stop"
           # %TEMP% 已在脚本内部被改指到 .msix-work\temp：winapp package 会先把
           # 约 260MB 的布局复制过去再压缩，C: 空间不足时会假死（本机实测 19 分钟）。
-          ./scripts/Build-MsisxPackage.ps1
+          ./scripts/Build-MsixPackage.ps1
 
       - name: Locate the built MSIX
         id: msix
@@ -126,7 +129,7 @@ jobs:
           Expand-Archive -LiteralPath $zip -DestinationPath $stage -Force
           $packagedManifest = Join-Path $stage "AppxManifest.xml"
           if (-not (Test-Path -LiteralPath $packagedManifest)) { throw "包里没有 AppxManifest.xml" }
-          ./scripts/MSIX-CertificationTest.ps1 -ManifestPath $packagedManifest -LayoutPath $stage
+          ./scripts/MSIX-CertificationTest.ps1 -ManifestPath $packagedManifest -LayoutPath $stage -EnforceStorePublisher
 
       - name: Install / smoke / uninstall round-trip
         shell: pwsh
@@ -140,7 +143,7 @@ jobs:
             Write-Host "已信任开发证书（devcert.cer）"
           }
           else {
-            Write-Warning "没找到 devcert.cer；装包可能因证书链不受信任失败。Build-MsisxPackage.ps1 生成证书时应带 --export-cer。"
+            Write-Warning "没找到 devcert.cer；装包可能因证书链不受信任失败。Build-MsixPackage.ps1 生成证书时应带 --export-cer。"
           }
 
           Get-Process -Name "duty-agent" -ErrorAction SilentlyContinue |
@@ -149,7 +152,7 @@ jobs:
           Add-AppxPackage -Path $msix -ErrorAction Stop
           Write-Host "Add-AppxPackage 成功"
 
-          $pkg = Get-AppxPackage -Name "DutyAgent" -ErrorAction SilentlyContinue
+          $pkg = Get-AppxPackage -Name "HelemaZuba.Duty-Agent" -ErrorAction SilentlyContinue
           if (-not $pkg) { throw "装完查不到 DutyAgent 包" }
           Write-Host "PFN=$($pkg.PackageFamilyName) Version=$($pkg.Version)"
 
@@ -166,7 +169,7 @@ jobs:
           # Windows 服务器版里 AUMID 激活不可靠（无交互会话），所以这里只做包层面
           # 断言；进程/日志/注册表/升级见 MSIX-LifecycleTest.ps1（手动 + 管理员）。
           Remove-AppxPackage -Package $pkg.PackageFullName -ErrorAction Stop
-          if (Get-AppxPackage -Name "DutyAgent" -ErrorAction SilentlyContinue) {
+          if (Get-AppxPackage -Name "HelemaZuba.Duty-Agent" -ErrorAction SilentlyContinue) {
             throw "卸载后仍能查到包"
           }
           Write-Host "Remove-AppxPackage 成功，安装往返通过"

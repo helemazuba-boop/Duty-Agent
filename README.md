@@ -326,14 +326,15 @@ build_client.bat                                                                
 构建：
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File scripts\Build-MsilPackage.ps1 -ReleaseVersion 1.2.3
+powershell -ExecutionPolicy Bypass -File scripts\Build-MsixPackage.ps1 -ReleaseVersion 1.2.3
 ```
 
-产物在 `.msix-work\DutyAgent_1.2.3_x64.msix`（本机已实证产出约 107MB，含完整内嵌 Python
+产物在 `.msix-work\HelemaZuba.Duty-Agent_1.2.3_x64.msix`（本机已实证产出约 107MB，含完整内嵌 Python
 后端的包）。提交商店前必须做的事：
 
-1. `Package.appxmanifest` 里的 `Publisher="CN=Duty-Agent Dev"` 换成 Partner Center 的
-   32 位十六进制发布者 ID，并用 `-ForStore`（不本地签名）交付给商店签名
+1. `Package.appxmanifest` 里的 `Publisher` 与 `Name` 已换成 Partner Center 账户的发布者 ID
+   与应用名（当前 `Name="HelemaZuba.Duty-Agent"` / `Publisher="CN=B4407923-BF46-468D-B8F8-549EDD96BDC3"`），
+   提交前再逐字符核对一遍，并用 `-ForStore`（不本地签名）交付给商店签名
 2. 商店图标（`DutyAgent.Client.Package/Assets/`）需最终确认合规；当前由
    `winapp manifest update-assets icon.png` 生成
 

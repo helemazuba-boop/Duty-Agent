@@ -42,7 +42,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)][string]$MsixPath,
-    [string]$PackageName = "DutyAgent",
+    [string]$PackageName = "HelemaZuba.Duty-Agent",
     [string]$CertPath = "",
     [string]$UpgradeMsixPath = "",
     [ValidateSet("All", "Install", "Run", "Upgrade", "Uninstall")]
