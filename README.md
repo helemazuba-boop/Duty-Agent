@@ -315,40 +315,49 @@ build_client.bat                                                                
 ## 上架微软商店（MSIX）
 
 代码层的包身份适配已完成，打包骨架见 `DutyAgent.Client.Package/`。完整改造计划、
-分批记录与尚未闭环的事项见 `docs/msix-store-adaptation-plan.md`。
+分批记录与实测数据见 `docs/msix-store-adaptation-plan.md`。
 
 前置条件：
 
-- 装有 "Desktop Bridge" 工作负载的 Visual Studio（或独立 Windows SDK）——
-  MSIX 只能用 VS 自带的 MSBuild 构建，.NET SDK 的 MSBuild 没有 DesktopBridge 目标
+- Node/npm 的 `@microsoft/winappcli`（`npm install -g @microsoft/winappcli`）——
+  **不需要 Visual Studio 或 Windows Kits**，winapp 用 NuGet 的 Windows SDK BuildTools 打包
 - Partner Center 开发者账号
 
 构建：
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File scripts\Build-MsixPackage.ps1 -ReleaseVersion 1.2.3
+powershell -ExecutionPolicy Bypass -File scripts\Build-MsilPackage.ps1 -ReleaseVersion 1.2.3
 ```
 
-产物在 `DutyAgent.Client.Package\AppPackages\`。提交商店前必须替换两处占位：
+产物在 `.msix-work\DutyAgent_1.2.3_x64.msix`（本机已实证产出约 107MB，含完整内嵌 Python
+后端的包）。提交商店前必须做的事：
 
-1. `Package.appxmanifest` 与 `DutyAgent.Client.Package.wapproj` 里的
-   `CN=REPLACE_WITH_PARTNER_CENTER_PUBLISHER_ID`
-2. `DutyAgent.Client.Package/Assets\*.png` 商店图标（缺省会用根目录 `icon.png` 缩放占位，不合规）
+1. `Package.appxmanifest` 里的 `Publisher="CN=Duty-Agent Dev"` 换成 Partner Center 的
+   32 位十六进制发布者 ID，并用 `-ForStore`（不本地签名）交付给商店签名
+2. 商店图标（`DutyAgent.Client.Package/Assets/`）需最终确认合规；当前由
+   `winapp manifest update-assets icon.png` 生成
 
 行为差异（包身份 vs zip 分发）：
 
 | 能力 | zip 分发 | MSIX |
 |---|---|---|
-| 开机自启 | 写 `HKCU\...\Run` | 系统 `StartupTask`（设置 → 应用 → 启动），卸载自动清理 |
+| 开机自启 | 写 `HKCU\...\Run`（exe 路径） | 优先系统 `StartupTask`；清单未声明该扩展时回退 `HKCU\...\Run`，命令 `explorer.exe shell:AppsFolder\<PFN>!App`（两条路都已实测） |
 | 开始菜单快捷方式 | 客户端自建 `.lnk` | 平台托管，客户端不再自建 |
-| 通知 AUMID | 自建 `.lnk 上的硬编码 ID` | `<PackageFamilyName>!App` |
+| 通知 AUMID | 自建 `.lnk` 上的硬编码 ID | `<PackageFamilyName>!App` |
 | 单实例互斥体 | `Local\DutyAgent.Client.*` | 同上加 `PackageFamilyName\` 前缀，可与 zip 版并存 |
 | 数据与日志 | `%LOCALAPPDATA%\DutyAgent` | 同一路径，两种形态共用同一份数据 |
 | 与 ClassIsland 握手 | 写宿主配置目录 | 宿主目录 + `%LOCALAPPDATA%\ClassIsland\Config` + `LocalState` 三处，桥接按"新鲜度优先"取最应连接的一个，并兜底扫描 `Packages\<包>\...` |
 
-> 握手目录的 MSIX 隔离语义**尚未在真实商店构建上实证**：`Packages\<PFN>\LocalCache\Local`
-> 与 `LocalState` 是否被客户端写到、桥接能否发现，需要在 MSIX 构建上启动后比对
-> 客户端 INFO 日志与桥接 DEBUG 日志。本机没有 Windows Kits，无法自证。
+> **MSIX 隔离语义已实证**（2026-10-13，winapp 稀疏包身份实测）：包身份进程写 Win32
+> `%LOCALAPPDATA%` 子路径**不重定向**，三处 meta 落点 md5 一致，桥接（非包进程）可直接
+> 读到 Win32 路径那份；`HKCU\...\Run` 写入同样不重定向；AUMID 激活可拉起全信任客户端。
+> 逐条证据见 `docs/msix-store-adaptation-plan.md` 修正 B。
+
+> **清单不声明任何 `<Extensions>`**：本机工具链（NuGet `Microsoft.Windows.SDK.BuildTools`
+> 的 makeappx schema 集，22 个 XSD 无 Desktop schema）无法校验 `desktop:`/`desktop6:`
+> 扩展元素，winapp 同理。改用完整 Windows SDK 构建时可恢复 `startupTask` 扩展，
+> 现清单注释里留有现成 XML；Run 键回退逻辑继续兜底。`fullTrustProcess` 扩展经实测不需要
+> （Python 子进程在稀疏包身份下启动/监管/自动重启均正常）。
 
 约束：仅 x64；未接 Store 商业化与增量更新通道；同机同时只应运行一个实例
 （否则会抢后端端口）。

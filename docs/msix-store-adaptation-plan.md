@@ -86,49 +86,72 @@
 同时删除了 `HealthMonitorService.IsProcessAlive` 与 `IpcBridgeService.IsProcessRunning`
 两个只被旧逻辑使用的私有方法 —— 留着就会成为第二个真相源。
 
-### 批次 1 修正 B：MSIX 的 AppData 隔离不是"路径字符串相同"就等同
+### 批次 1 修正 B：MSIX 的 AppData 隔离 —— 已实证（2026-10-13）
 
-> 这条是**未实证**的。明确说明：MSIX 的目录重定向在不同运行模式（完全信任 / 应用容器 /
-> 以及对 LocalAppData 使用 Win32 API 还是 WinRT API）下行为不同，而本机没有 Windows Kits，
-> 无法在本机打包验证。因此**不能假设**"客户端和桥接进程看到同一个实际目录"。
+> 原文的顾虑是"客户端和桥接进程是否共享同一个实际目录，需要实测，而不是因为路径字符串
+> 一样就认为没问题"。**已完成实测**：用 `winapp create-debug-identity` 给客户端 exe 挂
+> 稀疏包身份，经 `shell:AppsFolder\<PFN>!App` 激活真实运行，再把读到的物理落点与客户端
+> INFO 日志对账。
 
-实际采取的是"两头都写 + 桥接能发现"的冗余策略，而不是赌某一种语义：
+**实测结论（均有日志 / 文件系统 / 注册表证据）**：
 
-客户端 `BridgeMetaPaths` 现在写三处（去重后）：
-1. 宿主布局路径（便携部署的真实落点，非包身份下唯一落点）；
-2. Win32 `%LOCALAPPDATA%\ClassIsland\Config\DutyAgentBridge`；
-3. 包身份下额外写一份到 `Windows.Storage.ApplicationData.Current.LocalFolder.Path`
-   （即 `Packages\<PFN>\LocalState`）下的同一相对路径。
+| # | 问题 | 实测结果 |
+|---|---|---|
+| 1 | 包身份下客户端能否完整工作 | 能。消息循环、主窗口、ClassIsland 配置目录发现、`桥接 meta 已写入 3 个路径`、通知流连接、Python 后端启动/监管/异常退出自动重启，全部正常 |
+| 2 | meta 三处落点是否一致、桥接（非包进程）能否读到 | 一致且可读。`%LOCALAPPDATA%\ClassIsland\Config\...`、宿主布局目录、`Packages\<PFN>\LocalState\ClassIsland\Config\...` 三份 md5 相同；从 bash（非包进程）可直接读到 Win32 路径那份 —— **包身份进程写 Win32 `%LOCALAPPDATA%` 子路径未发生重定向** |
+| 3 | `ApplicationData.Current.LocalFolder` 指向 | `C:\Users\...\AppData\Local\Packages\DutyAgent_3ecm5aq137n80\LocalState`（客户端 INFO 日志原样打出） |
+| 4 | HKCU Run 键写入是否重定向 | **不重定向**。包身份进程写 `HKCU\...\Run` 后，非包进程（reg query / C# winreg）立刻读到，登录时的 explorer 同样读得到 |
+| 5 | AUMID 激活能否拉起全信任客户端 | 能。`shell:AppsFolder\DutyAgent_3ecm5aq137n80!App` 启动成功；把 Run 键里的 `explorer.exe shell:AppsFolder\<PFN>!App` 原样执行也启动成功 —— 自启回退链路的最后一环成立 |
 
-桥接侧对应能发现三处：
-1. `MetaFilePaths` = 宿主布局 + Win32 LocalAppData；
-2. `FallbackMetaFilePaths` = 通配扫描 `Packages\<任意包>\LocalCache\Local\...` 与
-   `Packages\<任意包>\LocalState\...`；
-3. 主层解析出结果时**完全不碰**兜底层，所以非商店部署零额外开销。
+冗余策略保留不变（三写 + 桥接三处能发现），因为它同时覆盖"宿主布局目录不可写"的降级
+场景；但语义疑云已消除：**Win32 LocalAppData 路径就是桥接与客户端共享的真实目录**。
 
-**验证要求（上线前必须做，本机做不到）**：在真实的 MSIX 构建上启动客户端后，
-比对客户端 INFO 日志里的"桥接 meta 已写入 N 个路径"物理落点，与桥接侧
-设置页诊断 / DEBUG 日志里 "Multiple bridge handshake files resolved" 显示的解析结果。
-若两者完全没有交集，再把第 3 个候选路径加进桥接的 `FallbackMetaFilePaths`。
+### 批次 1 修正 B 附带发现：本机 MSIX 工具链无法校验任何 desktop 扩展
+
+同一轮实测暴露了一个工具链硬限制，它直接改写了自启方案（见批次 3 修正）：
+
+- 本机三套 makeappx —— NuGet `Microsoft.Windows.SDK.BuildTools`（10.0.28000 /
+  10.0.26100 / 10.0.22621 三个版本都验证过）与 `winapp 0.7.1` 内置的那个 —— 校验清单用的
+  schema 集（`schemas/10.0.*/winrt/*.xsd`，22 个文件）**只有 Foundation +
+  UapManifestSchema，没有任何 Desktop\* schema**。
+- 直接后果：清单里出现任何 `desktop:` / `desktop6:` 扩展元素都会被判
+  `error C00CE014 / C00CE169`（`{foundation}Extensions` 不允许该子元素 / `Category`
+  不在枚举内）。对照组 `uap:Extension` 可以正常通过 —— 证明不是校验器整体失效，
+  就是 desktop schema 缺失。该现象与 `IgnorableNamespaces` 是否列了 `desktop` 无关。
+- 因此**本机（及任何只装 NuGet BuildTools 的 CI）不能产出或验证带 desktop 扩展的清单**；
+  这不是我们的清单写错了 —— 同样的元素在完整 Windows SDK 下合法且商店常见。
 
 ### 批次 2 —— MSIX 打包工程（B）
 
 - 新增 `DutyAgent.Client.Package/`：
-  - `Package.appxmanifest`：包身份占位、`runFullTrust`、`windows.startupTask` 扩展、
-    `uap:VisualElements`（托盘/磁贴）、最小版本 10.0.17763.0。
-  - `DutyAgent.Client.Package.wapproj`：Windows Application Packaging Project，
-    引用发布产物（`dotnet publish` 输出的 client 目录），包含 `Assets_Duty` 全部资产。
+  - `Package.appxmanifest`：包身份占位、`runFullTrust`、`uap:VisualElements`（托盘/磁贴）、
+    最小版本 10.0.17763.0。**不再声明任何 `<Extensions>`**，原因与"完整 Windows SDK
+    下的恢复方法"都写在清单内注释里。
+  - `Assets/`：由 `icon.png` 经 `winapp manifest update-assets` 生成的 49 张商店资产
+    （MedTile / AppList / WideTile / StoreLogo 全尺寸）。
+  - ~~`DutyAgent.Client.Package.wapproj`~~ **已删除**：Desktop Bridge MSBuild 目标需要
+    Visual Studio，本机（及纯 .NET SDK 环境）不可用；winapp CLI 代替它完成打包。
   - `README.md`：发布者 ID 替换说明、构建与签名命令、商店提交流程。
-- 新增 `scripts/Build-MsixPackage.ps1`：一条命令跑完「发布客户端 → 组装 msix」。
-- **本地无法产出 .msix**：本机没有 Windows Kits / MakeAppx / DesktopBridge MSBuild 目标
-  （`.NET` SDK 只从 NuGet 拉 Windows 契约）。此项须在装有 "Windows SDK + Desktop Bridge"
-  工作负载的机器上验证，见「风险」。
+- `scripts/Build-MsixPackage.ps1` 重写为 winapp 流程：发布客户端 → 组装 winapp 布局 →
+  `winapp package`。构建机只要有 .NET SDK + `@microsoft/winappcli`（npm），
+  **不需要 Visual Studio 或 Windows Kits**。
+- **本机已实证产出 .msix**（2026-10-13）：`DutyAgent_1.0.0.0_x64.msix`，107 MB，开发证书
+  签名；解包校验通过 —— `AppxManifest.xml`（无 Extensions）、49 资产、`Assets_Duty`
+  1707 个文件（`python-embed` 完整：`python311.dll` 5.8M + 全部 `.pyd` + `Lib/` +
+  `web/index.html`）、随包桥接 `DutyAgentBridge.dll` + `manifest.yml`、`resources.pri`。
+- **打包性能坑**：`winapp package` 先把整个布局复制到 `%TEMP%` 再压缩。C: 剩余空间不足时
+  会慢到看似假死（实测 19 分钟未完成）。把 `TMP`/`TEMP` 指到空闲盘后，同样 261 MB
+  只用 **19 秒**。
 
 ### 批次 3 —— 自启 / 快捷方式 / 通知适配包身份（C、D）
 
-- `AutoStartManager`：`PackageIdentity` 可用时改用 `Windows.ApplicationModel.StartupTask`
-  （`net8.0-windows10.0.17763.0` 下 WinRT 可直接调用，已实测编译通过）；
-  非包身份时保持原 `HKCU Run` 行为不变。
+- `AutoStartManager`：包身份下优先 `Windows.ApplicationModel.StartupTask`；**清单未声明
+  `desktop6:startupTask` 扩展时 `StartupTask.GetAsync` 抛异常**，此时回退 HKCU Run 键，
+  命令为 `explorer.exe shell:AppsFolder\<PFN>!App`（AUMID 取
+  `WindowsShortcutActivator.AppUserModelId`）。两个前提都已实测：包身份进程写 Run 键不
+  重定向（修正 B 表 #4）、AUMID 命令能拉起客户端（表 #5）。`IsEnabled()` 按当前形态分别
+  比对两种命令形态，安装形态切换后能自愈改写。回归见 `DutyAgent.Client.Tests`
+  （`AutoStartCommandTests`）。
 - `WindowsShortcutActivator`：包身份下跳过自建 `.lnk`，`AppUserModelId` 返回包身份 AppId
   (`<PackageFamilyName>!App`)；非包身份行为不变。
 - `DesktopNotificationService`：包身份下不再指定 AUMID，让 toast 走当前包身份。
@@ -137,8 +160,14 @@
 
 - `BackendProcessManager`：子进程环境加入 `PYTHONDONTWRITEBYTECODE=1`，杜绝往只读安装目录写缓存。
 - `Program.cs`：互斥体与唤醒事件名在包身份下加 `<PackageFamilyName>\` 前缀，
-  使 Store 版与 zip 版可以并存。
+  使 Store 版与 zip 版可以并存。**实测中抓到并修掉一个自身缺陷**：初版把包名前缀拼到了
+  `Local\` 之前，Win32 把名字当文件路径，商店版客户端启动即抛
+  `DirectoryNotFoundException` 崩溃（minidump 0xE0434352，日志只有第一行）。修正为
+  "根前缀必须留在最前"，回归见 `DutyAgent.Client.Tests`（`ScopeNameTests`，8 例，
+  含变异测试：把前缀改回错误位置后 6/8 立刻失败）。
 - `MainForm`：WebView2 `userDataFolder` 在包身份下改用 `Windows.Storage.ApplicationData.Current.LocalFolder`。
+- `PackageIdentityHelper` / `ClientLog`：启动即把 `包身份/PFN/LocalAppData/LocalState`
+  打进 INFO 日志，AppDomain 级未处理异常也落日志 —— 商店版排障的最低要求。
 
 ### 批次 5 —— 文档
 
@@ -157,9 +186,10 @@
 
 | 风险 | 应对 |
 |---|---|
-| 本机无 MSIX 工具链，打包工程无法验证 | 批次 2 交付"可审阅的工程 + 明确验证步骤"，不假装已验证；首包在目标机器产出 |
+| ~~本机无 MSIX 工具链，打包工程无法验证~~ **已消除** | 2026-10-13 用 winapp 0.7.1 在本机产出并解包验证了 .msix，包内容/清单/签名全部核对 |
+| 带 desktop 扩展的清单在本机工具链无法校验 | 放弃 `startupTask` 扩展改用运行期 Run 键回退（已实测全链路）；清单注释保留完整 SDK 下的恢复 XML |
 | 包身份下写入宿主布局目录可能失败 | 批次 1 的双写机制已把这条路径降级为"尽力而为" |
-| .NET 8 + WinForms + self-contained 的 WAP 组合有已知摩擦 | 批次 3 先只做代码层改造（与打包工程解耦），降低 spike 失败的牵连面 |
+| 商店版与 zip 版同机并存 | 单实例命名加 PFN 作用域（批次 4，已修掉并回归）；握手 meta 三写双读 + 有效性/新鲜度选取（批次 1 修正 A） |
 | 桥接插件一键安装仍写 `<...>\data\Plugins` | 保持现状 + 失败时给出明确的手动安装指引；不在本轮改造 |
 
 ## 提交节奏
@@ -171,6 +201,12 @@
 3. `feat(client): 包身份下的自启/快捷方式/通知适配`
 4. `fix(client): Python 子进程只读目录与并发命名加固`
 5. `docs: 上架微软商店适配说明`
+6. `feat(client): 包身份实测落地 —— winapp 打包、Run 键自启回退、ScopeName 崩溃修复`
 
 > 批次 1 的修正 A/B 与 `Duty-Agent-ClassIsland-Bridge.Tests`（9 个用例，覆盖
 > "旧路径残留"、"PID 复用"、"主层优先"等）在同一批追加提交。
+>
+> 批次 6 是实测批：修正 B 的五项实测、工具链 desktop schema 缺失的发现、清单去掉
+> `<Extensions>`、`AutoStartManager` 的 Run 键回退（`ScopeName` 前缀崩溃的修复 +
+> `DutyAgent.Client.Tests` 11 例）、`.wapproj` 删除、`Build-MsixPackage.ps1` 重写为
+> winapp 流程、本机 107MB .msix 产出与解包校验，全部在同一批。

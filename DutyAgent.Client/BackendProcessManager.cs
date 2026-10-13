@@ -79,6 +79,7 @@ internal sealed class BackendProcessManager : IDisposable
             return;
         }
 
+        LogPathDiagnostics();
         EnsureRequiredFiles();
         EnsureDefaultHostConfig();
 
@@ -529,6 +530,33 @@ internal sealed class BackendProcessManager : IDisposable
         catch
         {
             return false;
+        }
+    }
+
+    /// <summary>
+    /// 启动路径诊断：把"当前是什么身份""桥接 meta 会写去哪几个路径"原样落盘。
+    /// MSIX 下 Win32 的 %LOCALAPPDATA% 可能被重定向到包私有目录，路径字符串相同
+    /// 不代表物理位置相同；桥接插件是另一个进程（且没有包身份），它看到什么只能
+    /// 从这两行反推，所以这是握手问题的第一手证据。
+    /// </summary>
+    public void LogPathDiagnostics()
+    {
+        try
+        {
+            ClientLog.Info($"运行环境: {PackageIdentityHelper.Describe()}");
+            ClientLog.Info(
+                $"ClassIsland 配置目录: {Path.GetFullPath(ClassIslandConfig.ConfigFolder)} " +
+                $"(来源={ClassIslandConfig.Source}, 探测到 {ClassIslandConfig.Candidates.Count} 个候选)");
+
+            var paths = BridgeMetaPaths;
+            var lines = paths
+                .Select((path, index) => $"  [{index}] {Path.GetFullPath(path)}");
+            ClientLog.Info(
+                $"桥接 meta 候选路径（共 {paths.Count} 个）:\n" + string.Join("\n", lines));
+        }
+        catch (Exception ex)
+        {
+            ClientLog.Warn($"路径诊断失败，不影响启动: {ex.Message}");
         }
     }
 

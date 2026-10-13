@@ -1,80 +1,100 @@
 <?xml version="1.0" encoding="utf-8"?>
-<Package xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
-         xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
-         xmlns:uap3="http://schemas.microsoft.com/appx/manifest/uap/windows10/3"
-         xmlns:desktop="http://schemas.microsoft.com/appx/manifest/desktop/windows10"
-         xmlns:desktop6="http://schemas.microsoft.com/appx/manifest/desktop/windows10/6"
-         xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
-         IgnorableNamespaces="uap uap3 desktop desktop6 rescap">
+
+<Package
+  xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
+  xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
+  xmlns:uap3="http://schemas.microsoft.com/appx/manifest/uap/windows10/3"
+  xmlns:uap10="http://schemas.microsoft.com/appx/manifest/uap/windows10/10"
+  xmlns:desktop="http://schemas.microsoft.com/appx/manifest/desktop/windows10"
+  xmlns:desktop6="http://schemas.microsoft.com/appx/manifest/desktop/windows10/6"
+  xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
+  IgnorableNamespaces="uap uap3 uap10 desktop desktop6 rescap">
 
   <!--
-    包身份占位说明：
-      Publisher 必须在最终构建时替换为 Partner Center 分配的原始发布者标识
-      （形如 CN=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx，共 32 位十六进制）。
-      WAP 工程会用 DutyAgent.Client.Package.wapproj 里的同名属性覆盖此处，
-      直接改这里的值只对“SDK MSIX 工具链”路径生效。
+    包身份。Publisher 注意：
+      - 本仓库检入的是"开发用" DN，仅用于本地 MSIX 签名与侧载。
+        由 scripts\Build-MsixPackage.ps1 的 -Publisher 参数覆盖。
+      - 上架 Partner Center 时，必须替换为账户设置里给出的原始发布者 ID
+        （形如 CN=<32 位十六进制>），并以「不本地签名」的方式交付给商店签名。
   -->
-  <Identity Name="DutyAgent"
-            Publisher="CN=REPLACE_WITH_PARTNER_CENTER_PUBLISHER_ID"
-            Version="1.0.0.0"
-            ProcessorArchitecture="x64" />
+  <Identity
+    Name="DutyAgent"
+    Publisher="CN=Duty-Agent Dev"
+    Version="1.0.0.0"
+    ProcessorArchitecture="x64" />
 
   <Properties>
     <DisplayName>Duty-Agent 值日排班</DisplayName>
     <PublisherDisplayName>Duty-Agent</PublisherDisplayName>
     <Logo>Assets\StoreLogo.png</Logo>
     <Description>班级值日排班助手：LLM 柔性排班 + 确定性兜底引擎，为 ClassIsland 桌面组件供数。</Description>
+    <uap10:PackageIntegrity>
+      <uap10:Content Enforcement="on"/>
+    </uap10:PackageIntegrity>
   </Properties>
 
   <Dependencies>
-    <TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.17763.0" MaxVersionTested="10.0.19041.0" />
+    <TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.18362.0" MaxVersionTested="10.0.26100.0" />
   </Dependencies>
 
   <Resources>
     <Resource Language="zh-CN" />
-    <Resource Language="en-US" />
+    <Resource Language="en-us" />
   </Resources>
 
   <Applications>
     <Application Id="App"
                  Executable="duty-agent.exe"
                  EntryPoint="Windows.FullTrustApplication">
-      <uap:VisualElements DisplayName="Duty-Agent"
-                          Description="班级值日排班助手"
-                          Square150x150Logo="Assets\Square150x150Logo.png"
-                          Square44x44Logo="Assets\Square44x44Logo.png"
-                          BackgroundColor="transparent">
-        <!--
-          AppListEntry 默认显示。若希望应用只活在托盘、不进开始菜单应用列表,
-          可改为 AppListEntry="none"。
-        -->
+      <uap:VisualElements
+        DisplayName="Duty-Agent"
+        Description="班级值日排班助手"
+        BackgroundColor="transparent"
+        Square150x150Logo="Assets\MedTile.png"
+        Square44x44Logo="Assets\AppList.png">
+        <uap:DefaultTile Wide310x150Logo="Assets\WideTile.png" />
       </uap:VisualElements>
     </Application>
   </Applications>
 
   <Capabilities>
     <!--
-      全信任桌面应用必需。注意：本应用不需要 broadFileSystemAccess —— 所有数据
-      都写在 %LOCALAPPDATA%\DutyAgent，与 ClassIsland 的握手文件走双写（含
-      LocalAppData 备路径），经典 Win32 I/O 在全信任下可读写用户有权限的路径。
+      全信任桌面应用必需。刻意**不**声明 broadFileSystemAccess：客户端数据全部落在
+      %LOCALAPPDATA%\DutyAgent，与 ClassIsland 的握手 meta 采用多路径冗余（含
+      LocalAppData 与 LocalState），无需访问包外任意路径。少一个受限能力，
+      审核摩擦小得多。经典 Win32 I/O 在全 trust 下可读写用户有权限的路径。
     -->
     <rescap:Capability Name="runFullTrust" />
   </Capabilities>
 
-  <Extensions>
-    <!-- 自启：AutoStartManager 在包身份下走 StartupTask API，声明必须与之对应 -->
-    <desktop6:Extension Category="windows.startupTask" Executable="duty-agent.exe"
-                        EntryPoint="Windows.FullTrustApplication">
-      <desktop6:StartupTask TaskId="DutyAgentStartup"
-                            Enabled="true"
-                            DisplayName="Duty-Agent 值日排班" />
-    </desktop6:Extension>
+  <!--
+    刻意不声明任何 <Extensions>。实测与工具链结论（2026-10，winapp 0.7.1 +
+    Microsoft.Windows.SDK.BuildTools 10.0.28000）：
 
-    <!--
-      Python 后端子进程。全信任打包应用启动的额外可执行文件需在此声明，
-      否则子进程可能拿不到包身份。
-    -->
-    <desktop:Extension Category="windows.fullTrustProcess"
-                       Executable="Assets_Duty\python-embed\python.exe" />
-  </Extensions>
+    1. windows.fullTrustProcess（python.exe 子进程）：不需要。实测稀疏包身份下
+       客户端可直接拉起并监管 Assets_Duty\python-embed\python.exe（启动、通知流、
+       异常退出自动重启全部正常）；该扩展只用于 FullTrustProcessLauncher 另行
+       拉起进程的场景。
+
+    2. desktop6:startupTask：本机工具链无法验证。NuGet BuildTools 的 makeappx
+       校验用的 schema 集（schemas/10.0.28000.0/winrt/*.xsd）不含 Desktop*，
+       所有 desktop:/desktop6: 扩展元素都会被判 "invalid child element"；
+       winapp package 同理。因此自启改为运行期回退：AutoStartManager 在
+       StartupTask 不可用时写 HKCU Run 键，命令为
+       explorer.exe shell:AppsFolder\<PFN>!App（实测两件事均成立：包身份进程
+       写 HKCU Run 未重定向，AUMID 激活可拉起全信任应用）。
+
+    若改用完整 Windows SDK（带 Desktop* schema）构建，可以恢复下面这段拿到
+    平台原生的自启管理（系统设置里可见、卸载自动清理）；Run 键回退逻辑会继续
+    作为兜底保留，两者不会同时生效：
+
+      <Extensions>
+        <desktop6:Extension Category="windows.startupTask" Executable="duty-agent.exe"
+                            EntryPoint="Windows.FullTrustApplication">
+          <desktop6:StartupTask TaskId="DutyAgentStartup" Enabled="true"
+                                DisplayName="Duty-Agent 值日排班" />
+        </desktop6:Extension>
+      </Extensions>
+  -->
+
 </Package>

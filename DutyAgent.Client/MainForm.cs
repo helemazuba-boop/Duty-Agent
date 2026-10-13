@@ -500,6 +500,7 @@ internal sealed class MainForm : Form
 
     private async Task InitializeAsync()
     {
+        ClientLog.Info("初始化流程开始。");
         try
         {
             await _backend.StartAsync(CancellationToken.None).ConfigureAwait(true);
