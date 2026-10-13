@@ -93,24 +93,55 @@ if (Test-Path -LiteralPath $bridgeReleaseDir) {
 }
 
 # ---------- 4. 版本盖章 ----------
-# MSIX Identity Version 必须是四段式；发布脚本已统一其余版本面。
-$version = $ReleaseVersion
-if ([string]::IsNullOrWhiteSpace($version)) {
-    $versionPy = Join-Path $root "Assets_Duty\version.py"
-    if (Test-Path -LiteralPath $versionPy) {
-        $text = [System.IO.File]::ReadAllText($versionPy, [System.Text.Encoding]::UTF8)
-        $m = [System.Text.RegularExpressions.Regex]::Match($text, '(?m)^APP_VERSION[ \t]*=[ \t]*"([^"\r\n]*)"')
-        if ($m.Success) { $version = $m.Groups[1].Value }
-    }
-}
-if ([string]::IsNullOrWhiteSpace($version)) { $version = "1.0.0" }
-$msixVersion = $version -replace '^(\d+\.\d+\.\d+)$', '$1.0'
+# 两个版本面分开，别再混：
+#   * MSIX Identity.Version = 产品/包版本，由 ReleaseVersion 或清单里的默认值决定；
+#   * Assets_Duty\version.py 的 APP_VERSION = 后端引擎版本，两回事。
+# 历史上这里强行用 version.py 去改包版本，出过两个坑（2026-10-14 修）：
+#   a) 那条 Regex.Replace(text, 'Version="\d+\.\d+\.\d+\.\d+"', ..., 1) 是"跑了但没生效"——
+#      多行属性排版下第一个匹配根本不是 Identity.Version；
+#   b) PS 5.1 下 int 参数找不到 count 重载，会被解释成 RegexOptions.IgnoreCase，
+#      于是改成"全部替换"，顺手把 TargetDeviceFamily 的 MinVersion 也一起换掉 ——
+#      那种包装得上但行为完全不对，比报错更难查。
+# 现在只有显式给了 -ReleaseVersion（CI / release.yml 的 tag 流程会传）才盖章，
+# 否则沿用清单里的版本，绝不动。
 $stagedManifest = Join-Path $pkgDir "Package.appxmanifest"
-$manifestText = [System.IO.File]::ReadAllText($stagedManifest, [System.Text.Encoding]::UTF8)
-$manifestText = [System.Text.RegularExpressions.Regex]::Replace(
-    $manifestText, 'Version="\d+\.\d+\.\d+\.\d+"', "Version=`"$msixVersion`"", 1)
-[System.IO.File]::WriteAllText($stagedManifest, $manifestText, (New-Object System.Text.UTF8Encoding($false)))
-Write-Host "[msix] 版本: $version (包版本 $msixVersion)"
+
+# 盖章前先记下原值，改完要复读比对
+$preXml = New-Object System.Xml.XmlDocument
+$preXml.PreserveWhitespace = $true
+$preXml.Load($stagedManifest)
+$preNsm = New-Object System.Xml.XmlNamespaceManager($preXml.NameTable)
+$preNsm.AddNamespace("x", "http://schemas.microsoft.com/appx/manifest/foundation/windows10")
+$preIdentity = $preXml.SelectSingleNode("/x:Package/x:Identity", $preNsm)
+if ($null -eq $preIdentity) { throw "清单里找不到 <Identity>，无法处理版本。" }
+$manifestVersion = $preIdentity.GetAttribute("Version")
+$preMinVersion = $preXml.SelectSingleNode("/x:Package/x:Dependencies/x:TargetDeviceFamily", $preNsm).GetAttribute("MinVersion")
+
+if ([string]::IsNullOrWhiteSpace($ReleaseVersion)) {
+    Write-Host "[msix] 未指定 -ReleaseVersion，沿用清单版本 $manifestVersion（不触碰 Assets_Duty\version.py 的引擎版本面）"
+    $msixVersion = $manifestVersion
+}
+else {
+    if ($ReleaseVersion -notmatch '^\d+\.\d+\.\d+$') {
+        throw "ReleaseVersion '$ReleaseVersion' 必须形如 x.y.z（四段写法请自行补 .0 到版本面里）。"
+    }
+    $msixVersion = "$ReleaseVersion.0"
+    $preIdentity.SetAttribute("Version", $msixVersion)
+    $preXml.Save($stagedManifest)
+    Write-Host "[msix] 版本: $msixVersion（来自 -ReleaseVersion $ReleaseVersion）"
+
+    # 复读校验：上次的教训就是"代码跑了但文件没变"
+    $postXml = New-Object System.Xml.XmlDocument
+    $postXml.Load($stagedManifest)
+    $postNsm = New-Object System.Xml.XmlNamespaceManager($postXml.NameTable)
+    $postNsm.AddNamespace("x", "http://schemas.microsoft.com/appx/manifest/foundation/windows10")
+    $postIdentity = $postXml.SelectSingleNode("/x:Package/x:Identity", $postNsm)
+    $gotVersion = $postIdentity.GetAttribute("Version")
+    if ($gotVersion -ne $msixVersion) { throw "版本盖章失败：期望 $msixVersion，实际 $gotVersion" }
+    $gotMinVersion = $postXml.SelectSingleNode("/x:Package/x:Dependencies/x:TargetDeviceFamily", $postNsm).GetAttribute("MinVersion")
+    if ($gotMinVersion -ne $preMinVersion) { throw "版本盖章误伤了 MinVersion：$preMinVersion -> $gotMinVersion" }
+    Write-Host "[msix] 版本已盖章并复读校验（MinVersion 未受影响：$gotMinVersion）"
+}
 
 # ---------- 5. 打包 ----------
 $packageArgs = @("package", $pkgDir, "--manifest", $stagedManifest, "--name", "DutyAgent")
@@ -125,12 +156,18 @@ if ($ForStore) {
         Write-Host "[msix] 生成开发证书（Publisher 从清单推断）..."
         Push-Location $certDir
         try {
-            & $winappCmd cert generate --manifest $stagedManifest -v
+            # --export-cer：同时导出只含公钥的 .cer。侧载/CI 装包只需要 .cer，
+            # 不必把带私钥的 .pfx（口令是 winapp 默认的 "password"）拷来拷去。
+            & $winappCmd cert generate --manifest $stagedManifest --export-cer -v
             if ($LASTEXITCODE -ne 0) { throw "生成开发证书失败" }
             & $winappCmd cert install (Join-Path $certDir "devcert.pfx") -v
             if ($LASTEXITCODE -ne 0) { Write-Warning "证书安装失败，侧载时可能需要手动信任。" }
         } finally {
             Pop-Location
+        }
+        $devCer = Join-Path $certDir "devcert.cer"
+        if (Test-Path -LiteralPath $devCer) {
+            Write-Host "[msix] 开发证书公钥: $devCer"
         }
     }
     $packageArgs += @("--cert", $devCert)

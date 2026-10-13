@@ -180,7 +180,14 @@
 3. 隐私政策 URL —— 应用会把名单姓名发往用户配置的 LLM API，条款需覆盖。
 4. 年龄分级；`runFullTrust` 能力说明（商店允许，自 Win10 1903 起）。
 5. 认证周期约 1–3 天；需在有 Desktop Bridge 工作负载的机器上产出首包。
-6. 包体：源 92M（其中 85M 为 python-embed），MSIX 压缩后预计 40M 以内。
+6. 包体：源 92M（其中 85M 为 python-embed），MSIX 压缩后实测 **107M**。
+7. **补 WebView2 运行时依赖**：清单当前未声明 `Microsoft.WinWebView2Runtime`，
+   Win10 用户装完界面打不开。补齐后打开 `MSIX-CertificationTest.ps1 -RequireWebView2Dependency`。
+8. **版本面决策**：MSIX `Identity.Version`（清单 `1.0.0.0`）、后端 `Assets_Duty/version.py`
+   （`0.50.0`）、README（`v0.51.8 Beta`）三处不一致。商店不接受版本回退，所以必须显式定号；
+   `MSIX-CertificationTest.ps1` 会以 WARN 形式持续提示漂移，不阻塞构建。
+9. 清单不声明 `<Extensions>` 的代价：自启只能走运行期 Run 键回退，卸载后留 AUMID 残留，
+   由 `MSIX-LifecycleTest.ps1` 的卸载阶段识别 + 卸载脚本清理。
 
 ## 风险
 
@@ -189,7 +196,7 @@
 | ~~本机无 MSIX 工具链，打包工程无法验证~~ **已消除** | 2026-10-13 用 winapp 0.7.1 在本机产出并解包验证了 .msix，包内容/清单/签名全部核对 |
 | 带 desktop 扩展的清单在本机工具链无法校验 | 放弃 `startupTask` 扩展改用运行期 Run 键回退（已实测全链路）；清单注释保留完整 SDK 下的恢复 XML |
 | 包身份下写入宿主布局目录可能失败 | 批次 1 的双写机制已把这条路径降级为"尽力而为" |
-| 商店版与 zip 版同机并存 | 单实例命名加 PFN 作用域（批次 4，已修掉并回归）；握手 meta 三写双读 + 有效性/新鲜度选取（批次 1 修正 A） |
+| 商店版与 zip 版同机并存 | **不是"已解决"，而是"已知不能同时跑"**：单实例命名加 PFN 作用域（批次 4）解决的是"两个 zip 实例"互相挡；包身份版拿到的是**不同**的锁名，所以 zip 版与商店版**互相挡不住**，会同时拉起后端、抢同一端口、污染同一份握手 meta。文档已改为明确禁止并存（`DutyAgent.Client.Package\README.md`），`MSIX-LifecycleTest.ps1` 的首跑阶段把"端口只应有一个 listener"列入待补断言 | 
 | 桥接插件一键安装仍写 `<...>\data\Plugins` | 保持现状 + 失败时给出明确的手动安装指引；不在本轮改造 |
 
 ## 提交节奏
@@ -202,6 +209,58 @@
 4. `fix(client): Python 子进程只读目录与并发命名加固`
 5. `docs: 上架微软商店适配说明`
 6. `feat(client): 包身份实测落地 —— winapp 打包、Run 键自启回退、ScopeName 崩溃修复`
+7. `feat(msix): 自启自愈与残留清理、生命周期验收脚本、MSIX CI 与静态认证`（本批，见下）
+
+> 批次 1 的修正 A/B 与 `Duty-Agent-ClassIsland-Bridge.Tests`（9 个用例，覆盖
+> "旧路径残留"、"PID 复用"、"主层优先"等）在同一批追加提交。
+>
+> 批次 6 是实测批：修正 B 的五项实测、工具链 desktop schema 缺失的发现、清单去掉
+> `<Extensions>`、`AutoStartManager` 的 Run 键回退（`ScopeName` 前缀崩溃的修复 +
+> `DutyAgent.Client.Tests` 11 例）、`.wapproj` 删除、`Build-MsisxPackage.ps1` 重写为
+> winapp 流程、本机 107MB .msix 产出与解包校验，全部在同一批。
+
+### 批次 7 —— 风险收口 + 生命周期验收 + CI（2026-10-14）
+
+针对三个明确问题各自落地：
+
+**① 自启清理与失败处理有风险**
+
+`AutoStartManager` 原来有两个隐患：`ApplyRunKey` 的 catch 是空的（被组策略锁定时
+界面显示"已开启"但开机不自启，日志里查不到原因），坏值也不会自愈（zip 版换目录、
+换签名导致 PFN 变化、旧版 AUMID 残留，都会让自启"开着但不生效"）。
+现在把收敛决策抽成纯函数 `ClassifyRunKeyValue` / `PlanRunKeyAction` /
+`TryGetExecutablePath`，`DutyAgent.Client.Tests` 用 22 例钉住；注册表每一步都留日志；
+`startupTask` 路径生效时**清掉 Run 键历史残留**（否则两条自启路径并存），
+而 startupTask 被组策略拒绝时**不动** Run 键（AUMID 命令本身可用，留着至少还剩一条路）。
+
+**② 安装 / 卸载 / 升级没有正式生命周期确认**
+
+新增 `scripts/MSIX-LifecycleTest.ps1`：安装 → 首跑（AUMID 激活、包身份日志首行、
+PFN 一致性、python 子进程、数据落点、Run 键自启、写升级探针）→ 升级（版本递增、
+用户数据保留）→ 卸载（包与安装目录消失、自启残留形态、数据不删）。
+每项 PASS/FAIL，失败即非零退出。GUI 只能在真机手动跑，CI 不覆盖。
+
+**③ MSIX CI 与认证测试空白**
+
+- `.github/workflows/test.yml` 原来只 build 不 test：`DutyAgent.Client.Tests`（ScopeName
+  回归那批）和 `DutyAgentBridge.Tests` 全都没进 CI。**这是最严重的一处空白** ——
+  2026-10-13 那个"包身份下启动即崩"的真 bug 正是 `ScopeNameTests` 当场抓到的，
+  而它当时并不在 CI 里。
+- 新增 `.github/workflows/msix.yml`：静态认证 → 出包 → 按**包内**清单再认证 →
+  装/卸往返。按包体清单再跑一遍是必须的：winapp 会重排属性并注入 `build:Metadata`，
+  仓库里那份通过不代表包体没问题。
+- 新增 `scripts/MSIX-CertificationTest.ps1`：清单结构、能力（只允许 runFullTrust，
+  禁止 broadFileSystemAccess）、资源文件真实存在、MinVersion 下限、版本面漂移提示。
+  只读不写，CI/PR 都能跑。
+
+**顺带修掉的真 bug**：`Build-MsixPackage.ps1` 的版本盖章是"跑了但没生效"——
+那条 `Regex.Replace(text, 'Version="\d+\.\d+\.\d+\.\d+"', ..., 1)` 在多行属性排版下
+第一个匹配根本不是 `Identity.Version`；且 PS 5.1 下 int 参数找不到 count 重载，
+会被解释成 `RegexOptions.IgnoreCase` 从而改成"全部替换"，顺手把
+`TargetDeviceFamily` 的 `MinVersion` 也换掉（包装得上但行为完全不对，比报错更难查）。
+证据：`.msix-work/final-unpack/AppxManifest.xml` 里 `Identity Version` 与 `MinVersion`
+都没被改过。改为 XML 操作 + 改后复读校验；并明确"只有显式 `-ReleaseVersion` 才盖章"，
+不再拿 `version.py` 的引擎版本去覆盖包版本。
 
 > 批次 1 的修正 A/B 与 `Duty-Agent-ClassIsland-Bridge.Tests`（9 个用例，覆盖
 > "旧路径残留"、"PID 复用"、"主层优先"等）在同一批追加提交。
