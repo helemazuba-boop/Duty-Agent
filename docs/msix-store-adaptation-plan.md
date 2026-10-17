@@ -160,7 +160,8 @@
 
 - `BackendProcessManager`：子进程环境加入 `PYTHONDONTWRITEBYTECODE=1`，杜绝往只读安装目录写缓存。
 - `Program.cs`：互斥体与唤醒事件名在包身份下加 `<PackageFamilyName>\` 前缀，
-  使 Store 版与 zip 版可以并存。**实测中抓到并修掉一个自身缺陷**：初版把包名前缀拼到了
+  使 Store 版与 zip 版可以并存**安装**（同机只允许一个客户端运行，见修正 C 的
+  跨形态数据目录 owner 互斥）。**实测中抓到并修掉一个自身缺陷**：初版把包名前缀拼到了
   `Local\` 之前，Win32 把名字当文件路径，商店版客户端启动即抛
   `DirectoryNotFoundException` 崩溃（minidump 0xE0434352，日志只有第一行）。修正为
   "根前缀必须留在最前"，回归见 `DutyAgent.Client.Tests`（`ScopeNameTests`，8 例，
@@ -189,7 +190,7 @@
 | ~~本机无 MSIX 工具链，打包工程无法验证~~ **已消除** | 2026-10-13 用 winapp 0.7.1 在本机产出并解包验证了 .msix，包内容/清单/签名全部核对 |
 | 带 desktop 扩展的清单在本机工具链无法校验 | 放弃 `startupTask` 扩展改用运行期 Run 键回退（已实测全链路）；清单注释保留完整 SDK 下的恢复 XML |
 | 包身份下写入宿主布局目录可能失败 | 批次 1 的双写机制已把这条路径降级为"尽力而为" |
-| 商店版与 zip 版同机并存 | 单实例命名加 PFN 作用域（批次 4，已修掉并回归）；握手 meta 三写双读 + 有效性/新鲜度选取（批次 1 修正 A） |
+| 商店版与 zip 版同机并存 | 单实例命名加 PFN 作用域（批次 4，已修掉并回归）；握手 meta 三写双读 + 有效性/新鲜度选取（批次 1 修正 A）；**运行期由跨形态数据目录 owner 互斥禁止双客户端（修正 C，2026-10-17）** |
 | 桥接插件一键安装仍写 `<...>\data\Plugins` | 保持现状 + 失败时给出明确的手动安装指引；不在本轮改造 |
 
 ## 提交节奏
@@ -210,3 +211,29 @@
 > `<Extensions>`、`AutoStartManager` 的 Run 键回退（`ScopeName` 前缀崩溃的修复 +
 > `DutyAgent.Client.Tests` 11 例）、`.wapproj` 删除、`Build-MsixPackage.ps1` 重写为
 > winapp 流程、本机 107MB .msix 产出与解包校验，全部在同一批。
+
+## 修正 C（2026-10-17）—— 上架防呆与触摸适配
+
+完整计划、落地记录与真机待办见 `docs/store-touch-remediation-plan.md`，这里只记与本文档
+结论相关的要点：
+
+1. **发布者防呆**：`Build-MsixPackage.ps1` 新增 `-Publisher "CN=<32 位十六进制>"`，
+   `-ForStore` 读回 staged manifest 硬校验；开发占位 DN 直接构建失败。本地签名证书
+   缓存改为按发布者 SHA-256 派生目录（换发布者自动重新生成）。
+2. **清单 MinVersion 保持 10.0.18362.0**：官方文档确认 WebView2 在 Win10 上
+   "绝大多数预装但仍有缺失"，属运行期问题而非 OS 版本问题。客户端改为启动时探测
+   `CoreWebView2Environment.GetAvailableBrowserVersionString()`，缺失时给出官方
+   下载指引。
+3. **HKCU Run 值名加 PFN 后缀**（修正 B 实测"包身份写 HKCU 不重定向"的直接推论）：
+   裸值名会被 zip 版与商店版互相覆盖/双启动；`IsEnabled`/`Apply` 兼容并迁移旧值，
+   `startupTask` 可用时清掉全部 Run 痕迹。
+4. **跨形态数据目录 owner 互斥**：`Local\DutyAgent.DataDirectory.Owner`（刻意不带
+   包前缀）保证 zip 版与商店版运行时只有一个后端写共享的 `state/roster/meta`；
+   后启动者通过 `Local\DutyAgent.DataDirectory.Wake` 唤醒既有实例后退出。
+5. **脚本编码**：`Build-MsixPackage.ps1` 无 BOM + 中文注释，在 Windows PowerShell 5.1
+   下按 ANSI 解析会产生**语法错误**（README 的调用方式正是 `powershell -File`）。
+   已加 UTF-8 BOM。README 里的脚本名拼写错误（`Build-MsilPackage.ps1`）一并修正。
+6. **触摸适配**（详见新文档批次 0/1）：触摸拖拽/缩放改走
+   `WM_SYSCOMMAND + SC_MOVE/SC_SIZE` 且用 `PostMessage` 投递；`DUTY_CHROME_PROBE=1`
+   探针用于真机判定 native / web 命中路径；`any-pointer: coarse` 下放大热区与控件。
+   默认上下文菜单**保留**（触屏长按粘贴入口）。

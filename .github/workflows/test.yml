@@ -93,3 +93,11 @@ jobs:
 
       - name: Build ClassIsland bridge (DutyAgentBridge)
         run: dotnet build Duty-Agent-ClassIsland-Bridge/DutyAgentBridge.csproj -c Release --nologo
+
+      - name: Run client unit tests (DutyAgent.Client.Tests)
+        # 覆盖 ScopeName（商店版崩溃回归）、AUMID 自启命令与 Run 值名作用域、
+        # 触摸模态循环命令映射。GUI 测试不存在，全部是纯函数级用例。
+        run: dotnet test DutyAgent.Client.Tests/DutyAgent.Client.Tests.csproj -c Release --nologo
+
+      - name: Run bridge unit tests (DutyAgentBridge.Tests)
+        run: dotnet test Duty-Agent-ClassIsland-Bridge.Tests/DutyAgentBridge.Tests.csproj -c Release --nologo
