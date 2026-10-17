@@ -15,12 +15,21 @@ namespace DutyAgent.Client;
 ///   explorer（非包进程）读得到；AUMID 激活可拉起全信任应用。</item>
 ///   <item>传统桌面（zip 分发）：维持原有 HKCU\...\Run 值行为。</item>
 /// </list>
+/// Run 键值名在包身份下带 PFN 后缀：包身份进程写 HKCU 不重定向，zip 版与商店版
+/// 若共用裸值名会互相覆盖自启开关，升级期还可能出现同一次登录双启动。
 /// </summary>
 internal static class AutoStartManager
 {
     private const string RunKeyPath = @"Software\Microsoft\Windows\CurrentVersion\Run";
-    private const string ValueName = "DutyAgent";
+    private const string RunValueName = "DutyAgent";
     private const string StartupTaskId = "DutyAgentStartup";
+
+    /// <summary>当前形态下 Run 键值名的完整形式（包身份带 PFN 后缀）。</summary>
+    private static string ScopedRunValueName => BuildRunValueName(PackageIdentityHelper.PackageFamilyName);
+
+    /// <summary>纯函数形式：作用域由调用方注入，便于在无包身份的构建机上做回归测试。</summary>
+    internal static string BuildRunValueName(string? family) =>
+        string.IsNullOrWhiteSpace(family) ? RunValueName : $"{RunValueName}.{family}";
 
     /// <summary>当前形态下"已启用自启"时 Run 键应有的命令；用于判断现值是否仍然有效。</summary>
     private static string ExpectedCommand => PackageIdentityHelper.IsPackaged
@@ -33,6 +42,14 @@ internal static class AutoStartManager
     /// </summary>
     internal static string BuildRunCommand(string appUserModelId) =>
         $"explorer.exe shell:AppsFolder\\{appUserModelId}";
+
+    /// <summary>
+    /// 旧版商店版（迁移前）写在裸值名上的命令：本包 AUMID 激活。
+    /// 只有确认是"本包自己"的旧值才允许删除，避免误伤同机 zip 版的 exe 启动项。
+    /// </summary>
+    internal static bool IsLegacyPackagedRunCommand(string? value, string? family) =>
+        !string.IsNullOrWhiteSpace(family)
+        && string.Equals(value, BuildRunCommand($"{family}!App"), StringComparison.OrdinalIgnoreCase);
 
     public static bool IsEnabled()
     {
@@ -48,9 +65,24 @@ internal static class AutoStartManager
         try
         {
             using var key = Registry.CurrentUser.OpenSubKey(RunKeyPath, writable: false);
-            return key?.GetValue(ValueName) is string current
+            if (key is null)
+            {
+                return false;
+            }
+
+            if (key.GetValue(ScopedRunValueName) is string current
                 && !string.IsNullOrWhiteSpace(current)
-                && string.Equals(current, ExpectedCommand, StringComparison.OrdinalIgnoreCase);
+                && string.Equals(current, ExpectedCommand, StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+
+            // 迁移期兼容：升级用户还停留在旧值名（无 PFN 后缀）上，视为已启用；
+            // Apply 会把它迁移成带后缀的值名。
+            return PackageIdentityHelper.IsPackaged
+                && IsLegacyPackagedRunCommand(
+                    key.GetValue(RunValueName) as string,
+                    PackageIdentityHelper.PackageFamilyName);
         }
         catch
         {
@@ -67,6 +99,15 @@ internal static class AutoStartManager
             var startupResult = ApplyStartupTask(enabled);
             if (startupResult.HasValue)
             {
+                // startupTask 接管自启后，历史 Run 键必须清掉：否则用户在系统
+                // "启动应用"里禁用后，下次登录仍会被 Run 键拉起。
+                // 仅在"已启用成功"或"正在关闭"时清理；启用被策略拒绝时保留
+                // Run 兜底，避免把用户已经打开的自启静默关掉。
+                if (startupResult.Value || !enabled)
+                {
+                    CleanupRunValues();
+                }
+
                 return startupResult.Value;
             }
 
@@ -90,19 +131,60 @@ internal static class AutoStartManager
             if (enabled)
             {
                 var command = ExpectedCommand;
-                if (key.GetValue(ValueName) is not string current || current != command)
+                if (key.GetValue(ScopedRunValueName) is not string current || current != command)
                 {
-                    key.SetValue(ValueName, command, RegistryValueKind.String);
+                    key.SetValue(ScopedRunValueName, command, RegistryValueKind.String);
                 }
+
+                DeleteLegacyRunValueIfOurs(key);
             }
             else
             {
-                key.DeleteValue(ValueName, throwOnMissingValue: false);
+                key.DeleteValue(ScopedRunValueName, throwOnMissingValue: false);
+                DeleteLegacyRunValueIfOurs(key);
             }
         }
         catch
         {
             // 注册表被组策略锁定等场景：静默失败，不影响主流程。
+        }
+    }
+
+    /// <summary>startupTask 可用时清理全部 Run 键痕迹（本包作用域值 + 本包旧命令）。</summary>
+    private static void CleanupRunValues()
+    {
+        try
+        {
+            using var key = Registry.CurrentUser.OpenSubKey(RunKeyPath, writable: true);
+            if (key is null)
+            {
+                return;
+            }
+
+            key.DeleteValue(ScopedRunValueName, throwOnMissingValue: false);
+            DeleteLegacyRunValueIfOurs(key);
+        }
+        catch
+        {
+        }
+    }
+
+    /// <summary>
+    /// 删除旧值名上的"本包命令"（迁移）。只删 AUMID 命令完全匹配的值：
+    /// 同机 zip 版写的 exe 路径值必须保留。
+    /// </summary>
+    private static void DeleteLegacyRunValueIfOurs(RegistryKey key)
+    {
+        if (!PackageIdentityHelper.IsPackaged)
+        {
+            return;
+        }
+
+        if (IsLegacyPackagedRunCommand(
+            key.GetValue(RunValueName) as string,
+            PackageIdentityHelper.PackageFamilyName))
+        {
+            key.DeleteValue(RunValueName, throwOnMissingValue: false);
         }
     }
 
