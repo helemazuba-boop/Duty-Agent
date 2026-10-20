@@ -351,14 +351,36 @@ def request_llm_stream(url: str, payload: dict, api_key: str, progress_callback=
     return content
 
 
+def resolve_provider_endpoint(base_url: str, suffix: str) -> str:
+    """把用户填的 ``base_url`` 解析成具体端点 URL（chat 与 models 共用同一套规则）。
+
+    以前 chat 和 models 各写一份归一化逻辑，规则很快就漂了：models 那版遇到
+    ``.../v1/models`` 会拼成 ``.../v1/models/v1/models``。收敛到这里之后，
+    两处由构造保证一致——凡是 chat 能用的 base_url，列模型也一定用同一个前缀。
+
+    ``suffix`` 形如 ``/chat/completions`` 或 ``/models``。
+    """
+    base = str(base_url or "").strip().rstrip("/")
+    lower = base.lower()
+    # 用户经常直接粘贴完整端点（很多服务商文档只给完整地址）：
+    # 先把它剥掉，再按同一套规则重建，避免出现 /v1/models/v1/models 这种叠罗汉。
+    for known in ("/chat/completions", "/models"):
+        if lower.endswith(known):
+            base = base[: -len(known)].rstrip("/")
+            lower = base.lower()
+            break
+    if lower.endswith("/v1"):
+        return f"{base}{suffix}"
+    # 已经带版本段就别再补 /v1：智谱是 /api/paas/v4，老规则会拼成
+    # /v4/v1/models（chat 也一样拼错）。只认 /v<数字>，避免把 /v1beta 之类误判。
+    if re.search(r"/v\d+$", lower):
+        return f"{base}{suffix}"
+    return f"{base}/v1{suffix}"
+
+
 def _build_llm_target(config: dict, messages: List[dict], transport_overrides: Optional[dict] = None, tools: Optional[List[dict]] = None) -> Tuple[str, dict, str]:
     base_url = str(config["base_url"]).rstrip("/")
-    if base_url.lower().endswith("/chat/completions"):
-        url = base_url
-    elif base_url.lower().endswith("/v1"):
-        url = f"{base_url}/chat/completions"
-    else:
-        url = f"{base_url}/v1/chat/completions"
+    url = resolve_provider_endpoint(base_url, "/chat/completions")
     payload = {
         "model": config["model"],
         "messages": list(messages),

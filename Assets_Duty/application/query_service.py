@@ -6,8 +6,12 @@ from state_ops import Context, compute_current_duty_date, load_config, load_host
 
 try:
     from readiness import evaluate_readiness, probe_model
+    # 别名导入：本类也有一个 list_models 方法，裸名 `list_models(...)` 在方法体内
+    # 解析的是模块全局，之前没导入就直接 NameError（/duty/model-list 一直 500）。
+    from readiness import list_models as fetch_provider_models
 except ImportError:  # pragma: no cover - import path fallback
     from ..readiness import evaluate_readiness, probe_model
+    from ..readiness import list_models as fetch_provider_models
 
 
 class QueryService:
@@ -171,7 +175,41 @@ class QueryService:
 
     def list_models(self, base_url: str, api_key: str) -> dict:
         """Return the model IDs exposed by an OpenAI-compatible provider."""
-        return list_models(base_url, api_key)
+        return fetch_provider_models(base_url, self._resolve_api_key(base_url, api_key))
+
+    def _resolve_api_key(self, base_url: str, api_key: str) -> str:
+        """请求里没带 key 时，回落到配置里给**同一个端点**配的 key。
+
+        以前这里只用请求体里的 key：调用方（CLI / 向导）只要没把 key 一起发过来，
+        就算配置里明明填了 key，列模型也会退化成匿名请求，云端端点直接 401。
+        所以"有 key 就要带上"。
+
+        只做同端点匹配（忽略大小写与结尾斜杠），绝不把云端 key 发往用户在表单里
+        随手填的其它地址——那等于把密钥泄露给任意 URL。
+        """
+        resolved = str(api_key or "").strip()
+        if resolved:
+            return resolved
+
+        target = str(base_url or "").strip().rstrip("/").lower()
+        if not target:
+            return ""
+
+        try:
+            config = load_config(Context(self._runtime.data_dir))
+        except Exception:  # noqa: BLE001 - 读配置失败不该让列模型整个崩掉
+            return ""
+
+        candidates = [config] + list(config.get("plan_presets") or [])
+        for item in candidates:
+            if not isinstance(item, dict):
+                continue
+            stored = str(item.get("api_key") or "").strip()
+            if not stored:
+                continue
+            if str(item.get("base_url") or "").strip().rstrip("/").lower() == target:
+                return stored
+        return ""
 
     def get_snapshot(self, trace_id: str | None = None, request_source: str = "api") -> dict:
         effective_trace_id = trace_id or self._runtime.new_trace_id()

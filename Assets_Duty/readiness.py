@@ -16,9 +16,9 @@ import urllib.request
 from typing import Any
 
 try:
-    from llm_transport import _build_llm_target
+    from llm_transport import _build_llm_target, _validate_auth_context, resolve_provider_endpoint
 except ImportError:  # pragma: no cover - import path fallback
-    from .llm_transport import _build_llm_target
+    from .llm_transport import _build_llm_target, _validate_auth_context, resolve_provider_endpoint
 
 PROBE_TIMEOUT_SECONDS = 5.0
 
@@ -94,12 +94,13 @@ def probe_model(base_url: str, model: str, api_key: str, timeout: float = PROBE_
 
 
 def list_models(base_url: str, api_key: str, timeout: float = PROBE_TIMEOUT_SECONDS) -> dict:
-    """Call the OpenAI-compatible ``/v1/models`` endpoint and return model IDs.
+    """Call the OpenAI-compatible models endpoint and return model IDs.
 
     The caller passes the raw ``base_url`` the user configured (e.g.
-    ``http://localhost:1234/v1`` or ``https://api.example.com/v1``).  We
-    normalize it to a models URL the same way ``_build_llm_target`` normalizes
-    the chat completions URL, so providers that expose only a prefix work too.
+    ``http://localhost:1234/v1`` or ``https://api.example.com/v1``).  The URL is
+    resolved by :func:`llm_transport.resolve_provider_endpoint` — the *same*
+    helper the chat request uses, so "chat works" and "listing works" can never
+    drift apart again.
     """
     base_url = str(base_url or "").strip()
     if not base_url:
@@ -110,16 +111,22 @@ def list_models(base_url: str, api_key: str, timeout: float = PROBE_TIMEOUT_SECO
             "models": [],
         }
 
-    normalized = base_url.rstrip("/")
-    if normalized.lower().endswith("/chat/completions"):
-        normalized = normalized[: -len("/chat/completions")]
-    if normalized.lower().endswith("/v1"):
-        url = f"{normalized}/models"
-    else:
-        url = f"{normalized}/v1/models"
+    url = resolve_provider_endpoint(base_url, "/models")
+
+    # 与 chat 请求同一套鉴权前置检查：HTTPS 端点缺 key 时直接给可执行的提示，
+    # 而不是等对方回一个裸 401（本地 http 端点仍然允许留空）。
+    resolved_key = (api_key or "").strip()
+    try:
+        _validate_auth_context(base_url, resolved_key)
+    except ValueError as ex:
+        return {
+            "ok": False,
+            "status": "unconfigured",
+            "detail": f"{ex}（该端点需要 API Key，当前请求与配置里都没有。）",
+            "models": [],
+        }
 
     headers = {"Accept": "application/json"}
-    resolved_key = (api_key or "").strip()
     if resolved_key:
         headers["Authorization"] = f"Bearer {resolved_key}"
 
@@ -129,11 +136,23 @@ def list_models(base_url: str, api_key: str, timeout: float = PROBE_TIMEOUT_SECO
     try:
         with opener.open(request, timeout=timeout) as response:
             body = json.loads(response.read().decode("utf-8"))
-        raw = body.get("data") or body.get("models") or []
-        if isinstance(raw, list):
-            ids = [m.get("id", "") for m in raw if isinstance(m, dict) and m.get("id")]
+
+        # 有些服务商直接返回裸数组；也有返回 {"error": ...} 却仍是 200 的。
+        if isinstance(body, list):
+            raw = body
+        elif isinstance(body, dict):
+            if body.get("error"):
+                detail = body.get("error")
+                if isinstance(detail, dict):
+                    detail = detail.get("message") or detail.get("code") or detail
+                return {"ok": False, "status": "error", "detail": f"服务端返回错误：{detail}", "models": []}
+            raw = body.get("data") or body.get("models") or []
         else:
-            ids = []
+            raw = []
+
+        ids = [m.get("id", "") for m in raw if isinstance(m, dict) and m.get("id")] if isinstance(raw, list) else []
+        # 去重保序：有的网关会把同一模型按多个 owner 重复列出。
+        ids = list(dict.fromkeys(ids))
         return {
             "ok": True,
             "status": "ok",
@@ -143,7 +162,7 @@ def list_models(base_url: str, api_key: str, timeout: float = PROBE_TIMEOUT_SECO
     except urllib.error.HTTPError as ex:
         code = ex.code
         if code in (401, 403):
-            return {"ok": False, "status": str(code), "detail": "鉴权失败。", "models": []}
+            return {"ok": False, "status": str(code), "detail": "鉴权失败：API Key 无效或无权限。", "models": []}
         if code == 404:
             return {"ok": False, "status": "404", "detail": "端点不存在，请检查 base_url 路径。", "models": []}
         return {"ok": False, "status": str(code), "detail": f"HTTP {code}。", "models": []}
