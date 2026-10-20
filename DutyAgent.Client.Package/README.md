@@ -8,8 +8,18 @@
 
 ## 构建
 
+仓库根有 `build_msix.bat`（等价包装，免去写 `-ExecutionPolicy`，参数原样透传）：
+
+```bat
+build_msix.bat
+build_msix.bat -ReleaseVersion 1.2.3
+build_msix.bat -ForStore
+```
+
+也可以直接调脚本：
+
 ```powershell
-# 一条命令：发布客户端 → 组装 winapp 布局 → winapp package → 开发证书签名
+# 一条命令：发布客户端 → 组装 winapp 布局 → winapp package → 开发证书签名 → 组装测试包
 powershell -ExecutionPolicy Bypass -File scripts\Build-MsixPackage.ps1
 
 # 指定版本：只改 MSIX 的 Identity.Version（补 .0），别处一律不动。

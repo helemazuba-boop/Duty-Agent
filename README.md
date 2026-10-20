@@ -330,9 +330,13 @@ build_client.bat                                                                
 
 构建：
 
-```powershell
-powershell -ExecutionPolicy Bypass -File scripts\Build-MsixPackage.ps1 -ReleaseVersion 1.2.3
+```bat
+build_msix.bat                                  :: 默认（版本沿用清单，并自动组装测试包）
+build_msix.bat -ReleaseVersion 1.2.3
+build_msix.bat -ForStore
 ```
+
+等价于 `powershell -ExecutionPolicy Bypass -File scripts\Build-MsixPackage.ps1 <同样的参数>`。
 
 产物在 `.msix-work\HelemaZuba.Duty-Agent_1.2.3_x64.msix`（本机已实证产出约 107MB，含完整内嵌 Python
 后端的包）。提交商店前必须做的事：
