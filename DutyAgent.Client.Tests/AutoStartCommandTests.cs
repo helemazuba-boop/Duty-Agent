@@ -136,25 +136,32 @@ public sealed class AutoStartCommandTests
 
     // ======== PlanRunKeyAction ========
 
-    [Theory]
-    [InlineData(AutoStartManager.RunKeyState.Matches, true, AutoStartManager.RunKeyAction.Keep)]
-    [InlineData(AutoStartManager.RunKeyState.Matches, false, AutoStartManager.RunKeyAction.Remove)]
-    [InlineData(AutoStartManager.RunKeyState.Absent, true, AutoStartManager.RunKeyAction.Write)]
-    [InlineData(AutoStartManager.RunKeyState.Absent, false, AutoStartManager.RunKeyAction.Keep)]
-    // 自愈：坏了就必须重写，不能只报"未启用"。
-    [InlineData(AutoStartManager.RunKeyState.DeadExecutable, true, AutoStartManager.RunKeyAction.Write)]
-    [InlineData(AutoStartManager.RunKeyState.ForeignAumid, true, AutoStartManager.RunKeyAction.Write)]
-    [InlineData(AutoStartManager.RunKeyState.Unrecognised, true, AutoStartManager.RunKeyAction.Write)]
-    // 清理：用户不要自启时，自己的失效残留也要一并删掉。
-    [InlineData(AutoStartManager.RunKeyState.DeadExecutable, false, AutoStartManager.RunKeyAction.Remove)]
-    [InlineData(AutoStartManager.RunKeyState.ForeignAumid, false, AutoStartManager.RunKeyAction.Remove)]
-    [InlineData(AutoStartManager.RunKeyState.Unrecognised, false, AutoStartManager.RunKeyAction.Remove)]
-    public void Plan_ActionMatrix(
-        AutoStartManager.RunKeyState state,
-        bool desiredEnabled,
-        AutoStartManager.RunKeyAction expected)
+    [Fact]
+    public void Plan_ActionMatrix()
     {
-        Assert.Equal(expected, AutoStartManager.PlanRunKeyAction(state, desiredEnabled));
+        // 这里刻意不用 [Theory] + [InlineData]：参数类型是 internal 枚举，
+        // 放进 public 测试方法的签名会触发 CS0051（可访问性不一致）。
+        // 表驱动放在方法体里，类型只出现在局部变量上就没这个问题。
+        var cases = new (AutoStartManager.RunKeyState State, bool Desired, AutoStartManager.RunKeyAction Expected)[]
+        {
+            (AutoStartManager.RunKeyState.Matches, true, AutoStartManager.RunKeyAction.Keep),
+            (AutoStartManager.RunKeyState.Matches, false, AutoStartManager.RunKeyAction.Remove),
+            (AutoStartManager.RunKeyState.Absent, true, AutoStartManager.RunKeyAction.Write),
+            (AutoStartManager.RunKeyState.Absent, false, AutoStartManager.RunKeyAction.Keep),
+            // 自愈：坏了就必须重写，不能只报"未启用"。
+            (AutoStartManager.RunKeyState.DeadExecutable, true, AutoStartManager.RunKeyAction.Write),
+            (AutoStartManager.RunKeyState.ForeignAumid, true, AutoStartManager.RunKeyAction.Write),
+            (AutoStartManager.RunKeyState.Unrecognised, true, AutoStartManager.RunKeyAction.Write),
+            // 清理：用户不要自启时，自己的失效残留也要一并删掉。
+            (AutoStartManager.RunKeyState.DeadExecutable, false, AutoStartManager.RunKeyAction.Remove),
+            (AutoStartManager.RunKeyState.ForeignAumid, false, AutoStartManager.RunKeyAction.Remove),
+            (AutoStartManager.RunKeyState.Unrecognised, false, AutoStartManager.RunKeyAction.Remove),
+        };
+
+        foreach (var (state, desired, expected) in cases)
+        {
+            Assert.Equal(expected, AutoStartManager.PlanRunKeyAction(state, desired));
+        }
     }
 
     [Fact]

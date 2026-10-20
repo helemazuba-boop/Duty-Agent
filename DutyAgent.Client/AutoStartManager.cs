@@ -8,46 +8,36 @@ namespace DutyAgent.Client;
 /// 开机自启执行器。三种形态分流：
 /// <list type="bullet">
 ///   <item>包身份 + 清单声明了 <c>desktop6:startupTask</c> 扩展：走
-///   <see cref="StartupTask"/>，状态由系统"启动应用"设置管理，卸载时由平台自动清理。
-///   该路径生效时**必须清掉 Run 键残留**，否则两条自启路径会并存。</item>
+///   <see cref="StartupTask"/>，状态由系统"启动应用"设置管理，卸载时由平台自动清理。</item>
 ///   <item>包身份 + 清单未声明该扩展（本仓库默认，原因见 Package.appxmanifest 注释）：
 ///   回退 HKCU\...\Run，命令为 <c>explorer.exe shell:AppsFolder\&lt;PFN&gt;!App</c>。
 ///   经验证：包身份进程写 HKCU Run 键会落入真实注册表（未重定向），登录时
 ///   explorer（非包进程）读得到；AUMID 激活可拉起全信任应用。</item>
 ///   <item>传统桌面（zip 分发）：维持原有 HKCU\...\Run 值行为。</item>
 /// </list>
+/// Run 键值名在包身份下带 PFN 后缀：包身份进程写 HKCU 不重定向，zip 版与商店版
+/// 若共用裸值名会互相覆盖自启开关，卸载一方会把另一方的自启一起带走。
 /// </summary>
 /// <remarks>
-/// 2026-10 加固。原来这版有两个隐患：
-/// <list type="number">
-///   <item><b>写失败完全静默</b>：<c>ApplyRunKey</c> 的 catch 是空的。被组策略锁定注册表时
-///   界面显示"已开启"，但开机并不自启，且日志里查不到任何原因。</item>
-///   <item><b>坏值不会自愈</b>：<c>IsEnabled</c> 只是比较字符串返回 false，没有任何东西
-///   去修复它 —— zip 版换目录、商店版重装换了签名（PFN 变化）、旧版 AUMID 残留，
-///   都会让自启"开着但坏了"。</item>
+/// 两条线的加固在这里合流（2026-10-21）：
+/// <list type="bullet">
+///   <item><b>值名作用域与迁移</b>：包身份下用 <c>DutyAgent.&lt;PFN&gt;</c>，并把旧版写在
+///   裸名 <c>DutyAgent</c> 上的"本包命令"迁移过来。只删命令完全匹配本包 AUMID 的旧值，
+///   同机 zip 版写的 exe 路径值必须保留。</item>
+///   <item><b>状态收敛与失败可见</b>：原来 <c>ApplyRunKey</c> 的 catch 是空的，被组策略
+///   锁定注册表时界面显示"已开启"但开机不自启、日志里查不到原因；坏值也不会自愈。
+///   现在收敛决策抽成纯函数（<see cref="ClassifyRunKeyValue"/> /
+///   <see cref="PlanRunKeyAction"/>），坏值一律重写，每一步都留日志。</item>
 /// </list>
-/// 现在每次 <see cref="Apply"/> 都会把注册表的实际状态收敛到用户意图上（自愈或清理），
-/// 并在每一步留日志。收敛决策本身抽成纯函数，见
-/// <see cref="ClassifyRunKeyValue"/> / <see cref="PlanRunKeyAction"/>，由
-/// <c>DutyAgent.Client.Tests.AutoStartCommandTests</c> 覆盖。
 /// </remarks>
 internal static class AutoStartManager
 {
     private const string RunKeyPath = @"Software\Microsoft\Windows\CurrentVersion\Run";
-    private const string ValueName = "DutyAgent";
+
+    /// <summary>裸值名。zip 版一直用它；旧版商店版也写在这里，是迁移的来源。</summary>
+    private const string RunValueName = "DutyAgent";
+
     private const string StartupTaskId = "DutyAgentStartup";
-
-    /// <summary>当前形态下"已启用自启"时 Run 键应有的命令；用于判断现值是否仍然有效。</summary>
-    private static string ExpectedCommand => PackageIdentityHelper.IsPackaged
-        ? BuildRunCommand(WindowsShortcutActivator.AppUserModelId)
-        : $"\"{Application.ExecutablePath}\" --silent";
-
-    /// <summary>
-    /// 包身份形态的 Run 键命令：经 AUMID 激活，而不是直接执行安装目录里的 exe
-    /// （MSIX 安装目录默认不可直接执行）。实测可从非包进程（登录时的 explorer）拉起。
-    /// </summary>
-    internal static string BuildRunCommand(string appUserModelId) =>
-        $"explorer.exe shell:AppsFolder\\{appUserModelId}";
 
     /// <summary>Run 键的现值相对目标命令的状态。</summary>
     internal enum RunKeyState
@@ -80,6 +70,33 @@ internal static class AutoStartManager
         /// <summary>删除值（含残留清理）。</summary>
         Remove,
     }
+
+    /// <summary>当前形态下 Run 键值名的完整形式（包身份带 PFN 后缀）。</summary>
+    private static string ScopedRunValueName => BuildRunValueName(PackageIdentityHelper.PackageFamilyName);
+
+    /// <summary>纯函数形式：作用域由调用方注入，便于在无包身份的构建机上做回归测试。</summary>
+    internal static string BuildRunValueName(string? family) =>
+        string.IsNullOrWhiteSpace(family) ? RunValueName : $"{RunValueName}.{family}";
+
+    /// <summary>当前形态下"已启用自启"时 Run 键应有的命令；用于判断现值是否仍然有效。</summary>
+    private static string ExpectedCommand => PackageIdentityHelper.IsPackaged
+        ? BuildRunCommand(WindowsShortcutActivator.AppUserModelId)
+        : $"\"{Application.ExecutablePath}\" --silent";
+
+    /// <summary>
+    /// 包身份形态的 Run 键命令：经 AUMID 激活，而不是直接执行安装目录里的 exe
+    /// （MSIX 安装目录默认不可直接执行）。实测可从非包进程（登录时的 explorer）拉起。
+    /// </summary>
+    internal static string BuildRunCommand(string appUserModelId) =>
+        $"explorer.exe shell:AppsFolder\\{appUserModelId}";
+
+    /// <summary>
+    /// 旧版商店版（迁移前）写在裸值名上的命令：本包 AUMID 激活。
+    /// 只有确认是"本包自己"的旧值才允许删除，避免误伤同机 zip 版的 exe 启动项。
+    /// </summary>
+    internal static bool IsLegacyPackagedRunCommand(string? value, string? family) =>
+        !string.IsNullOrWhiteSpace(family)
+        && string.Equals(value, BuildRunCommand($"{family}!App"), StringComparison.OrdinalIgnoreCase);
 
     /// <summary>
     /// 分类 Run 键现值。纯函数，便于单测。<paramref name="currentExecutableExists"/>
@@ -143,9 +160,24 @@ internal static class AutoStartManager
         try
         {
             using var key = Registry.CurrentUser.OpenSubKey(RunKeyPath, writable: false);
-            return key?.GetValue(ValueName) is string current
+            if (key is null)
+            {
+                return false;
+            }
+
+            if (key.GetValue(ScopedRunValueName) is string current
                 && !string.IsNullOrWhiteSpace(current)
-                && string.Equals(current, ExpectedCommand, StringComparison.OrdinalIgnoreCase);
+                && string.Equals(current, ExpectedCommand, StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+
+            // 迁移期兼容：升级用户还停留在旧值名（无 PFN 后缀）上，视为已启用；
+            // Apply 会把它迁移成带后缀的值名。
+            return PackageIdentityHelper.IsPackaged
+                && IsLegacyPackagedRunCommand(
+                    key.GetValue(RunValueName) as string,
+                    PackageIdentityHelper.PackageFamilyName);
         }
         catch
         {
@@ -164,18 +196,16 @@ internal static class AutoStartManager
             var startupResult = ApplyStartupTask(enabled);
             if (startupResult.HasValue)
             {
-                if (startupResult.Value)
+                // startupTask 接管自启后，历史 Run 键必须清掉：否则用户在系统
+                // "启动应用"里禁用后，下次登录仍会被 Run 键拉起。
+                // 仅在"已启用成功"或"正在关闭"时清理；启用被策略拒绝时保留
+                // Run 兜底，避免把用户已经打开的自启静默关掉。
+                if (startupResult.Value || !enabled)
                 {
-                    // startupTask 是权威自启通道，目标状态已达成；
-                    // Run 键若留着旧值就成了第二条自启路径（换签名重装后 PFN 变了，
-                    // 旧 AUMID 已经失效，纯残留）。
-                    ClearLeftoverRunKey(enabled);
-                    return true;
+                    CleanupRunValues();
                 }
 
-                // 目标没达成（典型：被组策略禁用）。这时**不要**动 Run 键：
-                // AUMID 命令本身是可用的，留着它至少还剩一条路。
-                return false;
+                return startupResult.Value;
             }
 
             ClientLog.Info("包身份下 startupTask 扩展不可用，自启回退为 HKCU Run 键（AUMID 启动）。");
@@ -184,49 +214,53 @@ internal static class AutoStartManager
         return ApplyRunKey(enabled);
     }
 
-    /// <summary>
-    /// 删掉 Run 键里可能残留的旧值（只在有值时才动，正常路径零成本）。
-    /// 失败只记日志：这里本来就是清理路径，不能反过来阻塞自启生效。
-    /// </summary>
-    private static void ClearLeftoverRunKey(bool enabled)
+    /// <summary>startupTask 可用时清理全部 Run 键痕迹（本包作用域值 + 本包旧命令）。</summary>
+    private static void CleanupRunValues()
     {
-        string? current = null;
         try
         {
-            using var key = Registry.CurrentUser.OpenSubKey(RunKeyPath, writable: false);
-            current = key?.GetValue(ValueName) as string;
+            using var key = Registry.CurrentUser.OpenSubKey(RunKeyPath, writable: true);
+            if (key is null)
+            {
+                return;
+            }
+
+            var hadScoped = key.GetValue(ScopedRunValueName) is string scoped
+                && !string.IsNullOrWhiteSpace(scoped);
+            var hadLegacy = IsLegacyPackagedRunCommand(
+                key.GetValue(RunValueName) as string,
+                PackageIdentityHelper.PackageFamilyName);
+
+            if (!hadScoped && !hadLegacy)
+            {
+                return;
+            }
+
+            key.DeleteValue(ScopedRunValueName, throwOnMissingValue: false);
+            if (hadLegacy)
+            {
+                key.DeleteValue(RunValueName, throwOnMissingValue: false);
+            }
+
+            ClientLog.Info("startupTask 已接管自启，清掉了 Run 键里的历史值（作用域值 / 旧裸值）。");
         }
         catch (Exception ex)
         {
-            ClientLog.Warn($"读取自启注册表失败，无法判断 Run 键残留：{ex.Message}");
-            return;
-        }
-
-        if (string.IsNullOrWhiteSpace(current))
-        {
-            return;
-        }
-
-        try
-        {
-            using var key = Registry.CurrentUser.CreateSubKey(RunKeyPath, writable: true);
-            key?.DeleteValue(ValueName, throwOnMissingValue: false);
-            ClientLog.Info($"startupTask 路径已接管自启（目标 enabled={enabled}），已清掉 Run 键里的历史残留值。");
-        }
-        catch (Exception ex)
-        {
-            ClientLog.Warn($"Run 键残留清理失败（不影响 startupTask 自启）：{ex.Message}");
+            // 清理路径失败不能反过来阻塞自启生效，但必须留证据。
+            ClientLog.Warn($"清理 Run 键历史值失败（不影响 startupTask 自启）：{ex.Message}");
         }
     }
 
     private static bool ApplyRunKey(bool enabled)
     {
         string? current;
+        string? legacy;
         bool currentExecutableExists;
         try
         {
             using var readKey = Registry.CurrentUser.OpenSubKey(RunKeyPath, writable: false);
-            current = readKey?.GetValue(ValueName) as string;
+            current = readKey?.GetValue(ScopedRunValueName) as string;
+            legacy = readKey?.GetValue(RunValueName) as string;
             currentExecutableExists =
                 TryGetExecutablePath(current, out var path) && !string.IsNullOrWhiteSpace(path) && File.Exists(path);
         }
@@ -238,8 +272,11 @@ internal static class AutoStartManager
 
         var state = ClassifyRunKeyValue(current, ExpectedCommand, currentExecutableExists);
         var action = PlanRunKeyAction(state, enabled);
+        var legacyIsOurs = PackageIdentityHelper.IsPackaged
+            && IsLegacyPackagedRunCommand(legacy, PackageIdentityHelper.PackageFamilyName);
 
-        if (action == RunKeyAction.Keep)
+        // 状态已正确、也没有待迁移的旧值时，不碰注册表。
+        if (action == RunKeyAction.Keep && !legacyIsOurs)
         {
             return true;
         }
@@ -255,24 +292,25 @@ internal static class AutoStartManager
 
             if (action == RunKeyAction.Write)
             {
-                key.SetValue(ValueName, ExpectedCommand, RegistryValueKind.String);
-                if (state == RunKeyState.Matches)
-                {
-                    ClientLog.Info("开机自启已开启。");
-                }
-                else
-                {
-                    // 自愈路径：这正是旧版本"开着但不生效"的坑。
-                    ClientLog.Warn($"开机自启现值失效（{_stateNames[state]}），已自愈写入：{ExpectedCommand}");
-                }
+                key.SetValue(ScopedRunValueName, ExpectedCommand, RegistryValueKind.String);
+                ClientLog.Info(state == RunKeyState.Matches
+                    ? $"开机自启已开启（值名 {ScopedRunValueName}）。"
+                    : $"开机自启现值失效（{_stateNames[state]}），已自愈写入 {ScopedRunValueName}：{ExpectedCommand}");
             }
-            else
+            else if (action == RunKeyAction.Remove)
             {
-                key.DeleteValue(ValueName, throwOnMissingValue: false);
-                ClientLog.Info(
-                    state == RunKeyState.Absent
-                        ? "开机自启已关闭。"
-                        : $"开机自启已关闭，并清理了失效残留（{_stateNames[state]}）。");
+                key.DeleteValue(ScopedRunValueName, throwOnMissingValue: false);
+                ClientLog.Info(state == RunKeyState.Absent
+                    ? "开机自启已关闭。"
+                    : $"开机自启已关闭，并清理了失效残留（{_stateNames[state]}）。");
+            }
+
+            if (legacyIsOurs)
+            {
+                // 迁移：旧版商店版把值写在裸名上，会和 zip 版互相覆盖。
+                // 只删"本包命令"完全匹配的值，zip 版的 exe 路径值必须留着。
+                key.DeleteValue(RunValueName, throwOnMissingValue: false);
+                ClientLog.Info("旧版裸值名 DutyAgent 上的自启项已迁移到 PFN 作用域值名。");
             }
 
             return true;

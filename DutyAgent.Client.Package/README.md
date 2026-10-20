@@ -22,9 +22,11 @@ powershell -ExecutionPolicy Bypass -File scripts\Build-MsixPackage.ps1 -ReleaseV
 powershell -ExecutionPolicy Bypass -File scripts\Build-MsixPackage.ps1 -ForStore
 ```
 
-产物在 `.msix-work\`：`DutyAgent_<版本>_x64.msix`（开发证书签名）或同名未签名包（`-ForStore`）。
-布局暂存目录为 `.msix-work\pkg`，证书在 `.msix-work\cert\devcert.pfx`
+产物在 `.msix-work\`：`HelemaZuba.Duty-Agent_<版本>_x64.msix`（开发证书签名）或同名未签名包
+（`-ForStore`）。布局暂存目录为 `.msix-work\pkg`，证书在 `.msix-work\cert\devcert.pfx`
 （口令是 winapp 默认的 `password`；公钥另导出 `devcert.cer`，旁加载和 CI 只需要它）。
+证书旁有 `publisher.txt` 记录它是为哪个 Publisher 生成的——清单 `Identity.Publisher` 一变
+就自动重新生成，避免旧 subject 证书导致签名失败。
 
 > 性能提示：`winapp package` 会先把约 260MB 的布局复制到 `%TEMP%` 再压缩。
 > C: 剩余空间不足时该阶段会慢到看似假死（实测 19 分钟未完成）；脚本已把
@@ -96,15 +98,20 @@ winapp create-debug-identity .msix-work\pkg\duty-agent.exe --manifest .msix-work
 
 ## 与 zip 版的关系
 
-- **zip 版与商店版不能同时跑。** 单实例互斥体名与唤醒事件名在包身份下会加
-  `PackageFamilyName` 前缀（见 `DutyAgent.Client\Program.cs`；前缀必须拼在
+- **两种形态可以同机安装，但同一时刻只有一个在跑后端。** 单实例互斥体名与唤醒事件名在包身份下
+  会加 `PackageFamilyName` 前缀（见 `DutyAgent.Client\Program.cs`；前缀必须拼在
   `Local\`/`Global\` 根之后，`DutyAgent.Client.Tests\ScopeNameTests` 有回归），
-  所以两者**互相挡不住**：会同时拉起后端、抢同一个端口。
-  数据与日志都在 `%LOCALAPPDATA%\DutyAgent`，两边共用同一份数据——
-  同一时刻只应有一个在跑，否则端口和握手 meta 都会互相污染。
+  所以**同形态**的第二实例走"唤醒 + 退出"。
+- 数据与日志都在 `%LOCALAPPDATA%\DutyAgent`，zip 版与商店版**共用同一份数据**；
+  因此运行时另有一把**不带包前缀**的数据目录 owner 互斥（`Local\DutyAgent.DataDirectory.Owner`）：
+  同机只允许一个客户端持有后端，后启动的一方通过 `Local\DutyAgent.DataDirectory.Wake`
+  唤醒既有实例后退出，避免两个后端写坏共享的 `state/roster/meta`。
 - 自启：包身份下若清单没有 `desktop6:startupTask` 扩展（当前如此，原因见清单注释），
-  客户端回退写 `HKCU\...\Run`，命令为 `explorer.exe shell:AppsFolder\<PFN>!App`
+  客户端回退写 `HKCU\...\Run`，值名为 `DutyAgent.<PFN>`（避免与 zip 版的裸值名
+  `DutyAgent` 互相覆盖），命令为 `explorer.exe shell:AppsFolder\<PFN>!App`
   （实测：包身份写 Run 键不重定向、AUMID 命令可拉起客户端）；zip 版仍写 exe 路径。
+  注意 **MSIX 自启无法传 `--silent`**：登录后显示主窗口而不是静默驻留托盘
+  （AUMID/StartupTask 均不支持传参），已记录为已知差异。
 - 握手 meta 三写双读，桥接（非包进程）从 Win32 `%LOCALAPPDATA%\ClassIsland\Config\DutyAgentBridge`
   读到的就是客户端写入的真实文件（实测 md5 一致，无重定向）。
 
@@ -125,3 +132,5 @@ winapp create-debug-identity .msix-work\pkg\duty-agent.exe --manifest .msix-work
 - WebView2 依赖 Evergreen Runtime：**Windows 11 预装，Windows 10 通常没有**
   （可能因装了别的软件而顺带存在）。缺了不会崩，客户端弹"启动失败"对话框，
   托盘与后端照常运行。运行时未打进包，也没在清单里声明依赖（见上面第 4 条）。
+  客户端目前**没有**做运行期版本探测（`GetAvailableBrowserVersionString`），
+  这条待补。

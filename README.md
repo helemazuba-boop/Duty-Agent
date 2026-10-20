@@ -315,13 +315,18 @@ build_client.bat                                                                
 ## 上架微软商店（MSIX）
 
 代码层的包身份适配已完成，打包骨架见 `DutyAgent.Client.Package/`。完整改造计划、
-分批记录与实测数据见 `docs/msix-store-adaptation-plan.md`。
+分批记录与实测数据见 `docs/msix-store-adaptation-plan.md`；上架与触摸适配的
+修订版计划、落地记录与待真机清单见 `docs/store-touch-remediation-plan.md`。
 
 前置条件：
 
 - Node/npm 的 `@microsoft/winappcli`（`npm install -g @microsoft/winappcli`）——
   **不需要 Visual Studio 或 Windows Kits**，winapp 用 NuGet 的 Windows SDK BuildTools 打包
 - Partner Center 开发者账号
+- WebView2 运行时：Win11 预装；Win10 绝大多数设备已随 Edge 更新获得，但仍有少量
+  缺失。当前客户端**还没有**做运行期版本探测，缺失时是 `InitializeWebViewAsync` 抛异常、
+  由 `InitializeAsync` 兜成"启动失败"对话框（托盘与后端仍正常），这是待补项
+  （不随包分发 Fixed Version——那会让包体再涨 250MB+）
 
 构建：
 
@@ -334,7 +339,8 @@ powershell -ExecutionPolicy Bypass -File scripts\Build-MsixPackage.ps1 -ReleaseV
 
 1. `Package.appxmanifest` 里的 `Publisher` 与 `Name` 已换成 Partner Center 账户的发布者 ID
    与应用名（当前 `Name="HelemaZuba.Duty-Agent"` / `Publisher="CN=B4407923-BF46-468D-B8F8-549EDD96BDC3"`），
-   提交前再逐字符核对一遍，并用 `-ForStore`（不本地签名）交付给商店签名
+   提交前再逐字符核对一遍，并用 `-ForStore`（不本地签名）交付给商店签名。
+   本地签名证书按清单 Publisher 派生：清单换了 Publisher 会自动重新生成，避免旧 subject 签名失败
 2. 商店图标（`DutyAgent.Client.Package/Assets/`）需最终确认合规；当前由
    `winapp manifest update-assets icon.png` 生成
 
@@ -342,11 +348,11 @@ powershell -ExecutionPolicy Bypass -File scripts\Build-MsixPackage.ps1 -ReleaseV
 
 | 能力 | zip 分发 | MSIX |
 |---|---|---|
-| 开机自启 | 写 `HKCU\...\Run`（exe 路径） | 优先系统 `StartupTask`；清单未声明该扩展时回退 `HKCU\...\Run`，命令 `explorer.exe shell:AppsFolder\<PFN>!App`（两条路都已实测） |
+| 开机自启 | 写 `HKCU\...\Run`（exe 路径） | 优先系统 `StartupTask`；清单未声明该扩展时回退 `HKCU\...\Run`（值名带 PFN 后缀，命令 `explorer.exe shell:AppsFolder\<PFN>!App`，两条路都已实测）。**MSIX 自启无法传 `--silent`**：登录后会显示主窗口，而不是静默驻留托盘 |
 | 开始菜单快捷方式 | 客户端自建 `.lnk` | 平台托管，客户端不再自建 |
 | 通知 AUMID | 自建 `.lnk` 上的硬编码 ID | `<PackageFamilyName>!App` |
-| 单实例互斥体 | `Local\DutyAgent.Client.*` | 同上加 `PackageFamilyName\` 前缀，可与 zip 版并存 |
-| 数据与日志 | `%LOCALAPPDATA%\DutyAgent` | 同一路径，两种形态共用同一份数据 |
+| 单实例互斥体 | `Local\DutyAgent.Client.*` | 同上加 `PackageFamilyName\` 前缀；跨形态另有**不带前缀**的数据目录 owner 互斥——zip 版与商店版可并存安装，但同机只允许一个客户端持有后端，后启动者唤醒前者后退出 |
+| 数据与日志 | `%LOCALAPPDATA%\DutyAgent` | 同一路径，两种形态共用同一份数据（因此需要上面的跨形态互斥） |
 | 与 ClassIsland 握手 | 写宿主配置目录 | 宿主目录 + `%LOCALAPPDATA%\ClassIsland\Config` + `LocalState` 三处，桥接按"新鲜度优先"取最应连接的一个，并兜底扫描 `Packages\<包>\...` |
 
 > **MSIX 隔离语义已实证**（2026-10-13，winapp 稀疏包身份实测）：包身份进程写 Win32
@@ -360,8 +366,13 @@ powershell -ExecutionPolicy Bypass -File scripts\Build-MsixPackage.ps1 -ReleaseV
 > 现清单注释里留有现成 XML；Run 键回退逻辑继续兜底。`fullTrustProcess` 扩展经实测不需要
 > （Python 子进程在稀疏包身份下启动/监管/自动重启均正常）。
 
-约束：仅 x64；未接 Store 商业化与增量更新通道；同机同时只应运行一个实例
-（否则会抢后端端口）。
+> **触摸适配**：标题栏拖拽与边框缩放对触摸走 `WM_SYSCOMMAND + SC_MOVE/SC_SIZE`
+> （`PostMessage` 投递，避免在 WebView 回调内同步重入消息泵）；窄窗口热区与控件在
+> `any-pointer: coarse` 下放大。`DUTY_CHROME_PROBE=1` 可把 native / web 两条命中
+> 路径写进客户端日志，用于真机定位。细节见 `docs/store-touch-remediation-plan.md`。
+
+约束：仅 x64；未接 Store 商业化与增量更新通道；同机同时只运行一个客户端
+（跨形态由数据目录 owner 互斥保证，否则会抢后端端口、写坏共享 state）。
 
 ## 许可证
 
