@@ -1,11 +1,14 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
     # x.y.z[.w]，与 New-DutyAgentClientRelease.ps1 同一契约：多处版本面必须一致。
     [string]$ReleaseVersion = "",
     [string]$Configuration = "Release",
     [switch]$SkipWebBuild,
     # 商店提交模式：不本地签名（交给 Partner Center），并提醒替换 Publisher。
-    [switch]$ForStore
+    [switch]$ForStore,
+    # 默认会组装 .msix-work\test-bundle\（可直接发到测试机的自包含目录）。
+    # 只想拿包、不想多花十几秒解包复检时加这个。
+    [switch]$SkipTestBundle
 )
 
 $ErrorActionPreference = "Stop"
@@ -30,6 +33,9 @@ if (-not (Test-Path -LiteralPath $assetsSource)) { throw "Missing assets dir: $a
 # winapp package 会先把整个包布局（约 260MB）复制到 %TEMP% 再调用 makeappx 压缩。
 # C: 剩余空间不足时这一阶段会慢到看似假死（实测 19 分钟未完成）；
 # 指到空闲盘后同样体积只需约 20 秒。
+# 先记下系统临时目录，再把它改指到工作目录。
+# 下面解包复检要写一个临时 .zip，那个必须落在**仓库外**——本机对仓库内文件删除会挂起。
+$sysTemp = [System.IO.Path]::GetTempPath()
 New-Item -ItemType Directory -Force -Path $tempDir | Out-Null
 $env:TMP = $tempDir
 $env:TEMP = $tempDir
@@ -118,6 +124,7 @@ $manifestVersion = $preIdentity.GetAttribute("Version")
 # Publisher 也要读出来：下面签证书要以它为准。Publisher 一变，旧开发证书立刻作废。
 $publisher = $preIdentity.GetAttribute("Publisher")
 $identityName = $preIdentity.GetAttribute("Name")
+$arch = $preIdentity.GetAttribute("ProcessorArchitecture")
 $preMinVersion = $preXml.SelectSingleNode("/x:Package/x:Dependencies/x:TargetDeviceFamily", $preNsm).GetAttribute("MinVersion")
 
 if ([string]::IsNullOrWhiteSpace($ReleaseVersion)) {
@@ -202,16 +209,124 @@ Write-Host "[msix] 打包（布局目录 $pkgDir）..."
 & $winappCmd @packageArgs -v
 if ($LASTEXITCODE -ne 0) { throw "winapp package 失败，exit=$LASTEXITCODE" }
 
-$msixFiles = @(Get-ChildItem -LiteralPath $workRoot -Filter "*.msix" -ErrorAction SilentlyContinue |
-    Sort-Object LastWriteTime -Descending)
-if ($msixFiles.Count -eq 0) { throw "打包报告成功但未找到 .msix，请检查 $workRoot。" }
+# winapp 按 <Name>_<Version>_<Arch>.msix 命名，直接算出来。
+# 别用"目录里最新的那个"：换过包身份之后 .msix-work 下会同时存在新旧两代产物，
+# 靠时间排序迟早拿错（实测现在就躺着两个 DutyAgent_1.0.0.0_x64.msix）。
+$expectedMsix = Join-Path $workRoot ("{0}_{1}_{2}.msix" -f $identityName, $msixVersion, $arch)
+if (-not (Test-Path -LiteralPath $expectedMsix)) {
+    $present = @(Get-ChildItem -LiteralPath $workRoot -Filter "*.msix" -File -ErrorAction SilentlyContinue |
+        ForEach-Object { $_.Name }) -join ", "
+    throw "打包报告成功但没找到预期产物：$expectedMsix`n目录里现有的 .msix：$present"
+}
+Write-Host "[msix] 产物: $expectedMsix"
+
+# 旧产物挪进 trash，不删：本机对仓库内文件删除会挂起。
+$trashDir = Join-Path $workRoot "trash"
+New-Item -ItemType Directory -Force -Path $trashDir | Out-Null
+$stamp = Get-Date -Format "yyyyMMddHHmmss"
+foreach ($f in @(Get-ChildItem -LiteralPath $workRoot -Filter "*.msix" -File -ErrorAction SilentlyContinue |
+        Where-Object { $_.FullName -ne $expectedMsix })) {
+    $dest = Join-Path $trashDir ("{0}.stale-{1}.msix" -f $f.BaseName, $stamp)
+    Move-Item -LiteralPath $f.FullName -Destination $dest -Force
+    Write-Host ("[msix] 旧产物已挪走：{0}" -f $f.Name)
+}
+
+# ---------- 6. 组装测试包 ----------
+# 目标是"一个目录直接发到测试机"，所以连安装/卸载脚本和清单一起放进去。
+# -ForStore 的包没签名，侧载装不上，不生成测试包。
+$bundleDir = Join-Path $workRoot "test-bundle"
+if ($ForStore) {
+    Write-Host ""
+    Write-Host "[msix] ForStore 模式：包未签名，侧载装不上，跳过测试包组装。"
+} elseif ($SkipTestBundle) {
+    Write-Host ""
+    Write-Host "[msix] -SkipTestBundle：跳过测试包组装。"
+} else {
+    Write-Host ""
+    Write-Host "[msix] 组装测试包：$bundleDir"
+
+    # 先把包体解出来跑一次静态认证 —— 发出去的包必须是能装的。
+    # 解包目录复用前先挪走（不删）；临时 zip 落在仓库外。
+    $unpackDir = Join-Path $workRoot "test-bundle-unpack"
+    if (Test-Path -LiteralPath $unpackDir) {
+        Move-Item -LiteralPath $unpackDir -Destination (Join-Path $trashDir "test-bundle-unpack.$stamp") -Force
+    }
+    New-Item -ItemType Directory -Force -Path $unpackDir | Out-Null
+
+    $tempZip = Join-Path $sysTemp ("duty-msix-verify-{0}.zip" -f $stamp)
+    Copy-Item -LiteralPath $expectedMsix -Destination $tempZip -Force
+    try {
+        Expand-Archive -LiteralPath $tempZip -DestinationPath $unpackDir -Force
+    } finally {
+        Remove-Item -LiteralPath $tempZip -Force -ErrorAction SilentlyContinue
+    }
+
+    $packagedManifest = Join-Path $unpackDir "AppxManifest.xml"
+    if (-not (Test-Path -LiteralPath $packagedManifest)) { throw "包内没有 AppxManifest.xml：$expectedMsix" }
+
+    # 认证脚本失败时走 exit 1，直接 & 调用会把当前会话一起退掉，
+    # 所以放到独立 powershell 进程里跑，只看退出码。
+    # VersionSource 传绝对路径：构建脚本的 CWD 可能是任意目录，相对路径会找不到。
+    $certScript = Join-Path $PSScriptRoot "MSIX-CertificationTest.ps1"
+    & powershell -NoProfile -ExecutionPolicy Bypass -File $certScript `
+        -ManifestPath $packagedManifest -LayoutPath $unpackDir `
+        -VersionSource (Join-Path $root "Assets_Duty\version.py")
+    if ($LASTEXITCODE -ne 0) {
+        throw "认证检查未通过（见上面的 FAIL 项），未生成测试包。"
+    }
+
+    New-Item -ItemType Directory -Force -Path $bundleDir | Out-Null
+
+    # 清掉测试包里的旧 msix（挪走，不删）
+    foreach ($f in @(Get-ChildItem -LiteralPath $bundleDir -Filter "*.msix" -File -ErrorAction SilentlyContinue)) {
+        Move-Item -LiteralPath $f.FullName -Destination (Join-Path $trashDir ("{0}.stale-{1}.msix" -f $f.BaseName, $stamp)) -Force
+    }
+
+    Copy-Item -LiteralPath $expectedMsix -Destination $bundleDir -Force
+    Copy-Item -LiteralPath (Join-Path $PSScriptRoot "Install-MsixForTesting.ps1") -Destination $bundleDir -Force
+    Copy-Item -LiteralPath (Join-Path $PSScriptRoot "Uninstall-MsixForTesting.ps1") -Destination $bundleDir -Force
+    Copy-Item -LiteralPath (Join-Path $root "docs\msix-test-checklist.md") -Destination $bundleDir -Force
+
+    $certSubject = $null
+    $certThumbprint = $null
+    if ((Test-Path -LiteralPath $devCer)) {
+        Copy-Item -LiteralPath $devCer -Destination $bundleDir -Force
+        $x509 = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2($devCer)
+        $certSubject = $x509.Subject
+        $certThumbprint = $x509.Thumbprint
+    } else {
+        Write-Warning "没找到 devcert.cer（$devCer），测试包里将没有证书，目标机装不上。"
+    }
+
+    $buildInfo = [ordered]@{
+        builtAt      = (Get-Date).ToString("o")
+        name         = $identityName
+        publisher    = $publisher
+        version      = $msixVersion
+        architecture = $arch
+        msix         = (Split-Path -Leaf $expectedMsix)
+        certificate  = [ordered]@{ subject = $certSubject; thumbprint = $certThumbprint }
+    }
+    $buildInfo | ConvertTo-Json -Depth 4 |
+        Set-Content -LiteralPath (Join-Path $bundleDir "build-info.json") -Encoding UTF8
+
+    Write-Host "[msix] 测试包已就绪（可直接压缩发走）："
+    foreach ($f in @(Get-ChildItem -LiteralPath $bundleDir -File | Sort-Object Name)) {
+        Write-Host ("         {0,-40} {1,10:N1} MB" -f $f.Name, ($f.Length / 1MB))
+    }
+}
 
 Write-Host ""
 Write-Host "============================================================"
 Write-Host " MSIX build done"
-foreach ($f in $msixFiles) { Write-Host " $($f.FullName)" }
+Write-Host (" 包身份 : {0} {1} ({2})" -f $identityName, $msixVersion, $arch)
+Write-Host (" 产物   : {0}" -f $expectedMsix)
+if (-not $ForStore -and -not $SkipTestBundle) {
+    Write-Host (" 测试包 : {0}" -f $bundleDir)
+    Write-Host " 目标机：管理员 PowerShell 跑 Install-MsixForTesting.ps1"
+}
 if (-not $ForStore) {
-    Write-Host " 本地验证：winapp create-debug-identity $pkgDir\duty-agent.exe --manifest $stagedManifest"
+    Write-Host " 免安装调试：winapp create-debug-identity $pkgDir\duty-agent.exe --manifest $stagedManifest"
     Write-Host " 然后 shell:AppsFolder\<PackageFamilyName>!App 启动。"
 }
 Write-Host "============================================================"

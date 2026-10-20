@@ -53,22 +53,50 @@ powershell -ExecutionPolicy Bypass -File scripts\Build-MsixPackage.ps1 -ForStore
    打开。旁加载场景声明该依赖会导致装不上，所以验证包里做的是"检测 + 提示"而非硬依赖。
 5. 商店侧提交 `.msix`（或打成 `.msixupload`）；认证通常 1–3 天。
 
-## 本地侧载 / 包身份测试
+## 本地侧载 / 异机测试（小范围）
+
+`Build-MsixPackage.ps1` 每次成功出包后会自动组装 `.msix-work\test-bundle\`——
+**把这个目录整个拷到目标机就能装**，不用再手工挑文件：
+
+| 文件 | 作用 |
+|---|---|
+| `<Name>_<Version>_x64.msix` | 本次产物（名字由清单 `Identity` 决定，脚本算出来，不靠"最新的那个"） |
+| `devcert.cer` | 开发证书**公钥**（subject 必须等于清单 `Identity.Publisher`） |
+| `build-info.json` | Name / Publisher / Version / 证书 subject+指纹 / 构建时间 |
+| `Install-MsixForTesting.ps1` | 导入证书 + 安装（管理员） |
+| `Uninstall-MsixForTesting.ps1` | 卸载 + 清 Run 键残留（管理员） |
+| `msix-test-checklist.md` | 逐项验证清单（源文件在 `docs/msix-test-checklist.md`） |
+
+目标机上：
 
 ```powershell
-# 完整安装（开发证书需先被信任，Build-MsixPackage.ps1 已尝试自动安装）
-Add-AppxPackage -Path .msix-work\DutyAgent_1.0.0.0_x64.msix
-# 卸载
-Get-AppxPackage DutyAgent | Remove-AppxPackage
+Set-ExecutionPolicy -Scope Process Bypass -Force
+.\Install-MsixForTesting.ps1      # 装完会打印 PFN 与 AUMID
+# …按 msix-test-checklist.md 逐项过…
+.\Uninstall-MsixForTesting.ps1    # 加 -RemoveCertificate 可连证书一起清
 ```
 
-免安装验证包身份相关行为（本轮实测方案）：
+这两个脚本**不硬编码包身份**：Name / Publisher / Version 从包内 `AppxManifest.xml` 读，
+指纹从 `.cer` 读，安装结果用 `Add-AppxPackage -PassThru` 拿。换 Publisher 不用改脚本。
+
+> 装之前会校验证书 subject 是否等于清单 Publisher，不一致直接报错——比
+> `Add-AppxPackage` 吐一个 `0x800B0109` 好排查。
+>
+> 自启值名带 PFN 作用域：**`DutyAgent.<PFN>`**（裸名 `DutyAgent` 是 zip 版在用）。
+> 卸载脚本按作用域精确清理，不会误删 zip 版的启动项。
+
+不想组装测试包（只要包本身）：`-SkipTestBundle`。
+
+免安装验证包身份相关行为：
 
 ```powershell
 winapp create-debug-identity .msix-work\pkg\duty-agent.exe --manifest .msix-work\pkg\Package.appxmanifest --keep-identity
 # 经 AUMID 激活：shell:AppsFolder\<PackageFamilyName>!App
 # 清理：winapp unregister --manifest .msix-work\pkg\Package.appxmanifest --force
 ```
+
+> 正式对外分发走商店（Package Flight / Private audience），不走这条侧载路。
+> 侧载用的自签证书只给内部测试机。
 
 ## 认证检查与生命周期验收
 

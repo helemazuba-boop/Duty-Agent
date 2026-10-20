@@ -77,6 +77,24 @@ function Test-Assert([bool]$Condition, [string]$Message, [string]$Detail = "") {
 
 function Test-Info([string]$Message) { Write-Host "  [....] $Message" -ForegroundColor Gray }
 
+<#
+    读本包 PFN 作用域的 Run 值（DutyAgent.<PFN>），找不到返回 $null。
+
+    包身份下客户端写的是带 PFN 后缀的值名（AutoStartManager.ScopedRunValueName），
+    裸值名 DutyAgent 是 zip 版在用的。以前这里读裸名，导致：
+      * "自启写入" 恒为 null → 恒 WARN（假失败）；
+      * "卸载后无残留" 恒为 null → 恒 PASS（假通过，比假失败更危险）。
+#>
+function Get-RunValue {
+    param([string]$Pfn)
+    if (-not $Pfn) { return $null }
+    $props = Get-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run" -ErrorAction SilentlyContinue
+    if ($null -eq $props) { return $null }
+    $value = $props."DutyAgent.$Pfn"
+    if ($null -eq $value) { return $null }
+    return [string]$value
+}
+
 function Test-Warn([string]$Message) {
     $script:Warnings.Add($Message)
     Write-Host "  [WARN] $Message" -ForegroundColor Yellow
@@ -214,13 +232,14 @@ function Invoke-FirstRun {
     Test-Assert (Test-Path -LiteralPath $dataLogs) "数据落在真实 %LOCALAPPDATA%\DutyAgent（未被重定向到 LocalState）" `
         ("若失败，zip 版与商店版会各存一份数据，是设计变更，需要同步引用处。")
 
-    # 自启：host-config 默认 client_auto_start=true，Apply(true) 应写 Run 键
-    $runValue = (Get-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run" -Name DutyAgent -ErrorAction SilentlyContinue).DutyAgent
+    # 自启：host-config 默认 client_auto_start=true，Apply(true) 应写 Run 键。
+    # 值名带 PFN 作用域（DutyAgent.<PFN>），裸名 DutyAgent 是 zip 版在用的。
+    $runValue = Get-RunValue -Pfn $pfn
     if ($runValue) {
-        Test-Assert ($runValue -like "*shell:AppsFolder\$pfn!App") "自启写入 HKCU Run 键（AUMID 激活）" "实际：$runValue"
+        Test-Assert ($runValue -like "*shell:AppsFolder\$pfn!App") "自启写入 HKCU Run 键（AUMID 激活，值名 DutyAgent.<PFN>）" "实际：$runValue"
     }
     else {
-        Test-Warn "Run 键里没有 DutyAgent 值（可能 host-config 关了 auto_start，或写键被策略拦）。"
+        Test-Warn ("Run 键里没有 DutyAgent.{0}（可能 host-config 关了 auto_start，或写键被策略拦）。" -f $pfn)
     }
 
     # 给升级阶段留一个探针文件
@@ -277,6 +296,8 @@ function Invoke-Uninstall {
     Start-Sleep -Milliseconds 1200
 
     $pkg = Get-AppxPackage -Name $PackageName -ErrorAction SilentlyContinue
+    # 先记下 PFN：包移除之后就查不到了，而下面清 Run 键要用它。
+    $pfn = if ($pkg) { $pkg.PackageFamilyName } else { $null }
     if ($pkg) {
         try {
             $pkg | Remove-AppxPackage -ErrorAction Stop
@@ -299,14 +320,14 @@ function Invoke-Uninstall {
         Test-Assert $true "卸载后安装目录已删除"
     }
 
-    $runStill = (Get-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run" -Name DutyAgent -ErrorAction SilentlyContinue).DutyAgent
+    $runStill = Get-RunValue -Pfn $pfn
     if ($runStill) {
         # MSIX 没有卸载钩子，这是已知残留；脚本负责清，客户端无法在卸载时运行。
-        Test-Warn "发现自启残留（MSIX 无卸载钩子，属已知项）：$runStill"
-        Test-Assert ($runStill -like "*shell:AppsFolder*") "残留形态是 AUMID（可被 2-卸载.ps1 清理）" $runStill
+        Test-Warn ("发现自启残留（MSIX 无卸载钩子，属已知项）：DutyAgent.{0} = {1}" -f $pfn, $runStill)
+        Test-Assert ($runStill -like "*shell:AppsFolder*") "残留形态是 AUMID（可被 Uninstall-MsixForTesting.ps1 清理）" $runStill
     }
     else {
-        Test-Assert $true "无自启残留"
+        Test-Assert $true "无自启残留（DutyAgent.<PFN> 已消失）"
     }
 
     if (Test-Path -LiteralPath $dataDir) {
