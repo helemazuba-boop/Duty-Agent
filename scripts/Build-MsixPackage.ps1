@@ -60,13 +60,20 @@ Write-Host "[msix] winapp: $winappCmd"
 Write-Host "[msix] 发布客户端（复用 New-DutyAgentClientRelease.ps1）..."
 New-Item -ItemType Directory -Force -Path $stagingRoot | Out-Null
 
-$releaseArgs = @(
-    "-OutputRoot", $stagingRoot,
-    "-Configuration", $Configuration,
-    "-NoZip"
-)
-if ($ReleaseVersion) { $releaseArgs += @("-ReleaseVersion", $ReleaseVersion) }
-if ($SkipWebBuild) { $releaseArgs += "-SkipWebBuild" }
+# 用**哈希表** splatting，不要用数组。
+# 数组 splatting 不会把 "-Name" 当成参数名，而是当位置参数塞进去：
+#   @('-Path','C:\','-Filter','*.txt')  →  '-Filter' 被当成 Path 的值
+# 这里以前就是数组写法，于是 New-DutyAgentClientRelease.ps1 收到的是
+#   OutputRoot='-OutputRoot' / Configuration=<staging 路径> / ReleaseVersion='-Configuration'
+# 直接抛 "ReleaseVersion '-Configuration' is not a valid x.y.z[.w] version."
+# （这段从 7bfb891 建工程起就是错的，等于发布步骤从来没按预期跑通过。）
+$releaseArgs = @{
+    OutputRoot    = $stagingRoot
+    Configuration = $Configuration
+    NoZip         = $true
+}
+if ($ReleaseVersion) { $releaseArgs['ReleaseVersion'] = $ReleaseVersion }
+if ($SkipWebBuild) { $releaseArgs['SkipWebBuild'] = $true }
 
 & (Join-Path $PSScriptRoot "New-DutyAgentClientRelease.ps1") @releaseArgs
 if ($LASTEXITCODE -ne 0) { throw "发布脚本失败，exit=$LASTEXITCODE" }
@@ -206,17 +213,36 @@ if ($ForStore) {
 }
 
 Write-Host "[msix] 打包（布局目录 $pkgDir）..."
-& $winappCmd @packageArgs -v
-if ($LASTEXITCODE -ne 0) { throw "winapp package 失败，exit=$LASTEXITCODE" }
+# winapp 把产物写到**当前工作目录**，不是 --manifest 所在目录。
+# 不显式切目录的话，直接跑 build_msix.bat 会把 108MB 的 .msix 丢在仓库根
+# （实测就是这么发生的：包出现在 D:\projects\D\Duty-Agent\ 而不是 .msix-work\）。
+Push-Location $workRoot
+try {
+    & $winappCmd @packageArgs -v
+    if ($LASTEXITCODE -ne 0) { throw "winapp package 失败，exit=$LASTEXITCODE" }
+} finally {
+    Pop-Location
+}
 
 # winapp 按 <Name>_<Version>_<Arch>.msix 命名，直接算出来。
 # 别用"目录里最新的那个"：换过包身份之后 .msix-work 下会同时存在新旧两代产物，
 # 靠时间排序迟早拿错（实测现在就躺着两个 DutyAgent_1.0.0.0_x64.msix）。
 $expectedMsix = Join-Path $workRoot ("{0}_{1}_{2}.msix" -f $identityName, $msixVersion, $arch)
+
+# 兜底：万一某个 winapp 版本仍把产物丢在调用方的 CWD，这里把它搬进工作目录，
+# 而不是让后面的测试包组装找不到文件。
+if (-not (Test-Path -LiteralPath $expectedMsix)) {
+    $strayMsix = Join-Path (Get-Location).Path (Split-Path -Leaf $expectedMsix)
+    if (Test-Path -LiteralPath $strayMsix) {
+        Write-Host ("[msix] 产物落在当前目录，搬到工作目录：{0}" -f (Split-Path -Leaf $expectedMsix))
+        Move-Item -LiteralPath $strayMsix -Destination $expectedMsix -Force
+    }
+}
+
 if (-not (Test-Path -LiteralPath $expectedMsix)) {
     $present = @(Get-ChildItem -LiteralPath $workRoot -Filter "*.msix" -File -ErrorAction SilentlyContinue |
         ForEach-Object { $_.Name }) -join ", "
-    throw "打包报告成功但没找到预期产物：$expectedMsix`n目录里现有的 .msix：$present"
+    throw "打包报告成功但没找到预期产物：$expectedMsix`n工作目录里现有的 .msix：$present"
 }
 Write-Host "[msix] 产物: $expectedMsix"
 
