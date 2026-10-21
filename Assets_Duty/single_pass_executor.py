@@ -33,6 +33,7 @@ from state_ops import (
     Context,
     anonymize_instruction,
     clone_count_map,
+    compute_roster_fingerprint,
     get_configured_area_names,
     get_configured_area_per_day_counts,
     load_api_key_from_env,
@@ -556,6 +557,14 @@ def apply_single_pass_completion(
             next_state["credit_counts"],
         )
         next_state["last_pointer"] = int(pointer_progress.get("pointer_after", next_state.get("last_pointer", 0)) or 0)
+        # Stamp the roster generation this settlement was computed against, so a
+        # later rollback can refuse to restore IDs onto a changed roster.
+        next_state["roster_fingerprint"] = compute_roster_fingerprint(
+            [
+                {"id": person_id, "name": id_to_name.get(person_id, ""), "active": id_to_active.get(person_id, 1)}
+                for person_id in all_ids
+            ]
+        )
         next_state["schedule_pool"] = merge_schedule_pool(
             current_state, restored, apply_mode, run_start_date
         )

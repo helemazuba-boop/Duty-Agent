@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import ctypes
 import dpapi_compat
+import hashlib
 import json
 import os
 import re
@@ -858,12 +859,36 @@ def _backup_previous_atomic(path: Path) -> None:
     os.replace(str(tmp_path), str(prev_path))
 
 
+def compute_roster_fingerprint(entries) -> str:
+    """Stable fingerprint of one roster generation (order + id + name + active).
+
+    Every ledger in ``state.json`` is keyed by roster ID, so a state snapshot is
+    only meaningful against the roster generation it was written with. Rollback
+    compares this to detect "the roster changed since that snapshot": restoring
+    old IDs onto a renumbered roster silently attributes one person's
+    debt/credit to somebody else.
+    """
+    lines: List[str] = []
+    for entry in entries or []:
+        if not isinstance(entry, dict):
+            continue
+        lines.append(
+            "{}|{}|{}".format(
+                int(entry.get("id", 0) or 0),
+                str(entry.get("name", "") or "").strip(),
+                1 if entry.get("active", True) else 0,
+            )
+        )
+    return hashlib.sha256("\n".join(lines).encode("utf-8")).hexdigest()[:16]
+
+
 def update_state(
     path: Path,
     updater: Callable[[dict], dict | None],
     *,
     timeout_seconds: int = STATE_LOCK_TIMEOUT_SECONDS,
     stop_event=None,
+    snapshot_previous: bool = True,
 ) -> dict:
     lock_path = path.with_suffix(path.suffix + ".lock")
     acquire_state_file_lock(lock_path, timeout_seconds=timeout_seconds, stop_event=stop_event)
@@ -871,7 +896,12 @@ def update_state(
         current = load_state(path)
         updated = updater(current)
         next_state = updated if isinstance(updated, dict) else current
-        _backup_previous_atomic(path)
+        # Only schedule-affecting writes refresh the .prev rollback slot.
+        # Operational writes (absences / notes / day overrides / roster remap)
+        # used to consume it too, which turned "rollback" into "undo the last
+        # file write" and made rollback after an operational change look broken.
+        if snapshot_previous:
+            _backup_previous_atomic(path)
         save_json_atomic(path, next_state)
         return next_state
     finally:
@@ -879,7 +909,7 @@ def update_state(
 
 
 
-def save_state(ctx: Context, state: dict) -> dict:
+def save_state(ctx: Context, state: dict, *, snapshot_previous: bool = True) -> dict:
     """
     将 state 保存到 ctx.paths["state"]，保留 .prev 备份。
     """
@@ -887,7 +917,8 @@ def save_state(ctx: Context, state: dict) -> dict:
     lock_path = path.with_suffix(path.suffix + ".lock")
     acquire_state_file_lock(lock_path, timeout_seconds=STATE_LOCK_TIMEOUT_SECONDS)
     try:
-        _backup_previous_atomic(path)
+        if snapshot_previous:
+            _backup_previous_atomic(path)
         save_json_atomic(path, state)
         return state
     finally:
@@ -904,6 +935,7 @@ def rollback_state(
     *,
     timeout_seconds: int = STATE_LOCK_TIMEOUT_SECONDS,
     stop_event=None,
+    roster_entries=None,
 ) -> dict:
     lock_path = path.with_suffix(path.suffix + ".lock")
     prev_path = path.with_suffix(".prev" + path.suffix)
@@ -912,6 +944,20 @@ def rollback_state(
         if not prev_path.exists():
             raise FileNotFoundError("No previous state to rollback to.")
         prev_state = load_state(prev_path)
+        if roster_entries is not None:
+            snapshot_fingerprint = str(prev_state.get("roster_fingerprint") or "")
+            if snapshot_fingerprint and snapshot_fingerprint != compute_roster_fingerprint(roster_entries):
+                raise ValueError(
+                    "回滚已阻止：花名册在该快照之后发生过变更（重编号/改名/增删成员），"
+                    "恢复旧排班会把债务/积分记错到人头上。请先恢复名单，或手动修正排班。"
+                )
+            if not snapshot_fingerprint:
+                print(
+                    "state_ops: rollback snapshot carries no roster_fingerprint; "
+                    "cannot verify the roster generation (allowing, legacy snapshot)",
+                    file=sys.stderr,
+                    flush=True,
+                )
         save_json_atomic(path, prev_state)
         prev_path.unlink(missing_ok=True)
         return prev_state

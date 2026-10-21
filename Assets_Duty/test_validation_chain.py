@@ -38,7 +38,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from state_ops import Context, load_state, save_json_atomic, save_config
+from state_ops import Context, load_roster_entries, load_state, save_json_atomic, save_config
 
 BASE_CONFIG = {
     "version": 1,
@@ -1136,6 +1136,98 @@ class ModelLedgerInjectionTests(unittest.TestCase):
         )
         self.assertEqual(result["status"], "success")
         self.assertTrue(any("指针" in warning for warning in result["adjustment_warnings"]))
+
+
+class RollbackSemanticsTests(unittest.TestCase):
+    """回滚语义：运营类写入不得消耗回滚槽位；跨名单代的回滚必须拒绝。"""
+
+    def _tmp(self):
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(lambda: __import__("shutil").rmtree(tmp, ignore_errors=True))
+        return Path(tmp)
+
+    def _run_once(self, ctx, completion="[areas]\nA = 教室\n[schedule]\n10-22 = A:1001 1002\n"):
+        from single_pass_executor import apply_single_pass_completion
+
+        return apply_single_pass_completion(
+            ctx, completion, {"mode": "single_pass", "start_date": "2026-10-22", "trace_id": "t"},
+        )
+
+    def test_operational_write_does_not_consume_rollback_slot(self):
+        """清请假这类运营写入不得刷新 .prev：回滚必须是"撤销上一次排班"，
+        而不是把排班成果原样奉还（旧行为让回滚看起来毫无效果）。"""
+        from application.command_service import CommandService
+        from state_ops import rollback_state
+
+        tmp = self._tmp()
+        ctx = make_ctx(tmp)
+        self._run_once(ctx)
+        self.assertEqual(len(load_state(ctx.paths["state"])["schedule_pool"]), 1)
+
+        service = CommandService(_StubRuntime(tmp))
+        service.manage_absences({"action": "clear"}, "t", "api")
+
+        restored = rollback_state(ctx.paths["state"])
+        self.assertEqual(restored["schedule_pool"], [])
+
+    def test_rollback_allowed_when_roster_unchanged(self):
+        from single_pass_executor import apply_single_pass_completion  # noqa: F401 (import order)
+        from state_ops import rollback_state
+
+        tmp = self._tmp()
+        ctx = make_ctx(tmp)
+        self._run_once(ctx)
+        restored = rollback_state(
+            ctx.paths["state"], roster_entries=load_roster_entries(ctx.paths["roster"])
+        )
+        self.assertEqual(restored["schedule_pool"], [])
+
+    def test_roster_change_blocks_rollback(self):
+        """名单重编号后回滚会把旧 ID 的账本写到新名单上（A 的欠账记到 B 头上），
+        必须显式拒绝而不是静默错账。"""
+        from application.command_service import CommandService
+        from state_ops import rollback_state
+
+        tmp = self._tmp()
+        ctx = make_ctx(tmp, state={
+            "schedule_pool": [], "debt_counts": {"1001": 2}, "credit_counts": {}, "last_pointer": 0,
+        })
+        self._run_once(ctx)
+        self.assertEqual(len(load_state(ctx.paths["state"])["schedule_pool"]), 1)
+
+        service = CommandService(_StubRuntime(tmp))
+        service.update_roster(
+            [
+                {"id": 1002, "name": "李四", "active": True},
+                {"id": 1001, "name": "张三", "active": True},
+                {"id": 1003, "name": "王五", "active": True},
+                {"id": 1004, "name": "赵六", "active": True},
+            ],
+            "t",
+            "api",
+        )
+
+        with self.assertRaises(ValueError) as caught:
+            rollback_state(
+                ctx.paths["state"], roster_entries=load_roster_entries(ctx.paths["roster"])
+            )
+        self.assertIn("花名册", str(caught.exception))
+
+    def test_legacy_snapshot_without_fingerprint_still_rolls_back(self):
+        """兼容：旧快照没有名单指纹时不得挡住回滚（无法证明分歧就放行）。"""
+        from state_ops import rollback_state, save_json_atomic
+
+        tmp = self._tmp()
+        ctx = make_ctx(tmp)
+        save_json_atomic(ctx.paths["state"], {"schedule_pool": [], "debt_counts": {}})
+        save_json_atomic(
+            ctx.paths["state"].with_suffix(".prev" + ctx.paths["state"].suffix),
+            {"schedule_pool": [], "debt_counts": {}, "credit_counts": {}, "last_pointer": 0},
+        )
+        restored = rollback_state(
+            ctx.paths["state"], roster_entries=load_roster_entries(ctx.paths["roster"])
+        )
+        self.assertEqual(restored["schedule_pool"], [])
 
 
 if __name__ == "__main__":

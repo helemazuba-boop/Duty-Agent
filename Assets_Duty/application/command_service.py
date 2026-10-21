@@ -7,7 +7,7 @@ from absence_ops import merge_absence_entries
 from engine import run_schedule
 from execution_profiles import build_execution_plan, resolve_execution_profile
 from single_pass_executor import apply_single_pass_completion, build_single_pass_request
-from state_ops import Context, has_previous_state, load_config, load_roster, load_roster_entries, load_state, patch_config, patch_host_config, remap_state_ids, rollback_state, save_roster_entries, save_schedule_entry_edit, save_state, update_state, _is_roster_order_changed
+from state_ops import Context, compute_roster_fingerprint, has_previous_state, load_config, load_roster, load_roster_entries, load_state, patch_config, patch_host_config, remap_state_ids, rollback_state, save_roster_entries, save_schedule_entry_edit, save_state, update_state, _is_roster_order_changed
 
 
 def _messages_to_prompt_text(messages: list[dict]) -> str:
@@ -363,16 +363,36 @@ class CommandService:
             old_roster = []
 
         result = save_roster_entries(context, roster_payload)
+        roster_fingerprint = compute_roster_fingerprint(result)
 
+        # A roster change DOES refresh the .prev rollback slot: the snapshot must
+        # be the pre-change state, because that is the only one carrying the old
+        # roster fingerprint. rollback_state then refuses to restore it onto the
+        # new roster (and a refused rollback does not consume the slot), so the
+        # user can restore the roster and retry instead of silently mis-attributing
+        # debt/credit.
         if old_roster and _is_roster_order_changed(old_roster, result):
             old_state = load_state(context.paths["state"])
             new_state = remap_state_ids(old_state, old_roster, result)
+            # Stamp the new roster generation so a later rollback can tell that
+            # the pre-remap snapshot no longer matches the roster on disk.
+            new_state["roster_fingerprint"] = roster_fingerprint
             if new_state != old_state:
                 save_state(context, new_state)
             self._runtime.logger.info(
                 "CommandService",
                 "Roster order changed, state IDs remapped.",
                 trace_id=effective_trace_id,
+            )
+        else:
+            # Same ID mapping (rename / activate-deactivate): keep the
+            # fingerprint current without touching the rollback slot.
+            def _stamp_fingerprint(current_state: dict) -> dict:
+                current_state["roster_fingerprint"] = roster_fingerprint
+                return current_state
+
+            update_state(
+                context.paths["state"], _stamp_fingerprint, snapshot_previous=False
             )
 
         self._runtime.publish_snapshot_changed("roster-updated", effective_trace_id)
@@ -491,7 +511,9 @@ class CommandService:
                 ]
                 return current_state
 
-            updated = update_state(context.paths["state"], _clear)
+            updated = update_state(
+            context.paths["state"], _clear, snapshot_previous=False
+        )
             self._runtime.publish_snapshot_changed("absences-cleared", effective_trace_id)
             return {
                 "status": "success",
@@ -534,7 +556,9 @@ class CommandService:
             )
             return current_state
 
-        updated = update_state(context.paths["state"], _add)
+        updated = update_state(
+            context.paths["state"], _add, snapshot_previous=False
+        )
         self._runtime.publish_snapshot_changed("absence-registered", effective_trace_id)
         self._runtime.logger.info(
             "CommandService",
@@ -573,7 +597,9 @@ class CommandService:
                 current_state["user_notes"] = []
                 return current_state
 
-            updated = update_state(context.paths["state"], _clear)
+            updated = update_state(
+            context.paths["state"], _clear, snapshot_previous=False
+        )
             self._runtime.publish_snapshot_changed("run-notes-cleared", effective_trace_id)
             return {
                 "status": "success",
@@ -600,7 +626,9 @@ class CommandService:
             current_state["user_notes"] = notes
             return current_state
 
-        updated = update_state(context.paths["state"], _add)
+        updated = update_state(
+            context.paths["state"], _add, snapshot_previous=False
+        )
         self._runtime.publish_snapshot_changed("run-note-added", effective_trace_id)
         return {
             "status": "success",
@@ -647,7 +675,9 @@ class CommandService:
                 current_state["day_overrides"] = overrides
                 return current_state
 
-            updated = update_state(context.paths["state"], _clear)
+            updated = update_state(
+            context.paths["state"], _clear, snapshot_previous=False
+        )
             self._runtime.publish_snapshot_changed("day-override-cleared", effective_trace_id)
             return {
                 "status": "success",
@@ -670,7 +700,9 @@ class CommandService:
             current_state["day_overrides"] = overrides
             return current_state
 
-        updated = update_state(context.paths["state"], _set)
+        updated = update_state(
+            context.paths["state"], _set, snapshot_previous=False
+        )
         self._runtime.publish_snapshot_changed("day-override-set", effective_trace_id)
         return {
             "status": "success",
@@ -711,7 +743,29 @@ class CommandService:
             trace_id=effective_trace_id,
             request_source=request_source,
         )
-        rolled_back = rollback_state(context.paths["state"])
+        try:
+            roster_entries = load_roster_entries(context.paths["roster"])
+        except (FileNotFoundError, ValueError):
+            roster_entries = None
+        try:
+            rolled_back = rollback_state(
+                context.paths["state"], roster_entries=roster_entries
+            )
+        except ValueError as ex:
+            # Roster generation mismatch (or another guard): surface as a
+            # regular error result instead of a 500.
+            self._runtime.logger.warn(
+                "CommandService",
+                "Rejected rollback_schedule.",
+                trace_id=effective_trace_id,
+                request_source=request_source,
+                error_message=str(ex),
+            )
+            return {
+                "status": "error",
+                "message": str(ex),
+                "trace_id": effective_trace_id,
+            }
         self._runtime.publish_snapshot_changed("rollback", effective_trace_id)
         self._runtime.logger.info(
             "CommandService",

@@ -9,7 +9,7 @@ from postprocess import (
     recover_missing_debts,
     restore_schedule,
 )
-from state_ops import clone_count_map, prune_operational_state, resolve_debt_credit_conflicts, update_state
+from state_ops import clone_count_map, compute_roster_fingerprint, prune_operational_state, resolve_debt_credit_conflicts, update_state
 
 from .contracts import FrozenSnapshot
 from .validators import validate_final_schedule
@@ -83,6 +83,17 @@ def finalize_multi_agent_run(
             state_data["credit_counts"],
         )
         state_data["last_pointer"] = barrier2["pointer_after"]
+        # Stamp the roster generation this settlement was computed against.
+        state_data["roster_fingerprint"] = compute_roster_fingerprint(
+            [
+                {
+                    "id": person_id,
+                    "name": snapshot.id_to_name.get(person_id, ""),
+                    "active": snapshot.id_to_active.get(person_id, 1),
+                }
+                for person_id in snapshot.all_ids
+            ]
+        )
         state_data["schedule_pool"] = merge_schedule_pool(
             state_data, restored, apply_mode, snapshot.start_date
         )
