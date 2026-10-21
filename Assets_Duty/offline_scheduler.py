@@ -40,6 +40,8 @@ from state_ops import (
     DEFAULT_ASSIGNMENTS_PER_AREA,
     DEFAULT_SINGLE_AREA_NAME,
     clone_count_map,
+    get_configured_area_names,
+    get_configured_area_per_day_counts,
     load_config,
     load_roster,
     load_state,
@@ -291,7 +293,25 @@ def run_offline_schedule(
             "selected_executor": "offline",
         }
 
-    area_structure = learn_area_structure(state_data.get("schedule_pool", []))
+    # Explicit config wins over learned history: the configured areas are the
+    # product-level contract. Learning from the pool is the fallback for users
+    # who never configured areas (the old order made a configured area set and a
+    # learned one coexist, producing phantom/empty areas).
+    configured_areas = get_configured_area_names(config)
+    if configured_areas:
+        configured_counts = get_configured_area_per_day_counts(config, configured_areas)
+        area_structure = [
+            (
+                name,
+                int(
+                    configured_counts.get(name, DEFAULT_ASSIGNMENTS_PER_AREA)
+                    or DEFAULT_ASSIGNMENTS_PER_AREA
+                ),
+            )
+            for name in configured_areas
+        ]
+    else:
+        area_structure = learn_area_structure(state_data.get("schedule_pool", []))
     slots_per_day = sum(count for _name, count in area_structure)
 
     active_set = set(active_ids)
@@ -324,6 +344,9 @@ def run_offline_schedule(
     resume_context = {
         "mode": "offline",
         "start_date": start_date.isoformat(),
+        # Offline skips weekends by default, so its window is not a plain
+        # start+days range — state the exact dates for the settle-side window audit.
+        "expected_dates": [day.isoformat() for day in target_dates],
         "trace_id": trace_id,
         "prompt_metadata": {},
         "execution_plan_meta": execution_plan.to_metadata() if execution_plan is not None else {},

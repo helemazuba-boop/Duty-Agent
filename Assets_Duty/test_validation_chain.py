@@ -546,5 +546,285 @@ class ToolLoopE2ECompletenessTests(unittest.TestCase):
         self.assertEqual(len(pool), 2)
 
 
+class InactivePersonnelTests(unittest.TestCase):
+    """停用人员不得进班表（single_pass 曾传 all_ids 放行停用者）。"""
+
+    def _tmp(self):
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(lambda: __import__("shutil").rmtree(tmp, ignore_errors=True))
+        return Path(tmp)
+
+    def test_inactive_person_stripped_with_warning(self):
+        from single_pass_executor import apply_single_pass_completion
+
+        roster = "id,name,active\n1001,张三,1\n1002,李四,1\n1003,王五,1\n1004,赵六,0\n"
+        tmp = self._tmp()
+        ctx = make_ctx(
+            tmp,
+            config={**BASE_CONFIG, "areas": ["教室"], "area_per_day_counts": {"教室": 2}},
+            roster=roster,
+        )
+        completion = "[areas]\nA = 教室\n[schedule]\n10-22 = A:1001 1004\n"
+        result = apply_single_pass_completion(
+            ctx, completion, {"mode": "single_pass", "start_date": "2026-10-22", "trace_id": "t"},
+        )
+        self.assertEqual(result["status"], "success")
+        names = load_state(ctx.paths["state"])["schedule_pool"][-1]["area_assignments"]["教室"]
+        self.assertNotIn("赵六", names)  # 停用者被剔除
+        self.assertEqual(len(names), 2)  # 缺额由在岗人员补齐
+        self.assertTrue(any("停用" in warning for warning in result["adjustment_warnings"]))
+
+    def test_only_inactive_person_still_filled_by_active_rotation(self):
+        from single_pass_executor import apply_single_pass_completion
+
+        roster = "id,name,active\n1001,张三,0\n1002,李四,1\n1003,王五,1\n"
+        tmp = self._tmp()
+        ctx = make_ctx(
+            tmp,
+            config={**BASE_CONFIG, "areas": ["教室"], "area_per_day_counts": {"教室": 2}},
+            roster=roster,
+        )
+        completion = "[areas]\nA = 教室\n[schedule]\n10-22 = A:1001\n"
+        result = apply_single_pass_completion(
+            ctx, completion, {"mode": "single_pass", "start_date": "2026-10-22", "trace_id": "t"},
+        )
+        self.assertEqual(result["status"], "success")
+        names = load_state(ctx.paths["state"])["schedule_pool"][-1]["area_assignments"]["教室"]
+        self.assertEqual(names, ["李四", "王五"])
+
+
+class PerDayAbsenceTests(unittest.TestCase):
+    """缺席必须逐日判定：请一天假不得误伤整个排班窗口。"""
+
+    def _tmp(self):
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(lambda: __import__("shutil").rmtree(tmp, ignore_errors=True))
+        return Path(tmp)
+
+    def test_single_day_absence_does_not_affect_other_days(self):
+        from single_pass_executor import apply_single_pass_completion
+        from state_ops import update_state
+
+        tmp = self._tmp()
+        ctx = make_ctx(tmp)  # 未配置区域 → 动态区域，不触发自动补齐，便于观察剔除
+        update_state(
+            ctx.paths["state"],
+            lambda state: {**state, "absences": [{"id": 1001, "from": "2026-10-23", "to": "2026-10-23"}]},
+        )
+        completion = (
+            "[areas]\nA = 教室\n[schedule]\n"
+            "10-22 = A:1001 1002\n10-23 = A:1001 1003\n10-24 = A:1001 1002\n"
+        )
+        result = apply_single_pass_completion(
+            ctx, completion, {"mode": "single_pass", "start_date": "2026-10-22", "trace_id": "t"},
+        )
+        self.assertEqual(result["status"], "success")
+        by_date = {
+            entry["date"]: entry["area_assignments"]["教室"]
+            for entry in load_state(ctx.paths["state"])["schedule_pool"]
+        }
+        self.assertEqual(by_date["2026-10-22"], ["张三", "李四"])
+        self.assertEqual(by_date["2026-10-23"], ["王五"])  # 仅当天剔除
+        self.assertEqual(by_date["2026-10-24"], ["张三", "李四"])
+
+    def test_absence_span_covers_every_day_in_range(self):
+        from single_pass_executor import apply_single_pass_completion
+        from state_ops import update_state
+
+        tmp = self._tmp()
+        ctx = make_ctx(tmp)
+        update_state(
+            ctx.paths["state"],
+            lambda state: {**state, "absences": [{"id": 1001, "from": "2026-10-22", "to": "2026-10-24"}]},
+        )
+        completion = (
+            "[areas]\nA = 教室\n[schedule]\n"
+            "10-22 = A:1001 1002\n10-23 = A:1001 1003\n10-24 = A:1001 1002\n"
+        )
+        result = apply_single_pass_completion(
+            ctx, completion, {"mode": "single_pass", "start_date": "2026-10-22", "trace_id": "t"},
+        )
+        self.assertEqual(result["status"], "success")
+        for entry in load_state(ctx.paths["state"])["schedule_pool"]:
+            self.assertNotIn("张三", entry["area_assignments"]["教室"])
+
+
+class WindowCoverageTests(unittest.TestCase):
+    """排班窗口覆盖不再静默：缺日/越界日期进 adjustment_warnings（不阻断）。"""
+
+    def _tmp(self):
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(lambda: __import__("shutil").rmtree(tmp, ignore_errors=True))
+        return Path(tmp)
+
+    def _apply(self, ctx, completion, start_date="2026-10-22"):
+        from single_pass_executor import apply_single_pass_completion
+
+        return apply_single_pass_completion(
+            ctx, completion, {"mode": "single_pass", "start_date": start_date, "trace_id": "t"},
+        )
+
+    def test_partial_window_warns_but_succeeds(self):
+        tmp = self._tmp()
+        ctx = make_ctx(tmp)
+        result = self._apply(ctx, "[areas]\nA = 教室\n[schedule]\n10-22 = A:1001 1002\n10-23 = A:1001 1003\n")
+        self.assertEqual(result["status"], "success")
+        warnings = result["adjustment_warnings"]
+        self.assertTrue(any("未覆盖日期" in warning for warning in warnings))
+        self.assertTrue(any("10-28" in warning for warning in warnings))
+
+    def test_full_window_has_no_coverage_warning(self):
+        tmp = self._tmp()
+        ctx = make_ctx(tmp)
+        lines = "\n".join(
+            f"10-{day:02d} = A:1001 1002" for day in range(22, 29)
+        )
+        result = self._apply(ctx, f"[areas]\nA = 教室\n[schedule]\n{lines}\n")
+        self.assertEqual(result["status"], "success")
+        self.assertFalse(any("未覆盖日期" in warning for warning in result["adjustment_warnings"]))
+
+    def test_out_of_window_dates_warn(self):
+        tmp = self._tmp()
+        ctx = make_ctx(tmp)
+        result = self._apply(ctx, "[areas]\nA = 教室\n[schedule]\n10-22 = A:1001 1002\n11-30 = A:1001 1002\n")
+        self.assertEqual(result["status"], "success")
+        self.assertTrue(any("超出排班窗口" in warning for warning in result["adjustment_warnings"]))
+
+
+def _snapshot(active_ids):
+    from datetime import datetime as _dt
+
+    from multi_agent.contracts import FrozenSnapshot
+
+    return FrozenSnapshot(
+        trace_id="", request_source="", instruction="",
+        request_time=_dt(2026, 3, 16), start_date=date(2026, 3, 16),
+        config={}, state={}, name_to_id={}, id_to_name={},
+        all_ids=list(active_ids), active_ids=list(active_ids), inactive_ids=[],
+        id_to_active={}, debt_list=[], credit_list=[], last_pointer=0,
+        previous_note="", duty_rule="",
+    )
+
+
+class MultiAgentValidatorStrengthTests(unittest.TestCase):
+    """multi_agent：agent6 结构校验 + 容量口径（复用允许同日跨区）。"""
+
+    def _barrier2(self, template=None, final_pool=None, dates=None):
+        return {
+            "template": template or {"2026-03-16": {"A": 2, "B": 2}},
+            "dates": dates or ["2026-03-16"],
+            "final_pool": final_pool if final_pool is not None else [1, 2, 3],
+            "supported_rules": [],
+            "warnings": [],
+            "unsupported_rules": [],
+            "priority_pool": [],
+            "pointer_pool": [],
+            "pointer_after": 0,
+            "consumed_credit_ids": [],
+            "slots": [],
+        }
+
+    def test_agent6_rejects_missing_date(self):
+        from multi_agent.validators import validate_agent6_output
+
+        barrier2 = self._barrier2(dates=["2026-03-16", "2026-03-17"])
+        raw = {"schedule": [{"date": "2026-03-16", "area_ids": {"A": [1, 2], "B": [3, 1]}}]}
+        with self.assertRaises(ValueError):
+            validate_agent6_output(raw, barrier2)
+
+    def test_agent6_rejects_wrong_area_set(self):
+        from multi_agent.validators import validate_agent6_output
+
+        barrier2 = self._barrier2()
+        raw = {"schedule": [{"date": "2026-03-16", "area_ids": {"A": [1, 2]}}]}
+        with self.assertRaises(ValueError):
+            validate_agent6_output(raw, barrier2)
+
+    def test_agent6_rejects_understaffed_area(self):
+        from multi_agent.validators import validate_agent6_output
+
+        barrier2 = self._barrier2()
+        raw = {"schedule": [{"date": "2026-03-16", "area_ids": {"A": [1], "B": [2, 3]}}]}
+        with self.assertRaises(ValueError):
+            validate_agent6_output(raw, barrier2)
+
+    def test_agent6_accepts_valid_schedule_with_cross_area_reuse(self):
+        from multi_agent.validators import validate_agent6_output
+
+        barrier2 = self._barrier2(final_pool=[1, 2, 3])
+        raw = {"schedule": [{"date": "2026-03-16", "area_ids": {"A": [1, 2], "B": [2, 3]}}]}
+        result = validate_agent6_output(raw, barrier2)
+        self.assertEqual(len(result["schedule"]), 1)
+
+    def test_capacity_allows_same_day_cross_area_reuse(self):
+        """3 人、最忙日 A:2+B:2：跨区复用下可行，不得判"人手不足"。"""
+        from multi_agent.executor import _check_capacity
+        from multi_agent.contracts import FrozenSnapshot
+        from datetime import datetime
+
+        snapshot = _snapshot(active_ids=[1, 2, 3])
+        barrier1 = {"absent_ids": [], "template": {"2026-03-16": {"A": 2, "B": 2}}}
+        barrier2 = self._barrier2(final_pool=[1, 2, 3])
+        _check_capacity(snapshot, barrier1, barrier2)  # 不得抛错
+
+    def test_capacity_rejects_when_largest_area_cannot_be_staffed(self):
+        from multi_agent.executor import _check_capacity
+        from multi_agent.contracts import FrozenSnapshot
+        from datetime import datetime
+
+        snapshot = _snapshot(active_ids=[1])
+        barrier1 = {"absent_ids": [], "template": {"2026-03-16": {"A": 2}}}
+        barrier2 = self._barrier2(final_pool=[1])
+        with self.assertRaises(ValueError):
+            _check_capacity(snapshot, barrier1, barrier2)
+
+    def test_capacity_rejects_when_final_pool_too_small(self):
+        """final_pool 小于最忙日最大区域人数 → agent6/兜底都排不出，须前置报错。"""
+        from multi_agent.executor import _check_capacity
+        from multi_agent.contracts import FrozenSnapshot
+        from datetime import datetime
+
+        snapshot = _snapshot(active_ids=[1, 2, 3])
+        barrier1 = {"absent_ids": [], "template": {"2026-03-16": {"A": 2}}}
+        barrier2 = self._barrier2(template={"2026-03-16": {"A": 2}}, final_pool=[1])
+        with self.assertRaises(ValueError):
+            _check_capacity(snapshot, barrier1, barrier2)
+
+
+class OfflineAreaSourceTests(unittest.TestCase):
+    """离线排班：config 配置了区域时以 config 为准，不再学历史结构。"""
+
+    def _tmp(self):
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(lambda: __import__("shutil").rmtree(tmp, ignore_errors=True))
+        return Path(tmp)
+
+    def test_configured_areas_win_over_learned_structure(self):
+        from offline_scheduler import run_offline_schedule
+        from execution_profiles import build_execution_plan, resolve_execution_profile
+        from state_ops import load_config
+
+        tmp = self._tmp()
+        config = {**BASE_CONFIG, "areas": ["操场"], "area_per_day_counts": {"操场": 2}}
+        ctx = make_ctx(
+            tmp,
+            config=config,
+            state={
+                "schedule_pool": [
+                    {"date": "2026-04-21", "area_assignments": {"教室": ["张三", "李四"], "走廊": ["王五"]}}
+                ],
+                "debt_counts": {}, "credit_counts": {}, "last_pointer": 0,
+            },
+        )
+        plan = build_execution_plan(resolve_execution_profile({}, load_config(ctx)))
+        result = run_offline_schedule(ctx, {"trace_id": "t"}, plan)
+        self.assertEqual(result["status"], "success")
+        pool = load_state(ctx.paths["state"])["schedule_pool"]
+        new_entries = [entry for entry in pool if entry["date"] != "2026-04-21"]
+        self.assertTrue(new_entries)
+        for entry in new_entries:
+            self.assertEqual(set(entry["area_assignments"]), {"操场"})
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

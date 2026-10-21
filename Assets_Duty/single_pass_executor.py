@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from datetime import date, datetime, timedelta
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from absence_ops import (
     absences_for_window,
@@ -55,9 +55,17 @@ def _enforce_absence_and_counts(
     day_overrides: Dict[str, Dict[str, int]],
     debt_counts: Dict[int, int],
     absent_ids: set,
+    absences: Optional[List[dict]] = None,
 ) -> List[str]:
-    """Deterministic post-parse repair (D-A): strip absentees, trim excess,
-    fill shortfall. Mutates ``normalized_ids`` in place; returns warnings."""
+    """Deterministic post-parse repair (D-A): strip absentees and inactive
+    members, trim excess, fill shortfall. Mutates ``normalized_ids`` in place;
+    returns warnings.
+
+    ``absences`` (raw persisted leave ranges) enables PER-DAY resolution: a
+    one-day leave only removes that person from that day. Without it the flat
+    ``absent_ids`` set applies to every date — still the right semantics for
+    model-declared ``[state] absent`` IDs, which carry no per-date ranges.
+    """
     warnings: List[str] = []
     if not normalized_ids:
         return warnings
@@ -69,12 +77,35 @@ def _enforce_absence_and_counts(
         day_ids = {person_id for ids in area_ids.values() for person_id in ids}
         entry_adjustments: List[str] = []
 
+        if absences:
+            entry_day = try_parse_iso_date(date_text)
+            day_absent = (
+                set(absences_for_window(absences, entry_day, entry_day))
+                if entry_day is not None
+                else set()
+            )
+        else:
+            day_absent = set(absent_ids)
+
         for area_name in list(area_ids.keys()):
             ids = list(area_ids.get(area_name, []))
 
-            stripped = [person_id for person_id in ids if person_id in absent_ids]
+            # Inactive (retired/transferred) members must never reach the pool.
+            # single_pass used to pass all_ids as the "active" set, so a
+            # deactivated person could be scheduled with zero warning.
+            inactive_hit = [pid for pid in ids if id_to_active.get(pid, 1) == 0]
+            if inactive_hit:
+                ids = [pid for pid in ids if id_to_active.get(pid, 1) != 0]
+                day_ids -= set(inactive_hit)
+                warnings.append(
+                    f"{date_text}/{area_name}: 剔除停用人员 "
+                    + " ".join(str(pid) for pid in inactive_hit)
+                )
+                entry_adjustments.append(f"剔除停用{len(inactive_hit)}人")
+
+            stripped = [person_id for person_id in ids if person_id in day_absent]
             if stripped:
-                ids = [person_id for person_id in ids if person_id not in absent_ids]
+                ids = [person_id for person_id in ids if person_id not in day_absent]
                 day_ids -= set(stripped)
                 warnings.append(
                     f"{date_text}/{area_name}: 剔除缺席人员 "
@@ -128,6 +159,45 @@ def _enforce_absence_and_counts(
             summary = "自动修正: " + "，".join(entry_adjustments)
             entry["note"] = f"{str(entry.get('note', '') or '').strip()} {summary}".strip()
 
+    return warnings
+
+
+def _audit_schedule_window(
+    normalized_ids: List[dict],
+    expected_dates: Optional[List[str]],
+) -> List[str]:
+    """Non-blocking window audit.
+
+    A run must not silently deliver half a window, nor silently schedule
+    outside it (the prompt calls over-generation fatal, but nothing enforced
+    it). Returns warning strings — never raises, never rewrites the schedule.
+    """
+    if not expected_dates:
+        return []
+    expected = {str(day).strip() for day in expected_dates if str(day).strip()}
+    if not expected:
+        return []
+    scheduled: set = set()
+    out_of_window: List[str] = []
+    for entry in normalized_ids:
+        parsed = try_parse_iso_date(entry.get("date", ""))
+        if parsed is None:
+            continue
+        iso = parsed.isoformat()
+        scheduled.add(iso)
+        if iso not in expected:
+            out_of_window.append(iso)
+
+    warnings: List[str] = []
+    missing = sorted(expected - scheduled)
+    if missing:
+        warnings.append(
+            "未覆盖日期 "
+            + " ".join(day[5:] for day in missing)
+            + f"（期望 {len(expected)} 天；若指令明确要求更少天数可忽略）"
+        )
+    if out_of_window:
+        warnings.append("超出排班窗口的日期: " + " ".join(sorted(out_of_window)))
     return warnings
 
 
@@ -257,6 +327,7 @@ def build_single_pass_request(
     resume_context = {
         "mode": execution_plan.runtime_mode,
         "start_date": start_date.isoformat(),
+        "window_end": window_end.isoformat(),
         "apply_mode": normalize_apply_mode(input_data.get("apply_mode")),
         "trace_id": trace_id,
         "prompt_metadata": prompt_metadata,
@@ -289,6 +360,8 @@ def apply_single_pass_completion(
     runtime_mode = resume_context.get("mode") or "single_pass"
     single_pass_strategy = resume_context.get("single_pass_strategy")
     transport_overrides = resume_context.get("transport_overrides") or {}
+    apply_mode = normalize_apply_mode(resume_context.get("apply_mode"))
+    run_start_date = try_parse_iso_date(start_date_value) or date.today()
 
     name_to_id, id_to_name, all_ids, id_to_active = load_roster(ctx.paths["roster"])
     state_data = load_state(ctx.paths["state"])
@@ -298,6 +371,22 @@ def apply_single_pass_completion(
     # model's declared areas are authoritative (no phantom default area).
     area_names = get_configured_area_names(config)
     area_per_day_counts = get_configured_area_per_day_counts(config, area_names)
+
+    # Expected schedule dates for the window audit: the producer states them
+    # explicitly (offline mode knows its exact target dates); otherwise derive
+    # them from the window_end recorded at prompt-build time, falling back to
+    # the configured default window for older handles that carry neither.
+    expected_dates = resume_context.get("expected_dates")
+    if not expected_dates:
+        window_end = try_parse_iso_date(resume_context.get("window_end"))
+        if window_end is None:
+            window_days = int(config.get("default_days", 7) or 7)
+            window_end = run_start_date + timedelta(days=max(1, window_days) - 1)
+        if window_end >= run_start_date:
+            expected_dates = [
+                (run_start_date + timedelta(days=offset)).isoformat()
+                for offset in range((window_end - run_start_date).days + 1)
+            ]
 
     debt_counts = clone_count_map(state_data.get("debt_counts", {}), set(all_ids))
     credit_counts = clone_count_map(state_data.get("credit_counts", {}), set(all_ids))
@@ -313,31 +402,18 @@ def apply_single_pass_completion(
         area_per_day_counts,
     )
 
-    # Sudden-situation enforcement: persisted absences overlapping the schedule
-    # window plus model-declared absent IDs are stripped, then counts are
-    # repaired deterministically (D-A: fill shortfall, trim excess).
-    absent_ids_set: set = set()
-    schedule_dates = [
-        parsed
-        for parsed in (
-            try_parse_iso_date(entry.get("date", "")) for entry in normalized_ids
-        )
-        if parsed is not None
-    ]
-    if schedule_dates:
-        absent_ids_set.update(
-            absences_for_window(
-                state_data.get("absences", []),
-                min(schedule_dates),
-                max(schedule_dates),
-            )
-        )
+    # Sudden-situation enforcement: persisted leave ranges are resolved PER DAY
+    # inside the enforcement pass (a one-day leave must not wipe the person from
+    # the whole window), model-declared [state] absent IDs apply run-wide, and
+    # inactive members are stripped. Counts are then repaired deterministically
+    # (D-A: fill shortfall, trim excess).
+    declared_absent_ids: set = set()
     for raw_id in ((llm_result.get("state_delta") or {}).get("absent_ids") or []):
         try:
-            absent_ids_set.add(int(raw_id))
+            declared_absent_ids.add(int(raw_id))
         except (TypeError, ValueError):
             continue
-    absent_ids_set &= set(all_ids)
+    declared_absent_ids &= set(all_ids)
     adjustment_warnings = _enforce_absence_and_counts(
         normalized_ids,
         all_ids,
@@ -346,7 +422,11 @@ def apply_single_pass_completion(
         area_per_day_counts,
         dict(state_data.get("day_overrides", {}) or {}),
         debt_counts,
-        absent_ids_set,
+        declared_absent_ids,
+        absences=state_data.get("absences", []) or [],
+    )
+    adjustment_warnings.extend(
+        _audit_schedule_window(normalized_ids, expected_dates)
     )
 
     restored = restore_schedule(normalized_ids, id_to_name, area_names, {})
@@ -354,8 +434,6 @@ def apply_single_pass_completion(
         raise ValueError("No valid schedule entries.")
 
     state_delta = dict(llm_result.get("state_delta") or {})
-    apply_mode = normalize_apply_mode(resume_context.get("apply_mode"))
-    run_start_date = try_parse_iso_date(start_date_value) or date.today()
     llm_pointer_after = state_delta.get("pointer_after")
     llm_consumed_credit_ids = state_delta.get("consumed_credit_ids")
 
