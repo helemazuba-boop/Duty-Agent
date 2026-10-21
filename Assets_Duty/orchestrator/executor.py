@@ -1,6 +1,16 @@
 """
 Orchestrator Agent executor — rounds + time-window multi-agent polling.
 
+*** FROZEN (2026-10-22 audit decision) ***
+This mode can no longer be selected from the config surface (the persisted-config
+whitelist drops `orchestration_mode`), and `engine.run_schedule` refuses to
+dispatch it. Known-unfixed gaps (see the 2026-10-22 validation audit): the
+aggregator injects `[areas]` inside `[[#window]]` blocks (the parser then drops
+the whole window's schedule lines), prompt examples use ISO dates while the
+parser only accepts MM-DD, and every real rejection code maps to INFO so the
+retry strategy always finalizes. Fix these before unfreezing. Unit tests drive
+this module directly and must keep passing.
+
 Protocol:
   第0步：Orchestrator 初始化 → 判断 total_slots ≥ 7
          ├─ < 7：Orchestrator 自己填充（不走 TimeWindow Agent）

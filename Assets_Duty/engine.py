@@ -52,6 +52,14 @@ __all__ = [
     "load_state",
 ]
 
+# FROZEN modes (2026-10-22 audit decision): tool_loop and orchestrator can no
+# longer be selected from the config surface (the persisted-config whitelist
+# drops `tool_loop_mode` / `orchestration_mode`), and their remaining
+# protocol/schema drift is deliberately NOT being fixed for now. The code stays
+# in place (unit tests drive the executors directly), but the engine refuses to
+# dispatch them so no half-fixed dormant path can produce production schedules.
+FROZEN_RUNTIME_MODES = ("tool_loop", "orchestrator")
+
 
 def run_schedule(ctx: Context, input_data: dict, emit_progress_fn=None, stop_event=None):
     payload = dict(input_data or {})
@@ -62,6 +70,26 @@ def run_schedule(ctx: Context, input_data: dict, emit_progress_fn=None, stop_eve
         config = load_config(ctx)
         execution_profile = resolve_execution_profile(payload, config)
         execution_plan = build_execution_plan(execution_profile)
+
+        if execution_plan.runtime_mode in FROZEN_RUNTIME_MODES:
+            _logger = getattr(ctx, "logger", None)
+            if _logger is not None:
+                _logger.warn(
+                    "Engine",
+                    "Rejected frozen runtime mode.",
+                    trace_id=getattr(ctx, "trace_id", ""),
+                    request_source=getattr(ctx, "request_source", ""),
+                    runtime_mode=execution_plan.runtime_mode,
+                )
+            return {
+                "status": "error",
+                "code": "mode_frozen",
+                "message": (
+                    f"执行模式 '{execution_plan.runtime_mode}' 已冻结（暂停维护）。"
+                    "请在配置中选择 single_pass / multi_agent / offline。"
+                ),
+                "trace_id": str(payload.get("trace_id", "")).strip() if isinstance(payload, dict) else "",
+            }
 
         if execution_plan.runtime_mode.startswith("multi_agent"):
             result = run_multi_agent_schedule(ctx, payload, execution_plan, emit_progress_fn, stop_event)

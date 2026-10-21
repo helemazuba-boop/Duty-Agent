@@ -966,6 +966,61 @@ class AbsenceUntilDateTests(unittest.TestCase):
         self.assertEqual(result, [{"id": 1001, "from": "2026-10-21", "to": "2026-10-25"}])
 
 
+class FrozenModeTests(unittest.TestCase):
+    """tool_loop / orchestrator 已冻结：引擎必须拒绝调度，而不是跑半成品代码。"""
+
+    def test_engine_refuses_frozen_modes(self):
+        import engine
+        from execution_profiles import ExecutionPlan, ExecutionProfile
+        from unittest.mock import patch
+
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(lambda: __import__("shutil").rmtree(tmp, ignore_errors=True))
+        ctx = make_ctx(Path(tmp))
+
+        for frozen_mode in ("tool_loop", "orchestrator"):
+            profile = ExecutionProfile(
+                model_profile="cloud",
+                orchestration_mode=frozen_mode,
+                provider_hint="",
+                multi_agent_ready=False,
+                edge_ready=False,
+                multi_agent_execution_mode="auto",
+                single_pass_strategy="cloud_standard",
+            )
+            plan = ExecutionPlan(
+                profile=profile,
+                runtime_mode=frozen_mode,
+                prompt_pack_strategy="ini_tool",
+                tasks=(),
+                notes=(),
+            )
+            with patch.object(engine, "build_execution_plan", return_value=plan):
+                result = engine.run_schedule(ctx, {"instruction": "x"})
+            self.assertEqual(result["status"], "error")
+            self.assertEqual(result["code"], "mode_frozen")
+
+    def test_frozen_modes_are_not_selectable_from_config(self):
+        """config 白名单丢弃 tool_loop_mode / orchestration_mode。"""
+        from state_ops import load_config
+
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(lambda: __import__("shutil").rmtree(tmp, ignore_errors=True))
+        ctx = make_ctx(Path(tmp))
+        save_json_atomic(
+            ctx.paths["config"],
+            {**BASE_CONFIG, "tool_loop_mode": "force", "orchestration_mode": "tool_loop"},
+        )
+        config = load_config(ctx)
+        # 持久化白名单丢弃这两个键；运行时投影即使派生 orchestration_mode，
+        # 也只会落在可选择的模式上（冻结模式不可达）。
+        self.assertNotIn("tool_loop_mode", config)
+        self.assertNotIn(config.get("orchestration_mode"), ("tool_loop", "orchestrator"))
+        from engine import FROZEN_RUNTIME_MODES
+
+        self.assertNotIn(config.get("orchestration_mode"), FROZEN_RUNTIME_MODES)
+
+
 class LedgerIdempotenceTests(unittest.TestCase):
     """账本幂等：重复 ingest 同一份排班不得二次扣债/二次烧积分。"""
 

@@ -1,6 +1,17 @@
 """
 Tool-loop executor — INI-based polling loop.
 
+*** FROZEN (2026-10-22 audit decision) ***
+This mode can no longer be selected from the config surface (the persisted-config
+whitelist drops `tool_loop_mode`), and `engine.run_schedule` refuses to dispatch
+it. Known-unfixed gaps (see the 2026-10-22 validation audit): the persisted pool
+still uses the `area_ids` (integer ID) schema instead of `area_assignments`
+(names), so consumers that read names see an empty schedule; `[[#name-drop]]`
+batch markers, alias-vs-area-name `@keep/@replace` matching, and non-ASCII batch
+names are all still broken; the in-loop ledger simulation diverges from
+`postprocess`. Fix these before unfreezing. Unit tests drive this module
+directly and must keep passing.
+
 Protocol:
   1. Python builds the system prompt (with or without @command hints, controlled by hints_on).
   2. LLM outputs INI text (optionally via tool_calls).
