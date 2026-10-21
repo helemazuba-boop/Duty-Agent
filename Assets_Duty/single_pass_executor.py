@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from typing import Any, Dict, List
 
 from absence_ops import (
@@ -19,6 +19,7 @@ from llm_transport import call_llm_raw, parse_schedule_completion
 from postprocess import (
     estimate_pointer_progress,
     merge_schedule_pool,
+    normalize_apply_mode,
     normalize_multi_area_schedule_ids,
     reconcile_credit_list,
     recover_missing_debts,
@@ -29,7 +30,6 @@ from postprocess import (
 from prompt_gateway import build_single_pass_prompt_messages
 from state_ops import (
     Context,
-    DEFAULT_SINGLE_AREA_NAME,
     anonymize_instruction,
     clone_count_map,
     get_configured_area_names,
@@ -142,6 +142,7 @@ def build_single_pass_request(
     input_data: dict,
     execution_plan: ExecutionPlan,
     emit_progress_fn=None,
+    stop_event=None,
 ) -> tuple[list[dict], dict]:
     """Build the single_pass prompt (messages) plus a small, serializable resume
     context, without calling any model.
@@ -209,7 +210,13 @@ def build_single_pass_request(
     # Configured areas/headcounts now reach the prompt (previously hardcoded
     # empty, leaving the area template to the model's guess); the settle half
     # re-derives the same values from config.
-    area_names = get_configured_area_names(ctx.config) or [DEFAULT_SINGLE_AREA_NAME]
+    # NOTE: when no areas are configured we deliberately pass an EMPTY list —
+    # injecting DEFAULT_SINGLE_AREA_NAME here would make the backend invent a
+    # "值日" area the model never declared, then auto-fill it (audit P0-07).
+    # Unconfigured = dynamic mode: the model's own [areas] declarations are the
+    # real area set. The default name remains reserved for the legacy CSV
+    # fallback parser and the offline no-history generator.
+    area_names = get_configured_area_names(ctx.config)
     area_per_day_counts = get_configured_area_per_day_counts(ctx.config, area_names)
     default_days = int(ctx.config.get("default_days", 7) or 7)
     window_end = start_date + timedelta(days=max(1, default_days) - 1)
@@ -250,6 +257,7 @@ def build_single_pass_request(
     resume_context = {
         "mode": execution_plan.runtime_mode,
         "start_date": start_date.isoformat(),
+        "apply_mode": normalize_apply_mode(input_data.get("apply_mode")),
         "trace_id": trace_id,
         "prompt_metadata": prompt_metadata,
         "execution_plan_meta": execution_plan.to_metadata(),
@@ -286,7 +294,9 @@ def apply_single_pass_completion(
     state_data = load_state(ctx.paths["state"])
 
     config = load_config(ctx)
-    area_names = get_configured_area_names(config) or [DEFAULT_SINGLE_AREA_NAME]
+    # Same policy as the prompt half: no configured areas -> dynamic mode, the
+    # model's declared areas are authoritative (no phantom default area).
+    area_names = get_configured_area_names(config)
     area_per_day_counts = get_configured_area_per_day_counts(config, area_names)
 
     debt_counts = clone_count_map(state_data.get("debt_counts", {}), set(all_ids))
@@ -344,6 +354,8 @@ def apply_single_pass_completion(
         raise ValueError("No valid schedule entries.")
 
     state_delta = dict(llm_result.get("state_delta") or {})
+    apply_mode = normalize_apply_mode(resume_context.get("apply_mode"))
+    run_start_date = try_parse_iso_date(start_date_value) or date.today()
     llm_pointer_after = state_delta.get("pointer_after")
     llm_consumed_credit_ids = state_delta.get("consumed_credit_ids")
 
@@ -387,7 +399,9 @@ def apply_single_pass_completion(
             next_state["credit_counts"],
         )
         next_state["last_pointer"] = int(pointer_progress.get("pointer_after", next_state.get("last_pointer", 0)) or 0)
-        next_state["schedule_pool"] = merge_schedule_pool(restored)
+        next_state["schedule_pool"] = merge_schedule_pool(
+            current_state, restored, apply_mode, run_start_date
+        )
         prune_operational_state(next_state)
         return next_state
 
@@ -425,6 +439,7 @@ def run_single_pass_schedule(
         input_data,
         execution_plan,
         emit_progress_fn=emit_progress_fn,
+        stop_event=stop_event,
     )
 
     content = call_llm_raw(

@@ -76,6 +76,20 @@ class StreamUnsupportedError(RuntimeError):
     pass
 
 
+class ScheduleParseError(ValueError, RuntimeError):
+    """A completion could not be parsed into the V2 schedule protocol.
+
+    Deliberately inherits from BOTH ``ValueError`` and ``RuntimeError``: the
+    service layer (``command_service``) catches ``(FileNotFoundError,
+    ValueError)`` to turn user-fixable input into an ``{"status": "error"}``
+    result instead of an HTTP 500, while the CLI catches
+    ``(RuntimeError, OSError, ValueError)``. Inheriting from both keeps every
+    existing caller correct without touching their except clauses, and makes
+    "the model emitted something we cannot parse" a first-class, retryable
+    error class rather than an incidental exception type.
+    """
+
+
 def _is_loopback_host(host: str) -> bool:
     normalized = (host or "").strip().lower()
     return normalized in {"localhost", "127.0.0.1", "::1", "0.0.0.0"}
@@ -882,7 +896,7 @@ def parse_schedule_completion(
                 "schedule": _parse_schedule_csv(csv_text),
                 "state_delta": {"debt_counts": {}, "credit_counts": {}},
             }, content
-        raise RuntimeError(f"Parse failed: {kv_error}") from kv_error
+        raise ScheduleParseError(f"Parse failed: {kv_error}") from kv_error
 
 
 def call_llm(

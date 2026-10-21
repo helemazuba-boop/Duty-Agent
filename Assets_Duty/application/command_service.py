@@ -89,6 +89,7 @@ class CommandService:
         payload: Dict[str, Any],
         trace_id: str | None = None,
         request_source: str = "cli",
+        stop_event=None,
     ) -> Dict[str, Any]:
         """Build a single_pass schedule prompt for external-AI delegation.
 
@@ -140,7 +141,9 @@ class CommandService:
             }
 
         try:
-            messages, resume_context = build_single_pass_request(context, request_payload, plan)
+            messages, resume_context = build_single_pass_request(
+                context, request_payload, plan, stop_event=stop_event
+            )
         except (FileNotFoundError, ValueError) as ex:
             # User-data conditions (missing roster.csv, malformed instruction
             # input) must surface as a regular error result, not as a 500: the
@@ -406,7 +409,26 @@ class CommandService:
             trace_id=effective_trace_id,
             request_source=request_source,
         )
-        result = save_schedule_entry_edit(context, schedule_payload)
+        try:
+            result = save_schedule_entry_edit(context, schedule_payload)
+        except (FileNotFoundError, ValueError) as ex:
+            # Bad user input (unparsable date, entry not found, ...) is
+            # caller-fixable: report a regular error result instead of an HTTP
+            # 500. The bridge, CLI and UI all render {"status": "error", ...}
+            # payloads verbatim (the adjustment endpoints already map these to
+            # 400 — this keeps schedule-entry on the same contract).
+            self._runtime.logger.warn(
+                "CommandService",
+                "Rejected save_schedule_entry on user data.",
+                trace_id=effective_trace_id,
+                request_source=request_source,
+                error_message=str(ex),
+            )
+            return {
+                "status": "error",
+                "message": str(ex),
+                "trace_id": effective_trace_id,
+            }
         try:
             roster = load_roster_entries(context.paths["roster"])
         except (FileNotFoundError, ValueError):

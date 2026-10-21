@@ -14,6 +14,7 @@ from absence_ops import (
 )
 from execution_profiles import ExecutionPlan
 from llm_transport import call_llm_json
+from postprocess import normalize_apply_mode
 from prompt_gateway import build_agent_prompt
 from state_ops import (
     Context,
@@ -445,6 +446,7 @@ def run_multi_agent_schedule(
         barrier2,
         final_schedule,
         stop_event=stop_event,
+        apply_mode=normalize_apply_mode(input_data.get("apply_mode")),
     )
     _emit_progress(
         emit_progress_fn,

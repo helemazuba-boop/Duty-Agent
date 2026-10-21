@@ -119,6 +119,16 @@ def build_prompt_messages(
             "with exactly the required headcount per area per day. "
             "Declare an alias for every required area in [areas] first."
         )
+    else:
+        # No areas configured = dynamic mode: the model's own [areas]
+        # declarations are the real area set. It must still emit the section
+        # (the V2 INI protocol requires it), and the backend will neither
+        # invent nor auto-fill an area the model did not declare.
+        methods_list.append(
+            "Area requirement: no areas are pre-configured. Declare the areas "
+            "this schedule needs in [areas] (at least one alias) and cover the "
+            "ones you declared on every scheduled date."
+        )
 
     if is_module_active("debt", instruction, bool(debt_counts)):
         params_list.append(PROMPTS["param_debt"].format(debt_counts=_format_count_map(debt_counts)))

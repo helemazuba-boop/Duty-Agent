@@ -25,6 +25,7 @@ def finalize_multi_agent_run(
     barrier2: Dict[str, Any],
     assembled_schedule: List[Dict[str, Any]],
     stop_event=None,
+    apply_mode: str = "append",
 ) -> Dict[str, Any]:
     validate_final_schedule(assembled_schedule, barrier2)
 
@@ -54,7 +55,9 @@ def finalize_multi_agent_run(
             state_data["credit_counts"],
         )
         state_data["last_pointer"] = barrier2["pointer_after"]
-        state_data["schedule_pool"] = merge_schedule_pool(restored)
+        state_data["schedule_pool"] = merge_schedule_pool(
+            state_data, restored, apply_mode, snapshot.start_date
+        )
         prune_operational_state(state_data)
         return state_data
 

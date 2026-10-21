@@ -232,11 +232,15 @@ class TestOfflineEndToEnd(unittest.TestCase):
             self.assertEqual(result["status"], "success")
 
             pool = load_state(context.paths["state"])["schedule_pool"]
-            self.assertEqual(len(pool), 5)
+            # 历史条目必须保留（merge 默认 append）：1 条历史 + 5 天新增
+            self.assertEqual(len(pool), 6)
+            self.assertEqual(pool[0]["date"], "2026-04-21")
             for entry in pool:
                 assignments = entry["area_assignments"]
-                self.assertEqual(len(assignments.get("教室", [])), 2)
-                self.assertEqual(len(assignments.get("走廊", [])), 1)
+                # 只有学习到的区域结构；后端不得注入幻影「值日」（审计 P0-07）
+                self.assertEqual(set(assignments), {"教室", "走廊"})
+                self.assertEqual(len(assignments["教室"]), 2)
+                self.assertEqual(len(assignments["走廊"]), 1)
 
     def test_offline_run_errors_when_no_active_roster(self):
         with tempfile.TemporaryDirectory() as temp_dir:

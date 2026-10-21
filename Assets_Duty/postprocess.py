@@ -7,6 +7,19 @@ from state_ops import clone_count_map, decrement_count_map_entry, increment_coun
 
 DAY_NAMES = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 
+# Schedule-pool application policy (see merge_schedule_pool). "append" is the
+# safe default: a rerun only overrides the dates it actually covers, so
+# history and manual edits outside the run's window always survive.
+SCHEDULE_APPLY_MODES = ("append", "replace_all", "replace_future", "replace_overlap")
+DEFAULT_SCHEDULE_APPLY_MODE = "append"
+
+
+def normalize_apply_mode(raw_value) -> str:
+    """Normalize a caller-supplied apply mode; unknown values fall back to the
+    safe default (``append``)."""
+    mode = str(raw_value or "").strip().lower()
+    return mode if mode in SCHEDULE_APPLY_MODES else DEFAULT_SCHEDULE_APPLY_MODE
+
 
 def collect_scheduled_unique_ids(normalized_schedule: List[dict]) -> List[int]:
     scheduled: List[int] = []
@@ -258,9 +271,64 @@ def restore_schedule(
     return restored
 
 
-def merge_schedule_pool(restored: List[dict]) -> List[dict]:
+def merge_schedule_pool(
+    state_data: dict,
+    restored: List[dict],
+    apply_mode: str = "append",
+    start_date: Optional[date] = None,
+) -> List[dict]:
+    """Merge a freshly restored schedule into the persisted pool.
+
+    ``apply_mode`` decides how much of the existing pool survives (ported
+    from ``origin/main``, where this policy existed before the standalone-client
+    bootstrap dropped it):
+
+    * ``append`` (default) — keep every existing entry; the new schedule only
+      overrides the dates it actually covers. Safe default: a partial rerun
+      must never drop history or manual edits outside its own window.
+    * ``replace_all`` — the new schedule becomes the entire pool.
+    * ``replace_future`` — keep entries strictly before ``start_date``.
+    * ``replace_overlap`` — keep entries outside ``[start_date, last new date]``.
+
+    Unknown/empty modes fall back to ``append``.
+    """
+    pool = [
+        entry
+        for entry in (state_data or {}).get("schedule_pool", [])
+        if isinstance(entry, dict)
+    ]
     restored = [entry for entry in restored if isinstance(entry, dict)]
-    return dedupe_pool_by_date(restored)
+    mode = str(apply_mode or "append").strip().lower()
+
+    if mode == "replace_all":
+        return dedupe_pool_by_date(restored)
+    if mode == "replace_future":
+        kept = [
+            entry
+            for entry in pool
+            if (parsed := try_parse_iso_date(entry.get("date"))) is None
+            or start_date is None
+            or parsed < start_date
+        ]
+        return dedupe_pool_by_date(kept + restored)
+    if mode == "replace_overlap":
+        dates = [
+            parsed
+            for entry in restored
+            if (parsed := try_parse_iso_date(entry.get("date"))) is not None
+        ]
+        if not dates or start_date is None:
+            return dedupe_pool_by_date(pool + restored)
+        end_date = max(dates)
+        kept = [
+            entry
+            for entry in pool
+            if (parsed := try_parse_iso_date(entry.get("date"))) is None
+            or parsed < start_date
+            or parsed > end_date
+        ]
+        return dedupe_pool_by_date(kept + restored)
+    return dedupe_pool_by_date(pool + restored)
 
 
 def dedupe_pool_by_date(entries):

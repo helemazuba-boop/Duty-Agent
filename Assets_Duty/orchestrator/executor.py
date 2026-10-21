@@ -240,7 +240,7 @@ def _orchestrator_direct(
     if exec_ctx is None:
         return {"status": "error", "message": "Direct mode ended without result.", "trace_id": orch_ctx.trace_id}
 
-    return _finalize(ctx, exec_ctx, orch_ctx, emit_progress_fn)
+    return _finalize(ctx, exec_ctx, orch_ctx, emit_progress_fn, stop_event)
 
 
 # ------------------------------------------------------------------------------
@@ -442,7 +442,7 @@ def _orchestrator_poll_loop(
     if exec_ctx is None:
         return {"status": "error", "message": "Poll loop ended without result.", "trace_id": orch_ctx.trace_id}
 
-    return _finalize(ctx, exec_ctx, orch_ctx, emit_progress_fn)
+    return _finalize(ctx, exec_ctx, orch_ctx, emit_progress_fn, stop_event)
 
 
 # ------------------------------------------------------------------------------
@@ -774,8 +774,53 @@ def _finalize(
     exec_ctx: ExecutionCtx,
     orch_ctx: OrchestratorContext,
     emit_progress_fn: Optional[Callable],
+    stop_event=None,
 ) -> Dict[str, Any]:
-    """将最终状态写入 state.json."""
+    """将最终状态写入 state.json.
+
+    完整性闸门（审计 P0-03）：``@finalize`` 只是模型的提交请求，不是完成证明；
+    跑满 max_rounds 更不是。只要还有未填槽位或模型未确认完成，就不写 state、
+    返回 ``partial``——不完整结果不得提交为正式排班。
+    """
+    incomplete_slots = list(getattr(exec_ctx, "remaining", None) or [])
+    finalized = bool(exec_ctx.finalized)
+    if incomplete_slots or not finalized:
+        _emit_progress(emit_progress_fn, "orchestrator_incomplete",
+                       "Schedule incomplete; state not committed.",
+                       {"remaining": len(incomplete_slots), "finalized": finalized})
+        return {
+            "status": "partial",
+            "message": (
+                "排班未完成，未写入正式排班："
+                + (
+                    f"还有 {len(incomplete_slots)} 个槽位未填满"
+                    if incomplete_slots
+                    else "模型未确认完成（缺少 @finalize）"
+                )
+                + "。请补充后重试。"
+            ),
+            "schedule_entries": [],
+            "partial_schedule_entries": [dict(entry) for entry in exec_ctx.schedule_pool],
+            "remaining": [
+                {"date": unit.date_iso, "area": unit.area_name}
+                for unit in incomplete_slots
+            ],
+            "rejected": exec_ctx.rejected,
+            "invalid_cmds": exec_ctx.invalid_cmds,
+            "final_state": {
+                "debt_counts": dict(exec_ctx.debt_counts),
+                "credit_counts": dict(exec_ctx.credit_counts),
+                "last_pointer": exec_ctx.last_pointer,
+            },
+            "execution_plan": {"runtime_mode": "orchestrator"},
+            "orchestrator_meta": {
+                "rounds": exec_ctx.round_num,
+                "finalized": finalized,
+                "hints_on": orch_ctx.hints_on,
+            },
+            "trace_id": orch_ctx.trace_id,
+        }
+
     def _apply_state(current_state: Dict[str, Any]) -> Dict[str, Any]:
         state_data = dict(current_state)
         state_data["next_run_note"] = f"mode=orchestrator; slots={len(exec_ctx.schedule_pool)}; rounds={exec_ctx.round_num}"
@@ -790,7 +835,7 @@ def _finalize(
         prune_operational_state(state_data)
         return state_data
 
-    state_data = update_state(ctx.paths["state"], _apply_state, stop_event=None)
+    state_data = update_state(ctx.paths["state"], _apply_state, stop_event=stop_event)
 
     _emit_progress(emit_progress_fn, "orchestrator_done", "State written.", {
         "schedule_entries": len(exec_ctx.schedule_pool),

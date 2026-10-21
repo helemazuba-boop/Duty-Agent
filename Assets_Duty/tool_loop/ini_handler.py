@@ -507,6 +507,17 @@ def _process_schedule_line(
             seen_ids.add(pid)
             parsed_ids.append(pid)
 
+        if not parsed_ids:
+            # An empty assignment ("A:") must not create an entry: an entry with
+            # no person IDs used to make the date look "covered" while nobody
+            # was actually scheduled (audit P0-03).
+            rejections.append((
+                slot_key,
+                'EMPTY_SLOT',
+                f'no person IDs assigned to {area_name} on {date_iso}',
+            ))
+            return
+
         batch.slots.append(ScheduleSlot(
             date_iso=date_iso,
             area_name=area_name,
@@ -702,28 +713,85 @@ def compute_remaining_units(
     accepted: List[dict],
     alias_map: Optional[Dict[str, str]] = None,
 ) -> List[ScheduleUnit]:
-    """
-    Subtract accepted entries from required slots to get remaining.
-    required_slots: all (date, area) slots that need to be filled.
-    accepted: entries already in the pool [{date, area_ids}, ...].
-    alias_map: unused in the current implementation (reserved for future).
-    Returns the set of unfilled slots.
-    """
-    # A (date, area) unit is filled when accepted contains that date.
-    # Area names in required_slots reflect the initial area set (e.g. DEFAULT_SINGLE_AREA_NAME),
-    # but the LLM may declare different [areas] in its INI. Since we cannot know
-    # the mapping at this stage, we consider a date "filled" if accepted has any area for it.
-    filled_dates: Set[str] = set()
-    for entry in accepted:
-        d = entry.get("date", "")
-        if d:
-            filled_dates.add(d)
+    """Subtract accepted assignments from required slots to get remaining.
 
-    return [
-        unit
-        for unit in required_slots
-        if unit.date_iso not in filled_dates
-    ]
+    A required (date, area) seat counts as filled only when the accepted
+    entries for that date assign at least the required headcount **to that
+    area**. Date-level "any entry exists" is NOT completion: a date where the
+    model skipped an area, or under-staffed it, still has remaining seats.
+
+    Fallback: when the model renamed every area for a date (none of the
+    required area names appear in the accepted set) there is no reliable
+    alias→area mapping at this stage, so that date falls back to comparing
+    total headcount. Dates with no accepted entry at all stay fully remaining.
+    """
+    # date -> area -> set of distinct assigned person IDs.
+    # A SET (not a count) so re-submitted rounds — which append the same
+    # entries to schedule_pool again — cannot inflate the headcount.
+    assigned: Dict[str, Dict[str, set]] = {}
+    accepted_areas: Dict[str, set] = {}
+    for entry in accepted or []:
+        if not isinstance(entry, dict):
+            continue
+        day = str(entry.get("date", "") or "")
+        if not day:
+            continue
+        area_ids = entry.get("area_ids") or {}
+        if not isinstance(area_ids, dict):
+            continue
+        per_area = assigned.setdefault(day, {})
+        names = accepted_areas.setdefault(day, set())
+        for area_name, ids in area_ids.items():
+            name = str(area_name or "").strip()
+            if not name:
+                continue
+            bucket = per_area.setdefault(name, set())
+            if isinstance(ids, (list, tuple, set)):
+                bucket.update(ids)
+            names.add(name)
+
+    # date -> area -> required headcount (one ScheduleUnit per seat)
+    required_counts: Dict[str, Dict[str, int]] = {}
+    for unit in required_slots or []:
+        required_counts.setdefault(unit.date_iso, {})
+        required_counts[unit.date_iso][unit.area_name] = (
+            required_counts[unit.date_iso].get(unit.area_name, 0) + 1
+        )
+
+    # (date, area) -> seats satisfied
+    satisfied: Dict[tuple, int] = {}
+    for day, areas in required_counts.items():
+        names_for_day = accepted_areas.get(day, set())
+        if set(areas) & names_for_day:
+            # At least one required area is present: compare per area so a
+            # missing/under-staffed area keeps its seats remaining.
+            for area, need in areas.items():
+                satisfied[(day, area)] = min(
+                    len(assigned.get(day, {}).get(area, ())), need
+                )
+        elif names_for_day:
+            # Model renamed every area for this date: no reliable mapping,
+            # fall back to the date's total headcount.
+            filled = min(
+                sum(len(ids) for ids in assigned.get(day, {}).values()),
+                sum(areas.values()),
+            )
+            for area, need in areas.items():
+                take = min(filled, need)
+                satisfied[(day, area)] = take
+                filled -= take
+        # else: nothing accepted for this date -> every seat remains
+
+    remaining: List[ScheduleUnit] = []
+    used: Dict[tuple, int] = {}
+    for unit in required_slots or []:
+        key = (unit.date_iso, unit.area_name)
+        cap = satisfied.get(key, 0)
+        if used.get(key, 0) < cap:
+            used[key] = used.get(key, 0) + 1
+            continue
+        remaining.append(unit)
+    return remaining
 
 
 # ------------------------------------------------------------------------------

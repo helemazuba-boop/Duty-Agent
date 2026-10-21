@@ -35,6 +35,7 @@ from llm_transport import (
     _normalize_structured_output,
     _extract_fenced_block,
 )
+from postprocess import dedupe_pool_by_date
 from state_ops import (
     Context,
     DEFAULT_SINGLE_AREA_NAME,
@@ -441,7 +442,9 @@ def _write_state(
     existing["debt_counts"] = dict(ctx_exec.debt_counts)
     existing["credit_counts"] = dict(ctx_exec.credit_counts)
     existing["last_pointer"] = ctx_exec.last_pointer
-    existing["schedule_pool"] = list(ctx_exec.schedule_pool)
+    # Dedupe by date (last wins): a multi-round run re-appends the same entries
+    # every round, and the persisted pool must never carry duplicate dates.
+    existing["schedule_pool"] = dedupe_pool_by_date(ctx_exec.schedule_pool)
     prune_operational_state(existing)
     save_json_atomic(state_path, existing)
 
@@ -831,10 +834,55 @@ def run_tool_loop_schedule(
                 "Ensure the LLM calls fill_schedule in its response."
             )
 
+        dates_sorted = sorted(seen_dates)
+        incomplete_slots = list(getattr(ctx_exec, "remaining", None) or [])
+        finalized = bool(ctx_exec.finalized)
+
+        if incomplete_slots or not finalized:
+            # 不完整结果不得提交为正式排班：``@finalize`` 只是模型的提交请求、
+            # 不是完成证明；跑满 max_rounds 更不是。state.json 保持原样，
+            # 调用方收到 partial 后可以补充重试（审计 P0-03）。
+            _emit_progress(emit_progress_fn, "tool_loop_incomplete",
+                           "Schedule incomplete; state not committed.",
+                           {"remaining": len(incomplete_slots), "finalized": finalized})
+            return {
+                "status": "partial",
+                "message": (
+                    "排班未完成，未写入正式排班："
+                    + (
+                        f"还有 {len(incomplete_slots)} 个槽位未填满"
+                        if incomplete_slots
+                        else "模型未确认完成（缺少 @finalize）"
+                    )
+                    + "。请补充后重试。"
+                ),
+                "schedule_entries": [],
+                "partial_schedule_entries": [dict(entry) for entry in ctx_exec.schedule_pool],
+                "remaining": [
+                    {"date": unit.date_iso, "area": unit.area_name}
+                    for unit in incomplete_slots
+                ],
+                "invalid_cmds": ctx_exec.invalid_cmds,
+                "rejected": ctx_exec.rejected,
+                "final_state": {
+                    "debt_counts": dict(ctx_exec.debt_counts),
+                    "credit_counts": dict(ctx_exec.credit_counts),
+                    "last_pointer": ctx_exec.last_pointer,
+                },
+                "execution_plan": execution_plan.to_metadata(),
+                "tool_loop_meta": {
+                    "rounds": round_num,
+                    "tool_calls": tool_call_count,
+                    "dates_covered": dates_sorted,
+                    "finalized": finalized,
+                    "hints_on": flags.hints_on,
+                },
+                "trace_id": trace_id,
+            }
+
         # Write authoritative state to disk
         _write_state(ctx, ctx_exec, trace_id)
 
-        dates_sorted = sorted(seen_dates)
         _emit_progress(emit_progress_fn, "tool_loop_done", "State written.", {
             "tool_calls": tool_call_count,
             "rounds": round_num,

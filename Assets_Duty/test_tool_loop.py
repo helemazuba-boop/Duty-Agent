@@ -495,7 +495,7 @@ A = 教室
 
 [schedule]
 04-06 = A:1001 1002
-04-07 = A:1003
+04-07 = A:1002 1003
 
 @finalize
 """
@@ -546,8 +546,8 @@ A = 教室
 A = 教室
 
 [schedule]
-04-06 = A:1001
-04-07 = A:1002
+04-06 = A:1001 1002
+04-07 = A:1002 1003
 
 @keep(#batch1 04-06 A)
 @finalize
@@ -666,14 +666,14 @@ class TestToolLoopProtocolE2E(unittest.TestCase):
 A = 教室
 
 [schedule]
-04-06 = A:1001
+04-06 = A:1001 1002
 """
         round2_ini = """[[#b2]]
 [areas]
 A = 教室
 
 [schedule]
-04-07 = A:1002
+04-07 = A:1002 1003
 
 @finalize
 """
