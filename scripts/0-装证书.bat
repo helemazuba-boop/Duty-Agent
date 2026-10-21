@@ -18,8 +18,12 @@ rem  NOTE: the admin check and the argument guard must live at TOP LEVEL.
 rem  Inside a "call :Label" subroutine, %1 / %* are the subroutine's own
 rem  arguments (empty here), so a guard written there never fires.
 rem
-rem  The bundle directory is passed explicitly (-Root "%~dp0") so this works no
-rem  matter where the folder was copied to.
+rem  NOTE: do NOT pass the directory as -Root. %~dp0 ends with a backslash, so
+rem  -Root "%ROOT%" reaches PowerShell as -Root "D:\...\" - the \" is parsed as
+rem  an escaped quote and the argument silently gains a trailing quote, which
+rem  then makes every Test-Path fail with "illegal characters in path". The
+rem  .ps1 resolves the bundle from its own $PSScriptRoot instead, so there is
+rem  nothing to pass.
 rem ---------------------------------------------------------------------------
 
 powershell.exe -NoProfile -Command "if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) { exit 1 }" >nul 2>&1
@@ -27,7 +31,7 @@ rem "errorlevel 1" is true when errorlevel >= 1, i.e. the probe failed, i.e.
 rem we are NOT an administrator yet - that is the only case that needs elevating.
 if errorlevel 1 goto :RunAsAdmin
 
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%ROOT%Import-DevCertificate.ps1" -Root "%ROOT%"
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%ROOT%Import-DevCertificate.ps1"
 set "RC=%ERRORLEVEL%"
 
 echo.

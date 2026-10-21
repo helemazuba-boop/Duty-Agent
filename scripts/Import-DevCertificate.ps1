@@ -32,6 +32,20 @@ $ErrorActionPreference = 'Stop'
 if (-not $Root) { $Root = $PSScriptRoot }
 if (-not $CertPath) { $CertPath = Join-Path $Root 'devcert.cer' }
 
+# 防御：调用方从命令行传目录时，反斜杠+引号的组合会把一个引号留在参数里
+# （0-装证书.bat 早期版本就踩过：-Root "%ROOT%" 里 %~dp0 带尾部反斜杠，
+# PowerShell 把 \" 当转义引号，路径末尾多一个 "，之后每个 Test-Path 都报
+# "路径中具有非法字符"）。这里统一剥掉包裹引号和尾部 separators。
+function Normalize-BundlePath {
+    param([string]$Value)
+    if (-not $Value) { return $Value }
+    return $Value.Trim().Trim('"', "'").TrimEnd('\', '/')
+}
+$Root = Normalize-BundlePath $Root
+if (-not $CertPath -or $CertPath -eq (Join-Path $Root 'devcert.cer')) {
+    $CertPath = Join-Path $Root 'devcert.cer'
+}
+
 function Resolve-CertFile {
     param([string]$Explicit, [string]$BundleRoot)
     if ($Explicit) {
