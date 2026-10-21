@@ -12,11 +12,12 @@
 
 | 文件 | 说明 |
 |---|---|
-| `<Name>_<Version>_x64.msix` | 安装包（约 107 MB，已用开发证书签名） |
+| `<Name>_<Version>_x64.msix` | 安装包（约 109 MB，已用开发证书签名） |
 | `devcert.cer` | 开发证书**公钥**（subject 必须等于清单 `Identity.Publisher`） |
 | `build-info.json` | 本次构建的 Name / Publisher / Version / 证书 subject 与指纹 / 构建时间 |
 | `Install-MsixForTesting.ps1` | 导入证书 + 安装（需管理员） |
 | `Uninstall-MsixForTesting.ps1` | 卸载 + 清理自启残留（需管理员） |
+| `bridge\` | ClassIsland 桥接插件（9 个文件，约 750 KB）。**只有**要验桥接联动时才用，见第 4 节 |
 | `msix-test-checklist.md` | 本文件 |
 
 > **不要**把 `devcert.pfx`（带私钥，口令是 winapp 默认的 `password`）发给任何人。
@@ -145,9 +146,52 @@ Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' |
 
 ## 4. 可选：桥接联动（需要 ClassIsland）
 
-- [ ] 装桥接插件后，ClassIsland 能识别到 Duty-Agent 在线
-- [ ] 触发一次排班，ClassIsland 侧收到通知
-- [ ] 客户端与 ClassIsland 读到的 `.duty-agent-meta.json` 是**同一个文件**（比对 mtime / md5）
+> 客户端包内自带一份桥接（`<安装目录>\bridge\`），客户端界面的
+> **"安装 ClassIsland 插件"** 就是把它拷进 `<ClassIsland>\data\Plugins\duty-agent-bridge\`。
+> 先试按钮；按钮报"未找到随包的桥接插件目录"或"无法定位 ClassIsland 插件目录"时，
+> 用手工方式。
+
+### 4.1 安装
+
+**方式 A（推荐）**：客户端界面点"安装 ClassIsland 插件" → 重启 ClassIsland。
+
+**方式 B（手工）**：把测试包里的 `bridge\` 整个目录拷过去：
+
+```powershell
+# ClassIsland 便携版就是它的 data 目录；装版通常在 %LOCALAPPDATA%\ClassIsland
+$target = "<ClassIsland>\data\Plugins\duty-agent-bridge"
+New-Item -ItemType Directory -Force -Path $target | Out-Null
+Copy-Item -Path ".\bridge\*" -Destination $target -Recurse -Force
+```
+
+拷完重启 ClassIsland，插件列表里应出现「Duty-Agent 桥接」。
+
+> ⚠️ **别用** `Duty-Agent-ClassIsland-Bridge\cipx\DutyAgentBridge.cipx`——那是
+> 2026-09-12 的旧构建（DLL 136 KB，当前 166 KB），装上会是落后多代的插件。
+
+### 4.2 确认加载的是这一份
+
+插件 `manifest.yml` 里 version 一直是 `0.50.0`，光看版本号分不出新旧。**比哈希**：
+
+```powershell
+(Get-FileHash "<ClassIsland>\data\Plugins\duty-agent-bridge\DutyAgentBridge.dll" -Algorithm MD5).Hash
+(Get-FileHash ".\bridge\DutyAgentBridge.dll" -Algorithm MD5).Hash   # 应与上面一致
+```
+
+### 4.3 验收项
+
+- [ ] ClassIsland 插件列表里能看到「Duty-Agent 桥接」，且无加载错误
+- [ ] 插件能识别到 Duty-Agent 在线（状态不是"未连接"）
+- [ ] 触发一次排班，ClassIsland 侧收到通知（`schedule_completed`）
+- [ ] 客户端与 ClassIsland 读到的 `.duty-agent-meta.json` 是**同一个文件**
+      （比对 mtime / MD5）——这条是包身份下最容易出问题的：客户端在包内跑，
+      桥接在 ClassIsland 进程里跑，两者必须落到同一个真实路径
+- [ ] 若装了桌面组件「值日人员」，显示的人员与客户端一致
+
+> 客户端启动时会打印 `[INFO] 桥接 meta 已写入 N 个路径：...`（这是客户端的日志）。
+> 把那段路径贴进回报里——桥接侧目前**不会**在界面或日志里回显它读的是哪个文件，
+> 出问题时只能靠这两边的路径对不上来定位。桥接自己的日志在
+> `<ClassIsland>\data\Config\Plugins\duty-agent-bridge\logs\`。
 
 ---
 

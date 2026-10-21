@@ -313,6 +313,22 @@ if ($ForStore) {
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot "Uninstall-MsixForTesting.ps1") -Destination $bundleDir -Force
     Copy-Item -LiteralPath (Join-Path $root "docs\msix-test-checklist.md") -Destination $bundleDir -Force
 
+    # 桥接插件再单独带一份。MSIX 布局里本来就有一份（<安装目录>\bridge\，
+    # 客户端界面的"安装 ClassIsland 插件"就是从那儿拷的），但便携版 ClassIsland、
+    # 或者客户端自动发现配置目录失败时，得能手工拷进 <ClassIsland>\data\Plugins\。
+    # 注意：不要用 Duty-Agent-ClassIsland-Bridge\cipx\*.cipx —— 那是 2026-09-12
+    # 的旧构建（DLL 136KB vs 当前 166KB），装了会得到一个落后多代的插件。
+    $bridgeSource = Join-Path $release.FullName "bridge"
+    if (Test-Path -LiteralPath $bridgeSource) {
+        $bridgeTarget = Join-Path $bundleDir "bridge"
+        if (Test-Path -LiteralPath $bridgeTarget) {
+            Move-Item -LiteralPath $bridgeTarget -Destination (Join-Path $trashDir "bundle-bridge.$stamp") -Force
+        }
+        Copy-Item -LiteralPath $bridgeSource -Destination $bundleDir -Recurse -Force
+    } else {
+        Write-Warning "发布产物里没有 bridge 目录（$bridgeSource），测试包将不含桥接插件。"
+    }
+
     $certSubject = $null
     $certThumbprint = $null
     if ((Test-Path -LiteralPath $devCer)) {
