@@ -53,6 +53,7 @@
 2. 管理员 PowerShell：
    ```powershell
    Set-ExecutionPolicy -Scope Process Bypass -Force
+   Get-ChildItem .\*.ps1 | Unblock-File      # 从 U 盘/共享拷来的文件带 MOTW，不解锁某些策略下会拒跑
    .\Install-MsixForTesting.ps1
    ```
 3. **期望输出**：系统版本 / WebView2 状态 → 证书 subject 与清单 Publisher 一致 → 证书导入 →
@@ -82,6 +83,9 @@
 - [ ] **托盘图标**出现在任务栏右下角
 - [ ] 窗口能拖拽移动、能缩放（自绘铬 + app-region 生效）
 - [ ] 再点一次开始菜单里的图标 → **不会开出第二个窗口**（单实例生效）
+- [ ] **首次启动**会拉起后端并弹首导向导（导入名单 → 选模型 → 试跑一次）
+- [ ] 点窗口的 × 会弹**关窗选择框**（驻留托盘 / 退出 / 取消，可勾"记住"）——
+      选「驻留托盘」后进程仍在，托盘右键「打开主界面」能叫回来
 
 ---
 
