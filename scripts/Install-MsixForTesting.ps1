@@ -8,7 +8,7 @@
         刻意**不硬编码**任何包身份：
           * Name / Publisher / Version 从 .msix 包内的 AppxManifest.xml 读；
           * 证书指纹从 devcert.cer 读；
-          * 安装结果用 Add-AppxPackage -PassThru 直接拿。
+          * 安装结果用 Get-AppxPackage 反查（Add-AppxPackage 无 -PassThru）。
         这样换 Publisher 或改 Name 之后，这个脚本不用改。
 
         装之前会校验证书 subject 是否等于清单 Identity.Publisher —— 不一致就报错，
@@ -196,9 +196,25 @@ if ($existing) {
     }
 }
 
-$addArgs = @{ Path = $msix; PassThru = $true }
+$addArgs = @{ Path = $msix }
 if ($forceUpdate) { $addArgs['ForceUpdateFromAnyVersion'] = $true }
-$pkg = Add-AppxPackage @addArgs
+# 不要用 -PassThru：Windows PowerShell 5.1 的 Add-AppxPackage 没有这个参数
+# （实测 (Get-Command Add-AppxPackage).Parameters 里没有 PassThru），传了会直接
+# ParameterBindingException 挂掉。装完用 Get-AppxPackage 查结果——和
+# .github/workflows/msix.yml 里的安装步骤保持同一条路（CI 一直在用的写法）。
+Add-AppxPackage @addArgs | Out-Null
+
+$pkg = $null
+foreach ($attempt in 1..3) {
+    $pkg = Get-AppxPackage -Name $identity.Name -ErrorAction SilentlyContinue |
+        Sort-Object Version -Descending |
+        Select-Object -First 1
+    if ($pkg) { break }
+    Start-Sleep -Milliseconds 800
+}
+if (-not $pkg) {
+    throw "安装命令已执行，但查不到包 $($identity.Name)。请重跑，或查看系统事件日志。"
+}
 Write-Host '      完成。' -ForegroundColor Green
 
 # ---------------------------------------------------------------- 3/3 结果

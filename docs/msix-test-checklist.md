@@ -10,13 +10,18 @@
 
 ## 0. 测试包里有什么
 
-**三个双击入口**，按序号走就行（会自己提权）：
+**四个双击入口**，按序号走：
 
-| 文件 | 干什么 |
-|---|---|
-| `1-安装.bat` | 导入开发证书 → 安装 MSIX → 打印 PFN / AUMID |
-| `2-启动.bat` | 按 AUMID 启动已装的客户端 |
-| `3-卸载.bat` | 卸载 + 清理自启残留 |
+| 文件 | 干什么 | 要管理员？ |
+|---|---|---|
+| `0-装证书.bat` | 把开发证书导入「本地计算机\受信任人」 | **是（唯一一次）** |
+| `1-安装.bat` | 安装 MSIX → 打印 PFN / AUMID | 会自动提权 |
+| `2-启动.bat` | 按 AUMID 启动已装的客户端 | 否 |
+| `3-卸载.bat` | 卸载 + 清理自启残留 | 会自动提权 |
+
+> `0-装证书.bat` 是**唯一**需要管理员的步骤。信任证书之后，装包本身不再需要管理员：
+> 直接**双击 `.msix`** 走 App Installer 窗口点「安装」即可（见 1.1）。
+> 对"测试员没有管理员权限"的机器，走的就是这条路。
 
 其余文件：
 
@@ -25,13 +30,14 @@
 | `<Name>_<Version>_x64.msix` | 安装包（约 109 MB，已用开发证书签名） |
 | `devcert.cer` | 开发证书**公钥**（subject 必须等于清单 `Identity.Publisher`） |
 | `build-info.json` | 本次构建的 Name / Publisher / Version / 证书 subject 与指纹 / 构建时间 |
-| `bridge\` | ClassIsland 桥接插件（9 个文件，约 750 KB）。**只有**要验桥接联动时才用，见第 4 节 |
+| `bridge\` | ClassIsland 桥接插件。**只有**要验桥接联动时才用，见第 4 节 |
+| `Import-DevCertificate.ps1` | `0-装证书.bat` 的实际实现 |
 | `Install-MsixForTesting.ps1` | `1-安装.bat` 的实际实现（也可直接 `.\Install-MsixForTesting.ps1`） |
 | `Uninstall-MsixForTesting.ps1` | `3-卸载.bat` 的实际实现 |
 | `msix-test-checklist.md` | 本文件 |
 
 > **不要**把 `devcert.pfx`（带私钥，口令是 winapp 默认的 `password`）发给任何人。
-> 侧载只需要 `.cer`。
+> 侧载只需要 `.cer`。`0-装证书.bat` 检测到带私钥的文件会直接拒绝并说明原因。
 
 ## 前置条件
 
@@ -59,27 +65,32 @@
 
 ## 1. 安装
 
+### 1.0 先信任证书（每台机器一次，需管理员）
+
 1. 把整个测试包目录拷到目标机（U 盘 / 局域网均可）。
-2. **双击 `1-安装.bat`**，UAC 弹窗点「是」。
+2. **双击 `0-装证书.bat`**，UAC 弹窗点「是」。
    也可以**右键 → 以管理员身份运行**（已提权时不会二次弹窗）。
-   它会自己提权、自己 `Bypass` 执行策略、自己解锁 MOTW，不需要开 PowerShell。
-3. **期望输出**：系统版本 / WebView2 状态 → 证书 subject 与清单 Publisher 一致 → 证书导入 →
-   `Add-AppxPackage` 成功 → 末尾打印 `Name` / `Version` / **PFN** / AUMID。
+3. **期望输出**：证书主题 / 指纹 / 有效期 → 导入「本地计算机\受信任人」→ 导入后复核通过。
 
-<details>
-<summary>手动跑（bat 出问题时的退路）</summary>
+这一步做一次就够，可反复运行（已信任同指纹证书会跳过）。证书过期或文件带私钥时会直接报错并说明怎么办。
 
-```powershell
-Set-ExecutionPolicy -Scope Process Bypass -Force
-Get-ChildItem .\*.ps1 | Unblock-File      # 从 U 盘/共享拷来的文件带 MOTW，不解锁某些策略下会拒跑
-.\Install-MsixForTesting.ps1
-```
+### 1.1 安装（二选一）
 
-</details>
+**方式 A：双击 `.msix`（推荐，不需要管理员）**
 
-> 安装脚本会**先把包内 `AppxManifest.xml` 读出来**，校验证书 subject 是否等于
-> `Identity.Publisher`。不一致会直接报错——这比 `Add-AppxPackage` 吐一个
-> `0x800B0109` 好排查得多。
+证书信任之后，直接双击 `<Name>_<Version>_x64.msix`，会弹出 **App Installer** 窗口，
+显示 Name / Publisher / Version，点「安装」即可。
+
+> Windows 10 1903+ / Windows 11 的 `.msix` 都关联到 App Installer。若双击没反应
+> （罕见），用方式 B。
+
+**方式 B：双击 `1-安装.bat`（走脚本，会自动提权）**
+
+它会自己 `Bypass` 执行策略、自己校验证书与清单 Publisher 是否一致、自己检测 WebView2，
+装完打印 `Name` / `Version` / **PFN** / AUMID。
+
+> 同版本重装时：方式 A 会被 App Installer 拒绝（它没有强制覆盖参数），
+> 方式 B 会自动加 `-ForceUpdateFromAnyVersion`。**要重装同版本就用方式 B，或先卸载。**
 
 ### 常见报错对照
 
@@ -124,6 +135,11 @@ Get-ChildItem .\*.ps1 | Unblock-File      # 从 U 盘/共享拷来的文件带 M
 - [ ] `包身份=是(MSIX)` 且 `PFN` 与安装脚本打印的一致
 
 > 这一行是历史上出过崩溃的地方（`ScopeName` 前缀顺序错误导致包身份下启动即崩）。
+>
+> 走"双击 .msix"方式安装时脚本不会打印 PFN，用这条命令自己取：
+> ```powershell
+> (Get-AppxPackage -Name "HelemaZuba.Duty-Agent").PackageFamilyName
+> ```
 
 ### 3.2 后端拉起与监管
 

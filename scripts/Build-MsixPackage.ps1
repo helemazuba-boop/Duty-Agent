@@ -309,15 +309,18 @@ if ($ForStore) {
     }
 
     Copy-Item -LiteralPath $expectedMsix -Destination $bundleDir -Force
+    Copy-Item -LiteralPath (Join-Path $PSScriptRoot "Import-DevCertificate.ps1") -Destination $bundleDir -Force
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot "Install-MsixForTesting.ps1") -Destination $bundleDir -Force
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot "Uninstall-MsixForTesting.ps1") -Destination $bundleDir -Force
     Copy-Item -LiteralPath (Join-Path $root "docs\msix-test-checklist.md") -Destination $bundleDir -Force
 
-    # 双击入口（安装 / 启动 / 卸载）。测试机上不该要求人先懂
+    # 双击入口（信任证书 / 安装 / 启动 / 卸载）。测试机上不该要求人先懂
     # Set-ExecutionPolicy 和 AUMID 长什么样；.ps1 留作实现，.bat 是壳。
-    # 三个 .bat 内容一律 ASCII（cmd 按 OEM 代码页渲染，中文会乱码），
+    # 四个 .bat 内容一律 ASCII + CRLF（cmd 按 OEM 代码页渲染，中文会乱码），
     # 中文提示全部由 .ps1 输出（它们带 UTF-8 BOM）。
-    foreach ($batName in @("1-安装.bat", "2-启动.bat", "3-卸载.bat")) {
+    # 0-装证书 是唯一需要管理员的步骤；信任之后 .msix 可以可以直接双击安装，
+    # 对"没有管理员权限的测试员"这条链路是必需的。
+    foreach ($batName in @("0-装证书.bat", "1-安装.bat", "2-启动.bat", "3-卸载.bat")) {
         $batSource = Join-Path $PSScriptRoot $batName
         if (Test-Path -LiteralPath $batSource) {
             Copy-Item -LiteralPath $batSource -Destination $bundleDir -Force
