@@ -32,7 +32,7 @@ import json
 import sys
 import tempfile
 import unittest
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from unittest.mock import patch
 
@@ -824,6 +824,146 @@ class OfflineAreaSourceTests(unittest.TestCase):
         self.assertTrue(new_entries)
         for entry in new_entries:
             self.assertEqual(set(entry["area_assignments"]), {"操场"})
+
+
+class DateResolutionTests(unittest.TestCase):
+    """日期解析：乱序/过去日期必须显式报错，合法跨年滚动必须保留。"""
+
+    def test_out_of_order_dates_rejected(self):
+        from llm_transport import parse_schedule_completion
+
+        completion = "[areas]\nA = X\n[schedule]\n03-25 = A:1\n03-24 = A:2\n"
+        with self.assertRaises(ValueError) as caught:
+            parse_schedule_completion(completion, "2026-03-24")
+        message = str(caught.exception)
+        self.assertIn("03-24", message)
+        self.assertIn("03-25", message)
+
+    def test_past_first_date_rejected(self):
+        from llm_transport import parse_schedule_completion
+
+        completion = "[areas]\nA = X\n[schedule]\n03-23 = A:1\n"
+        with self.assertRaises(ValueError) as caught:
+            parse_schedule_completion(completion, "2026-03-24")
+        self.assertIn("before the schedule start", str(caught.exception))
+
+    def test_cross_year_boundary_still_allowed(self):
+        """回归保护：12-31 -> 01-01 这类合法跨年滚动不得被误杀。"""
+        from llm_transport import parse_schedule_completion
+
+        completion = "[areas]\nA = X\n[schedule]\n12-31 = A:1\n01-02 = A:2\n"
+        parsed, _ = parse_schedule_completion(completion, "2026-12-31")
+        self.assertEqual(
+            [entry["date"] for entry in parsed["schedule"]],
+            ["2026-12-31", "2027-01-02"],
+        )
+
+    def test_tool_loop_mmdd_out_of_order_rejected(self):
+        from tool_loop.ini_handler import _parse_mmdd_to_date
+
+        with self.assertRaises(ValueError) as caught:
+            _parse_mmdd_to_date("04-06", date(2026, 4, 5), date(2026, 4, 7))
+        self.assertIn("ascending", str(caught.exception))
+
+    def test_tool_loop_mmdd_past_start_rejected(self):
+        from tool_loop.ini_handler import _parse_mmdd_to_date
+
+        with self.assertRaises(ValueError):
+            _parse_mmdd_to_date("04-01", date(2026, 4, 5), None)
+
+    def test_tool_loop_start_date_follows_instruction(self):
+        """指令点名了更早的日期范围时，解析锚点必须跟随指令（否则过去的
+        指令日期全被滚到明年，循环永远填不满）。"""
+        from tool_loop.executor import _resolve_loop_start_date
+
+        self.assertEqual(
+            _resolve_loop_start_date("安排4月1日到4月7日", date(2026, 4, 5)),
+            date(2026, 4, 1),
+        )
+        self.assertEqual(
+            _resolve_loop_start_date("从 2026-04-01 到 2026-04-07", date(2026, 4, 5)),
+            date(2026, 4, 1),
+        )
+        # 不得把人名/数量误判成日期
+        self.assertEqual(_resolve_loop_start_date("教室2-3人值日", date(2026, 4, 5)), date(2026, 4, 5))
+        self.assertEqual(_resolve_loop_start_date("排下周日", date(2026, 4, 5)), date(2026, 4, 5))
+
+    def test_tool_loop_past_instruction_date_parses_to_this_year(self):
+        from tool_loop.ini_handler import _parse_mmdd_to_date
+
+        resolved = _parse_mmdd_to_date("04-01", date(2026, 4, 1), None)
+        self.assertEqual(resolved, date(2026, 4, 1))
+
+
+class OrchestratorDateTests(unittest.TestCase):
+    """orchestrator 日期解析：M/D 范围不再必崩，ISO 范围不再被静默忽略。"""
+
+    def test_compute_dates_handles_md_range(self):
+        from orchestrator.executor import _compute_dates
+
+        dates = _compute_dates("4月6日到4月8日", date(2026, 10, 21), 7)
+        self.assertEqual(dates, [date(2026, 4, 6), date(2026, 4, 7), date(2026, 4, 8)])
+
+    def test_compute_dates_handles_iso_range(self):
+        from orchestrator.executor import _compute_dates
+
+        dates = _compute_dates("从 2026-04-01 到 2026-04-03", date(2026, 10, 21), 7)
+        self.assertEqual(dates, [date(2026, 4, 1), date(2026, 4, 2), date(2026, 4, 3)])
+
+    def test_compute_dates_falls_back_to_default_window(self):
+        from orchestrator.executor import _compute_dates
+
+        dates = _compute_dates("排下周日", date(2026, 10, 21), 7)
+        self.assertEqual(dates, [date(2026, 10, 21) + timedelta(days=i) for i in range(7)])
+
+    def test_window_fragments_concatenate_in_window_order(self):
+        """窗口片段必须按窗口序拼接：MM-DD 的年份推断跨窗共享 previous_date，
+        按网络完成顺序拼接会把日期推到下一年（同输入两次运行结果不同）。"""
+        from tool_loop.ini_handler import _parse_mmdd_to_date
+
+        class _Window:
+            def __init__(self, index, name):
+                self.index = index
+                self.name = name
+
+        windows = [_Window(0, "p1"), _Window(1, "p2")]
+        fragments = list(reversed(windows))  # 网络完成顺序：p2 先回
+        ordered = sorted(fragments, key=lambda item: item.index)
+        self.assertEqual([window.name for window in ordered], ["p1", "p2"])
+
+        previous = None
+        resolved = []
+        for mmdd in ("04-05", "04-06", "04-07", "04-08"):
+            day = _parse_mmdd_to_date(mmdd, date(2026, 4, 5), previous)
+            resolved.append(day)
+            previous = day
+        self.assertEqual(resolved[0], date(2026, 4, 5))
+        self.assertEqual(resolved[-1], date(2026, 4, 8))
+
+
+class AbsenceUntilDateTests(unittest.TestCase):
+    """"请假到 MM-DD"：同日不得滚到下一年，过去日期不得造出一整年缺席。"""
+
+    TODAY = date(2026, 10, 21)
+
+    def _extract(self, clause):
+        from absence_ops import extract_absentees
+
+        return extract_absentees(clause, {"张三": 1001}, today=self.TODAY)
+
+    def test_until_today_is_single_day(self):
+        result = self._extract("张三请假到10-21")
+        self.assertEqual(result, [{"id": 1001, "from": "2026-10-21", "to": "2026-10-21"}])
+
+    def test_until_past_date_does_not_create_year_long_absence(self):
+        result = self._extract("张三请假到10-20")
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["from"], "2026-10-21")
+        self.assertEqual(result[0]["to"], "2026-10-21")
+
+    def test_until_future_date_keeps_range(self):
+        result = self._extract("张三请假到10-25")
+        self.assertEqual(result, [{"id": 1001, "from": "2026-10-21", "to": "2026-10-25"}])
 
 
 if __name__ == "__main__":

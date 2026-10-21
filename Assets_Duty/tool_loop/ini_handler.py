@@ -171,27 +171,38 @@ _ASSIGN_SEG_RE = re.compile(
 
 
 def _parse_mmdd_to_date(mmdd: str, start_date: date, previous_date: Optional[date]) -> date:
-    """Resolve MM-DD to a concrete date near start_date."""
+    """Resolve MM-DD to a concrete date near start_date.
+
+    Strictly ascending, with exactly one legal exception: the December ->
+    January calendar-year boundary. A date before the run start, or one that
+    goes backwards in any other way, is a typo — it used to be silently rolled
+    into the next year, which turned model mistakes into valid-looking future
+    schedules (and made "schedule last week" loops unsatisfiable).
+    """
     m = re.match(r'^(\d{2})-(\d{2})$', mmdd.strip())
     if not m:
         raise ValueError(f"invalid MM-DD: {mmdd}")
     month, day = int(m.group(1)), int(m.group(2))
-    candidate_year = (previous_date or start_date).year
-    while True:
-        try:
-            candidate = date(candidate_year, month, day)
-        except ValueError:
-            raise ValueError(f"invalid MM-DD: {mmdd}")
-        if previous_date is None:
-            if candidate < start_date:
-                candidate_year += 1
-                continue
-        elif candidate < previous_date:
-            candidate_year += 1
-            continue
-        if candidate > start_date + timedelta(days=370):
-            raise ValueError(f"date {mmdd} exceeds supported window")
-        return candidate
+    try:
+        candidate = date((previous_date or start_date).year, month, day)
+    except ValueError:
+        raise ValueError(f"invalid MM-DD: {mmdd}")
+
+    if previous_date is None:
+        if candidate < start_date:
+            raise ValueError(
+                f"date {mmdd} is before the schedule start {start_date.isoformat()}"
+            )
+    elif candidate <= previous_date:
+        if not (previous_date.month == 12 and candidate.month == 1):
+            raise ValueError(
+                f"dates must be ascending (got {mmdd} after {previous_date.isoformat()})"
+            )
+        candidate = date(previous_date.year + 1, month, day)
+
+    if candidate > start_date + timedelta(days=370):
+        raise ValueError(f"date {mmdd} exceeds supported window")
+    return candidate
 
 
 def _split_sections(raw_text: str) -> Tuple[

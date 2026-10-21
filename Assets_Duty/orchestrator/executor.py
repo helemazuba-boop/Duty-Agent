@@ -317,6 +317,13 @@ def _orchestrator_poll_loop(
                     fragment = f"; [[#{window.name}]]\n; ERROR: {ex}"
                 fragments.append((window, fragment))
 
+        # Window fragments must be concatenated in WINDOW order, not network
+        # completion order: MM-DD year inference walks the combined text with a
+        # shared "previous date", so an out-of-order window silently pushes its
+        # dates into the next year — and the same model output could then yield
+        # different dates on different runs.
+        fragments.sort(key=lambda item: item[0].index)
+
         # --------------------------------------------------------------------------
         # 汇总 INI → ini_handler
         # --------------------------------------------------------------------------
@@ -867,7 +874,9 @@ def _finalize(
 # ------------------------------------------------------------------------------
 
 def _compute_dates(instruction: str, start_date: date, default_days: int = 7) -> List[date]:
-    date_ranges = _parse_date_ranges(instruction, start_date)
+    # NOTE: pass start_date.YEAR, not the date object — date(date_obj, m, d)
+    # raises TypeError, which made every date-range instruction crash.
+    date_ranges = _parse_date_ranges(instruction, start_date.year)
     if date_ranges:
         all_dates: List[date] = []
         for s, e in date_ranges:
@@ -879,6 +888,9 @@ def _compute_dates(instruction: str, start_date: date, default_days: int = 7) ->
     return [start_date + timedelta(days=i) for i in range(default_days)]
 
 
+_ISO_RANGE_RE = re.compile(
+    r"(20\d{2})-(\d{1,2})-(\d{1,2})\s*[-~至到]\s*(20\d{2})-(\d{1,2})-(\d{1,2})"
+)
 _DATE_RANGE_RE = re.compile(
     r"(\d{1,2})[月/-](\d{1,2})(?:\s*日?\s*[-~至到]\s*(\d{1,2})[月/-](\d{1,2})(?:\s*日?))?",
 )
@@ -887,7 +899,20 @@ _DATE_SINGLE_RE = re.compile(r"(\d{1,2})[月/-](\d{1,2})")
 
 def _parse_date_ranges(text: str, default_year: int) -> List[Tuple[date, date]]:
     results: List[Tuple[date, date]] = []
-    for m in _DATE_RANGE_RE.finditer(text):
+    # ISO ranges first: "2026-04-01 到 2026-04-07" used to be matched by the
+    # M/D pattern as "26-04" -> date(2026, 26, 4) -> ValueError -> silently
+    # ignored, so the run fell back to the default 7-day window.
+    for match in _ISO_RANGE_RE.finditer(text or ""):
+        try:
+            start = date(int(match.group(1)), int(match.group(2)), int(match.group(3)))
+            end = date(int(match.group(4)), int(match.group(5)), int(match.group(6)))
+        except ValueError:
+            continue
+        results.append((start, end) if start <= end else (end, start))
+    if results:
+        return results
+
+    for m in _DATE_RANGE_RE.finditer(text or ""):
         mm1, dd1 = int(m.group(1)), int(m.group(2))
         g3, g4 = m.group(3), m.group(4)
         if not g3 or not g4:

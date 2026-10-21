@@ -663,23 +663,33 @@ def _resolve_mmdd(mmdd: str, start_date: date, previous_date: Optional[date]) ->
 
     month = int(match.group("month"))
     day = int(match.group("day"))
-    candidate_year = previous_date.year if previous_date is not None else start_date.year
+    try:
+        candidate = date((previous_date or start_date).year, month, day)
+    except ValueError as ex:
+        raise ValueError(f"invalid MM-DD date: {mmdd}") from ex
 
-    while True:
-        try:
-            candidate = date(candidate_year, month, day)
-        except ValueError as ex:
-            raise ValueError(f"invalid MM-DD date: {mmdd}") from ex
-        if previous_date is None:
-            if candidate < start_date:
-                candidate_year += 1
-                continue
-        elif candidate < previous_date:
-            candidate_year += 1
-            continue
-        if candidate > start_date + timedelta(days=370):
-            raise ValueError(f"date {mmdd} exceeds supported window")
-        return candidate
+    if previous_date is None:
+        if candidate < start_date:
+            # A first date before the run start is a typo or a hallucinated
+            # date, NOT a cross-year roll: silently moving it a year forward
+            # used to hide the error and schedule into the wrong year.
+            raise ValueError(
+                f"date {mmdd} is before the schedule start {start_date.isoformat()}"
+            )
+    elif candidate <= previous_date:
+        # Dates must be strictly ascending. The ONLY legitimate "backwards"
+        # move is the December -> January calendar-year boundary (12-31 ->
+        # 01-01); everything else used to be silently pushed into next year,
+        # which turned a typo into a valid-looking future schedule.
+        if not (previous_date.month == 12 and candidate.month == 1):
+            raise ValueError(
+                f"dates must be ascending (got {mmdd} after {previous_date.isoformat()})"
+            )
+        candidate = date(previous_date.year + 1, month, day)
+
+    if candidate > start_date + timedelta(days=370):
+        raise ValueError(f"date {mmdd} exceeds supported window")
+    return candidate
 
 
 def _parse_ids_space_separated(raw_value: str, *, date_text: str, alias: str) -> List[int]:

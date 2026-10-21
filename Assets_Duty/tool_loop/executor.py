@@ -347,6 +347,48 @@ def _parse_date_from_tokens(year: int, mm_str: str, dd_str: str) -> date:
     raise ValueError(f"invalid date: {mm_str}/{dd_str}")
 
 
+# Instruction date forms that are unambiguous enough to anchor the parse window.
+# "教室2-3人" must NOT match (a bare digit-hyphen-digit is a headcount, not a
+# date), so only Chinese 月/日 forms, ISO dates and explicit MM-DD ranges count.
+_INSTRUCTION_ISO_RE = re.compile(r"(20\d{2})-(\d{1,2})-(\d{1,2})")
+_INSTRUCTION_CN_RE = re.compile(r"(\d{1,2})\s*月\s*(\d{1,2})\s*日")
+_INSTRUCTION_RANGE_RE = re.compile(r"(\d{1,2})-(\d{1,2})\s*[-~至到]\s*(\d{1,2})-(\d{1,2})")
+
+
+def _resolve_loop_start_date(instruction: str, today: date) -> date:
+    """Earliest date the instruction explicitly names, never later than today.
+
+    Required slots are generated from the instruction (including dates that are
+    already past), so anchoring MM-DD resolution at "today" would push every
+    such date into NEXT year — the loop could then never cover its own required
+    slots and would burn all rounds before auto-finalizing a wrong-year schedule.
+    """
+    earliest: Optional[date] = None
+
+    def _consider(candidate: Optional[date]) -> None:
+        nonlocal earliest
+        if candidate is not None and (earliest is None or candidate < earliest):
+            earliest = candidate
+
+    for match in _INSTRUCTION_ISO_RE.finditer(instruction or ""):
+        try:
+            _consider(date(int(match.group(1)), int(match.group(2)), int(match.group(3))))
+        except ValueError:
+            continue
+    for match in _INSTRUCTION_CN_RE.finditer(instruction or ""):
+        try:
+            _consider(date(today.year, int(match.group(1)), int(match.group(2))))
+        except ValueError:
+            continue
+    for match in _INSTRUCTION_RANGE_RE.finditer(instruction or ""):
+        try:
+            _consider(date(today.year, int(match.group(1)), int(match.group(2))))
+        except ValueError:
+            continue
+
+    return min(earliest, today) if earliest is not None else today
+
+
 def _build_required_slots(
     instruction: str,
     start_date: date,
@@ -521,6 +563,10 @@ def run_tool_loop_schedule(
 
         trace_id = str(input_data.get("trace_id", "")).strip() or ""
         start_date = datetime.fromisoformat(start_date_iso).date()
+        # The parse anchor follows the instruction's own dates (see
+        # _resolve_loop_start_date): required slots come from the instruction,
+        # so a past instruction date must stay in THIS year.
+        start_date = _resolve_loop_start_date(instruction, start_date)
 
         # Load config (with api_key) before the polling loop
         config = load_config(ctx)
