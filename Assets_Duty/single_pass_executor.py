@@ -21,6 +21,7 @@ from postprocess import (
     merge_schedule_pool,
     normalize_apply_mode,
     normalize_multi_area_schedule_ids,
+    pool_entry_changed,
     reconcile_credit_list,
     recover_missing_debts,
     restore_schedule,
@@ -160,6 +161,19 @@ def _enforce_absence_and_counts(
             entry["note"] = f"{str(entry.get('note', '') or '').strip()} {summary}".strip()
 
     return warnings
+
+
+def _is_known_person(person_id, all_ids: List[int]) -> bool:
+    """True when the ID exists in the roster (active or not).
+
+    Ledger deltas declared by the model are untrusted input: an ID that is not
+    in the roster used to be persisted verbatim and then polluted every later
+    prompt ("current_debt_counts=999*3").
+    """
+    try:
+        return int(person_id) in set(all_ids)
+    except (TypeError, ValueError):
+        return False
 
 
 def _audit_schedule_window(
@@ -436,37 +450,102 @@ def apply_single_pass_completion(
     state_delta = dict(llm_result.get("state_delta") or {})
     llm_pointer_after = state_delta.get("pointer_after")
     llm_consumed_credit_ids = state_delta.get("consumed_credit_ids")
-
-    if llm_pointer_after is not None:
-        safe_pointer = max(0, min(int(llm_pointer_after), len(all_ids) - 1)) if all_ids else 0
-        pointer_progress = {
-            "pointer_after": safe_pointer,
-            "consumed_credit_ids": list(llm_consumed_credit_ids or []),
+    # Model-declared ledger deltas are UNTRUSTED input: filter hallucinated IDs
+    # here (a `debt = 999*3` line used to persist forever and pollute every
+    # later prompt) and dedupe consumed credit (a repeated ID burned twice).
+    declared_debt_counts = {
+        person_id: count
+        for person_id, count in (state_delta.get("debt_counts") or {}).items()
+        if _is_known_person(person_id, all_ids)
+    }
+    dropped_debt_ids = sorted(
+        {
+            str(person_id)
+            for person_id in (state_delta.get("debt_counts") or {})
+            if not _is_known_person(person_id, all_ids)
         }
-    else:
-        pointer_progress = estimate_pointer_progress(
-            all_ids,
-            [person_id for person_id in all_ids if id_to_active.get(person_id, 1) != 0],
-            int(state_data.get("last_pointer", 0) or 0),
-            debt_counts,
-            credit_counts,
-            normalized_ids,
+    )
+    if dropped_debt_ids:
+        adjustment_warnings.append(
+            "忽略未在花名册中的债务声明: " + " ".join(dropped_debt_ids)
         )
+    declared_credit_counts = {
+        person_id: count
+        for person_id, count in (state_delta.get("credit_counts") or {}).items()
+        if _is_known_person(person_id, all_ids)
+    }
+    consumed_credit_ids = sorted(
+        {
+            int(person_id)
+            for person_id in (llm_consumed_credit_ids or [])
+            if _is_known_person(person_id, all_ids)
+        }
+    )
 
     def _apply_state_update(current_state: dict) -> dict:
         next_state = dict(current_state)
         current_debt_counts = clone_count_map(next_state.get("debt_counts", {}), set(all_ids))
         current_credit_counts = clone_count_map(next_state.get("credit_counts", {}), set(all_ids))
 
+        # Ledger idempotence: settle ONLY the dates this run actually writes
+        # (new or modified). Re-ingesting an identical completion must not
+        # decrement the same debt twice, nor burn the same credit twice.
+        previous_by_date = {
+            str(entry.get("date", "")).strip(): entry
+            for entry in current_state.get("schedule_pool", [])
+            if isinstance(entry, dict)
+        }
+        settled_dates = {
+            str(entry.get("date", "")).strip()
+            for entry in restored
+            if pool_entry_changed(
+                previous_by_date.get(str(entry.get("date", "")).strip()), entry
+            )
+        }
+        settled_schedule = [
+            entry for entry in normalized_ids
+            if str(entry.get("date", "") or "").strip() in settled_dates
+        ]
+
+        if not settled_schedule:
+            # Nothing new to settle: keep debt/credit/pointer exactly as they
+            # are (a replayed or no-op run is a no-op for the ledger too).
+            next_state["schedule_pool"] = merge_schedule_pool(
+                current_state, restored, apply_mode, run_start_date
+            )
+            prune_operational_state(next_state)
+            return next_state
+
+        if llm_pointer_after is not None:
+            safe_pointer = max(0, min(int(llm_pointer_after), len(all_ids) - 1)) if all_ids else 0
+            pointer_progress = {
+                "pointer_after": safe_pointer,
+                "consumed_credit_ids": consumed_credit_ids,
+            }
+            if safe_pointer < int(state_data.get("last_pointer", 0) or 0):
+                adjustment_warnings.append(
+                    f"模型申请的指针 {safe_pointer} 早于当前指针 "
+                    f"{int(state_data.get('last_pointer', 0) or 0)}，已按申请值落盘"
+                )
+        else:
+            pointer_progress = estimate_pointer_progress(
+                all_ids,
+                [person_id for person_id in all_ids if id_to_active.get(person_id, 1) != 0],
+                int(state_data.get("last_pointer", 0) or 0),
+                debt_counts,
+                credit_counts,
+                settled_schedule,
+            )
+
         next_state["debt_counts"] = recover_missing_debts(
             current_debt_counts,
-            state_delta.get("debt_counts", {}),
-            normalized_ids,
+            declared_debt_counts,
+            settled_schedule,
         )
         next_state["credit_counts"] = reconcile_credit_list(
             current_credit_counts,
-            state_delta.get("credit_counts", {}),
-            normalized_ids,
+            declared_credit_counts,
+            settled_schedule,
             set(all_ids),
             next_state["debt_counts"],
             True,

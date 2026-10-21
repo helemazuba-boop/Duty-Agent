@@ -21,6 +21,23 @@ def normalize_apply_mode(raw_value) -> str:
     return mode if mode in SCHEDULE_APPLY_MODES else DEFAULT_SCHEDULE_APPLY_MODE
 
 
+def pool_entry_changed(previous: object, entry: dict) -> bool:
+    """Whether a pool entry differs from what is already persisted.
+
+    Notes are ignored: the deterministic repair pass rewrites them
+    ("自动修正: ...") on every run, and a note-only change must not re-settle
+    the ledger. Shared by every executor so "what counts as a new settlement"
+    has exactly one definition.
+    """
+    if not isinstance(previous, dict):
+        return True
+
+    def _strip(record: dict) -> dict:
+        return {key: value for key, value in record.items() if key != "note"}
+
+    return _strip(previous) != _strip(entry)
+
+
 def collect_scheduled_unique_ids(normalized_schedule: List[dict]) -> List[int]:
     scheduled: List[int] = []
     seen: set[int] = set()

@@ -966,5 +966,122 @@ class AbsenceUntilDateTests(unittest.TestCase):
         self.assertEqual(result, [{"id": 1001, "from": "2026-10-21", "to": "2026-10-25"}])
 
 
+class LedgerIdempotenceTests(unittest.TestCase):
+    """账本幂等：重复 ingest 同一份排班不得二次扣债/二次烧积分。"""
+
+    def _tmp(self):
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(lambda: __import__("shutil").rmtree(tmp, ignore_errors=True))
+        return Path(tmp)
+
+    def _apply(self, ctx, completion, start_date="2026-10-22"):
+        from single_pass_executor import apply_single_pass_completion
+
+        return apply_single_pass_completion(
+            ctx, completion, {"mode": "single_pass", "start_date": start_date, "trace_id": "t"},
+        )
+
+    def _state(self, ctx):
+        return load_state(ctx.paths["state"])
+
+    def _counts(self, ctx, key):
+        return {
+            int(person_id): value
+            for person_id, value in (load_state(ctx.paths["state"]).get(key) or {}).items()
+        }
+
+    def test_replayed_completion_does_not_double_decrement_debt(self):
+        tmp = self._tmp()
+        ctx = make_ctx(tmp, state={
+            "schedule_pool": [], "debt_counts": {"1001": 2}, "credit_counts": {}, "last_pointer": 0,
+        })
+        completion = "[areas]\nA = 教室\n[schedule]\n10-22 = A:1001 1002\n"
+        self._apply(ctx, completion)
+        self.assertEqual(self._counts(ctx, "debt_counts"), {1001: 1})
+        # 同一份 completion 再 ingest 一次：不得再扣一次
+        self._apply(ctx, completion)
+        self.assertEqual(self._counts(ctx, "debt_counts"), {1001: 1})
+
+    def test_modified_date_settles_again(self):
+        """被真正改写的日期要重新结算（不能为了幂等把该扣的也吞了）。"""
+        tmp = self._tmp()
+        ctx = make_ctx(tmp, state={
+            "schedule_pool": [], "debt_counts": {"1001": 2}, "credit_counts": {}, "last_pointer": 0,
+        })
+        self._apply(ctx, "[areas]\nA = 教室\n[schedule]\n10-22 = A:1001\n")
+        self.assertEqual(self._counts(ctx, "debt_counts"), {1001: 1})
+        self._apply(ctx, "[areas]\nA = 教室\n[schedule]\n10-22 = A:1001 1002\n")
+        self.assertEqual(self._counts(ctx, "debt_counts"), {})
+
+    def test_note_only_change_does_not_resettle(self):
+        tmp = self._tmp()
+        ctx = make_ctx(tmp, state={
+            "schedule_pool": [], "debt_counts": {"1001": 2}, "credit_counts": {}, "last_pointer": 0,
+        })
+        self._apply(ctx, "[areas]\nA = 教室\n[schedule]\n10-22 = A:1001 1002\n")
+        self.assertEqual(self._counts(ctx, "debt_counts"), {1001: 1})
+        # 只改备注：人员没变，不得重新结算
+        self._apply(ctx, "[areas]\nA = 教室\n[schedule]\n10-22 = A:1001 1002 # 换备注\n")
+        self.assertEqual(self._counts(ctx, "debt_counts"), {1001: 1})
+
+
+class ModelLedgerInjectionTests(unittest.TestCase):
+    """模型通过 [state] 声明的账本变更是不可信输入。"""
+
+    def _tmp(self):
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(lambda: __import__("shutil").rmtree(tmp, ignore_errors=True))
+        return Path(tmp)
+
+    def _apply(self, ctx, completion, start_date="2026-10-22"):
+        from single_pass_executor import apply_single_pass_completion
+
+        return apply_single_pass_completion(
+            ctx, completion, {"mode": "single_pass", "start_date": start_date, "trace_id": "t"},
+        )
+
+    def _counts(self, ctx, key):
+        return {
+            int(person_id): value
+            for person_id, value in (load_state(ctx.paths["state"]).get(key) or {}).items()
+        }
+
+    def test_hallucinated_debt_id_dropped_with_warning(self):
+        tmp = self._tmp()
+        ctx = make_ctx(tmp)
+        result = self._apply(
+            ctx,
+            "[areas]\nA = 教室\n[schedule]\n10-22 = A:1001 1002\n[state]\ndebt = 999*3\n",
+        )
+        self.assertEqual(result["status"], "success")
+        self.assertNotIn(999, self._counts(ctx, "debt_counts"))
+        self.assertTrue(any("999" in warning for warning in result["adjustment_warnings"]))
+
+    def test_duplicate_consumed_credit_burns_once(self):
+        tmp = self._tmp()
+        ctx = make_ctx(tmp, state={
+            "schedule_pool": [], "debt_counts": {}, "credit_counts": {"1003": 2}, "last_pointer": 0,
+        })
+        result = self._apply(
+            ctx,
+            "[areas]\nA = 教室\n[schedule]\n10-22 = A:1001 1002\n"
+            "[state]\npointer = 1\nconsumed_credit = 1003 1003\n",
+        )
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(self._counts(ctx, "credit_counts"), {1003: 1})
+
+    def test_pointer_moving_backwards_warns(self):
+        tmp = self._tmp()
+        ctx = make_ctx(tmp, state={
+            "schedule_pool": [], "debt_counts": {}, "credit_counts": {}, "last_pointer": 3,
+        })
+        result = self._apply(
+            ctx,
+            "[areas]\nA = 教室\n[schedule]\n10-22 = A:1001 1002\n[state]\npointer = 0\n",
+        )
+        self.assertEqual(result["status"], "success")
+        self.assertTrue(any("指针" in warning for warning in result["adjustment_warnings"]))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
