@@ -10,14 +10,24 @@
 
 ## 0. 测试包里有什么
 
+**三个双击入口**，按序号走就行（会自己提权）：
+
+| 文件 | 干什么 |
+|---|---|
+| `1-安装.bat` | 导入开发证书 → 安装 MSIX → 打印 PFN / AUMID |
+| `2-启动.bat` | 按 AUMID 启动已装的客户端 |
+| `3-卸载.bat` | 卸载 + 清理自启残留 |
+
+其余文件：
+
 | 文件 | 说明 |
 |---|---|
 | `<Name>_<Version>_x64.msix` | 安装包（约 109 MB，已用开发证书签名） |
 | `devcert.cer` | 开发证书**公钥**（subject 必须等于清单 `Identity.Publisher`） |
 | `build-info.json` | 本次构建的 Name / Publisher / Version / 证书 subject 与指纹 / 构建时间 |
-| `Install-MsixForTesting.ps1` | 导入证书 + 安装（需管理员） |
-| `Uninstall-MsixForTesting.ps1` | 卸载 + 清理自启残留（需管理员） |
 | `bridge\` | ClassIsland 桥接插件（9 个文件，约 750 KB）。**只有**要验桥接联动时才用，见第 4 节 |
+| `Install-MsixForTesting.ps1` | `1-安装.bat` 的实际实现（也可直接 `.\Install-MsixForTesting.ps1`） |
+| `Uninstall-MsixForTesting.ps1` | `3-卸载.bat` 的实际实现 |
 | `msix-test-checklist.md` | 本文件 |
 
 > **不要**把 `devcert.pfx`（带私钥，口令是 winapp 默认的 `password`）发给任何人。
@@ -50,14 +60,22 @@
 ## 1. 安装
 
 1. 把整个测试包目录拷到目标机（U 盘 / 局域网均可）。
-2. 管理员 PowerShell：
-   ```powershell
-   Set-ExecutionPolicy -Scope Process Bypass -Force
-   Get-ChildItem .\*.ps1 | Unblock-File      # 从 U 盘/共享拷来的文件带 MOTW，不解锁某些策略下会拒跑
-   .\Install-MsixForTesting.ps1
-   ```
+2. **双击 `1-安装.bat`**，UAC 弹窗点「是」。
+   也可以**右键 → 以管理员身份运行**（已提权时不会二次弹窗）。
+   它会自己提权、自己 `Bypass` 执行策略、自己解锁 MOTW，不需要开 PowerShell。
 3. **期望输出**：系统版本 / WebView2 状态 → 证书 subject 与清单 Publisher 一致 → 证书导入 →
    `Add-AppxPackage` 成功 → 末尾打印 `Name` / `Version` / **PFN** / AUMID。
+
+<details>
+<summary>手动跑（bat 出问题时的退路）</summary>
+
+```powershell
+Set-ExecutionPolicy -Scope Process Bypass -Force
+Get-ChildItem .\*.ps1 | Unblock-File      # 从 U 盘/共享拷来的文件带 MOTW，不解锁某些策略下会拒跑
+.\Install-MsixForTesting.ps1
+```
+
+</details>
 
 > 安装脚本会**先把包内 `AppxManifest.xml` 读出来**，校验证书 subject 是否等于
 > `Identity.Publisher`。不一致会直接报错——这比 `Add-AppxPackage` 吐一个
@@ -77,7 +95,11 @@
 
 ## 2. 启动与基本可用性
 
-开始菜单搜索「Duty-Agent」启动（或 `explorer.exe shell:AppsFolder\<PFN>!App`）。
+**双击 `2-启动.bat`**（它从 `build-info.json` 读包名、查到已装包后按 AUMID 拉起）。
+也可以开始菜单搜索「Duty-Agent」。
+
+> `2-启动.bat` 刻意**不提权**——用管理员身份启动会让客户端拿到不需要的 admin 令牌，
+> 自启注册也会跑到错误的用户配置里。
 
 - [ ] **主窗口出现**，WebView 里加载出完整界面（不是白屏、不是「启动失败」弹窗）
 - [ ] **托盘图标**出现在任务栏右下角
@@ -201,9 +223,10 @@ Copy-Item -Path ".\bridge\*" -Destination $target -Recurse -Force
 
 ## 5. 卸载
 
-```powershell
-.\Uninstall-MsixForTesting.ps1
-```
+**双击 `3-卸载.bat`**（删包 + 清自启残留 + 单独提示证书清理，需管理员）。
+
+它不只删包：卸载后还会检查 `HKCU\...\Run` 下 `DutyAgent` / `DutyAgent.<PFN>` 的残留——
+MSIX 没有卸载钩子，客户端卸载后没法自己清理注册表，这个壳不补就永远留在开机启动里。
 
 - [ ] `Get-AppxPackage -Name HelemaZuba.Duty-Agent` 查不到
 - [ ] `DutyAgent.<PFN>` 已消失（脚本按 PFN 作用域精确清理）

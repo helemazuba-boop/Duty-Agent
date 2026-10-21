@@ -313,6 +313,19 @@ if ($ForStore) {
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot "Uninstall-MsixForTesting.ps1") -Destination $bundleDir -Force
     Copy-Item -LiteralPath (Join-Path $root "docs\msix-test-checklist.md") -Destination $bundleDir -Force
 
+    # 双击入口（安装 / 启动 / 卸载）。测试机上不该要求人先懂
+    # Set-ExecutionPolicy 和 AUMID 长什么样；.ps1 留作实现，.bat 是壳。
+    # 三个 .bat 内容一律 ASCII（cmd 按 OEM 代码页渲染，中文会乱码），
+    # 中文提示全部由 .ps1 输出（它们带 UTF-8 BOM）。
+    foreach ($batName in @("1-安装.bat", "2-启动.bat", "3-卸载.bat")) {
+        $batSource = Join-Path $PSScriptRoot $batName
+        if (Test-Path -LiteralPath $batSource) {
+            Copy-Item -LiteralPath $batSource -Destination $bundleDir -Force
+        } else {
+            Write-Warning "缺少双击入口脚本：$batSource"
+        }
+    }
+
     # 桥接插件再单独带一份。MSIX 布局里本来就有一份（<安装目录>\bridge\，
     # 客户端界面的"安装 ClassIsland 插件"就是从那儿拷的），但便携版 ClassIsland、
     # 或者客户端自动发现配置目录失败时，得能手工拷进 <ClassIsland>\data\Plugins\。
