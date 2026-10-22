@@ -315,7 +315,7 @@ class TestCliDelegation(unittest.TestCase):
             runtime = self._with_runtime(temp_dir)
             try:
                 with TestClient(app) as client, _cli_routed_to(client):
-                    _, prompt_payload = _run_cli(
+                    prompt_exit_code, prompt_payload = _run_cli(
                         [
                             "--base-url", BASE_URL,
                             f"--token={runtime.access_token}",
@@ -323,6 +323,8 @@ class TestCliDelegation(unittest.TestCase):
                             "--instruction", "本周排班",
                         ]
                     )
+                    self.assertEqual(prompt_exit_code, 0, prompt_payload)
+                    self.assertEqual(prompt_payload.get("status"), "success", prompt_payload)
                     resume_context = prompt_payload["resume_context"]
                     completion = _future_completion(resume_context["start_date"])
 
