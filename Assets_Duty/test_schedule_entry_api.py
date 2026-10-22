@@ -180,6 +180,15 @@ class TestScheduleEntryEditStore(unittest.TestCase):
                 },
             )
 
+            _seed_roster(
+                context,
+                [
+                    {"id": 1, "name": "Alice", "active": True},
+                    {"id": 2, "name": "Bob", "active": True},
+                    {"id": 3, "name": "Carol", "active": True},
+                ],
+            )
+
             result = save_schedule_entry_edit(
                 context,
                 {
@@ -225,7 +234,8 @@ class TestScheduleEntryEditStore(unittest.TestCase):
                     },
                 )
 
-    def test_unknown_or_inactive_names_do_not_affect_ledger(self):
+    def test_manual_edit_rejects_unknown_or_inactive_names(self):
+        """审计 P1：手工入口曾把"不在花名册/已停用"的姓名原样写进排班。"""
         with tempfile.TemporaryDirectory() as temp_dir:
             context = Context(Path(temp_dir))
             _seed_roster(
@@ -237,10 +247,56 @@ class TestScheduleEntryEditStore(unittest.TestCase):
             )
             _seed_state(
                 context,
+                {"schedule_pool": [], "next_run_note": "", "debt_counts": {}, "credit_counts": {}, "last_pointer": 0},
+            )
+
+            with self.assertRaisesRegex(ValueError, "不在花名册中"):
+                save_schedule_entry_edit(
+                    context,
+                    {
+                        "source_date": None,
+                        "target_date": "2026-03-21",
+                        "day": "周六",
+                        "area_assignments": {"教室": ["Alice", "Carol"]},
+                        "note": "",
+                        "confirm_overwrite": False,
+                        "ledger_mode": "record",
+                    },
+                )
+
+            with self.assertRaisesRegex(ValueError, "已停用"):
+                save_schedule_entry_edit(
+                    context,
+                    {
+                        "source_date": None,
+                        "target_date": "2026-03-21",
+                        "day": "周六",
+                        "area_assignments": {"教室": ["Bob"]},
+                        "note": "",
+                        "confirm_overwrite": False,
+                        "ledger_mode": "record",
+                    },
+                )
+
+    def test_stale_names_in_existing_entries_do_not_affect_ledger(self):
+        """已存在条目里的失效姓名（人已删）被覆盖时，不得污染账本计算。"""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            context = Context(Path(temp_dir))
+            _seed_roster(
+                context,
+                [
+                    {"id": 1, "name": "Alice", "active": True},
+                    {"id": 2, "name": "Bob", "active": True},
+                ],
+            )
+            _seed_state(
+                context,
                 {
-                    "schedule_pool": [],
+                    "schedule_pool": [
+                        {"date": "2026-03-21", "day": "周六", "area_assignments": {"教室": ["Ghost"]}, "note": ""}
+                    ],
                     "next_run_note": "",
-                    "debt_counts": {2: 1},
+                    "debt_counts": {},
                     "credit_counts": {},
                     "last_pointer": 0,
                 },
@@ -249,19 +305,20 @@ class TestScheduleEntryEditStore(unittest.TestCase):
             save_schedule_entry_edit(
                 context,
                 {
-                    "source_date": None,
+                    "source_date": "2026-03-21",
                     "target_date": "2026-03-21",
                     "day": "周六",
-                    "area_assignments": {"教室": ["Bob", "Carol"]},
+                    "area_assignments": {"教室": ["Alice"]},
                     "note": "",
-                    "confirm_overwrite": False,
+                    "confirm_overwrite": True,
                     "ledger_mode": "record",
                 },
             )
             state = load_state(context.paths["state"])
 
-        self.assertEqual(state["debt_counts"], {2: 1})
-        self.assertEqual(state["credit_counts"], {})
+        self.assertEqual(state["debt_counts"], {})
+        self.assertEqual(state["credit_counts"], {1: 1})
+        self.assertEqual(state["schedule_pool"][0]["area_assignments"], {"教室": ["Alice"]})
 
 
 class TestScheduleEntryEditApi(unittest.TestCase):

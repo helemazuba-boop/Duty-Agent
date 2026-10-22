@@ -13,6 +13,8 @@ import time
 from datetime import date, datetime, timedelta
 from ctypes import wintypes
 from pathlib import Path
+
+from absence_ops import absences_for_window
 from typing import Callable, Dict, Iterable, List, Optional, Tuple
 
 from diagnostics import truncate_for_log
@@ -1883,6 +1885,59 @@ def _load_active_name_to_id(roster_path: Path) -> Dict[str, int]:
     }
 
 
+def _read_persisted_absences(state_path: Path) -> List[dict]:
+    """Absence ranges for manual-entry validation. Never raises: a missing or
+    unreadable state file simply means "no recorded absences"."""
+    try:
+        return _normalize_absences(load_state(state_path).get("absences", []))
+    except (OSError, ValueError):
+        return []
+
+
+def _validate_manual_assignments(
+    normalized_assignments: Dict[str, List[str]],
+    roster_path: Path,
+    target_date: str,
+    absences: List[dict],
+) -> None:
+    """Validate a hand/API-edited schedule against the same rules the LLM path
+    enforces (audit P1: the manual entry endpoint used to accept anything).
+
+    * every name must exist in the roster AND be active
+    * nobody on leave for the target date may be scheduled
+    * the same person may not appear twice in one area
+    """
+    if not normalized_assignments:
+        return
+
+    try:
+        name_to_id, _id_to_name, _all_ids, id_to_active = load_roster(roster_path)
+    except (FileNotFoundError, ValueError):
+        name_to_id, id_to_active = {}, {}
+
+    absent_ids: set = set()
+    try:
+        parsed_day = datetime.strptime(target_date, "%Y-%m-%d").date()
+    except ValueError:
+        parsed_day = None
+    if parsed_day is not None and absences:
+        absent_ids = set(absences_for_window(absences, parsed_day, parsed_day))
+
+    for area_name, students in normalized_assignments.items():
+        if len(students) != len(set(students)):
+            raise ValueError(f"{target_date}/{area_name}: 同一区域安排了重复人员")
+        for student in students:
+            person_id = name_to_id.get(student)
+            if person_id is None:
+                raise ValueError(f"{target_date}/{area_name}: {student} 不在花名册中")
+            if id_to_active.get(person_id, 0) == 0:
+                raise ValueError(f"{target_date}/{area_name}: {student} 已停用，不能安排值日")
+            if person_id in absent_ids:
+                raise ValueError(
+                    f"{target_date}/{area_name}: {student} 当天请假/缺席，不能安排值日"
+                )
+
+
 def _clone_schedule_entry_payload(entry: object) -> dict:
     if not isinstance(entry, dict):
         return {
@@ -1936,6 +1991,12 @@ def save_schedule_entry_edit(ctx: Context, payload: dict) -> dict:
     normalized_assignments = _normalize_schedule_entry_area_assignments(request.get("area_assignments"))
     normalized_note = str(request.get("note", "") or "").strip()
     confirm_overwrite = bool(request.get("confirm_overwrite", False))
+    # Same rule set as the LLM path: unknown / inactive / on-leave people and
+    # same-area duplicates are rejected here too (audit P1).
+    persisted_absences = _read_persisted_absences(ctx.paths["state"])
+    _validate_manual_assignments(
+        normalized_assignments, ctx.paths["roster"], normalized_target_date, persisted_absences
+    )
     active_name_to_id = _load_active_name_to_id(ctx.paths["roster"])
     proposed_entry = {
         "date": normalized_target_date,
@@ -2021,6 +2082,13 @@ def save_schedule_entry_edit(ctx: Context, payload: dict) -> dict:
             raise ValueError("Schedule entry not found.")
 
         if action == "create":
+            # The action was decided from a pre-lock read; re-check inside the
+            # lock so a concurrent writer cannot leave two entries for the same
+            # date (the second one was unreachable for edit/delete forever).
+            if current_duplicate is not None:
+                raise ValueError(
+                    f"排班冲突：{normalized_target_date} 已被其它写入方创建，请刷新后重试。"
+                )
             target_item = {}
             schedule_pool.append(target_item)
             ledger_reference = target_item
@@ -2034,7 +2102,17 @@ def save_schedule_entry_edit(ctx: Context, payload: dict) -> dict:
                 raise ValueError("Schedule entry overwrite target is invalid.")
             schedule_pool = [entry for entry in schedule_pool if entry is not current_item]
             target_item = current_duplicate
-            ledger_reference = current_item
+            # Account BOTH sides: the source entry loses its people AND the
+            # target entry is overwritten, so whoever was displaced from the
+            # target date must be recorded as owing a debt (audit P1: only the
+            # source side used to be accounted, silently erasing the target's
+            # assignment history).
+            ledger_reference = {
+                "area_assignments": {
+                    **current_item.get("area_assignments", {}),
+                    **current_duplicate.get("area_assignments", {}),
+                }
+            }
         else:
             if current_item is None:
                 raise ValueError("Schedule entry not found.")

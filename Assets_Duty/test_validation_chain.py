@@ -1230,5 +1230,121 @@ class RollbackSemanticsTests(unittest.TestCase):
         self.assertEqual(restored["schedule_pool"], [])
 
 
+class ManualEntryValidationTests(unittest.TestCase):
+    """手工/外部编辑入口必须与 LLM 路径同强度校验（审计 P1）。"""
+
+    def _tmp(self):
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(lambda: __import__("shutil").rmtree(tmp, ignore_errors=True))
+        return Path(tmp)
+
+    def _edit(self, ctx, **payload):
+        from state_ops import save_schedule_entry_edit
+
+        request = {"target_date": "2026-10-22", "area_assignments": {"教室": ["张三", "李四"]}}
+        request.update(payload)
+        return save_schedule_entry_edit(ctx, request)
+
+    def test_unknown_person_rejected(self):
+        tmp = self._tmp()
+        ctx = make_ctx(tmp)
+        with self.assertRaises(ValueError) as caught:
+            self._edit(ctx, area_assignments={"教室": ["Ghost"]})
+        self.assertIn("Ghost", str(caught.exception))
+
+    def test_inactive_person_rejected(self):
+        tmp = self._tmp()
+        roster = "id,name,active\n1001,张三,1\n1002,李四,1\n1003,王五,1\n1004,赵六,0\n"
+        ctx = make_ctx(tmp, roster=roster)
+        with self.assertRaises(ValueError) as caught:
+            self._edit(ctx, area_assignments={"教室": ["赵六"]})
+        self.assertIn("停用", str(caught.exception))
+
+    def test_absent_person_rejected_for_that_date(self):
+        from state_ops import update_state
+
+        tmp = self._tmp()
+        ctx = make_ctx(tmp)
+        update_state(
+            ctx.paths["state"],
+            lambda state: {**state, "absences": [{"id": 1001, "from": "2026-10-22", "to": "2026-10-22"}]},
+        )
+        with self.assertRaises(ValueError) as caught:
+            self._edit(ctx, area_assignments={"教室": ["张三", "李四"]})
+        self.assertIn("请假", str(caught.exception))
+
+    def test_same_area_duplicate_is_deduped_not_rejected(self):
+        """手工编辑对同区重复姓名去重（UI 拖拽可能重复提交），不硬拒。"""
+        tmp = self._tmp()
+        ctx = make_ctx(tmp)
+        result = self._edit(ctx, area_assignments={"教室": ["张三", "张三"]})
+        self.assertEqual(result["status"], "success")
+        names = load_state(ctx.paths["state"])["schedule_pool"][-1]["area_assignments"]["教室"]
+        self.assertEqual(names, ["张三"])
+
+    def test_move_and_overwrite_accounts_displaced_target_person(self):
+        """移动到已有条目的日期时，被顶掉的人必须记欠账（原来只记源条目）。"""
+        tmp = self._tmp()
+        ctx = make_ctx(tmp)
+        self._edit(ctx, target_date="2026-10-22", area_assignments={"教室": ["张三"]})
+        self._edit(ctx, target_date="2026-10-23", area_assignments={"教室": ["李四"]})
+
+        result = save_schedule_entry_edit_safely(
+            ctx,
+            source_date="2026-10-22",
+            target_date="2026-10-23",
+            area_assignments={"教室": ["张三"]},
+            confirm_overwrite=True,
+        )
+        self.assertEqual(result["status"], "success")
+        state = load_state(ctx.paths["state"])
+        credits = {
+            int(person_id): value
+            for person_id, value in state["credit_counts"].items()
+        }
+        debts = {
+            int(person_id): value
+            for person_id, value in state["debt_counts"].items()
+        }
+        # 李四被顶掉：他因 10-23 排班得来的积分必须被消耗掉（旧实现完全不记账）
+        self.assertNotIn(1002, credits)
+        self.assertNotIn(1002, debts)
+
+    def test_stale_action_cannot_create_duplicate_date(self):
+        """锁外预读与锁内实际状态不一致时，必须报错而不是插入同日双条目。"""
+        import state_ops
+        from unittest.mock import patch
+
+        tmp = self._tmp()
+        ctx = make_ctx(tmp)
+        existing = {
+            "schedule_pool": [
+                {"date": "2026-10-22", "day": "Thu", "area_assignments": {"教室": ["张三", "李四"]}, "note": ""}
+            ],
+            "debt_counts": {},
+            "credit_counts": {},
+            "last_pointer": 0,
+        }
+        empty = {"schedule_pool": [], "debt_counts": {}, "credit_counts": {}, "last_pointer": 0}
+
+        # 锁外决策读到空池 → action=create；进锁后再读，同日条目已被别的写入方创建
+        calls = {"n": 0}
+
+        def _fake_load_state(path):
+            calls["n"] += 1
+            return dict(empty) if calls["n"] == 1 else dict(existing)
+
+        with patch.object(state_ops, "load_state", side_effect=_fake_load_state),                 patch.object(state_ops, "_read_persisted_absences", return_value=[]):
+            with self.assertRaises(ValueError) as caught:
+                self._edit(ctx)
+        self.assertIn("冲突", str(caught.exception))
+
+
+def save_schedule_entry_edit_safely(ctx, **payload):
+    from state_ops import save_schedule_entry_edit
+
+    return save_schedule_entry_edit(ctx, payload)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
