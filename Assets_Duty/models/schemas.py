@@ -4,6 +4,8 @@ from typing import Dict, List, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict
 
+from validation_policy import DEFAULT_VALIDATION_MODE
+
 
 class DutyRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -119,6 +121,13 @@ class DutyBackendConfigModel(BaseModel):
     # Optional multi-area template; empty list = legacy single default area.
     areas: List[str] = []
     area_per_day_counts: dict = {}
+    # Validation policy (relaxed / strict / repair / auto) as configured, plus
+    # the mode the engine actually applies once "auto" is expanded by
+    # model_profile. `effective_validation_mode` is what the UI should show as
+    # the running policy when the user picked "auto". Defaults come from the
+    # policy module so flipping the product default is a one-line change there.
+    validation_mode: str = DEFAULT_VALIDATION_MODE
+    effective_validation_mode: str = DEFAULT_VALIDATION_MODE
 
 
 class DutyBackendConfigPatch(BaseModel):
@@ -132,6 +141,10 @@ class DutyBackendConfigPatch(BaseModel):
     offline_skip_weekends: Optional[bool] = None
     areas: Optional[List[str]] = None
     area_per_day_counts: Optional[dict] = None
+    # Validation policy ("relaxed" / "strict" / "repair" / "auto"). Stored
+    # verbatim; state_ops normalizes it and the runtime projection also
+    # exposes the resolved value as `effective_validation_mode`.
+    validation_mode: Optional[str] = None
 
 
 class DutyNotificationSettingsPatch(BaseModel):

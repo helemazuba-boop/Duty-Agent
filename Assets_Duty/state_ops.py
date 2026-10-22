@@ -18,6 +18,7 @@ from absence_ops import absences_for_window
 from typing import Callable, Dict, Iterable, List, Optional, Tuple
 
 from diagnostics import truncate_for_log
+from validation_policy import DEFAULT_VALIDATION_MODE, normalize_validation_mode, resolve_validation_mode
 
 # Re-exported for use by other modules (engine, routers, etc.)
 def sanitize_error_for_client(msg: str) -> str:
@@ -375,6 +376,10 @@ def _create_default_persisted_config() -> dict:
         "offline_skip_weekends": True,
         "areas": [],
         "area_per_day_counts": {},
+        # Written explicitly so a fresh install's config.json is already in its
+        # normalized shape - otherwise the first load flags it as "changed" and
+        # rewrites it once for no reason.
+        "validation_mode": DEFAULT_VALIDATION_MODE,
     }
 
 
@@ -429,6 +434,10 @@ def _normalize_persisted_config(config: dict | None) -> dict:
         "offline_skip_weekends": bool(source.get("offline_skip_weekends", True)),
         "areas": areas,
         "area_per_day_counts": area_per_day_counts,
+        # Validation policy. Persisted verbatim ("auto" stays "auto") so the
+        # settings UI can show what the user chose; the runtime projection
+        # additionally exposes `effective_validation_mode` (auto expanded).
+        "validation_mode": normalize_validation_mode(source.get("validation_mode")),
     }
 
 
@@ -469,6 +478,15 @@ def _hydrate_runtime_config(persisted: dict, logger=None) -> dict:
         "offline_skip_weekends": normalized.get("offline_skip_weekends", True),
         "areas": normalized["areas"],
         "area_per_day_counts": normalized["area_per_day_counts"],
+        # Configured mode (what the user picked; "auto" stays "auto") plus the
+        # mode the engine will actually apply. Executors read the effective one
+        # through ValidationPolicy.from_config; the settings UI shows both so
+        # "auto" is not a black box. `model_profile` only exists on the
+        # hydrated side, so it is injected here for the auto resolution.
+        "validation_mode": normalized["validation_mode"],
+        "effective_validation_mode": resolve_validation_mode(
+            {**normalized, "model_profile": selected_plan.get("model_profile", "")}
+        ),
     }
 
 
@@ -1080,6 +1098,9 @@ def _persisted_config_body(config: dict | None) -> dict:
         "offline_skip_weekends": normalized.get("offline_skip_weekends", True),
         "areas": normalized.get("areas", []),
         "area_per_day_counts": normalized.get("area_per_day_counts", {}),
+        # Without this, changing only the validation policy would not bump the
+        # config version, so two concurrent PATCHes could race silently.
+        "validation_mode": normalized.get("validation_mode", ""),
     }
 
 
@@ -1088,7 +1109,7 @@ def patch_config(ctx: Context, patch: dict) -> dict:
     unsupported_keys = sorted(
         str(key)
         for key, value in (patch or {}).items()
-        if value is not None and key not in {"expected_version", "selected_plan_id", "plan_presets", "duty_rule", "offline_schedule_days", "offline_skip_weekends", "areas", "area_per_day_counts"}
+        if value is not None and key not in {"expected_version", "selected_plan_id", "plan_presets", "duty_rule", "offline_schedule_days", "offline_skip_weekends", "areas", "area_per_day_counts", "validation_mode"}
     )
     if unsupported_keys:
         raise ValueError(f"Unsupported config patch keys: {', '.join(unsupported_keys)}")
