@@ -287,15 +287,17 @@ class ConfigPlumbingTests(unittest.TestCase):
 
     def test_changing_only_the_mode_bumps_the_version(self):
         # _persisted_config_body decides the version bump; a key missing there
-        # lets two concurrent policy PATCHes race without a 409.
+        # lets two concurrent policy PATCHes race without a 409. "strict" and
+        # not "relaxed" because relaxed is the default - patching to the value
+        # that is already in effect is a no-op by design.
         ctx = self._ctx()
-        result = patch_config(ctx, {"validation_mode": "relaxed"})
+        result = patch_config(ctx, {"validation_mode": "strict"})
         self.assertEqual(result["version"], 2)
 
     def test_reapplying_the_same_mode_does_not_bump_the_version(self):
         ctx = self._ctx()
-        patch_config(ctx, {"validation_mode": "relaxed"})
-        result = patch_config(ctx, {"validation_mode": "relaxed"})
+        patch_config(ctx, {"validation_mode": "strict"})
+        result = patch_config(ctx, {"validation_mode": "strict"})
         self.assertEqual(result["version"], 2)
 
     def test_legacy_config_without_the_key_is_migrated_on_load(self):
@@ -551,6 +553,48 @@ class EndToEndModeTests(unittest.TestCase):
         pool = load_state(self.ctx.paths["state"])["schedule_pool"]
         entry = next(item for item in pool if item["date"] == "2026-09-14")
         self.assertEqual(len(entry["area_assignments"]["教室"]), 3)
+
+
+class DefaultModeTests(unittest.TestCase):
+    """The product default is `relaxed`: a capable model's schedule is no longer
+    silently rewritten. These pin that the flip actually took effect."""
+
+    def test_default_is_relaxed(self):
+        self.assertEqual(vp.DEFAULT_VALIDATION_MODE, "relaxed")
+
+    def test_enforcement_without_an_explicit_policy_does_not_rewrite(self):
+        # Every legacy caller that predates the policy table now gets the
+        # product default. If this ever starts filling/trimming again, someone
+        # re-hard-coded the old behaviour.
+        from single_pass_executor import _enforce_absence_and_counts
+
+        schedule = [{"date": "2026-09-14", "area_ids": {"教室": [1001]}, "note": ""}]
+        warnings = _enforce_absence_and_counts(
+            schedule, [1001, 1002], {1001: 1, 1002: 1}, 0, {"教室": 2}, {}, {}, set(),
+        )
+        self.assertEqual(schedule[0]["area_ids"]["教室"], [1001])
+        self.assertTrue(any("宽松模式未修改" in w for w in warnings))
+        self.assertNotIn("自动修正", schedule[0]["note"])
+
+    def test_legacy_config_migrates_to_relaxed(self):
+        import tempfile
+
+        from state_ops import create_default_config, load_config
+
+        with tempfile.TemporaryDirectory() as tmp:
+            ctx = Context(data_dir=Path(tmp))
+            config = load_config(ctx)
+        self.assertEqual(config["validation_mode"], "relaxed")
+        self.assertEqual(config["effective_validation_mode"], "relaxed")
+        self.assertEqual(create_default_config()["validation_mode"], "relaxed")
+
+    def test_auto_still_protects_constrained_profiles(self):
+        # The whole point of `auto`: a user on a sub-1B local model must not have
+        # to understand the three modes to keep the safety net.
+        policy = vp.ValidationPolicy.from_config(
+            {"validation_mode": "auto", "model_profile": "campus_small"}
+        )
+        self.assertEqual(policy.mode, "repair")
 
 
 class MultiAgentPolicyTests(unittest.TestCase):

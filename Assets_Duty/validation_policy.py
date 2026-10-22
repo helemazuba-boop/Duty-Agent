@@ -47,10 +47,12 @@ from typing import Dict, Iterable, List, Optional
 
 VALIDATION_MODES = ("relaxed", "strict", "repair")
 
-# Batch 1 lands the mechanism with the historical behaviour as the default so
-# the refactor itself is behaviour-neutral; the product default becomes
-# "relaxed" in the batch that flips it (see docs/validation-modes.md).
-DEFAULT_VALIDATION_MODE = "repair"
+# The product default. The mechanism first landed with the historical behaviour
+# ("repair") so the refactor was behaviour-neutral; this is the flip to the
+# intended default - a capable model's schedule is no longer silently rewritten,
+# and deviations are reported instead. `auto` keeps sub-1B/edge profiles on
+# "repair" so the population that still needs the net keeps it.
+DEFAULT_VALIDATION_MODE = "relaxed"
 
 ACTION_REJECT = "reject"
 ACTION_WARN = "warn"

@@ -287,6 +287,7 @@ class ToolLoopEnforcementTests(unittest.TestCase):
 
 class SinglePassEnforcementTests(unittest.TestCase):
     def test_strip_absent_then_fill_debt_first(self):
+        import validation_policy
         from single_pass_executor import _enforce_absence_and_counts
 
         schedule = [{"date": "2026-09-14", "area_ids": {"教室": [1001, 1005]}, "note": ""}]
@@ -299,6 +300,7 @@ class SinglePassEnforcementTests(unittest.TestCase):
             {"2026-09-14": {"教室": 3}},
             {1003: 1},
             {1005},
+            policy=validation_policy.ValidationPolicy("repair"),
         )
         area_ids = schedule[0]["area_ids"]["教室"]
         self.assertNotIn(1005, area_ids)
@@ -308,6 +310,7 @@ class SinglePassEnforcementTests(unittest.TestCase):
         self.assertIn("自动修正", schedule[0]["note"])
 
     def test_trim_excess_protects_debtors(self):
+        import validation_policy
         from single_pass_executor import _enforce_absence_and_counts
 
         schedule = [{"date": "2026-09-14", "area_ids": {"教室": [1003, 1001, 1002, 1004]}, "note": ""}]
@@ -320,6 +323,7 @@ class SinglePassEnforcementTests(unittest.TestCase):
             {},
             {1003: 2},
             set(),
+            policy=validation_policy.ValidationPolicy("repair"),
         )
         area_ids = schedule[0]["area_ids"]["教室"]
         self.assertEqual(len(area_ids), 2)
@@ -327,6 +331,7 @@ class SinglePassEnforcementTests(unittest.TestCase):
         self.assertTrue(any("超额裁剪" in warning for warning in warnings))
 
     def test_shortfall_with_empty_pool_warns(self):
+        import validation_policy
         from single_pass_executor import _enforce_absence_and_counts
 
         schedule = [{"date": "2026-09-14", "area_ids": {"教室": [1001]}, "note": ""}]
@@ -339,6 +344,7 @@ class SinglePassEnforcementTests(unittest.TestCase):
             {},
             {},
             set(),
+            policy=validation_policy.ValidationPolicy("repair"),
         )
         self.assertTrue(any("人手不足" in warning for warning in warnings))
 
@@ -360,7 +366,8 @@ class SinglePassEnforcementTests(unittest.TestCase):
         )
         save_json_atomic(
             ctx.paths["config"],
-            {"areas": ["教室"], "area_per_day_counts": {"教室": 3}},
+            {"areas": ["教室"], "area_per_day_counts": {"教室": 3},
+             "validation_mode": "repair"},
         )
         update_state(
             ctx.paths["state"],

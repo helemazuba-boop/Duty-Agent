@@ -38,6 +38,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import validation_policy
 from state_ops import Context, load_roster_entries, load_state, save_json_atomic, save_config
 
 BASE_CONFIG = {
@@ -274,11 +275,17 @@ class DefaultAreaInjectionTests(unittest.TestCase):
         self.assertNotIn("值日", entry["area_assignments"])
 
     def test_configured_areas_still_enforced(self):
-        """回归保护：配置了区域时，缺额补齐/超额裁剪仍然生效。"""
+        """回归保护：配置了区域时，缺额补齐/超额裁剪仍然生效。
+
+        显式要求 ``repair``：宽松模式已是产品默认，不再自动补齐。
+        """
         from single_pass_executor import apply_single_pass_completion
 
         tmp = self._tmp()
-        ctx = make_ctx(tmp, config={**BASE_CONFIG, "areas": ["教室"], "area_per_day_counts": {"教室": 3}})
+        ctx = make_ctx(tmp, config={
+            **BASE_CONFIG, "areas": ["教室"], "area_per_day_counts": {"教室": 3},
+            "validation_mode": "repair",
+        })
         completion = "[areas]\nA = 教室\n[schedule]\n10-22 = A:1001\n"
         result = apply_single_pass_completion(
             ctx, completion, {"mode": "single_pass", "start_date": "2026-10-22", "trace_id": "t"},
@@ -561,7 +568,10 @@ class InactivePersonnelTests(unittest.TestCase):
         tmp = self._tmp()
         ctx = make_ctx(
             tmp,
-            config={**BASE_CONFIG, "areas": ["教室"], "area_per_day_counts": {"教室": 2}},
+            config={
+                **BASE_CONFIG, "areas": ["教室"], "area_per_day_counts": {"教室": 2},
+                "validation_mode": "repair",
+            },
             roster=roster,
         )
         completion = "[areas]\nA = 教室\n[schedule]\n10-22 = A:1001 1004\n"
@@ -581,7 +591,10 @@ class InactivePersonnelTests(unittest.TestCase):
         tmp = self._tmp()
         ctx = make_ctx(
             tmp,
-            config={**BASE_CONFIG, "areas": ["教室"], "area_per_day_counts": {"教室": 2}},
+            config={
+                **BASE_CONFIG, "areas": ["教室"], "area_per_day_counts": {"教室": 2},
+                "validation_mode": "repair",
+            },
             roster=roster,
         )
         completion = "[areas]\nA = 教室\n[schedule]\n10-22 = A:1001\n"
@@ -606,7 +619,9 @@ class PerDayAbsenceTests(unittest.TestCase):
         from state_ops import update_state
 
         tmp = self._tmp()
-        ctx = make_ctx(tmp)  # 未配置区域 → 动态区域，不触发自动补齐，便于观察剔除
+        # 未配置区域 → 动态区域，不触发自动补齐，便于观察剔除。
+        # 显式 repair：宽松模式（产品默认）不剔除，只报告。
+        ctx = make_ctx(tmp, config={**BASE_CONFIG, "validation_mode": "repair"})
         update_state(
             ctx.paths["state"],
             lambda state: {**state, "absences": [{"id": 1001, "from": "2026-10-23", "to": "2026-10-23"}]},
@@ -632,7 +647,8 @@ class PerDayAbsenceTests(unittest.TestCase):
         from state_ops import update_state
 
         tmp = self._tmp()
-        ctx = make_ctx(tmp)
+        # 显式 repair：宽松模式（产品默认）遇到"当天请假"是拒绝而非剔除。
+        ctx = make_ctx(tmp, config={**BASE_CONFIG, "validation_mode": "repair"})
         update_state(
             ctx.paths["state"],
             lambda state: {**state, "absences": [{"id": 1001, "from": "2026-10-22", "to": "2026-10-24"}]},
@@ -1474,8 +1490,11 @@ class MultiAgentRemainingTests(unittest.TestCase):
             "must_run_ids": [3],
         }
         schedule = [{"date": "2026-10-22", "area_ids": {"教室": [1, 2]}, "note": ""}]
+        # 显式 strict：宽松模式（产品默认）只报告 must_run 缺失，不拒绝。
         with self.assertRaises(ValueError) as caught:
-            validate_final_schedule(schedule, barrier2)
+            validate_final_schedule(
+                schedule, barrier2, validation_policy.ValidationPolicy("strict")
+            )
         self.assertIn("must_run", str(caught.exception))
 
         ok_schedule = [{"date": "2026-10-22", "area_ids": {"教室": [2, 3]}, "note": ""}]
@@ -1620,13 +1639,21 @@ class MaliciousCompletionTableTests(unittest.TestCase):
 
     START = "2026-10-22"
 
-    def _settle(self, completion, roster=ROSTER, state=None):
-        """跑到结算（落盘到 temp data dir），返回 (status, warnings, pool)。"""
+    def _settle(self, completion, roster=ROSTER, state=None, mode="repair"):
+        """跑到结算（落盘到 temp data dir），返回 (status, warnings, pool)。
+
+        ``mode`` 默认 ``repair``：本表钉的正是"解析→校验→规范化→修正→结算"
+        全链，而宽松模式（产品默认）刻意不修正。需要观察宽松行为的用例显式传
+        ``mode="relaxed"``。
+        """
         from single_pass_executor import apply_single_pass_completion
 
         tmp = Path(tempfile.mkdtemp())
         self.addCleanup(lambda: __import__("shutil").rmtree(tmp, ignore_errors=True))
-        ctx = make_ctx(tmp, roster=roster, state=state)
+        ctx = make_ctx(
+            tmp, roster=roster, state=state,
+            config={**BASE_CONFIG, "validation_mode": mode},
+        )
         result = apply_single_pass_completion(
             ctx, completion, {"mode": "single_pass", "start_date": self.START, "trace_id": "t"},
         )

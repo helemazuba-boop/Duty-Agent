@@ -57,6 +57,12 @@ const planDirty = ref(false);
 const planSaving = ref(false);
 const planProbing = ref(false);
 
+// 校验策略:validation_mode 是用户选择的档位(auto 会按模型画像解析),
+// effectiveValidationMode 是后端实际生效的档位(只读展示)。
+const validationMode = ref('relaxed');
+const effectiveValidationMode = ref('relaxed');
+const validationModeSaving = ref(false);
+
 // 后端 preset id 为 'incremental-small'(连字符);labels 仅作 name 缺失时的回退。
 const planLabels: Record<string, string> = {
   standard: '标准',
@@ -89,6 +95,25 @@ const modelProfileLabels: Record<string, string> = {
 const modelProfileOptions = Object.entries(modelProfileLabels).map(([value, label]) => ({ value, label }));
 const agentOrderOptions = Object.entries(agentOrderLabels).map(([value, label]) => ({ value, label }));
 
+// ======== 校验策略（后端 validation_policy）========
+// 三档产品语义与后端 validation_policy.describe_modes() 保持一致；文案在这里
+// 重复一份是因为设置页需要即时渲染，而 /api/v1/config 只回 mode 值本身。
+const validationModeLabels: Record<string, string> = {
+  relaxed: '宽松模式(推荐)',
+  strict: '严格模式',
+  repair: '实验性智能修复',
+  auto: '自动(按模型选择)',
+};
+
+const validationModeDetails: Record<string, string> = {
+  relaxed: '尊重模型输出:人数缺口、日期覆盖、区域结构等问题只警告,不自动修改排班。仅当与本地已知事实冲突(人员不在花名册、已停用、当天请假)或同一区域重复安排时才拒绝提交。',
+  strict: '完整检查区域人数、目标日期与业务规则,任一不满足即拒绝提交并列出具体违例。排班窗口必须完整覆盖,区域人数必须等于配置。',
+  repair: '由确定性代码自动补齐、裁剪和调整,每一次修改都会在排班结果里列出。适合 0.8B 级本地小模型。',
+  auto: '本地/受限模型画像(campus_small、edge)使用智能修复,其余使用宽松模式。',
+};
+
+const validationModeOptions = Object.entries(validationModeLabels).map(([value, label]) => ({ value, label }));
+
 const currentPreset = computed(() => planPresets.value.find((p) => p.id === selectedPlanId.value) || null);
 const isOfflinePreset = computed(() => currentPreset.value?.mode_id === 'offline');
 const planOptions = computed(() => planPresets.value.map((p) => ({
@@ -119,6 +144,10 @@ const applyConfig = (config: any, opts: { keepDutyRuleDraft?: boolean } = {}) =>
   singlePassStrategy.value = config.single_pass_strategy || 'auto';
   offlineScheduleDays.value = typeof config.offline_schedule_days === 'number' ? config.offline_schedule_days : 7;
   offlineSkipWeekends.value = config.offline_skip_weekends !== false;
+  validationMode.value = validationModeLabels[config.validation_mode]
+    ? config.validation_mode
+    : 'relaxed';
+  effectiveValidationMode.value = config.effective_validation_mode || validationMode.value;
   if (!opts.keepDutyRuleDraft) {
     dutyRule.value = config.duty_rule || '';
     dutyRuleSaved.value = true;
@@ -196,6 +225,24 @@ const saveDutyRule = async () => {
 
 const handleDutyRuleChange = () => {
   dutyRuleSaved.value = false;
+};
+
+const saveValidationMode = async () => {
+  validationModeSaving.value = true;
+  try {
+    const config = await api.updateConfig({ validation_mode: validationMode.value });
+    applyConfig(config, { keepDutyRuleDraft: true });
+    message.success('校验策略已保存');
+  } catch (e: any) {
+    if (e?.response?.status === 409) {
+      await loadConfig();
+      message.warning('配置已被其他入口更新,已重新加载,请确认后再保存');
+    } else {
+      message.error('校验策略保存失败');
+    }
+  } finally {
+    validationModeSaving.value = false;
+  }
 };
 
 // ======== 通知设置 ========
@@ -651,6 +698,64 @@ onMounted(async () => {
               description="后端未连接或配置为空。请先启动独立客户端后点击上方“检测连接”。"
               type="warning"
               show-icon
+            />
+          </Panel>
+
+          <!-- 校验策略 -->
+          <Panel
+            class="mb-16"
+            title="校验策略"
+            subtitle="模型输出与本地规则冲突时,后端是拒绝、只警告、还是自动修正"
+          >
+            <template #actions>
+              <Button
+                type="primary"
+                size="small"
+                :loading="validationModeSaving"
+                @click="saveValidationMode"
+              >
+                <template #icon><SaveOutlined /></template>
+                保存
+              </Button>
+            </template>
+
+            <div class="form-grid">
+              <div class="config-item">
+                <div class="config-label">策略档位</div>
+                <Select
+                  v-model:value="validationMode"
+                  :options="validationModeOptions"
+                  class="config-control"
+                />
+              </div>
+              <div class="config-item">
+                <div class="config-label">当前生效</div>
+                <div class="config-desc">
+                  由所选档位决定;选择"自动"时按模型画像解析,只读
+                </div>
+                <div class="status-tags">
+                  <Tag color="blue">{{ validationModeLabels[effectiveValidationMode] || effectiveValidationMode }}</Tag>
+                  <Tag v-if="validationMode === 'auto' && effectiveValidationMode !== 'auto'">
+                    解析自 {{ modelProfileLabels[modelProfile] || modelProfile }}
+                  </Tag>
+                </div>
+              </div>
+            </div>
+
+            <Alert
+              class="mt-12"
+              :type="validationMode === 'strict' ? 'warning' : 'info'"
+              show-icon
+              :message="validationModeLabels[validationMode] || validationMode"
+              :description="validationModeDetails[validationMode] || ''"
+            />
+
+            <Alert
+              class="mt-12"
+              type="info"
+              show-icon
+              message="以下检查在任何档位下都生效"
+              description="协议解析失败、日期乱序或重复、同一区域重复安排同一人、账本幂等、历史排班保留、回滚的名单代际校验。这些保护的是数据一致性,而不是模型的发挥空间,因此不随档位关闭。"
             />
           </Panel>
 

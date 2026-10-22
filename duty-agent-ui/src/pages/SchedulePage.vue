@@ -263,10 +263,12 @@ const fmtTime = (ts: number) =>
                       模型不可用，本次排班由确定性算法兜底生成（规则全部满足，但未经过模型推理）。
                     </div>
 
-                    <!-- 后端确定性修正/提示:剔除缺席、缺额补齐、忽略幻觉账本、未覆盖日期… -->
+                    <!-- 后端校验提示:剔除缺席、缺额补齐、忽略幻觉账本、未覆盖日期…
+                         宽松模式下这些都是"只警告、未修改"；智能修复模式下才是真改动，
+                         逐条文本自身会说明是哪一种（"自动修正:" vs "宽松模式未修改"）。 -->
                     <div v-if="msg.run!.warnings && msg.run!.warnings.length > 0" class="ai-run__warnings">
                       <div class="ai-run__warnings-title">
-                        自动修正与提示 · {{ msg.run!.warnings.length }} 条
+                        校验提示 · {{ msg.run!.warnings.length }} 条
                       </div>
                       <div v-for="(warning, wi) in msg.run!.warnings" :key="wi" class="ai-run__warning">
                         {{ warning }}

@@ -9,6 +9,7 @@ from state_ops import (
     get_configured_area_names,
     get_configured_area_per_day_counts,
 )
+from validation_policy import DEFAULT_VALIDATION_MODE, ValidationPolicy
 
 from .contracts import FrozenSnapshot
 
@@ -369,8 +370,14 @@ def validate_agent6_output(raw: Dict[str, Any], barrier2: Dict[str, Any]) -> Dic
     # hard-fail the whole run with no model self-repair and no code fallback.
     # Raising here feeds "Fix this error: ..." back to the model (call_llm_json
     # retries on any validator exception).
+    #
+    # The policy is deliberately NOT consulted at this gate: this is the agent6
+    # retry boundary, and "the model's output is not usable yet, try again" is
+    # the correct response in every mode. The policy decides what happens to a
+    # deviation that survives into settlement (see validate_final_schedule), not
+    # whether the model gets a second chance.
     try:
-        validate_final_schedule(normalized, barrier2)
+        validate_final_schedule(normalized, barrier2, ValidationPolicy("strict"))
     except KeyError as ex:
         raise ValueError(f"schedule references unknown template key: {ex}") from ex
     return {"schedule": normalized}
@@ -405,8 +412,6 @@ def validate_final_schedule(
 
     Returns the warnings the caller must surface; never rewrites the schedule.
     """
-    from validation_policy import DEFAULT_VALIDATION_MODE, ValidationPolicy
-
     policy = policy or ValidationPolicy(DEFAULT_VALIDATION_MODE)
     warnings: List[str] = []
     template = barrier2["template"]
