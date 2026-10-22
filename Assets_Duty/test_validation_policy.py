@@ -29,8 +29,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import state_ops
 import validation_policy as vp
-from state_ops import Context, patch_config, save_json_atomic
+from state_ops import Context, load_state, patch_config, save_json_atomic
 
 BASE_PLAN = {
     "id": "standard", "name": "标准", "mode_id": "standard",
@@ -140,9 +141,14 @@ class CheckMatrixTests(unittest.TestCase):
         for check in discretion:
             self.assertEqual(vp.CHECK_ACTIONS[check]["strict"], vp.ACTION_REJECT, check)
 
-    def test_repair_rewrites_model_discretion(self):
-        for check in ("headcount_short", "headcount_excess", "window_gap", "must_run_missing"):
+    def test_repair_rewrites_only_what_it_actually_repairs(self):
+        # Window / phantom-area / template checks only *report* today - no mode
+        # rewrites the date set or the area structure. The table must not claim
+        # a repair that does not exist.
+        for check in ("headcount_short", "headcount_excess", "must_run_missing"):
             self.assertEqual(vp.CHECK_ACTIONS[check]["repair"], vp.ACTION_REPAIR, check)
+        for check in ("window_gap", "out_of_window", "phantom_area", "template_mismatch"):
+            self.assertEqual(vp.CHECK_ACTIONS[check]["repair"], vp.ACTION_WARN, check)
 
     def test_cross_area_reuse_is_allowed_in_every_mode(self):
         # Product rule: same person, different areas, same day is fine. No
@@ -328,6 +334,208 @@ class PatchSchemaTests(unittest.TestCase):
         )
         self.assertEqual(model.validation_mode, "auto")
         self.assertEqual(model.effective_validation_mode, "repair")
+
+
+class EnforcementDispatchTests(unittest.TestCase):
+    """The executors must ask the table, not decide for themselves.
+
+    These drive ``_enforce_absence_and_counts`` directly so a regression in the
+    dispatch (rather than in the repair maths, which test_repair_wave2 covers)
+    is caught here.
+    """
+
+    RELAXED = None  # built in setUp to keep the assertions readable
+
+    def _run(self, schedule, *, mode, area_counts, absences=None, day_overrides=None):
+        from single_pass_executor import _enforce_absence_and_counts
+
+        return _enforce_absence_and_counts(
+            schedule,
+            [1001, 1002, 1003, 1004],
+            {1001: 1, 1002: 1, 1003: 1, 1004: 1},
+            0,
+            area_counts,
+            day_overrides or {},
+            {},
+            set(),
+            absences=absences,
+            policy=vp.ValidationPolicy(mode),
+        )
+
+    def test_relaxed_does_not_fill_a_shortfall(self):
+        schedule = [{"date": "2026-09-14", "area_ids": {"教室": [1001]}, "note": ""}]
+        warnings = self._run(schedule, mode="relaxed", area_counts={"教室": 3})
+        self.assertEqual(schedule[0]["area_ids"]["教室"], [1001])  # untouched
+        self.assertTrue(any("宽松模式未修改" in w for w in warnings))
+        self.assertNotIn("自动修正", schedule[0]["note"])
+
+    def test_relaxed_does_not_trim_an_excess(self):
+        schedule = [{"date": "2026-09-14", "area_ids": {"教室": [1001, 1002, 1003]}, "note": ""}]
+        warnings = self._run(schedule, mode="relaxed", area_counts={"教室": 2})
+        self.assertEqual(schedule[0]["area_ids"]["教室"], [1001, 1002, 1003])
+        self.assertTrue(any("宽松模式未修改" in w for w in warnings))
+        self.assertNotIn("自动修正", schedule[0]["note"])
+
+    def test_relaxed_still_refuses_an_inactive_person(self):
+        from single_pass_executor import _enforce_absence_and_counts
+
+        schedule = [{"date": "2026-09-14", "area_ids": {"教室": [1001, 1004]}, "note": ""}]
+        with self.assertRaises(ValueError) as caught:
+            _enforce_absence_and_counts(
+                schedule, [1001, 1002, 1003, 1004],
+                {1001: 1, 1002: 1, 1003: 1, 1004: 0},  # 1004 deactivated
+                0, {"教室": 2}, {}, {}, set(),
+                policy=vp.ValidationPolicy("relaxed"),
+            )
+        self.assertIn("已停用", str(caught.exception))
+
+    def test_relaxed_still_refuses_someone_on_leave(self):
+        schedule = [{"date": "2026-09-14", "area_ids": {"教室": [1001, 1002]}, "note": ""}]
+        with self.assertRaises(ValueError) as caught:
+            self._run(
+                schedule, mode="relaxed", area_counts={"教室": 2},
+                absences=[{"id": 1002, "from": "2026-09-14", "to": "2026-09-14"}],
+            )
+        self.assertIn("请假", str(caught.exception))
+
+    def test_strict_refuses_a_shortfall(self):
+        schedule = [{"date": "2026-09-14", "area_ids": {"教室": [1001]}, "note": ""}]
+        with self.assertRaises(ValueError) as caught:
+            self._run(schedule, mode="strict", area_counts={"教室": 3})
+        self.assertIn("少于所需", str(caught.exception))
+
+    def test_strict_refuses_an_excess(self):
+        schedule = [{"date": "2026-09-14", "area_ids": {"教室": [1001, 1002, 1003]}, "note": ""}]
+        with self.assertRaises(ValueError) as caught:
+            self._run(schedule, mode="strict", area_counts={"教室": 2})
+        self.assertIn("超过所需", str(caught.exception))
+
+    def test_repair_still_fills_and_stamps_the_note(self):
+        # Historical behaviour, now behind the table rather than hard-coded.
+        schedule = [{"date": "2026-09-14", "area_ids": {"教室": [1001]}, "note": ""}]
+        warnings = self._run(schedule, mode="repair", area_counts={"教室": 2})
+        self.assertEqual(len(schedule[0]["area_ids"]["教室"]), 2)
+        self.assertTrue(any("补齐" in w for w in warnings))
+        self.assertIn("自动修正", schedule[0]["note"])
+
+    def test_relaxed_allows_same_day_cross_area_reuse(self):
+        # Product constraint: one person in two areas on the same day is legal
+        # in every mode. Neither mode may strip it or reject the run.
+        schedule = [
+            {
+                "date": "2026-09-14",
+                "area_ids": {"教室": [1001, 1002], "楼道": [1001, 1003]},
+                "note": "",
+            }
+        ]
+        warnings = self._run(schedule, mode="relaxed", area_counts={"教室": 2, "楼道": 2})
+        self.assertEqual(schedule[0]["area_ids"]["教室"], [1001, 1002])
+        self.assertEqual(schedule[0]["area_ids"]["楼道"], [1001, 1003])
+        self.assertEqual(warnings, [])
+
+    def test_strict_window_gap_refuses(self):
+        from single_pass_executor import _audit_schedule_window
+
+        schedule = [{"date": "2026-09-14", "area_ids": {"教室": [1001]}, "note": ""}]
+        with self.assertRaises(ValueError) as caught:
+            _audit_schedule_window(
+                schedule, ["2026-09-13", "2026-09-14"], vp.ValidationPolicy("strict")
+            )
+        self.assertIn("未覆盖日期", str(caught.exception))
+
+    def test_relaxed_window_gap_only_warns(self):
+        from single_pass_executor import _audit_schedule_window
+
+        schedule = [{"date": "2026-09-14", "area_ids": {"教室": [1001]}, "note": ""}]
+        warnings = _audit_schedule_window(
+            schedule, ["2026-09-13", "2026-09-14"], vp.ValidationPolicy("relaxed")
+        )
+        self.assertTrue(any("未覆盖日期" in w for w in warnings))
+        self.assertEqual(len(schedule), 1)  # never rewrites the date set
+
+
+class EndToEndModeTests(unittest.TestCase):
+    """The mode must survive the whole settle path, not just one function."""
+
+    def setUp(self):
+        import tempfile
+
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.data_dir = Path(self._tmp.name)
+        self.ctx = Context(data_dir=self.data_dir)
+        state_ops.save_roster_entries(
+            self.ctx,
+            [
+                {"id": 1001, "name": "张三", "active": True},
+                {"id": 1002, "name": "李四", "active": True},
+                {"id": 1003, "name": "赵六", "active": True},
+            ],
+        )
+
+    def _write_config(self, **overrides):
+        payload = {"areas": ["教室"], "area_per_day_counts": {"教室": 3}}
+        payload.update(overrides)
+        save_json_atomic(self.ctx.paths["config"], payload)
+
+    COMPLETION = (
+        "[areas]\nA = 教室\n[schedule]\n09-14 = A:1001 1002\n"
+        "[state]\npointer = 1\n"
+    )
+    RESUME = {"mode": "single_pass", "start_date": "2026-09-14", "trace_id": "t"}
+
+    def test_relaxed_commits_the_models_short_schedule_verbatim(self):
+        from single_pass_executor import apply_single_pass_completion
+
+        self._write_config(validation_mode="relaxed")
+        result = apply_single_pass_completion(self.ctx, self.COMPLETION, self.RESUME)
+
+        self.assertEqual(result["status"], "success")
+        self.assertTrue(any("人手不足" in w for w in result["adjustment_warnings"]))
+        pool = load_state(self.ctx.paths["state"])["schedule_pool"]
+        entry = next(item for item in pool if item["date"] == "2026-09-14")
+        # Exactly what the model wrote - no third person conjured by the code.
+        self.assertEqual(entry["area_assignments"]["教室"], ["张三", "李四"])
+        self.assertNotIn("自动修正", entry["note"])
+
+    def test_strict_refuses_the_same_completion(self):
+        from single_pass_executor import apply_single_pass_completion
+
+        self._write_config(validation_mode="strict")
+        with self.assertRaises(ValueError):
+            apply_single_pass_completion(self.ctx, self.COMPLETION, self.RESUME)
+        # Nothing may be persisted when strict refuses.
+        self.assertEqual(load_state(self.ctx.paths["state"]).get("schedule_pool", []), [])
+
+    def test_repair_fills_it_and_says_so(self):
+        from single_pass_executor import apply_single_pass_completion
+
+        self._write_config(validation_mode="repair")
+        result = apply_single_pass_completion(self.ctx, self.COMPLETION, self.RESUME)
+
+        self.assertEqual(result["status"], "success")
+        pool = load_state(self.ctx.paths["state"])["schedule_pool"]
+        entry = next(item for item in pool if item["date"] == "2026-09-14")
+        self.assertEqual(len(entry["area_assignments"]["教室"]), 3)
+        self.assertIn("自动修正", entry["note"])
+
+    def test_auto_with_a_constrained_profile_behaves_like_repair(self):
+        from single_pass_executor import apply_single_pass_completion
+
+        self._write_config(
+            validation_mode="auto",
+            plan_presets=[{
+                "id": "p", "name": "p", "mode_id": "standard", "api_key": "k",
+                "base_url": "https://example.com/v1", "model": "m",
+                "model_profile": "campus_small",
+            }],
+            selected_plan_id="p",
+        )
+        result = apply_single_pass_completion(self.ctx, self.COMPLETION, self.RESUME)
+        self.assertEqual(result["status"], "success")
+        pool = load_state(self.ctx.paths["state"])["schedule_pool"]
+        entry = next(item for item in pool if item["date"] == "2026-09-14")
+        self.assertEqual(len(entry["area_assignments"]["教室"]), 3)
 
 
 if __name__ == "__main__":

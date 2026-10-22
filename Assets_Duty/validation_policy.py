@@ -108,11 +108,15 @@ CHECK_ACTIONS: Dict[str, Dict[str, str]] = {
     # --- the model's own discretion ---------------------------------------
     "headcount_short": _row(relaxed=ACTION_WARN, strict=ACTION_REJECT, repair=ACTION_REPAIR),
     "headcount_excess": _row(relaxed=ACTION_WARN, strict=ACTION_REJECT, repair=ACTION_REPAIR),
-    "window_gap": _row(relaxed=ACTION_WARN, strict=ACTION_REJECT, repair=ACTION_REPAIR),
-    "out_of_window": _row(relaxed=ACTION_WARN, strict=ACTION_REJECT, repair=ACTION_REPAIR),
-    "phantom_area": _row(relaxed=ACTION_WARN, strict=ACTION_REJECT, repair=ACTION_REPAIR),
+    # Window checks only *report* today: no mode rewrites the date set, because
+    # dropping an out-of-window date or inventing a missing one is a bigger
+    # decision than a headcount tweak. `repair` therefore degrades to `warn`
+    # rather than claiming a fix that does not exist.
+    "window_gap": _row(relaxed=ACTION_WARN, strict=ACTION_REJECT, repair=ACTION_WARN),
+    "out_of_window": _row(relaxed=ACTION_WARN, strict=ACTION_REJECT, repair=ACTION_WARN),
+    "phantom_area": _row(relaxed=ACTION_WARN, strict=ACTION_REJECT, repair=ACTION_WARN),
     "must_run_missing": _row(relaxed=ACTION_WARN, strict=ACTION_REJECT, repair=ACTION_REPAIR),
-    "template_mismatch": _row(relaxed=ACTION_WARN, strict=ACTION_REJECT, repair=ACTION_REPAIR),
+    "template_mismatch": _row(relaxed=ACTION_WARN, strict=ACTION_REJECT, repair=ACTION_WARN),
     # Cross-area same-day reuse is ALLOWED by product rule in every mode
     # (see the audit's design constraint); it is listed only so a future
     # policy change has an obvious place to land, not because it is checked.

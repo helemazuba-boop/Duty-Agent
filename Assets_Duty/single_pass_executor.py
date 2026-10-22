@@ -44,6 +44,7 @@ from state_ops import (
     resolve_debt_credit_conflicts,
     update_state,
 )
+from validation_policy import DEFAULT_VALIDATION_MODE, ValidationPolicy
 
 AI_RESPONSE_MAX_CHARS = 20000
 
@@ -58,16 +59,30 @@ def _enforce_absence_and_counts(
     debt_counts: Dict[int, int],
     absent_ids: set,
     absences: Optional[List[dict]] = None,
+    policy: Optional[ValidationPolicy] = None,
 ) -> List[str]:
     """Deterministic post-parse repair (D-A): strip absentees and inactive
     members, trim excess, fill shortfall. Mutates ``normalized_ids`` in place;
     returns warnings.
 
+    Every step consults ``policy`` (see :mod:`validation_policy`) instead of
+    running unconditionally:
+
+    * ``repair`` — historical behaviour: fix it and say so.
+    * ``relaxed`` — the model is authoritative, so headcount problems are only
+      reported; conflicts with locally-known truth (inactive / on leave) are
+      still refused rather than silently scheduled.
+    * ``strict`` — any headcount deviation refuses the commit.
+
     ``absences`` (raw persisted leave ranges) enables PER-DAY resolution: a
     one-day leave only removes that person from that day. Without it the flat
     ``absent_ids`` set applies to every date — still the right semantics for
     model-declared ``[state] absent`` IDs, which carry no per-date ranges.
+
+    ``policy=None`` keeps the historical behaviour for direct callers (tests,
+    one-off scripts) that predate the policy table.
     """
+    policy = policy or ValidationPolicy(DEFAULT_VALIDATION_MODE)
     warnings: List[str] = []
     if not normalized_ids:
         return warnings
@@ -97,6 +112,12 @@ def _enforce_absence_and_counts(
             # deactivated person could be scheduled with zero warning.
             inactive_hit = [pid for pid in ids if id_to_active.get(pid, 1) == 0]
             if inactive_hit:
+                if policy.is_fatal("inactive_person"):
+                    raise ValueError(
+                        f"{date_text}/{area_name}: 安排了已停用人员 "
+                        + " ".join(str(pid) for pid in inactive_hit)
+                        + "。请先在名单管理中恢复该成员，或修改排班。"
+                    )
                 ids = [pid for pid in ids if id_to_active.get(pid, 1) != 0]
                 day_ids -= set(inactive_hit)
                 warnings.append(
@@ -107,6 +128,12 @@ def _enforce_absence_and_counts(
 
             stripped = [person_id for person_id in ids if person_id in day_absent]
             if stripped:
+                if policy.is_fatal("absent_same_day"):
+                    raise ValueError(
+                        f"{date_text}/{area_name}: 安排了当天请假/缺席人员 "
+                        + " ".join(str(person_id) for person_id in stripped)
+                        + "。请修改排班或先取消该成员的请假。"
+                    )
                 ids = [person_id for person_id in ids if person_id not in day_absent]
                 day_ids -= set(stripped)
                 warnings.append(
@@ -125,35 +152,61 @@ def _enforce_absence_and_counts(
                 required = None  # dynamic model-declared area: leave count as-is
 
             if required is not None:
+                # Compute the repair first, then decide whether to apply it:
+                # `relaxed` must report the same deviation without touching it.
                 kept, trimmed = trim_excess(ids, required, debt_counts)
                 if trimmed:
-                    ids = kept
-                    day_ids -= set(trimmed)
-                    warnings.append(
-                        f"{date_text}/{area_name}: 超额裁剪移除 "
-                        + " ".join(str(person_id) for person_id in trimmed)
-                    )
-                    entry_adjustments.append(f"裁剪{len(trimmed)}人")
+                    if policy.is_fatal("headcount_excess"):
+                        raise ValueError(
+                            f"{date_text}/{area_name}: 安排了 {len(ids)} 人，"
+                            f"超过所需 {required} 人"
+                            + "（" + " ".join(str(pid) for pid in trimmed) + "）"
+                        )
+                    if policy.repairs("headcount_excess"):
+                        ids = kept
+                        day_ids -= set(trimmed)
+                        warnings.append(
+                            f"{date_text}/{area_name}: 超额裁剪移除 "
+                            + " ".join(str(person_id) for person_id in trimmed)
+                        )
+                        entry_adjustments.append(f"裁剪{len(trimmed)}人")
+                    else:
+                        warnings.append(
+                            f"{date_text}/{area_name}: 安排了 {len(ids)} 人，"
+                            f"超过配置 {required} 人（宽松模式未修改）"
+                        )
 
                 if len(ids) < required:
-                    candidates = [
-                        person_id
-                        for person_id in rotation
-                        if person_id not in day_ids and person_id not in absent_ids
-                    ]
-                    ids, added = fill_shortfall(ids, required, candidates, debt_counts)
-                    if added:
-                        day_ids.update(added)
-                        warnings.append(
-                            f"{date_text}/{area_name}: 缺额自动补齐 "
-                            + " ".join(str(person_id) for person_id in added)
-                        )
-                        entry_adjustments.append(f"补齐{len(added)}人")
+                    added: List[int] = []
+                    if policy.repairs("headcount_short"):
+                        candidates = [
+                            person_id
+                            for person_id in rotation
+                            if person_id not in day_ids and person_id not in absent_ids
+                        ]
+                        ids, added = fill_shortfall(ids, required, candidates, debt_counts)
+                        if added:
+                            day_ids.update(added)
+                            warnings.append(
+                                f"{date_text}/{area_name}: 缺额自动补齐 "
+                                + " ".join(str(person_id) for person_id in added)
+                            )
+                            entry_adjustments.append(f"补齐{len(added)}人")
                     if len(ids) < required:
+                        if policy.is_fatal("headcount_short"):
+                            raise ValueError(
+                                f"{date_text}/{area_name}: 仅排上 {len(ids)} 人，"
+                                f"少于所需 {required} 人"
+                            )
+                        # Only a mode that actually tried to fix it may stamp
+                        # the note; in relaxed mode nothing was touched, so the
+                        # deviation must not read as an automatic correction.
+                        if policy.repairs("headcount_short"):
+                            entry_adjustments.append("人手不足")
                         warnings.append(
                             f"{date_text}/{area_name}: 人手不足，需 {required} 人仅排上 {len(ids)} 人"
+                            + ("" if policy.repairs("headcount_short") else "（宽松模式未修改）")
                         )
-                        entry_adjustments.append("人手不足")
 
             area_ids[area_name] = ids
 
@@ -180,13 +233,20 @@ def _is_known_person(person_id, all_ids: List[int]) -> bool:
 def _audit_schedule_window(
     normalized_ids: List[dict],
     expected_dates: Optional[List[str]],
+    policy: Optional[ValidationPolicy] = None,
 ) -> List[str]:
     """Non-blocking window audit.
 
     A run must not silently deliver half a window, nor silently schedule
     outside it (the prompt calls over-generation fatal, but nothing enforced
     it). Returns warning strings — never raises, never rewrites the schedule.
+
+    ``strict`` is the exception: it refuses the commit instead of warning,
+    because "the requested dates" is part of the contract there. No mode
+    rewrites the date set — dropping an out-of-window day or inventing a
+    missing one is a bigger decision than a headcount tweak.
     """
+    policy = policy or ValidationPolicy(DEFAULT_VALIDATION_MODE)
     if not expected_dates:
         return []
     expected = {str(day).strip() for day in expected_dates if str(day).strip()}
@@ -206,13 +266,19 @@ def _audit_schedule_window(
     warnings: List[str] = []
     missing = sorted(expected - scheduled)
     if missing:
-        warnings.append(
+        detail = (
             "未覆盖日期 "
             + " ".join(day[5:] for day in missing)
             + f"（期望 {len(expected)} 天；若指令明确要求更少天数可忽略）"
         )
+        if policy.is_fatal("window_gap"):
+            raise ValueError(f"{detail}。严格模式拒绝提交不完整的排班窗口。")
+        warnings.append(detail)
     if out_of_window:
-        warnings.append("超出排班窗口的日期: " + " ".join(sorted(out_of_window)))
+        detail = "超出排班窗口的日期: " + " ".join(sorted(out_of_window))
+        if policy.is_fatal("out_of_window"):
+            raise ValueError(f"{detail}。严格模式拒绝提交窗口之外的排班。")
+        warnings.append(detail)
     return warnings
 
 
@@ -421,7 +487,9 @@ def apply_single_pass_completion(
     # inside the enforcement pass (a one-day leave must not wipe the person from
     # the whole window), model-declared [state] absent IDs apply run-wide, and
     # inactive members are stripped. Counts are then repaired deterministically
-    # (D-A: fill shortfall, trim excess).
+    # (D-A: fill shortfall, trim excess) — all of it now gated by the
+    # validation policy, so `relaxed` reports deviations without rewriting the
+    # model's schedule and `strict` refuses to commit them.
     declared_absent_ids: set = set()
     for raw_id in ((llm_result.get("state_delta") or {}).get("absent_ids") or []):
         try:
@@ -429,6 +497,7 @@ def apply_single_pass_completion(
         except (TypeError, ValueError):
             continue
     declared_absent_ids &= set(all_ids)
+    validation_policy = ValidationPolicy.from_config(config)
     adjustment_warnings = _enforce_absence_and_counts(
         normalized_ids,
         all_ids,
@@ -439,9 +508,10 @@ def apply_single_pass_completion(
         debt_counts,
         declared_absent_ids,
         absences=state_data.get("absences", []) or [],
+        policy=validation_policy,
     )
     adjustment_warnings.extend(
-        _audit_schedule_window(normalized_ids, expected_dates)
+        _audit_schedule_window(normalized_ids, expected_dates, validation_policy)
     )
 
     restored = restore_schedule(normalized_ids, id_to_name, area_names, {})
