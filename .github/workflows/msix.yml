@@ -1,0 +1,199 @@
+name: MSIX
+
+# 补齐 MSIX 侧的两块 CI 空白：
+#   1. 认证测试：WACK 本机没有，商店认证又太晚，所以把能自动化的清单/资源/能力
+#      规范固化成每次都跑的静态检查（MSIX-CertificationTest.ps1）。
+#   2. 打包链路：以前 release.yml 只出 zip，MSIX 从来没在 CI 里构建过，更别说
+#      安装往返。这里建一次包、按包内清单再跑一遍认证、再做装/卸往返。
+#
+# 刻意不做：GUI 只在 CI 里装/卸，不启动。AUMID 激活 + WebView2 + 后端拉起属于
+# 手动生命周期验收，见 MSIX-LifecycleTest.ps1。
+
+on:
+  push:
+    paths:
+      - "DutyAgent.Client/**"
+      - "DutyAgent.Client-Package/**"
+      - "DutyAgent.Client.Tests/**"
+      - "Duty-Agent-ClassIsland-Bridge/**"
+      - "Duty-Agent-ClassIsland-Bridge.Tests/**"
+      - "Assets_Duty/**"
+      - "duty-agent-ui/**"
+      - "scripts/Build-MsixPackage.ps1"
+      - "scripts/New-DutyAgentClientRelease.ps1"
+      - "scripts/MSIX-CertificationTest.ps1"
+      - "scripts/MSIX-LifecycleTest.ps1"
+      - ".github/workflows/msix.yml"
+  pull_request:
+    paths:
+      - "DutyAgent.Client/**"
+      - "DutyAgent.Client-Package/**"
+      - "DutyAgent.Client.Tests/**"
+      - "Duty-Agent-ClassIsland-Bridge/**"
+      - "Duty-Agent-ClassIsland-Bridge.Tests/**"
+      - "Assets_Duty/**"
+      - "duty-agent-ui/**"
+      - "scripts/Build-MsixPackage.ps1"
+      - "scripts/New-DutyAgentClientRelease.ps1"
+      - "scripts/MSIX-CertificationTest.ps1"
+      - "scripts/MSIX-LifecycleTest.ps1"
+      - ".github/workflows/msix.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: msix-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  certification:
+    name: Manifest certification lint
+    runs-on: windows-latest
+    outputs:
+      package_present: ${{ steps.detect.outputs.present }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Detect MSIX package project
+        id: detect
+        shell: pwsh
+        run: |
+          $manifest = "DutyAgent.Client-Package\\Package.appxmanifest"
+          if (Test-Path -LiteralPath $manifest -PathType Leaf) {
+            "present=true" >> $env:GITHUB_OUTPUT
+          }
+          else {
+            Write-Host "::notice::No MSIX package manifest on this branch; MSIX checks are not applicable."
+            "present=false" >> $env:GITHUB_OUTPUT
+          }
+
+      # 只读、秒级、不需要管理员。任何 PR 都能跑，最早失败也最便宜。
+      # -EnforceStorePublisher：清单现在放的就是 Partner Center 发布者 ID，硬校验它，
+      # 谁不小心改回开发 DN 立刻在 CI 暴露。
+      - name: Certification checks against the checked-in manifest
+        if: steps.detect.outputs.present == 'true'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          ./scripts/MSIX-CertificationTest.ps1 `
+            -ManifestPath "DutyAgent.Client-Package\Package.appxmanifest" `
+            -EnforceStorePublisher
+
+  package:
+    name: Build + verify + install smoke
+    runs-on: windows-latest
+    needs: certification
+    if: needs.certification.outputs.package_present == 'true'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+
+      - name: Setup Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install winapp CLI (@microsoft/winappcli)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          # winapp.exe 在 npm 全局 bin 里；setup-node 已把它加进 PATH。
+          npm install -g @microsoft/winappcli
+          $winapp = (Get-Command winapp -ErrorAction SilentlyContinue).Source
+          if (-not $winapp) { throw "winapp 未安装成功" }
+          Write-Host "winapp: $winapp"
+
+      - name: Build MSIX package (client + UI + backend + bridge)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          # %TEMP% 已在脚本内部被改指到 .msix-work\temp：winapp package 会先把
+          # 约 260MB 的布局复制过去再压缩，C: 空间不足时会假死（本机实测 19 分钟）。
+          ./scripts/Build-MsixPackage.ps1
+
+      - name: Locate the built MSIX
+        id: msix
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $pkg = Get-ChildItem -LiteralPath ".msix-work" -Filter "*.msix" -Recurse -ErrorAction SilentlyContinue |
+            Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          if (-not $pkg) { throw "构建未产出 .msix" }
+          Write-Host "MSIX: $($pkg.FullName) ($([int]($pkg.Length / 1MB)) MB)"
+          "path=$($pkg.FullName)" >> $env:GITHUB_OUTPUT
+
+      # 包体内的清单才是真正会被认证/安装读到的那一份。仓库里那份通过不代表
+      # 打包过程没改坏（winapp 会重排属性并注入 build:Metadata）。
+      - name: Re-run certification checks against the packaged manifest
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $msix = "${{ steps.msix.outputs.path }}"
+          $stage = Join-Path $env:RUNNER_TEMP "msix-unpack"
+          if (Test-Path -LiteralPath $stage) { Remove-Item -LiteralPath $stage -Recurse -Force }
+          New-Item -ItemType Directory -Force -Path $stage | Out-Null
+          # Expand-Archive 对扩展名挑剔，先复制成 .zip
+          $zip = Join-Path $stage "pkg.zip"
+          Copy-Item -LiteralPath $msix -Destination $zip -Force
+          Expand-Archive -LiteralPath $zip -DestinationPath $stage -Force
+          $packagedManifest = Join-Path $stage "AppxManifest.xml"
+          if (-not (Test-Path -LiteralPath $packagedManifest)) { throw "包里没有 AppxManifest.xml" }
+          ./scripts/MSIX-CertificationTest.ps1 -ManifestPath $packagedManifest -LayoutPath $stage -EnforceStorePublisher
+
+      - name: Install / smoke / uninstall round-trip
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $msix = "${{ steps.msix.outputs.path }}"
+
+          $cer = Join-Path (Get-Location) ".msix-work\cert\devcert.cer"
+          if (Test-Path -LiteralPath $cer) {
+            Import-Certificate -FilePath $cer -CertStoreLocation "Cert:\LocalMachine\TrustedPeople" | Out-Null
+            Write-Host "已信任开发证书（devcert.cer）"
+          }
+          else {
+            Write-Warning "没找到 devcert.cer；装包可能因证书链不受信任失败。Build-MsixPackage.ps1 生成证书时应带 --export-cer。"
+          }
+
+          Get-Process -Name "duty-agent" -ErrorAction SilentlyContinue |
+            Stop-Process -Force -ErrorAction SilentlyContinue
+
+          Add-AppxPackage -Path $msix -ErrorAction Stop
+          Write-Host "Add-AppxPackage 成功"
+
+          $pkg = Get-AppxPackage -Name "HelemaZuba.Duty-Agent" -ErrorAction SilentlyContinue
+          if (-not $pkg) { throw "装完查不到 DutyAgent 包" }
+          Write-Host "PFN=$($pkg.PackageFamilyName) Version=$($pkg.Version)"
+
+          foreach ($rel in @(
+            "duty-agent.exe",
+            "Assets_Duty\python-embed\python.exe",
+            "Assets_Duty\web\index.html",
+            "bridge\DutyAgentBridge.dll")) {
+            $p = Join-Path $pkg.InstallLocation ($rel -replace "/", "\")
+            if (-not (Test-Path -LiteralPath $p)) { throw "安装目录里缺 $rel" }
+            Write-Host "  ok $rel"
+          }
+
+          # Windows 服务器版里 AUMID 激活不可靠（无交互会话），所以这里只做包层面
+          # 断言；进程/日志/注册表/升级见 MSIX-LifecycleTest.ps1（手动 + 管理员）。
+          Remove-AppxPackage -Package $pkg.PackageFullName -ErrorAction Stop
+          if (Get-AppxPackage -Name "HelemaZuba.Duty-Agent" -ErrorAction SilentlyContinue) {
+            throw "卸载后仍能查到包"
+          }
+          Write-Host "Remove-AppxPackage 成功，安装往返通过"
+
+      - name: Upload MSIX artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: duty-agent-msix
+          path: ${{ steps.msix.outputs.path }}
+          if-no-files-found: error
