@@ -15,7 +15,7 @@ from absence_ops import (
     trim_excess,
 )
 from execution_profiles import ExecutionPlan
-from llm_transport import call_llm_raw, parse_schedule_completion
+from llm_transport import call_llm_raw, get_and_clear_last_reasoning, parse_schedule_completion
 from postprocess import (
     estimate_pointer_progress,
     merge_schedule_pool,
@@ -646,7 +646,7 @@ def apply_single_pass_completion(
 
     update_state(ctx.paths["state"], _apply_state_update, stop_event=stop_event)
 
-    return {
+    result_payload = {
         "status": "success",
         "ai_response": llm_text[:AI_RESPONSE_MAX_CHARS],
         "trace_id": trace_id,
@@ -657,6 +657,13 @@ def apply_single_pass_completion(
         "transport_overrides": transport_overrides,
         "adjustment_warnings": adjustment_warnings,
     }
+    # The model's chain-of-thought, if the provider sent one. Captured by
+    # llm_transport as a side channel (reasoning never enters `content`, so the
+    # parser is unaffected) and surfaced here purely for the user to read.
+    reasoning = get_and_clear_last_reasoning().strip()
+    if reasoning:
+        result_payload["reasoning_content"] = reasoning[:AI_RESPONSE_MAX_CHARS]
+    return result_payload
 
 
 def run_single_pass_schedule(

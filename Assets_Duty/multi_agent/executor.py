@@ -13,7 +13,7 @@ from absence_ops import (
     merge_absence_entries,
 )
 from execution_profiles import ExecutionPlan
-from llm_transport import call_llm_json
+from llm_transport import call_llm_json, get_and_clear_last_reasoning, reset_last_reasoning
 from postprocess import normalize_apply_mode
 from prompt_gateway import build_agent_prompt
 from state_ops import (
@@ -536,7 +536,7 @@ def run_multi_agent_schedule(
         },
     )
 
-    return {
+    result_payload = {
         "status": "success",
         "completion_source": completion_source,
         "ai_response": final_ai_response[:20000],
@@ -554,3 +554,15 @@ def run_multi_agent_schedule(
         },
         "execution_trace": execution_trace,
     }
+    # Chain-of-thought from whichever agent ran last. Each agent's reasoning is
+    # captured by llm_transport as a side channel and overwritten by the next
+    # call, so this is the thinking behind the final assembly — which is the
+    # part the user actually wants to read. Only present when the model sent
+    # one, and never when the code fallback produced the schedule.
+    if completion_source == "llm":
+        reasoning = get_and_clear_last_reasoning().strip()
+        if reasoning:
+            result_payload["reasoning_content"] = reasoning[:20000]
+    else:
+        reset_last_reasoning()
+    return result_payload

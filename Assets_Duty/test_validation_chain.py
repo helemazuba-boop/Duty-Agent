@@ -1742,6 +1742,86 @@ class MaliciousCompletionTableTests(unittest.TestCase):
         self.assertIn("张三", names)
 
 
+class ReasoningVisibilityTests(unittest.TestCase):
+    """模型的思考过程必须到达用户（2026-10-22）。
+
+    推理模型把 CoT 放在 ``reasoning_content`` 字段或行内 ``<think>`` 块，
+    llm_transport 两者都捕获为旁路（绝不进 content），执行器负责把它取出来
+    放进 result payload。这条链上任何一环断了，用户在界面上就看不到思考。
+    """
+
+    def _ctx(self, tmp, **config_extra):
+        return make_ctx(tmp, config={**BASE_CONFIG, **config_extra})
+
+    def test_single_pass_surfaces_reasoning_in_result(self):
+        from single_pass_executor import apply_single_pass_completion
+
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: __import__("shutil").rmtree(tmp, ignore_errors=True))
+        ctx = self._ctx(tmp, areas=["教室"], area_per_day_counts={"教室": 2})
+
+        completion = (
+            "<think>先确认谁在请假，再看谁的欠账最多</think>\n"
+            "[areas]\nA = 教室\n[schedule]\n10-22 = A:1001 1002\n"
+        )
+        result = apply_single_pass_completion(
+            ctx, completion, {"mode": "single_pass", "start_date": "2026-10-22", "trace_id": "t"}
+        )
+        self.assertEqual(result["status"], "success")
+        self.assertIn("reasoning_content", result)
+        self.assertIn("先确认谁在请假", result["reasoning_content"])
+        # ai_response 是模型**原始输出**, deliberately 包含 <think> 标签——
+        # 前端"模型输出"区块展示的就是原文,让用户看到模型真正说了什么。
+        # 真正的保证在别处:解析器吃到的 content 必须是干净的(见
+        # test_llm_transport.TestReasoningCapture)。
+        self.assertIn("<think>", result["ai_response"])
+        self.assertIn("[areas]", result["ai_response"])
+        # 落盘的排班里绝不能出现思考文本
+        pool = load_state(ctx.paths["state"])["schedule_pool"]
+        day = next(entry for entry in pool if entry["date"] == "2026-10-22")
+        self.assertNotIn("先确认谁在请假", str(day))
+
+    def test_no_reasoning_means_no_key(self):
+        """非推理模型不该拿到一个空的 reasoning_content 键——
+        前端靠键的存在与否决定是否渲染"模型思考"区块。"""
+        from single_pass_executor import apply_single_pass_completion
+
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: __import__("shutil").rmtree(tmp, ignore_errors=True))
+        ctx = self._ctx(tmp, areas=["教室"], area_per_day_counts={"教室": 2})
+        result = apply_single_pass_completion(
+            ctx,
+            "[areas]\nA = 教室\n[schedule]\n10-22 = A:1001 1002\n",
+            {"mode": "single_pass", "start_date": "2026-10-22", "trace_id": "t"},
+        )
+        self.assertEqual(result["status"], "success")
+        self.assertNotIn("reasoning_content", result)
+
+    def test_reasoning_is_consumed_not_left_for_the_next_run(self):
+        """旁路是模块级单例，取一次必须清空，否则下一次排班会带上一次的思考。"""
+        import llm_transport
+        from single_pass_executor import apply_single_pass_completion
+
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: __import__("shutil").rmtree(tmp, ignore_errors=True))
+        ctx = self._ctx(tmp, areas=["教室"], area_per_day_counts={"教室": 2})
+
+        apply_single_pass_completion(
+            ctx,
+            "<think>first run's thoughts</think>\n[areas]\nA = 教室\n[schedule]\n10-22 = A:1001 1002\n",
+            {"mode": "single_pass", "start_date": "2026-10-22", "trace_id": "t"},
+        )
+        # 第二次运行没有任何思考
+        second = apply_single_pass_completion(
+            ctx,
+            "[areas]\nA = 教室\n[schedule]\n10-23 = A:1001 1002\n",
+            {"mode": "single_pass", "start_date": "2026-10-22", "trace_id": "t"},
+        )
+        self.assertNotIn("reasoning_content", second)
+        self.assertEqual(llm_transport.get_and_clear_last_reasoning(), "")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+

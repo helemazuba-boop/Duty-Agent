@@ -217,5 +217,203 @@ B = Cleaning
         self.assertEqual(parsed["schedule"][0]["note"], "final")
 
 
+class TestReasoningCapture(unittest.TestCase):
+    """CoT 捕获契约（2026-10-22）。
+
+    推理模型把思考放在两处，两种以前都被丢掉：``reasoning_content`` 字段
+    （DeepSeek-R1 / Qwen3 / GLM）与行内 ``<think>`` 块（Kimi-K2-Thinking）。
+
+    核心约束：**reasoning 绝不进入 content**。``call_llm_raw`` 的返回值会
+    直接喂给 V2 INI 解析器，混入思考就破坏了发送方/解析方配套约定。
+    """
+
+    def setUp(self):
+        import llm_transport
+
+        llm_transport.reset_last_reasoning()
+
+    def test_reasoning_content_field_is_captured(self):
+        from llm_transport import extract_reasoning_from_stream_event
+
+        text = extract_reasoning_from_stream_event(
+            {"choices": [{"delta": {"reasoning_content": "let me think"}}]}
+        )
+        self.assertEqual(text, "let me think")
+
+    def test_alternate_field_names(self):
+        from llm_transport import extract_reasoning_from_stream_event
+
+        self.assertEqual(
+            extract_reasoning_from_stream_event({"choices": [{"delta": {"reasoning": "a"}}]}),
+            "a",
+        )
+        self.assertEqual(
+            extract_reasoning_from_stream_event(
+                {"choices": [{"message": {"reasoning_content": "b"}}]}
+            ),
+            "b",
+        )
+        self.assertEqual(
+            extract_reasoning_from_stream_event(
+                {"choices": [{"delta": {"reasoning_text": "c"}}]}
+            ),
+            "c",
+        )
+
+    def test_content_only_event_yields_no_reasoning(self):
+        from llm_transport import extract_reasoning_from_stream_event
+
+        self.assertEqual(
+            extract_reasoning_from_stream_event({"choices": [{"delta": {"content": "[areas]"}}]}),
+            "",
+        )
+
+    def test_reasoning_never_leaks_into_content(self):
+        """同一个 chunk 里两种字段都在时，content 仍须只含正文。"""
+        from llm_transport import (
+            extract_reasoning_from_stream_event,
+            extract_text_from_stream_event,
+        )
+
+        event = {"choices": [{"delta": {"reasoning_content": "thinking", "content": "[areas]"}}]}
+        self.assertEqual(extract_text_from_stream_event(event), "[areas]")
+        self.assertEqual(extract_reasoning_from_stream_event(event), "thinking")
+
+    def test_inline_think_block_is_stripped_and_recorded(self):
+        from llm_transport import _normalize_structured_output, get_and_clear_last_reasoning
+
+        cleaned = _normalize_structured_output(
+            "<think>secret plan</think>\n[areas]\nA = 教室\n"
+        )
+        self.assertNotIn("secret plan", cleaned)
+        self.assertIn("[areas]", cleaned)
+        self.assertEqual(get_and_clear_last_reasoning().strip(), "secret plan")
+
+    def test_multiple_think_blocks_all_recorded(self):
+        from llm_transport import _normalize_structured_output, get_and_clear_last_reasoning
+
+        cleaned = _normalize_structured_output("<think>a</think>\n[sched]\n<think>b</think>")
+        self.assertEqual(cleaned, "[sched]")
+        self.assertEqual(get_and_clear_last_reasoning().split(), ["a", "b"])
+
+    def test_plain_output_records_nothing(self):
+        from llm_transport import _normalize_structured_output, get_and_clear_last_reasoning
+
+        self.assertEqual(_normalize_structured_output("[areas]\nA = 教室"), "[areas]\nA = 教室")
+        self.assertEqual(get_and_clear_last_reasoning(), "")
+
+    def test_get_and_clear_consumes(self):
+        import llm_transport
+
+        llm_transport._record_reasoning("x")
+        self.assertEqual(llm_transport.get_and_clear_last_reasoning(), "x")
+        self.assertEqual(llm_transport.get_and_clear_last_reasoning(), "")
+
+    def test_reset_drops_stale_reasoning(self):
+        import llm_transport
+
+        llm_transport._record_reasoning("from a failed call")
+        llm_transport.reset_last_reasoning()
+        self.assertEqual(llm_transport.get_and_clear_last_reasoning(), "")
+
+    def test_streaming_splits_reasoning_from_content(self):
+        """端到端：一个带 reasoning_content 的 SSE 流，两条通道必须分开。
+
+        这是整个功能的核心契约——思考走 stream_reasoning，正文走
+        stream_chunk，两者绝不混流，否则 V2 INI 解析器会吃到思考文本。
+        """
+        import contextlib
+        import io
+        import json as _json
+
+        import llm_transport
+
+        sse = "".join(
+            "data: " + _json.dumps({"choices": [{"delta": d}]}, ensure_ascii=False) + "\n\n"
+            for d in (
+                {"reasoning_content": "先看请假"},
+                {"reasoning_content": "，再看欠账"},
+                {"content": "[areas]\n"},
+                {"content": "A = 教室\n"},
+            )
+        ) + "data: [DONE]\n\n"
+
+        @contextlib.contextmanager
+        def fake_urlopen(url, timeout=None):
+            yield io.BytesIO(sse.encode("utf-8"))
+
+        events = []
+        with patch.object(
+            llm_transport.urllib.request, "urlopen", fake_urlopen
+        ):
+            content = llm_transport.request_llm_stream(
+                "http://x/v1/chat/completions",
+                {"model": "m"},
+                "",
+                lambda phase, msg, chunk: events.append((phase, chunk)),
+                None,
+            )
+
+        self.assertEqual(content, "[areas]\nA = 教室\n")
+        self.assertNotIn("先看请假", content)
+        self.assertEqual(
+            llm_transport.get_and_clear_last_reasoning(), "先看请假，再看欠账"
+        )
+        self.assertEqual(
+            [phase for phase, _ in events],
+            ["stream_start", "stream_reasoning", "stream_reasoning", "stream_chunk", "stream_end"],
+        )
+        reasoning_chunks = [c for phase, c in events if phase == "stream_reasoning"]
+        self.assertEqual(reasoning_chunks, ["先看请假", "，再看欠账"])
+        content_chunks = [c for phase, c in events if phase == "stream_chunk"]
+        self.assertEqual(content_chunks, ["[areas]\nA = 教室\n"])
+
+    def test_non_stream_path_records_reasoning(self):
+        """非流式路径同样要捕获，否则关掉流式的用户完全看不到思考。"""
+        import json as _json
+        from unittest.mock import patch
+
+        import llm_transport
+
+        payload = _json.dumps({
+            "choices": [{"message": {
+                "reasoning_content": "deliberating",
+                "content": "[areas]\nA = 教室\n[schedule]\n10-22 = A:1001\n",
+            }}]
+        }).encode("utf-8")
+
+        class _Resp:
+            def read(self, _n):
+                return payload if not getattr(self, "_done", False) else b""
+
+            def close(self):
+                pass
+
+        resp = _Resp()
+        # 第一次 read 返回全文，第二次返回空表示结束。
+        original_read = resp.read
+        state = {"done": False}
+
+        def read(_n):
+            if state["done"]:
+                return b""
+            state["done"] = True
+            return payload
+
+        resp.read = read
+        del original_read
+        with patch.object(llm_transport.urllib.request, "urlopen", return_value=resp):
+            content = llm_transport.request_llm_non_stream(
+                "http://x/v1/chat/completions", {"model": "m"}, ""
+            )
+        self.assertIn("[areas]", content)
+        self.assertNotIn("deliberating", content)
+        self.assertEqual(llm_transport.get_and_clear_last_reasoning(), "deliberating")
+
+
+
+
 if __name__ == "__main__":
     unittest.main()
+
+

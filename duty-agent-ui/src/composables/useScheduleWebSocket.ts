@@ -97,8 +97,21 @@ async function runScheduleSSE(
           }
           if (currentEvent === 'message' || currentEvent === '') {
             if (dataBuffer) {
-              const evt = safeParse<{ phase?: string; message?: string }>(dataBuffer);
-              if (evt) onProgress?.({ phase: evt.phase ?? '', message: evt.message ?? '' });
+              // stream_chunk carries both the model's content and its reasoning
+              // (phase "stream_reasoning"); dropping it here would mean the SSE
+              // fallback silently loses the CoT that the WS path shows.
+              const evt = safeParse<{
+                phase?: string;
+                message?: string;
+                stream_chunk?: string | null;
+              }>(dataBuffer);
+              if (evt) {
+                onProgress?.({
+                  phase: evt.phase ?? '',
+                  message: evt.message ?? '',
+                  stream_chunk: evt.stream_chunk ?? null,
+                });
+              }
             }
           }
           currentEvent = '';
@@ -230,6 +243,12 @@ export function useScheduleWebSocket() {
                 const result: ScheduleResult = { status: msg.status || 'ok' };
                 if (msg.ai_response) result.ai_response = msg.ai_response;
                 if (msg.message) result.message = msg.message;
+                // The model's chain-of-thought, when the provider sent one.
+                // Only present on the LLM path - the code fallback has nothing
+                // to reason about.
+                if (typeof msg.reasoning_content === 'string' && msg.reasoning_content.trim()) {
+                  result.reasoning_content = msg.reasoning_content;
+                }
                 // 后端确定性修正/提示与兜底来源：必须透传给 UI，否则用户只看到
                 // "成功"，看不到班表被代码改过（审计 P1）。
                 if (Array.isArray(msg.adjustment_warnings)) {

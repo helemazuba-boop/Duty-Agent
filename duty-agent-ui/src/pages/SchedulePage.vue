@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, nextTick, watch } from 'vue';
-import { Drawer, Input } from 'ant-design-vue';
+import { Drawer, Input, message as antMessage } from 'ant-design-vue';
 import {
   SendOutlined,
   ClearOutlined,
@@ -31,6 +31,7 @@ const {
   isRunning,
   currentPhase,
   progress,
+  nowTick,
   send,
   retry,
   clear,
@@ -106,8 +107,11 @@ function flattenRows(run: RunInfo): RunRow[] {
 }
 
 function runDuration(run: RunInfo): string {
-  if (!run.endedAt) return '';
-  return `${((run.endedAt - run.startedAt) / 1000).toFixed(1)}s`;
+  // running 时 endedAt 还没落地,用当前时间让秒数继续走——否则标题里的计时
+  // 会停在进入 running 那一刻(nowTick 每 1000ms 推一次,驱动这里重算)。
+  const end = run.endedAt ?? nowTick.value;
+  if (!run.startedAt) return '';
+  return `${(Math.max(0, end - run.startedAt) / 1000).toFixed(1)}s`;
 }
 
 function stepOffset(run: RunInfo, ts: number): string {
@@ -120,6 +124,18 @@ function stepTotal(run: RunInfo): number {
 
 function isRunExpanded(msg: ChatMsg): boolean {
   return expandedRuns.value.has(msg.id);
+}
+
+/** 复制模型思考。与 copyError 同一套降级:剪贴板 API 在非安全上下文下不可用。 */
+async function copyReasoning(run: RunInfo) {
+  const text = run.reasoning || '';
+  if (!text) return;
+  try {
+    await navigator.clipboard.writeText(text);
+    antMessage.success('模型思考已复制');
+  } catch {
+    antMessage.warning('复制失败，请手动选择文本复制');
+  }
 }
 
 function toggleRun(msg: ChatMsg) {
@@ -223,6 +239,9 @@ const fmtTime = (ts: number) =>
                       <span class="ai-run__title">
                         <template v-if="msg.run!.status === 'running'">
                           {{ currentPhase || progress || '执行中' }}
+                          <!-- 正计时:running 期间随 nowTick 每秒重算。
+                               没有它,标题里的秒数会停在进入 running 那一刻。 -->
+                          <span class="ai-run__live-timer da-tnum">{{ runDuration(msg.run!) }}</span>
                         </template>
                         <template v-else-if="msg.run!.status === 'success'">
                           排班完成 · {{ stepTotal(msg.run!) }} 步 · {{ runDuration(msg.run!) }}
@@ -253,9 +272,43 @@ const fmtTime = (ts: number) =>
                       </div>
                     </div>
 
-                    <!-- 结果摘要:渲染在同一张 card 正文区 -->
-                    <div v-if="msg.run!.status === 'success' && msg.run!.result && isRunExpanded(msg)" class="ai-run__result">
-                      {{ msg.run!.result }}
+                    <!-- 模型输出与模型思考:默认展开(用户明确要求不被藏起来)。
+                         两者都是模型的原始产出,不是后端的结算结果。 -->
+                    <div
+                      v-if="(msg.run!.status === 'running' || isRunExpanded(msg))
+                        && (msg.run!.result || msg.run!.reasoning)"
+                      class="ai-run__model"
+                    >
+                      <!-- 模型正文:V2 INI 原文,排班结果就是由它解析而来 -->
+                      <div v-if="msg.run!.result" class="ai-run__model-block">
+                        <div class="ai-run__model-head">
+                          <span class="ai-run__model-title">模型输出</span>
+                          <span class="ai-run__model-hint">排班结果由这段文本解析而来</span>
+                        </div>
+                        <pre class="ai-run__model-body">{{ msg.run!.result }}</pre>
+                      </div>
+
+                      <!-- 模型思考(CoT):推理模型的 reasoning_content / <think> 块。
+                           后端作为旁路捕获,绝不参与解析;仅本机可见,不外发。 -->
+                      <div v-if="msg.run!.reasoning" class="ai-run__model-block ai-run__model-block--reasoning">
+                        <div class="ai-run__model-head">
+                          <span class="ai-run__model-title">模型思考</span>
+                          <span class="ai-run__model-hint">
+                            仅本机可见，不参与排班解析
+                            <span v-if="msg.run!.status === 'running'" class="ai-run__model-live">实时</span>
+                          </span>
+                          <a-button
+                            size="small"
+                            type="text"
+                            class="ai-run__model-copy"
+                            @click.stop="copyReasoning(msg.run!)"
+                          >
+                            <template #icon><CopyOutlined /></template>
+                            复制
+                          </a-button>
+                        </div>
+                        <pre class="ai-run__model-body ai-run__model-body--reasoning">{{ msg.run!.reasoning }}</pre>
+                      </div>
                     </div>
 
                     <!-- 兜底来源:模型不可用,代码兜底仍然算成功,但用户应知道 -->
@@ -597,14 +650,81 @@ const fmtTime = (ts: number) =>
   flex-shrink: 0;
 }
 
-.ai-run__result {
-  padding: 10px 12px;
+/* 运行中正计时:跟在 phase 文本后面,弱化处理(主角是 phase 不是秒表) */
+.ai-run__live-timer {
+  margin-left: 8px;
+  font-size: 12px;
+  color: var(--dt-text-secondary, #8c8c8c);
+}
+
+/* 模型输出 / 模型思考：模型的原始产出，不是后端结算结果。
+   默认展开（用户要求不被藏起来），用 <pre> 保留原始换行——V2 INI 的
+   可读性完全依赖缩进与空行。 */
+.ai-run__model {
   border-top: 1px solid var(--dt-border);
-  font-size: 14px;
-  line-height: 1.7;
+}
+
+.ai-run__model-block {
+  padding: 8px 12px 10px;
+}
+
+.ai-run__model-block + .ai-run__model-block {
+  border-top: 1px dashed var(--dt-border);
+}
+
+.ai-run__model-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+.ai-run__model-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--dt-text);
+}
+
+.ai-run__model-hint {
+  font-size: 11px;
+  color: var(--dt-text-secondary, #8c8c8c);
+}
+
+.ai-run__model-live {
+  margin-left: 6px;
+  padding: 0 5px;
+  border-radius: 3px;
+  color: var(--dt-primary, #1677ff);
+  background: color-mix(in srgb, var(--dt-primary, #1677ff) 12%, transparent);
+}
+
+.ai-run__model-copy {
+  margin-left: auto;
+  font-size: 11px;
+}
+
+.ai-run__model-body {
+  margin: 0;
+  max-height: 320px;
+  overflow: auto;
+  padding: 8px 10px;
+  border-radius: 4px;
+  /* 模型输出是 V2 INI 原文,可读性完全依赖对齐,必须等宽。
+     (da-tnum 只做数字等宽,不适用于代码块。) */
+  font-family: ui-monospace, SFMono-Regular, "Cascadia Mono", Consolas,
+    "Liberation Mono", monospace;
+  font-size: 12px;
+  line-height: 1.65;
   color: var(--dt-text);
   white-space: pre-wrap;
   word-break: break-word;
+  background: color-mix(in srgb, var(--dt-text, #000) 4%, transparent);
+}
+
+/* 思考过程比正文更长也更"碎",给它更高的上限与更弱的视觉权重 */
+.ai-run__model-body--reasoning {
+  max-height: 420px;
+  color: var(--dt-text-secondary, #8c8c8c);
 }
 
 /* 兜底来源提示：中性色（不是错误，是"来源不同"） */

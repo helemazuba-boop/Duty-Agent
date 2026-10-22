@@ -32,6 +32,42 @@ _LOGGER = logging.getLogger(__name__)
 # qwen3.5 emits tool_calls as non-SSE JSON between SSE chunks.
 _stream_final_json: Optional[dict] = None
 
+# Reasoning / chain-of-thought captured from the most recent call.
+#
+# Reasoning models put their thinking in one of two places, and both used to be
+# discarded: a dedicated `reasoning_content` field (DeepSeek-R1, Qwen3, GLM) or
+# an inline `<think>…</think>` block (Kimi-K2-Thinking). The inline form is still
+# stripped from the content by `_normalize_structured_output`, which is correct —
+# the V2 INI parser must never see it — but it is recorded here first so the UI
+# can show the user what the model was thinking.
+#
+# It is deliberately a module-level side channel rather than part of the return
+# value: `call_llm_raw` must keep returning pure `content`, because every caller
+# feeds that straight into the parser. Mixing reasoning into it would break the
+# protocol.
+_last_reasoning: str = ""
+
+
+def get_and_clear_last_reasoning() -> str:
+    """Return the reasoning captured from the most recent call, then clear it."""
+    global _last_reasoning
+    text = _last_reasoning
+    _last_reasoning = ""
+    return text
+
+
+def reset_last_reasoning() -> None:
+    """Drop any reasoning left over from a previous call (e.g. a failed one)."""
+    global _last_reasoning
+    _last_reasoning = ""
+
+
+def _record_reasoning(text: str) -> None:
+    global _last_reasoning
+    cleaned = str(text or "")
+    if cleaned.strip():
+        _last_reasoning += cleaned
+
 
 def get_and_clear_stream_final_json() -> Optional[dict]:
     """Return the stored final JSON from the most recent streaming response, then clear it."""
@@ -169,6 +205,32 @@ def extract_text_from_non_stream_response(response: dict) -> str:
     return extract_text_content(choice.get("message", {}).get("content")) or extract_text_content(choice.get("text"))
 
 
+def extract_reasoning_from_stream_event(event_obj: dict) -> str:
+    """Pull the reasoning delta out of a streaming event, if the model sent one.
+
+    Providers disagree on the field name: `reasoning_content` is the de-facto
+    standard (DeepSeek-R1, Qwen3, GLM), some use `reasoning`, and a few nest it
+    under `delta.reasoning`. All are checked; the first non-empty wins.
+
+    Kept separate from :func:`extract_text_from_stream_event` on purpose — the
+    two must never be concatenated into the same stream.
+    """
+    choices = event_obj.get("choices", [])
+    if not choices:
+        return ""
+    choice = choices[0]
+    delta = choice.get("delta") or {}
+    message = choice.get("message") or {}
+    for source in (delta, message, choice, event_obj):
+        if not isinstance(source, dict):
+            continue
+        for key in ("reasoning_content", "reasoning", "reasoning_text"):
+            text = extract_text_content(source.get(key))
+            if text.strip():
+                return text
+    return ""
+
+
 def extract_text_from_stream_event(event_obj: dict) -> str:
     choices = event_obj.get("choices", [])
     if not choices:
@@ -256,6 +318,7 @@ def request_llm_non_stream(url: str, payload: dict, api_key: str, stop_event: Op
             {"function": {"name": t["name"], "arguments": json.dumps(t["arguments"])}}
             for t in tc
         ]})
+    _record_reasoning(extract_reasoning_from_stream_event(parsed))
     content = extract_text_from_non_stream_response(parsed)
     if not content.strip():
         raise RuntimeError("LLM returned empty content.")
@@ -274,9 +337,30 @@ def request_llm_stream(url: str, payload: dict, api_key: str, progress_callback=
     last_progress_emit_at = time.time()
     global _stream_final_json
     _stream_final_json = None
+    reasoning_chunks: List[str] = []
+    reasoning_emitted_at = 0.0
 
     if progress_callback:
         progress_callback("stream_start", "Streaming response opened.", "")
+
+    def _emit_reasoning_progress(force: bool = False) -> None:
+        """Forward captured reasoning to the UI on the same throttle as content.
+
+        Never routed into `chunks`: the parser must see pure content. The phase
+        name is what the UI keys on to render it as "模型思考" rather than as
+        another schedule step.
+        """
+        nonlocal reasoning_emitted_at
+        if not progress_callback or not reasoning_chunks:
+            return
+        now = time.time()
+        if not force and (now - reasoning_emitted_at) < LLM_STREAM_PROGRESS_MIN_INTERVAL_SECONDS:
+            return
+        reasoning_emitted_at = now
+        progress_callback(
+            "stream_reasoning", "Model is reasoning...", "".join(reasoning_chunks)
+        )
+        reasoning_chunks.clear()
 
     with urllib.request.urlopen(request, timeout=LLM_TIMEOUT_SECONDS) as response:
         for raw_line in response:
@@ -300,6 +384,11 @@ def request_llm_stream(url: str, payload: dict, api_key: str, progress_callback=
                         if msg.get("tool_calls"):
                             chunks.append("[TOOL_CALL]")
                             saw_sse_data = True  # treat as valid response
+                        reasoning = extract_reasoning_from_stream_event(event_obj)
+                        if reasoning:
+                            reasoning_chunks.append(reasoning)
+                            _record_reasoning(reasoning)
+                            _emit_reasoning_progress()
                         text = extract_text_from_stream_event(event_obj)
                         if text:
                             chunks.append(text)
@@ -330,6 +419,12 @@ def request_llm_stream(url: str, payload: dict, api_key: str, progress_callback=
             except Exception:
                 continue
 
+            reasoning = extract_reasoning_from_stream_event(event_obj)
+            if reasoning:
+                reasoning_chunks.append(reasoning)
+                _record_reasoning(reasoning)
+                _emit_reasoning_progress()
+
             text = extract_text_from_stream_event(event_obj)
             if not text:
                 continue
@@ -341,6 +436,8 @@ def request_llm_stream(url: str, payload: dict, api_key: str, progress_callback=
                 progress_callback("stream_chunk", "Receiving model stream...", "".join(buffered_for_progress))
                 buffered_for_progress.clear()
                 last_progress_emit_at = now
+
+    _emit_reasoning_progress(force=True)
 
     if not saw_sse_data:
         raw_text = "".join(raw_lines).strip()
@@ -524,8 +621,28 @@ def _normalize_structured_output(content: str) -> str:
         updated = _REASONING_BLOCK_PATTERN.sub("", stripped)
         if updated == stripped:
             break
+        # Record what we strip so the UI can still show it as the model's
+        # thinking. The parser must not see it; the user should.
+        for match in _REASONING_BLOCK_PATTERN.finditer(stripped):
+            body = _strip_reasoning_tags(match.group(0))
+            if body:
+                _record_reasoning(body + "\n")
         stripped = updated
     return stripped.strip()
+
+
+def _strip_reasoning_tags(block: str) -> str:
+    """Inner text of a ``<think>\u2026</think>`` block, tags removed.
+
+    ``_REASONING_BLOCK_PATTERN`` matches the *whole* block including both tags,
+    so ``sub("", block)`` would delete everything. Take the span between the
+    opening tag's ``>`` and the last ``<`` instead.
+    """
+    start = block.find(">")
+    end = block.rfind("<")
+    if start != -1 and end > start:
+        return block[start + 1:end]
+    return block
 
 
 def _extract_json_candidate(content: str) -> dict:

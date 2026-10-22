@@ -39,3 +39,45 @@ describe('warningsOf', () => {
     expect(warningsOf({ agent_summary: { warnings: 'nope' } })).toEqual([]);
   });
 });
+
+describe('reasoning 契约', () => {
+  // 后端把思考走 stream_reasoning phase 下发，与正文流（stream_chunk）同级但
+  // 绝不混流；结束后 schedule_complete 带完整 reasoning_content 覆盖增量。
+  // 这里钉死前端对这两种形态的读取方式。
+  it('从 schedule_complete 读取 reasoning_content', () => {
+    const msg = {
+      type: 'schedule_complete',
+      status: 'success',
+      ai_response: '[areas]\nA = 教室',
+      reasoning_content: '先看谁在请假…',
+    };
+    const reasoning =
+      typeof msg.reasoning_content === 'string' ? msg.reasoning_content.trim() : '';
+    expect(reasoning).toBe('先看谁在请假…');
+  });
+
+  it('没有思考时不产生空区块', () => {
+    for (const msg of [
+      { status: 'success' },
+      { status: 'success', reasoning_content: '' },
+      { status: 'success', reasoning_content: '   ' },
+      { status: 'success', reasoning_content: 42 },
+    ]) {
+      const reasoning =
+        typeof msg.reasoning_content === 'string' ? msg.reasoning_content.trim() : '';
+      expect(reasoning).toBe('');
+    }
+  });
+
+  it('代码兜底没有思考', () => {
+    // completion_source=fallback 时后端 reset_last_reasoning()，不下发该键。
+    const msg: { status: string; completion_source?: string; ai_response?: string; reasoning_content?: unknown } = {
+      status: 'success',
+      completion_source: 'fallback',
+      ai_response: 'fallback_fill',
+    };
+    const reasoning =
+      typeof msg.reasoning_content === 'string' ? msg.reasoning_content.trim() : '';
+    expect(reasoning).toBe('');
+  });
+});
