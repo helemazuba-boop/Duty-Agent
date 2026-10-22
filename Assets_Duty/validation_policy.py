@@ -108,11 +108,13 @@ CHECK_ACTIONS: Dict[str, Dict[str, str]] = {
     # --- the model's own discretion ---------------------------------------
     "headcount_short": _row(relaxed=ACTION_WARN, strict=ACTION_REJECT, repair=ACTION_REPAIR),
     "headcount_excess": _row(relaxed=ACTION_WARN, strict=ACTION_REJECT, repair=ACTION_REPAIR),
-    # Window checks only *report* today: no mode rewrites the date set, because
-    # dropping an out-of-window date or inventing a missing one is a bigger
-    # decision than a headcount tweak. `repair` therefore degrades to `warn`
-    # rather than claiming a fix that does not exist.
-    "window_gap": _row(relaxed=ACTION_WARN, strict=ACTION_REJECT, repair=ACTION_WARN),
+    # Window checks: whether a *fix* exists depends on the executor.
+    # multi_agent can hand a short window to its deterministic fallback (which
+    # emits every template date), so `repair` there means "delegate to the code
+    # layer". single_pass has no window-fill capability, so the same `repair`
+    # degrades to a warning there - the check is identical, the available fix is
+    # not, and both executors document which one they are.
+    "window_gap": _row(relaxed=ACTION_WARN, strict=ACTION_REJECT, repair=ACTION_REPAIR),
     "out_of_window": _row(relaxed=ACTION_WARN, strict=ACTION_REJECT, repair=ACTION_WARN),
     "phantom_area": _row(relaxed=ACTION_WARN, strict=ACTION_REJECT, repair=ACTION_WARN),
     "must_run_missing": _row(relaxed=ACTION_WARN, strict=ACTION_REJECT, repair=ACTION_REPAIR),
@@ -243,6 +245,18 @@ class ValidationPolicy:
 
     def warns(self, check: str) -> bool:
         return self.action(check) == ACTION_WARN
+
+    def delegates_to_code(self, check: str) -> bool:
+        """True when the model's output is not acceptable as-is and the
+        deterministic layer must take over.
+
+        Covers both ``reject`` (refuse the commit) and ``repair`` (the code
+        fixes it). Executors whose "repair" is *routing to a fallback* — e.g.
+        multi_agent handing a short window to ``fallback_fill_schedule`` — use
+        this instead of :meth:`is_fatal`, which would let a repairable deviation
+        through unreviewed.
+        """
+        return self.action(check) in (ACTION_REJECT, ACTION_REPAIR)
 
     def as_dict(self) -> dict:
         return {

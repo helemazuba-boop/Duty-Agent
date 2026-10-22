@@ -376,12 +376,51 @@ def validate_agent6_output(raw: Dict[str, Any], barrier2: Dict[str, Any]) -> Dic
     return {"schedule": normalized}
 
 
-def validate_final_schedule(schedule: List[Dict[str, Any]], barrier2: Dict[str, Any]) -> None:
+def validate_final_schedule(
+    schedule: List[Dict[str, Any]],
+    barrier2: Dict[str, Any],
+    policy=None,
+) -> List[str]:
+    """Validate the assembled schedule against barrier2.
+
+    Structural problems (duplicate dates, wrong area set, wrong slot count,
+    same person twice in one area, IDs outside the candidate pool, violated
+    rules) always raise: they make the schedule ambiguous, so no mode may wave
+    them through.
+
+    Two checks are policy-dependent (see :mod:`validation_policy`):
+
+    * ``must_run_missing`` — a "必须让 X 上" instruction. ``relaxed`` reports it
+      instead of refusing, because the model's judgement about who is on duty
+      outranks a hint it chose not to follow; ``strict``/``repair`` refuse, which
+      sends agent6 back for a retry or into the code fallback.
+    * ``window_gap`` — fewer dates than the template asked for. ``relaxed``
+      commits the partial window (append mode preserves the rest) with a
+      warning; ``strict`` refuses; ``repair`` delegates to the deterministic
+      fallback, which emits every template date.
+
+    Both use :meth:`ValidationPolicy.delegates_to_code` rather than
+    ``is_fatal``: in this executor "repair" *is* raising, because the caller
+    catches the ValueError and re-runs through ``fallback_fill_schedule``.
+
+    Returns the warnings the caller must surface; never rewrites the schedule.
+    """
+    from validation_policy import DEFAULT_VALIDATION_MODE, ValidationPolicy
+
+    policy = policy or ValidationPolicy(DEFAULT_VALIDATION_MODE)
+    warnings: List[str] = []
     template = barrier2["template"]
     final_pool = set(barrier2["final_pool"])
 
     if len(schedule) != len(barrier2["dates"]):
-        raise ValueError("schedule date count mismatch")
+        if policy.delegates_to_code("window_gap"):
+            raise ValueError(
+                f"排班覆盖 {len(schedule)}/{len(barrier2['dates'])} 天，未覆盖全部目标日期"
+            )
+        warnings.append(
+            f"排班覆盖 {len(schedule)}/{len(barrier2['dates'])} 天"
+            "（宽松模式未修改，未覆盖的日期保持原有排班）"
+        )
 
     # "必须让 X 上" 是硬要求：出现在最终排班里，否则整轮校验失败（ agent6 会
     # 因此收到错误反馈并重试，或落入代码兜底）。
@@ -395,9 +434,10 @@ def validate_final_schedule(schedule: List[Dict[str, Any]], barrier2: Dict[str, 
         }
         missing_must_run = [person_id for person_id in must_run_ids if person_id not in scheduled_ids]
         if missing_must_run:
-            raise ValueError(
-                "must_run 人员未被排班: " + " ".join(str(pid) for pid in missing_must_run)
-            )
+            detail = "must_run 人员未被排班: " + " ".join(str(pid) for pid in missing_must_run)
+            if policy.delegates_to_code("must_run_missing"):
+                raise ValueError(detail)
+            warnings.append(f"{detail}（宽松模式未修改）")
 
     seen_dates = set()
     schedule_by_person: Dict[int, set[datetime.date]] = {}
@@ -453,6 +493,8 @@ def validate_final_schedule(schedule: List[Dict[str, Any]], barrier2: Dict[str, 
             for idx in range(1, len(assigned_days)):
                 if assigned_days[idx] - assigned_days[idx - 1] == timedelta(days=1):
                     raise ValueError(f"avoid_consecutive_days violated for {person_id}")
+
+    return warnings
 
 
 def fallback_fill_schedule(barrier2: Dict[str, Any]) -> List[Dict[str, Any]]:

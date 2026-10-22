@@ -10,6 +10,7 @@ from postprocess import (
     restore_schedule,
 )
 from state_ops import clone_count_map, compute_roster_fingerprint, prune_operational_state, resolve_debt_credit_conflicts, update_state
+from validation_policy import ValidationPolicy
 
 from .contracts import FrozenSnapshot
 from .validators import validate_final_schedule
@@ -33,7 +34,14 @@ def finalize_multi_agent_run(
     stop_event=None,
     apply_mode: str = "append",
 ) -> Dict[str, Any]:
-    validate_final_schedule(assembled_schedule, barrier2)
+    policy = ValidationPolicy.from_config(getattr(snapshot, "config", None) or {})
+    policy_warnings = validate_final_schedule(assembled_schedule, barrier2, policy)
+    # barrier2["warnings"] is the list the executor surfaces as
+    # agent_summary.warnings (and runtime.collect_result_warnings forwards), so
+    # appending here is what puts a relaxed-mode deviation in front of the user
+    # instead of leaving it in this function's return value.
+    if policy_warnings:
+        barrier2.setdefault("warnings", []).extend(policy_warnings)
 
     restored = restore_schedule(assembled_schedule, snapshot.id_to_name, barrier2["area_names"], {})
     if not restored:
@@ -105,4 +113,5 @@ def finalize_multi_agent_run(
     return {
         "state_data": state_data,
         "restored_schedule": restored,
+        "policy_warnings": policy_warnings,
     }

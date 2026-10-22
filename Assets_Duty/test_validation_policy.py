@@ -25,6 +25,7 @@ import json
 import sys
 import tempfile
 import unittest
+from datetime import date
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -141,14 +142,28 @@ class CheckMatrixTests(unittest.TestCase):
         for check in discretion:
             self.assertEqual(vp.CHECK_ACTIONS[check]["strict"], vp.ACTION_REJECT, check)
 
-    def test_repair_rewrites_only_what_it_actually_repairs(self):
-        # Window / phantom-area / template checks only *report* today - no mode
-        # rewrites the date set or the area structure. The table must not claim
-        # a repair that does not exist.
-        for check in ("headcount_short", "headcount_excess", "must_run_missing"):
+    def test_repair_delegates_only_where_a_fix_exists(self):
+        # `repair` must mean "the deterministic layer fixes it", never a claim
+        # with nothing behind it. Headcount has a real fix in every executor;
+        # window_gap's fix exists only in multi_agent (its fallback emits every
+        # template date), so single_pass's window audit degrades it to a warning
+        # and documents why.
+        for check in ("headcount_short", "headcount_excess", "must_run_missing", "window_gap"):
             self.assertEqual(vp.CHECK_ACTIONS[check]["repair"], vp.ACTION_REPAIR, check)
-        for check in ("window_gap", "out_of_window", "phantom_area", "template_mismatch"):
+        for check in ("out_of_window", "phantom_area", "template_mismatch"):
             self.assertEqual(vp.CHECK_ACTIONS[check]["repair"], vp.ACTION_WARN, check)
+
+    def test_delegates_to_code_covers_reject_and_repair_only(self):
+        strict = vp.ValidationPolicy("strict")
+        self.assertTrue(strict.delegates_to_code("window_gap"))
+        self.assertTrue(strict.delegates_to_code("headcount_short"))
+        self.assertFalse(strict.delegates_to_code("cross_area_reuse"))
+        relaxed = vp.ValidationPolicy("relaxed")
+        self.assertFalse(relaxed.delegates_to_code("window_gap"))
+        repair = vp.ValidationPolicy("repair")
+        self.assertTrue(repair.delegates_to_code("window_gap"))
+        self.assertTrue(repair.delegates_to_code("must_run_missing"))
+        self.assertFalse(repair.delegates_to_code("out_of_window"))
 
     def test_cross_area_reuse_is_allowed_in_every_mode(self):
         # Product rule: same person, different areas, same day is fine. No
@@ -536,6 +551,114 @@ class EndToEndModeTests(unittest.TestCase):
         pool = load_state(self.ctx.paths["state"])["schedule_pool"]
         entry = next(item for item in pool if item["date"] == "2026-09-14")
         self.assertEqual(len(entry["area_assignments"]["教室"]), 3)
+
+
+class MultiAgentPolicyTests(unittest.TestCase):
+    """multi_agent's "repair" IS raising: the caller catches the ValueError and
+    re-runs through ``fallback_fill_schedule``. So the executor must use
+    ``delegates_to_code``, not ``is_fatal``."""
+
+    def _barrier2(self, dates, must_run_ids=None):
+        template = {day: {"教室": 1} for day in dates}
+        return {
+            "dates": list(dates),
+            "template": template,
+            "final_pool": [1001],
+            "area_names": ["教室"],
+            "must_run_ids": list(must_run_ids or []),
+            "supported_rules": [],
+            "warnings": [],
+            "unsupported_rules": [],
+            # Keys build_next_run_note and the ledger settlement read.
+            "priority_pool": [1001],
+            "pointer_pool": [1001],
+            "pointer_after": 0,
+            "consumed_credit_ids": [],
+        }
+
+    def _schedule(self, dates):
+        return [{"date": day, "area_ids": {"教室": [1001]}, "note": ""} for day in dates]
+
+    def test_repair_still_refuses_a_short_window_so_the_fallback_runs(self):
+        from multi_agent.validators import validate_final_schedule
+
+        barrier2 = self._barrier2(["2026-09-13", "2026-09-14"])
+        with self.assertRaises(ValueError):
+            validate_final_schedule(
+                self._schedule(["2026-09-13"]), barrier2, vp.ValidationPolicy("repair")
+            )
+
+    def test_relaxed_commits_a_short_window_with_a_warning(self):
+        from multi_agent.validators import validate_final_schedule
+
+        barrier2 = self._barrier2(["2026-09-13", "2026-09-14"])
+        warnings = validate_final_schedule(
+            self._schedule(["2026-09-13"]), barrier2, vp.ValidationPolicy("relaxed")
+        )
+        self.assertTrue(any("宽松模式未修改" in w for w in warnings))
+
+    def test_strict_refuses_a_short_window(self):
+        from multi_agent.validators import validate_final_schedule
+
+        barrier2 = self._barrier2(["2026-09-13", "2026-09-14"])
+        with self.assertRaises(ValueError):
+            validate_final_schedule(
+                self._schedule(["2026-09-13"]), barrier2, vp.ValidationPolicy("strict")
+            )
+
+    def test_relaxed_reports_a_missing_must_run_instead_of_refusing(self):
+        from multi_agent.validators import validate_final_schedule
+
+        barrier2 = self._barrier2(["2026-09-13"], must_run_ids=[1002])
+        warnings = validate_final_schedule(
+            self._schedule(["2026-09-13"]), barrier2, vp.ValidationPolicy("relaxed")
+        )
+        self.assertTrue(any("must_run" in w for w in warnings))
+
+    def test_repair_still_refuses_a_missing_must_run(self):
+        from multi_agent.validators import validate_final_schedule
+
+        barrier2 = self._barrier2(["2026-09-13"], must_run_ids=[1002])
+        with self.assertRaises(ValueError):
+            validate_final_schedule(
+                self._schedule(["2026-09-13"]), barrier2, vp.ValidationPolicy("repair")
+            )
+
+    def test_structural_problems_raise_in_every_mode(self):
+        # Ambiguity, not discretion: no mode may wave a duplicate-in-area or an
+        # out-of-pool ID through.
+        from multi_agent.validators import validate_final_schedule
+
+        for mode in vp.VALIDATION_MODES:
+            barrier2 = self._barrier2(["2026-09-13"])
+            schedule = [{"date": "2026-09-13", "area_ids": {"教室": [1001, 1001]}, "note": ""}]
+            with self.assertRaises(ValueError, msg=mode):
+                validate_final_schedule(schedule, barrier2, vp.ValidationPolicy(mode))
+
+    def test_settlement_appends_policy_warnings_to_agent_summary(self):
+        # runtime.collect_result_warnings reads agent_summary.warnings, which is
+        # barrier2["warnings"] - so the deviation has to land there or the user
+        # never sees it.
+        from multi_agent.settlement import finalize_multi_agent_run
+
+        class _Snapshot:
+            trace_id = "t"
+            start_date = date(2026, 9, 13)
+            config = {"validation_mode": "relaxed"}
+            id_to_name = {1001: "张三"}
+            all_ids = [1001]
+            id_to_active = {1001: 1}
+
+        barrier2 = self._barrier2(["2026-09-13", "2026-09-14"])
+        barrier1 = {"new_debt_ids": [], "new_credit_ids": []}
+        with tempfile.TemporaryDirectory() as tmp:
+            ctx = Context(data_dir=Path(tmp))
+            state_ops.save_roster_entries(ctx, [{"id": 1001, "name": "张三", "active": True}])
+            settlement = finalize_multi_agent_run(
+                ctx, _Snapshot(), barrier1, barrier2, self._schedule(["2026-09-13"])
+            )
+        self.assertTrue(settlement["policy_warnings"])
+        self.assertTrue(barrier2["warnings"])
 
 
 if __name__ == "__main__":
