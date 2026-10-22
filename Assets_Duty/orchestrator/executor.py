@@ -240,7 +240,7 @@ def _orchestrator_direct(
     if exec_ctx is None:
         return {"status": "error", "message": "Direct mode ended without result.", "trace_id": orch_ctx.trace_id}
 
-    return _finalize(ctx, exec_ctx, orch_ctx, emit_progress_fn)
+    return _finalize(ctx, exec_ctx, orch_ctx, emit_progress_fn, stop_event)
 
 
 # ------------------------------------------------------------------------------
@@ -316,6 +316,13 @@ def _orchestrator_poll_loop(
                                    f"TimeWindow {window.name} failed: {ex}", {})
                     fragment = f"; [[#{window.name}]]\n; ERROR: {ex}"
                 fragments.append((window, fragment))
+
+        # Window fragments must be concatenated in WINDOW order, not network
+        # completion order: MM-DD year inference walks the combined text with a
+        # shared "previous date", so an out-of-order window silently pushes its
+        # dates into the next year — and the same model output could then yield
+        # different dates on different runs.
+        fragments.sort(key=lambda item: item[0].index)
 
         # --------------------------------------------------------------------------
         # 汇总 INI → ini_handler
@@ -442,7 +449,7 @@ def _orchestrator_poll_loop(
     if exec_ctx is None:
         return {"status": "error", "message": "Poll loop ended without result.", "trace_id": orch_ctx.trace_id}
 
-    return _finalize(ctx, exec_ctx, orch_ctx, emit_progress_fn)
+    return _finalize(ctx, exec_ctx, orch_ctx, emit_progress_fn, stop_event)
 
 
 # ------------------------------------------------------------------------------
@@ -774,8 +781,53 @@ def _finalize(
     exec_ctx: ExecutionCtx,
     orch_ctx: OrchestratorContext,
     emit_progress_fn: Optional[Callable],
+    stop_event=None,
 ) -> Dict[str, Any]:
-    """将最终状态写入 state.json."""
+    """将最终状态写入 state.json.
+
+    完整性闸门（审计 P0-03）：``@finalize`` 只是模型的提交请求，不是完成证明；
+    跑满 max_rounds 更不是。只要还有未填槽位或模型未确认完成，就不写 state、
+    返回 ``partial``——不完整结果不得提交为正式排班。
+    """
+    incomplete_slots = list(getattr(exec_ctx, "remaining", None) or [])
+    finalized = bool(exec_ctx.finalized)
+    if incomplete_slots or not finalized:
+        _emit_progress(emit_progress_fn, "orchestrator_incomplete",
+                       "Schedule incomplete; state not committed.",
+                       {"remaining": len(incomplete_slots), "finalized": finalized})
+        return {
+            "status": "partial",
+            "message": (
+                "排班未完成，未写入正式排班："
+                + (
+                    f"还有 {len(incomplete_slots)} 个槽位未填满"
+                    if incomplete_slots
+                    else "模型未确认完成（缺少 @finalize）"
+                )
+                + "。请补充后重试。"
+            ),
+            "schedule_entries": [],
+            "partial_schedule_entries": [dict(entry) for entry in exec_ctx.schedule_pool],
+            "remaining": [
+                {"date": unit.date_iso, "area": unit.area_name}
+                for unit in incomplete_slots
+            ],
+            "rejected": exec_ctx.rejected,
+            "invalid_cmds": exec_ctx.invalid_cmds,
+            "final_state": {
+                "debt_counts": dict(exec_ctx.debt_counts),
+                "credit_counts": dict(exec_ctx.credit_counts),
+                "last_pointer": exec_ctx.last_pointer,
+            },
+            "execution_plan": {"runtime_mode": "orchestrator"},
+            "orchestrator_meta": {
+                "rounds": exec_ctx.round_num,
+                "finalized": finalized,
+                "hints_on": orch_ctx.hints_on,
+            },
+            "trace_id": orch_ctx.trace_id,
+        }
+
     def _apply_state(current_state: Dict[str, Any]) -> Dict[str, Any]:
         state_data = dict(current_state)
         state_data["next_run_note"] = f"mode=orchestrator; slots={len(exec_ctx.schedule_pool)}; rounds={exec_ctx.round_num}"
@@ -790,7 +842,7 @@ def _finalize(
         prune_operational_state(state_data)
         return state_data
 
-    state_data = update_state(ctx.paths["state"], _apply_state, stop_event=None)
+    state_data = update_state(ctx.paths["state"], _apply_state, stop_event=stop_event)
 
     _emit_progress(emit_progress_fn, "orchestrator_done", "State written.", {
         "schedule_entries": len(exec_ctx.schedule_pool),
@@ -822,7 +874,9 @@ def _finalize(
 # ------------------------------------------------------------------------------
 
 def _compute_dates(instruction: str, start_date: date, default_days: int = 7) -> List[date]:
-    date_ranges = _parse_date_ranges(instruction, start_date)
+    # NOTE: pass start_date.YEAR, not the date object — date(date_obj, m, d)
+    # raises TypeError, which made every date-range instruction crash.
+    date_ranges = _parse_date_ranges(instruction, start_date.year)
     if date_ranges:
         all_dates: List[date] = []
         for s, e in date_ranges:
@@ -834,6 +888,9 @@ def _compute_dates(instruction: str, start_date: date, default_days: int = 7) ->
     return [start_date + timedelta(days=i) for i in range(default_days)]
 
 
+_ISO_RANGE_RE = re.compile(
+    r"(20\d{2})-(\d{1,2})-(\d{1,2})\s*[-~至到]\s*(20\d{2})-(\d{1,2})-(\d{1,2})"
+)
 _DATE_RANGE_RE = re.compile(
     r"(\d{1,2})[月/-](\d{1,2})(?:\s*日?\s*[-~至到]\s*(\d{1,2})[月/-](\d{1,2})(?:\s*日?))?",
 )
@@ -842,7 +899,20 @@ _DATE_SINGLE_RE = re.compile(r"(\d{1,2})[月/-](\d{1,2})")
 
 def _parse_date_ranges(text: str, default_year: int) -> List[Tuple[date, date]]:
     results: List[Tuple[date, date]] = []
-    for m in _DATE_RANGE_RE.finditer(text):
+    # ISO ranges first: "2026-04-01 到 2026-04-07" used to be matched by the
+    # M/D pattern as "26-04" -> date(2026, 26, 4) -> ValueError -> silently
+    # ignored, so the run fell back to the default 7-day window.
+    for match in _ISO_RANGE_RE.finditer(text or ""):
+        try:
+            start = date(int(match.group(1)), int(match.group(2)), int(match.group(3)))
+            end = date(int(match.group(4)), int(match.group(5)), int(match.group(6)))
+        except ValueError:
+            continue
+        results.append((start, end) if start <= end else (end, start))
+    if results:
+        return results
+
+    for m in _DATE_RANGE_RE.finditer(text or ""):
         mm1, dd1 = int(m.group(1)), int(m.group(2))
         g3, g4 = m.group(3), m.group(4)
         if not g3 or not g4:

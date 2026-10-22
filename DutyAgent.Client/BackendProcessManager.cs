@@ -79,6 +79,7 @@ internal sealed class BackendProcessManager : IDisposable
             return;
         }
 
+        LogPathDiagnostics();
         EnsureRequiredFiles();
         EnsureDefaultHostConfig();
 
@@ -106,6 +107,12 @@ internal sealed class BackendProcessManager : IDisposable
         {
             startInfo.EnvironmentVariables.Remove(key);
         }
+
+        // 安装目录（Assets_Duty 所在）在 MSIX 下是只读的，而发布产物刻意删掉了全部
+        // .pyc，Python 运行期会尝试写 __pycache__ 并在日志里刷一串 Access denied。
+        // 关掉字节码缓存：只影响启动略慢，不影响功能。
+        startInfo.EnvironmentVariables["PYTHONDONTWRITEBYTECODE"] = "1";
+        startInfo.EnvironmentVariables["PYTHONUNBUFFERED"] = "1";
 
         // 端口：host-config 的 server_port > 0 时优先固定（MCP 等外部接入需要稳定
         // 地址）；端口被占则回退随机，避免固定端口冲突把后端拖进"启动即崩溃 →
@@ -328,6 +335,79 @@ internal sealed class BackendProcessManager : IDisposable
         return Path.Combine(ClassIslandConfig.ConfigFolder, "DutyAgentBridge", BridgeMetaFileName);
     }
 
+    /// <summary>
+    /// Store / 包身份场景下的安全 meta 路径：固定在 %LOCALAPPDATA%\ClassIsland\Config 下，
+    /// 不依赖 ClassIsland 是否便携安装、装在哪个盘。桥接侧会同时读取这里，
+    /// 因此该路径与宿主布局路径互为冗余，任一可用即可握手成功。
+    /// </summary>
+    private static string ResolveAlternateBridgeMetaPath()
+    {
+        var root = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "ClassIsland",
+            "Config");
+        return Path.Combine(root, "DutyAgentBridge", BridgeMetaFileName);
+    }
+
+    /// <summary>
+    /// LocalState 变体：MSIX 下 <see cref="Windows.Storage.ApplicationData.Current.LocalFolder"/>
+    /// 落在 Packages\&lt;PFN&gt;\LocalState，与 Win32 的 %LOCALAPPDATA% 不是同一个物理目录。
+    /// 包身份下额外写一份，确保"桥接能读到的那个物理位置"一定有文件。
+    /// </summary>
+    private static string ResolveLocalStateBridgeMetaPath()
+    {
+        try
+        {
+            if (!PackageIdentityHelper.IsPackaged)
+            {
+                return string.Empty;
+            }
+
+            var root = Path.Combine(
+                Windows.Storage.ApplicationData.Current.LocalFolder.Path,
+                "ClassIsland",
+                "Config");
+            return Path.Combine(root, "DutyAgentBridge", BridgeMetaFileName);
+        }
+        catch
+        {
+            return string.Empty;
+        }
+    }
+
+    /// <summary>备用 meta 路径（包身份下的安全写入点）。</summary>
+    public string AlternateBridgeMetaPath { get; } = ResolveAlternateBridgeMetaPath();
+
+    /// <summary>
+    /// 全部 meta 候选路径（去重）。宿主布局路径在前——非包身份与旧部署下它是唯一落点。
+    /// </summary>
+    public IReadOnlyList<string> BridgeMetaPaths
+    {
+        get
+        {
+            var candidates = new List<string> { BridgeMetaPath, AlternateBridgeMetaPath };
+
+            // LocalState 变体（仅包身份）：与 Win32 LocalAppData 可能是两个物理目录。
+            var localState = ResolveLocalStateBridgeMetaPath();
+            if (!string.IsNullOrWhiteSpace(localState))
+            {
+                candidates.Add(localState);
+            }
+
+            var result = new List<string>(candidates.Count);
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var candidate in candidates)
+            {
+                if (!string.IsNullOrWhiteSpace(candidate) && seen.Add(candidate))
+                {
+                    result.Add(candidate);
+                }
+            }
+
+            return result;
+        }
+    }
+
     private void EnsureRequiredFiles()
     {
         var pythonExe = Path.Combine(AssetsDirectory, "python-embed", "python.exe");
@@ -453,18 +533,38 @@ internal sealed class BackendProcessManager : IDisposable
         }
     }
 
+    /// <summary>
+    /// 启动路径诊断：把"当前是什么身份""桥接 meta 会写去哪几个路径"原样落盘。
+    /// MSIX 下 Win32 的 %LOCALAPPDATA% 可能被重定向到包私有目录，路径字符串相同
+    /// 不代表物理位置相同；桥接插件是另一个进程（且没有包身份），它看到什么只能
+    /// 从这两行反推，所以这是握手问题的第一手证据。
+    /// </summary>
+    public void LogPathDiagnostics()
+    {
+        try
+        {
+            ClientLog.Info($"运行环境: {PackageIdentityHelper.Describe()}");
+            ClientLog.Info(
+                $"ClassIsland 配置目录: {Path.GetFullPath(ClassIslandConfig.ConfigFolder)} " +
+                $"(来源={ClassIslandConfig.Source}, 探测到 {ClassIslandConfig.Candidates.Count} 个候选)");
+
+            var paths = BridgeMetaPaths;
+            var lines = paths
+                .Select((path, index) => $"  [{index}] {Path.GetFullPath(path)}");
+            ClientLog.Info(
+                $"桥接 meta 候选路径（共 {paths.Count} 个）:\n" + string.Join("\n", lines));
+        }
+        catch (Exception ex)
+        {
+            ClientLog.Warn($"路径诊断失败，不影响启动: {ex.Message}");
+        }
+    }
+
     private void WriteBridgeMetaFile()
     {
         if (_process is not { HasExited: false } || Port <= 0)
         {
             return;
-        }
-
-        var metaPath = BridgeMetaPath;
-        var directory = Path.GetDirectoryName(metaPath);
-        if (!string.IsNullOrWhiteSpace(directory))
-        {
-            Directory.CreateDirectory(directory);
         }
 
         var payload = new Dictionary<string, object?>
@@ -482,30 +582,104 @@ internal sealed class BackendProcessManager : IDisposable
         };
 
         var json = JsonSerializer.Serialize(payload, new JsonSerializerOptions { WriteIndented = true });
-        var tempPath = metaPath + ".tmp";
-        File.WriteAllText(tempPath, json, new UTF8Encoding(false));
-        File.Move(tempPath, metaPath, overwrite: true);
+
+        // 多写：宿主布局路径（便携部署的真实落点）+ LocalAppData 安全路径 +
+        // LocalState 变体（包身份下 Win32 LocalAppData 可能被重定向到别处）。
+        // 前者在包身份下可能不可写，因此单处失败只告警；只要有一处成功，桥接就能握手。
+        //
+        // 写完后**逐个读回校验**：MSIX 的目录重定向让"我以为写到了 X"和"物理上落在 X"
+        // 不一定是同一件事。读回拿到的完整路径才是真实落点，记进日志供对账——
+        // 这是商店版上线后唯一能证明"桥接进程看到的是同一个目录"的手段。
+        var verified = new List<string>();
+        var failures = new List<string>();
+        foreach (var metaPath in BridgeMetaPaths)
+        {
+            try
+            {
+                var directory = Path.GetDirectoryName(metaPath);
+                if (!string.IsNullOrWhiteSpace(directory))
+                {
+                    Directory.CreateDirectory(directory);
+                }
+
+                var tempPath = metaPath + ".tmp";
+                File.WriteAllText(tempPath, json, new UTF8Encoding(false));
+                File.Move(tempPath, metaPath, overwrite: true);
+                var roundTripped = VerifyMetaRoundTrip(metaPath);
+                verified.Add(metaPath);
+                if (!roundTripped)
+                {
+                    failures.Add($"{metaPath}: 写后读回校验失败");
+                }
+            }
+            catch (Exception ex)
+            {
+                failures.Add($"{metaPath}: {ex.Message}");
+            }
+        }
+
+        if (verified.Count == 0)
+        {
+            ClientLog.Error(
+                $"写入桥接 meta 文件失败（{failures.Count} 个候选路径均失败）：{string.Join("; ", failures)}");
+        }
+        else
+        {
+            // 物理落点是排查"桥接为什么不握手"的第一手证据，任何时候都值得 INFO。
+            ClientLog.Info(
+                $"桥接 meta 已写入 {verified.Count} 个路径：" +
+                string.Join("; ", verified.Select(p => Path.GetFullPath(p))));
+            var roundTripFailed = failures.Where(f => f.Contains("读回校验失败", StringComparison.Ordinal)).ToList();
+            if (roundTripFailed.Count > 0)
+            {
+                ClientLog.Warn($"meta 读回校验异常：{string.Join("; ", roundTripFailed)}");
+            }
+        }
+    }
+
+    /// <summary>
+    /// 写入后立即读回，确认文件内容可解析且 pid/port 与本次一致。
+    /// 顺带暴露"路径看似相同、物理位置却不同"的重定向问题。
+    /// </summary>
+    private bool VerifyMetaRoundTrip(string metaPath)
+    {
+        try
+        {
+            using var document = JsonDocument.Parse(File.ReadAllText(metaPath, Encoding.UTF8));
+            var root = document.RootElement;
+            return root.TryGetProperty("pid", out var pidElement) &&
+                   pidElement.GetInt32() == Environment.ProcessId &&
+                   root.TryGetProperty("port", out var portElement) &&
+                   portElement.GetInt32() == Port;
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     private void DeleteBridgeMetaFile()
     {
-        var metaPath = BridgeMetaPath;
-        if (!File.Exists(metaPath))
+        // 与 WriteBridgeMetaFile 对称：清理所有候选路径。
+        foreach (var metaPath in BridgeMetaPaths)
         {
-            return;
-        }
-
-        try
-        {
-            if (!MetaFileBelongsToCurrentProcess(metaPath))
+            if (!File.Exists(metaPath))
             {
-                return;
+                continue;
             }
 
-            File.Delete(metaPath);
-        }
-        catch
-        {
+            try
+            {
+                if (!MetaFileBelongsToCurrentProcess(metaPath))
+                {
+                    continue;
+                }
+
+                File.Delete(metaPath);
+            }
+            catch
+            {
+            }
         }
     }
 

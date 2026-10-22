@@ -76,6 +76,20 @@ class StreamUnsupportedError(RuntimeError):
     pass
 
 
+class ScheduleParseError(ValueError, RuntimeError):
+    """A completion could not be parsed into the V2 schedule protocol.
+
+    Deliberately inherits from BOTH ``ValueError`` and ``RuntimeError``: the
+    service layer (``command_service``) catches ``(FileNotFoundError,
+    ValueError)`` to turn user-fixable input into an ``{"status": "error"}``
+    result instead of an HTTP 500, while the CLI catches
+    ``(RuntimeError, OSError, ValueError)``. Inheriting from both keeps every
+    existing caller correct without touching their except clauses, and makes
+    "the model emitted something we cannot parse" a first-class, retryable
+    error class rather than an incidental exception type.
+    """
+
+
 def _is_loopback_host(host: str) -> bool:
     normalized = (host or "").strip().lower()
     return normalized in {"localhost", "127.0.0.1", "::1", "0.0.0.0"}
@@ -351,14 +365,36 @@ def request_llm_stream(url: str, payload: dict, api_key: str, progress_callback=
     return content
 
 
+def resolve_provider_endpoint(base_url: str, suffix: str) -> str:
+    """把用户填的 ``base_url`` 解析成具体端点 URL（chat 与 models 共用同一套规则）。
+
+    以前 chat 和 models 各写一份归一化逻辑，规则很快就漂了：models 那版遇到
+    ``.../v1/models`` 会拼成 ``.../v1/models/v1/models``。收敛到这里之后，
+    两处由构造保证一致——凡是 chat 能用的 base_url，列模型也一定用同一个前缀。
+
+    ``suffix`` 形如 ``/chat/completions`` 或 ``/models``。
+    """
+    base = str(base_url or "").strip().rstrip("/")
+    lower = base.lower()
+    # 用户经常直接粘贴完整端点（很多服务商文档只给完整地址）：
+    # 先把它剥掉，再按同一套规则重建，避免出现 /v1/models/v1/models 这种叠罗汉。
+    for known in ("/chat/completions", "/models"):
+        if lower.endswith(known):
+            base = base[: -len(known)].rstrip("/")
+            lower = base.lower()
+            break
+    if lower.endswith("/v1"):
+        return f"{base}{suffix}"
+    # 已经带版本段就别再补 /v1：智谱是 /api/paas/v4，老规则会拼成
+    # /v4/v1/models（chat 也一样拼错）。只认 /v<数字>，避免把 /v1beta 之类误判。
+    if re.search(r"/v\d+$", lower):
+        return f"{base}{suffix}"
+    return f"{base}/v1{suffix}"
+
+
 def _build_llm_target(config: dict, messages: List[dict], transport_overrides: Optional[dict] = None, tools: Optional[List[dict]] = None) -> Tuple[str, dict, str]:
     base_url = str(config["base_url"]).rstrip("/")
-    if base_url.lower().endswith("/chat/completions"):
-        url = base_url
-    elif base_url.lower().endswith("/v1"):
-        url = f"{base_url}/chat/completions"
-    else:
-        url = f"{base_url}/v1/chat/completions"
+    url = resolve_provider_endpoint(base_url, "/chat/completions")
     payload = {
         "model": config["model"],
         "messages": list(messages),
@@ -627,23 +663,33 @@ def _resolve_mmdd(mmdd: str, start_date: date, previous_date: Optional[date]) ->
 
     month = int(match.group("month"))
     day = int(match.group("day"))
-    candidate_year = previous_date.year if previous_date is not None else start_date.year
+    try:
+        candidate = date((previous_date or start_date).year, month, day)
+    except ValueError as ex:
+        raise ValueError(f"invalid MM-DD date: {mmdd}") from ex
 
-    while True:
-        try:
-            candidate = date(candidate_year, month, day)
-        except ValueError as ex:
-            raise ValueError(f"invalid MM-DD date: {mmdd}") from ex
-        if previous_date is None:
-            if candidate < start_date:
-                candidate_year += 1
-                continue
-        elif candidate < previous_date:
-            candidate_year += 1
-            continue
-        if candidate > start_date + timedelta(days=370):
-            raise ValueError(f"date {mmdd} exceeds supported window")
-        return candidate
+    if previous_date is None:
+        if candidate < start_date:
+            # A first date before the run start is a typo or a hallucinated
+            # date, NOT a cross-year roll: silently moving it a year forward
+            # used to hide the error and schedule into the wrong year.
+            raise ValueError(
+                f"date {mmdd} is before the schedule start {start_date.isoformat()}"
+            )
+    elif candidate <= previous_date:
+        # Dates must be strictly ascending. The ONLY legitimate "backwards"
+        # move is the December -> January calendar-year boundary (12-31 ->
+        # 01-01); everything else used to be silently pushed into next year,
+        # which turned a typo into a valid-looking future schedule.
+        if not (previous_date.month == 12 and candidate.month == 1):
+            raise ValueError(
+                f"dates must be ascending (got {mmdd} after {previous_date.isoformat()})"
+            )
+        candidate = date(previous_date.year + 1, month, day)
+
+    if candidate > start_date + timedelta(days=370):
+        raise ValueError(f"date {mmdd} exceeds supported window")
+    return candidate
 
 
 def _parse_ids_space_separated(raw_value: str, *, date_text: str, alias: str) -> List[int]:
@@ -860,7 +906,7 @@ def parse_schedule_completion(
                 "schedule": _parse_schedule_csv(csv_text),
                 "state_delta": {"debt_counts": {}, "credit_counts": {}},
             }, content
-        raise RuntimeError(f"Parse failed: {kv_error}") from kv_error
+        raise ScheduleParseError(f"Parse failed: {kv_error}") from kv_error
 
 
 def call_llm(

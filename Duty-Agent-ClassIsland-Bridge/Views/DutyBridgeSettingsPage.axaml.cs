@@ -94,7 +94,10 @@ public partial class DutyBridgeSettingsPage : SettingsPageBase
     private void UpdatePathDiagnostics()
     {
         MetaSourceText.Text = $"Meta 来源: {_paths.MetaSource}";
-        MetaFileText.Text = $"Meta 文件: {_paths.MetaFilePath}";
+        // 多候选路径逐行展示，便于定位"客户端写在哪、桥接读哪"。
+        MetaFileText.Text = _paths.MetaFilePaths.Count > 1
+            ? "Meta 文件:\n  " + string.Join("\n  ", _paths.MetaFilePaths)
+            : $"Meta 文件: {_paths.MetaFilePath}";
         LogsDirectoryText.Text = $"日志目录: {_paths.LogsDirectory}";
     }
 

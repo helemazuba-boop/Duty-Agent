@@ -22,8 +22,9 @@ internal static class ClientLog
 
     public static void Error(string message) => Append("ERROR", message);
 
-    public static void Error(string message, Exception exception) =>
-        Append("ERROR", $"{message} {exception.GetType().Name}: {exception.Message}");
+    /// <summary>异常对象的字符串化失败也不能影响主流程，参数允许为 null。</summary>
+    public static void Error(string message, Exception? exception) =>
+        Append("ERROR", $"{message} {exception?.ToString() ?? "(异常对象为空)"}");
 
     private static void Append(string level, string message)
     {

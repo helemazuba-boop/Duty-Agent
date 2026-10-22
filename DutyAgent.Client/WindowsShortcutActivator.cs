@@ -1,15 +1,32 @@
 using System.Runtime.InteropServices;
 using System.Text;
+using Windows.ApplicationModel;
 
 namespace DutyAgent.Client;
 
 internal static class WindowsShortcutActivator
 {
-    public const string AppUserModelId = "DutyAgent.Client";
+    /// <summary>
+    /// 通知/任务栏用的 AppUserModelId。
+    /// 包身份下必须是系统分配的 AppId（&lt;PackageFamilyName&gt;!App），硬编码 AUMID
+    /// 会让 toast 静默失败；传统桌面形态下保持自建 .lnk 上写入的那个 ID。
+    /// </summary>
+    public static string AppUserModelId =>
+        PackageIdentityHelper.IsPackaged
+            ? $"{Package.Current.Id.FamilyName}!App"
+            : PackagedFallbackId;
+
+    public const string PackagedFallbackId = "DutyAgent.Client";
 
     public static void EnsureShortcut()
     {
         if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        // 商店/ MSIX 形态由平台负责磁贴与快捷方式，自建 .lnk 只会与包身份冲突。
+        if (PackageIdentityHelper.IsPackaged)
         {
             return;
         }

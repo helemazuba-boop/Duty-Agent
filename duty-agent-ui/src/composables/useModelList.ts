@@ -21,7 +21,11 @@ export function useModelList() {
     try {
       const result = await api.fetchModelList({ base_url: baseUrl.trim(), api_key: apiKey || undefined });
       models.value = (result.models || []).map((id: string) => ({ id }));
-      if (models.value.length === 0) {
+      if (result.ok === false) {
+        // 后端失败也是 200，只靠 models 为空判断会把"鉴权失败/端点不存在"
+        // 说成"未返回任何模型"，排查时完全看不出原因。
+        message.error(result.detail || '获取模型列表失败');
+      } else if (models.value.length === 0) {
         message.warning(result.detail || '该端点未返回任何模型');
       }
     } catch {

@@ -35,6 +35,7 @@ from llm_transport import (
     _normalize_structured_output,
     _extract_fenced_block,
 )
+from postprocess import dedupe_pool_by_date
 from state_ops import (
     Context,
     DEFAULT_SINGLE_AREA_NAME,
@@ -346,6 +347,48 @@ def _parse_date_from_tokens(year: int, mm_str: str, dd_str: str) -> date:
     raise ValueError(f"invalid date: {mm_str}/{dd_str}")
 
 
+# Instruction date forms that are unambiguous enough to anchor the parse window.
+# "教室2-3人" must NOT match (a bare digit-hyphen-digit is a headcount, not a
+# date), so only Chinese 月/日 forms, ISO dates and explicit MM-DD ranges count.
+_INSTRUCTION_ISO_RE = re.compile(r"(20\d{2})-(\d{1,2})-(\d{1,2})")
+_INSTRUCTION_CN_RE = re.compile(r"(\d{1,2})\s*月\s*(\d{1,2})\s*日")
+_INSTRUCTION_RANGE_RE = re.compile(r"(\d{1,2})-(\d{1,2})\s*[-~至到]\s*(\d{1,2})-(\d{1,2})")
+
+
+def _resolve_loop_start_date(instruction: str, today: date) -> date:
+    """Earliest date the instruction explicitly names, never later than today.
+
+    Required slots are generated from the instruction (including dates that are
+    already past), so anchoring MM-DD resolution at "today" would push every
+    such date into NEXT year — the loop could then never cover its own required
+    slots and would burn all rounds before auto-finalizing a wrong-year schedule.
+    """
+    earliest: Optional[date] = None
+
+    def _consider(candidate: Optional[date]) -> None:
+        nonlocal earliest
+        if candidate is not None and (earliest is None or candidate < earliest):
+            earliest = candidate
+
+    for match in _INSTRUCTION_ISO_RE.finditer(instruction or ""):
+        try:
+            _consider(date(int(match.group(1)), int(match.group(2)), int(match.group(3))))
+        except ValueError:
+            continue
+    for match in _INSTRUCTION_CN_RE.finditer(instruction or ""):
+        try:
+            _consider(date(today.year, int(match.group(1)), int(match.group(2))))
+        except ValueError:
+            continue
+    for match in _INSTRUCTION_RANGE_RE.finditer(instruction or ""):
+        try:
+            _consider(date(today.year, int(match.group(1)), int(match.group(2))))
+        except ValueError:
+            continue
+
+    return min(earliest, today) if earliest is not None else today
+
+
 def _build_required_slots(
     instruction: str,
     start_date: date,
@@ -441,7 +484,9 @@ def _write_state(
     existing["debt_counts"] = dict(ctx_exec.debt_counts)
     existing["credit_counts"] = dict(ctx_exec.credit_counts)
     existing["last_pointer"] = ctx_exec.last_pointer
-    existing["schedule_pool"] = list(ctx_exec.schedule_pool)
+    # Dedupe by date (last wins): a multi-round run re-appends the same entries
+    # every round, and the persisted pool must never carry duplicate dates.
+    existing["schedule_pool"] = dedupe_pool_by_date(ctx_exec.schedule_pool)
     prune_operational_state(existing)
     save_json_atomic(state_path, existing)
 
@@ -518,6 +563,10 @@ def run_tool_loop_schedule(
 
         trace_id = str(input_data.get("trace_id", "")).strip() or ""
         start_date = datetime.fromisoformat(start_date_iso).date()
+        # The parse anchor follows the instruction's own dates (see
+        # _resolve_loop_start_date): required slots come from the instruction,
+        # so a past instruction date must stay in THIS year.
+        start_date = _resolve_loop_start_date(instruction, start_date)
 
         # Load config (with api_key) before the polling loop
         config = load_config(ctx)
@@ -831,10 +880,55 @@ def run_tool_loop_schedule(
                 "Ensure the LLM calls fill_schedule in its response."
             )
 
+        dates_sorted = sorted(seen_dates)
+        incomplete_slots = list(getattr(ctx_exec, "remaining", None) or [])
+        finalized = bool(ctx_exec.finalized)
+
+        if incomplete_slots or not finalized:
+            # 不完整结果不得提交为正式排班：``@finalize`` 只是模型的提交请求、
+            # 不是完成证明；跑满 max_rounds 更不是。state.json 保持原样，
+            # 调用方收到 partial 后可以补充重试（审计 P0-03）。
+            _emit_progress(emit_progress_fn, "tool_loop_incomplete",
+                           "Schedule incomplete; state not committed.",
+                           {"remaining": len(incomplete_slots), "finalized": finalized})
+            return {
+                "status": "partial",
+                "message": (
+                    "排班未完成，未写入正式排班："
+                    + (
+                        f"还有 {len(incomplete_slots)} 个槽位未填满"
+                        if incomplete_slots
+                        else "模型未确认完成（缺少 @finalize）"
+                    )
+                    + "。请补充后重试。"
+                ),
+                "schedule_entries": [],
+                "partial_schedule_entries": [dict(entry) for entry in ctx_exec.schedule_pool],
+                "remaining": [
+                    {"date": unit.date_iso, "area": unit.area_name}
+                    for unit in incomplete_slots
+                ],
+                "invalid_cmds": ctx_exec.invalid_cmds,
+                "rejected": ctx_exec.rejected,
+                "final_state": {
+                    "debt_counts": dict(ctx_exec.debt_counts),
+                    "credit_counts": dict(ctx_exec.credit_counts),
+                    "last_pointer": ctx_exec.last_pointer,
+                },
+                "execution_plan": execution_plan.to_metadata(),
+                "tool_loop_meta": {
+                    "rounds": round_num,
+                    "tool_calls": tool_call_count,
+                    "dates_covered": dates_sorted,
+                    "finalized": finalized,
+                    "hints_on": flags.hints_on,
+                },
+                "trace_id": trace_id,
+            }
+
         # Write authoritative state to disk
         _write_state(ctx, ctx_exec, trace_id)
 
-        dates_sorted = sorted(seen_dates)
         _emit_progress(emit_progress_fn, "tool_loop_done", "State written.", {
             "tool_calls": tool_call_count,
             "rounds": round_num,

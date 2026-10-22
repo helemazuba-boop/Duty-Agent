@@ -1,0 +1,174 @@
+# DutyAgent.Client MSIX 打包工程
+
+把独立客户端打成可提交微软商店（Partner Center）的 MSIX 包。
+
+> ✅ **本机已实证**（2026-10-13）：用 `@microsoft/winappcli`（winapp 0.7.1）在本机产出并
+> 解包验证了 `.msix`。**不需要 Visual Studio、不需要 Windows Kits**，构建机只要有
+> .NET SDK + Node/npm 即可。实测数据见 `docs/msix-store-adaptation-plan.md` 修正 B。
+
+## 构建
+
+仓库根有 `build_msix.bat`（等价包装，免去写 `-ExecutionPolicy`，参数原样透传）：
+
+```bat
+build_msix.bat
+build_msix.bat -ReleaseVersion 1.2.3
+build_msix.bat -ForStore
+```
+
+也可以直接调脚本：
+
+```powershell
+# 一条命令：发布客户端 → 组装 winapp 布局 → winapp package → 开发证书签名 → 组装测试包
+powershell -ExecutionPolicy Bypass -File scripts\Build-MsixPackage.ps1
+
+# 指定版本：只改 MSIX 的 Identity.Version（补 .0），别处一律不动。
+# 版本面已分家，别再混（2026-10-14 修）：
+#   包版本  = 这里的 -ReleaseVersion，或清单里的默认值；
+#   引擎版本 = Assets_Duty\version.py 的 APP_VERSION，后端自己的版本，与此无关。
+powershell -ExecutionPolicy Bypass -File scripts\Build-MsixPackage.ps1 -ReleaseVersion 1.2.3
+
+# 商店提交模式：不本地签名（交给 Partner Center）
+powershell -ExecutionPolicy Bypass -File scripts\Build-MsixPackage.ps1 -ForStore
+```
+
+产物在 `.msix-work\`：`HelemaZuba.Duty-Agent_<版本>_x64.msix`（开发证书签名）或同名未签名包
+（`-ForStore`）。布局暂存目录为 `.msix-work\pkg`，证书在 `.msix-work\cert\devcert.pfx`
+（口令是 winapp 默认的 `password`；公钥另导出 `devcert.cer`，旁加载和 CI 只需要它）。
+证书旁有 `publisher.txt` 记录它是为哪个 Publisher 生成的——清单 `Identity.Publisher` 一变
+就自动重新生成，避免旧 subject 证书导致签名失败。
+
+> 性能提示：`winapp package` 会先把约 260MB 的布局复制到 `%TEMP%` 再压缩。
+> C: 剩余空间不足时该阶段会慢到看似假死（实测 19 分钟未完成）；脚本已把
+> `TMP`/`TEMP` 指到 `.msix-work\temp`，同体积实测约 20 秒。
+
+## 提交商店前必须做的事
+
+> ✅ **包身份已换成正式上架配置**（2026-10-14）：
+> `Identity Name="HelemaZuba.Duty-Agent"` / `Publisher="CN=B4407923-BF46-468D-B8F8-549EDD96BDC3"`。
+> **PFN 随之改变**（不再是 `DutyAgent_3ecm5aq137n80`），AUMID = 新 `<PFN>!App`。
+> 本地签名用的开发证书会自动按新 Publisher 重新生成（`Build-MsixPackage.ps1` 会核对）。
+> 提交前请确认这个 Publisher 与 Partner Center → 账户设置里给出的发布者 ID **逐字符一致**
+> （含连字符），否则商店会拒。
+
+1. **核对发布者 ID 与应用名**：确认上面的 `Name` / `Publisher` 与 Partner Center 里预留的
+   完全一致，然后用 `-ForStore` 交付（打包时不本地签名，由商店签名）。
+2. **检查商店图标资产**。`Assets\*.png` 已由 `winapp manifest update-assets <仓库根>\icon.png`
+   生成 49 张（MedTile / AppList / WideTile / StoreLogo 全尺寸），已入库；
+   换图标后重跑该命令即可，无需手工缩放。
+3. **年龄分级与隐私政策 URL**。应用会把名单姓名发往用户配置的 LLM API，隐私条款必须覆盖。
+4. **补 WebView2 运行时依赖**。清单当前**没有**声明 `Microsoft.WinWebView2Runtime`，
+   Windows 10 默认不带这个运行时，缺了界面打不开（客户端会弹"启动失败"对话框，
+   托盘和后端仍正常）。补齐依赖后把 `MSIX-CertificationTest.ps1 -RequireWebView2Dependency`
+   打开。旁加载场景声明该依赖会导致装不上，所以验证包里做的是"检测 + 提示"而非硬依赖。
+5. 商店侧提交 `.msix`（或打成 `.msixupload`）；认证通常 1–3 天。
+
+## 本地侧载 / 异机测试（小范围）
+
+`Build-MsixPackage.ps1` 每次成功出包后会自动组装 `.msix-work\test-bundle\`——
+**把这个目录整个拷到目标机就能装**，不用再手工挑文件：
+
+| 文件 | 作用 |
+|---|---|
+| `<Name>_<Version>_x64.msix` | 本次产物（名字由清单 `Identity` 决定，脚本算出来，不靠"最新的那个"） |
+| `devcert.cer` | 开发证书**公钥**（subject 必须等于清单 `Identity.Publisher`） |
+| `build-info.json` | Name / Publisher / Version / 证书 subject+指纹 / 构建时间 |
+| `Install-MsixForTesting.ps1` | 导入证书 + 安装（管理员） |
+| `Uninstall-MsixForTesting.ps1` | 卸载 + 清 Run 键残留（管理员） |
+| `msix-test-checklist.md` | 逐项验证清单（源文件在 `docs/msix-test-checklist.md`） |
+
+目标机上：
+
+```powershell
+Set-ExecutionPolicy -Scope Process Bypass -Force
+.\Install-MsixForTesting.ps1      # 装完会打印 PFN 与 AUMID
+# …按 msix-test-checklist.md 逐项过…
+.\Uninstall-MsixForTesting.ps1    # 加 -RemoveCertificate 可连证书一起清
+```
+
+这两个脚本**不硬编码包身份**：Name / Publisher / Version 从包内 `AppxManifest.xml` 读，
+指纹从 `.cer` 读，安装结果用 `Add-AppxPackage -PassThru` 拿。换 Publisher 不用改脚本。
+
+> 装之前会校验证书 subject 是否等于清单 Publisher，不一致直接报错——比
+> `Add-AppxPackage` 吐一个 `0x800B0109` 好排查。
+>
+> 自启值名带 PFN 作用域：**`DutyAgent.<PFN>`**（裸名 `DutyAgent` 是 zip 版在用）。
+> 卸载脚本按作用域精确清理，不会误删 zip 版的启动项。
+
+不想组装测试包（只要包本身）：`-SkipTestBundle`。
+
+免安装验证包身份相关行为：
+
+```powershell
+winapp create-debug-identity .msix-work\pkg\duty-agent.exe --manifest .msix-work\pkg\Package.appxmanifest --keep-identity
+# 经 AUMID 激活：shell:AppsFolder\<PackageFamilyName>!App
+# 清理：winapp unregister --manifest .msix-work\pkg\Package.appxmanifest --force
+```
+
+> 正式对外分发走商店（Package Flight / Private audience），不走这条侧载路。
+> 侧载用的自签证书只给内部测试机。
+
+## 认证检查与生命周期验收
+
+| 脚本 | 作用 | 环境要求 |
+|---|---|---|
+| `scripts\MSIX-CertificationTest.ps1` | 静态认证：清单结构、能力、资源文件、版本面。只读不写。 | 无（CI 里跑） |
+| `scripts\MSIX-LifecycleTest.ps1` | 正式生命周期：安装 → 首跑（AUMID 激活、包身份日志、Run 键自启、数据落点）→ 升级（版本递增、数据保留）→ 卸载（残留、数据不删）。 | **管理员 + 真机** |
+
+```powershell
+# 静态认证（任何 PR / CI 都能跑）
+.\scripts\MSIX-CertificationTest.ps1 -ManifestPath DutyAgent.Client.Package\Package.appxmanifest
+
+# 对已解包的包体再跑一遍（包内清单才是真正被安装/认证读到的那一份，
+# winapp 会重排属性并注入 build:Metadata，仓库里那份通过不代表包体没问题）
+.\scripts\MSIX-CertificationTest.ps1 -ManifestPath .msix-work\final-unpack\AppxManifest.xml -LayoutPath .msix-work\final-unpack
+
+# 生命周期验收（会装包、写注册表、卸载，默认要交互确认；-Force 跳过）
+.\scripts\MSIX-LifecycleTest.ps1 -MsixPath .msix-work\DutyAgent_1.0.0.0_x64.msix -CertPath .msix-work\cert\devcert.cer
+```
+
+这些检查由 `.github\workflows\msix.yml` 在每次推送/PR 到 MSIX 相关路径时自动执行：
+静态认证 → 出包 → 按包内清单再认证 → 装/卸往返。GUI 启动部分刻意不在 CI 里做
+（服务器版没有交互会话，WebView2 也未必在），由 `MSIX-LifecycleTest.ps1` 手动覆盖。
+
+> 升级验收要第二个包。不给 `-UpgradeMsixPath` 时该阶段只告警不失败。
+> 生成方法：先出 1.0.0.1 的包，再把两个包一起传给脚本。
+
+## 与 zip 版的关系
+
+- **两种形态可以同机安装，但同一时刻只有一个在跑后端。** 单实例互斥体名与唤醒事件名在包身份下
+  会加 `PackageFamilyName` 前缀（见 `DutyAgent.Client\Program.cs`；前缀必须拼在
+  `Local\`/`Global\` 根之后，`DutyAgent.Client.Tests\ScopeNameTests` 有回归），
+  所以**同形态**的第二实例走"唤醒 + 退出"。
+- 数据与日志都在 `%LOCALAPPDATA%\DutyAgent`，zip 版与商店版**共用同一份数据**；
+  因此运行时另有一把**不带包前缀**的数据目录 owner 互斥（`Local\DutyAgent.DataDirectory.Owner`）：
+  同机只允许一个客户端持有后端，后启动的一方通过 `Local\DutyAgent.DataDirectory.Wake`
+  唤醒既有实例后退出，避免两个后端写坏共享的 `state/roster/meta`。
+- 自启：包身份下若清单没有 `desktop6:startupTask` 扩展（当前如此，原因见清单注释），
+  客户端回退写 `HKCU\...\Run`，值名为 `DutyAgent.<PFN>`（避免与 zip 版的裸值名
+  `DutyAgent` 互相覆盖），命令为 `explorer.exe shell:AppsFolder\<PFN>!App`
+  （实测：包身份写 Run 键不重定向、AUMID 命令可拉起客户端）；zip 版仍写 exe 路径。
+  注意 **MSIX 自启无法传 `--silent`**：登录后显示主窗口而不是静默驻留托盘
+  （AUMID/StartupTask 均不支持传参），已记录为已知差异。
+- 握手 meta 三写双读，桥接（非包进程）从 Win32 `%LOCALAPPDATA%\ClassIsland\Config\DutyAgentBridge`
+  读到的就是客户端写入的真实文件（实测 md5 一致，无重定向）。
+
+## 能力声明说明
+
+只声明了 `runFullTrust`。刻意**不**声明 `broadFileSystemAccess`：客户端的数据全部落在
+`%LOCALAPPDATA%\DutyAgent`，与 ClassIsland 的握手 meta 文件采用多路径冗余写入
+（宿主布局 / Win32 LocalAppData / 包 LocalState），无需访问包外任意路径。
+少一个受限能力，审核摩擦小得多。
+
+## 已知约束
+
+- 仅 x64。arm64 需要另一份 `python-embed`，暂不支持。
+- 未做 Store 商业化（内购/许可），也未接 Store 增量更新通道。
+- 清单不声明任何 `<Extensions>`：本机工具链（NuGet BuildTools 的 makeappx schema 集）
+  缺 Desktop schema，无法校验 `desktop:`/`desktop6:` 扩展元素。改用完整 Windows SDK
+  构建时可以恢复 `startupTask` 扩展（清单注释里有现成 XML），Run 键回退逻辑继续兜底。
+- WebView2 依赖 Evergreen Runtime：**Windows 11 预装，Windows 10 通常没有**
+  （可能因装了别的软件而顺带存在）。缺了不会崩，客户端弹"启动失败"对话框，
+  托盘与后端照常运行。运行时未打进包，也没在清单里声明依赖（见上面第 4 条）。
+  客户端目前**没有**做运行期版本探测（`GetAvailableBrowserVersionString`），
+  这条待补。

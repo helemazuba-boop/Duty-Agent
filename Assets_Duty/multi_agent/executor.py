@@ -14,6 +14,7 @@ from absence_ops import (
 )
 from execution_profiles import ExecutionPlan
 from llm_transport import call_llm_json
+from postprocess import normalize_apply_mode
 from prompt_gateway import build_agent_prompt
 from state_ops import (
     Context,
@@ -47,27 +48,41 @@ AGENT_TIMEOUT_SECONDS = 70
 
 
 def _check_capacity(snapshot: FrozenSnapshot, barrier1: Dict[str, Any], barrier2: Dict[str, Any]) -> None:
-    """Fail fast with a human-readable message when the active roster (minus
-    window absences) cannot cover the busiest single day of the template.
+    """Fail fast with a human-readable message when the roster cannot cover the
+    busiest single day of the template.
 
-    Cross-date (and same-day cross-area) reuse stays allowed, so the binding
-    constraint is the busiest day, not the sum of all slots."""
-    template = barrier2.get("template") or {}
+    Same-day cross-area reuse is allowed (the agent6 prompt says so and
+    ``validate_final_schedule`` accepts it), so the binding constraint per day
+    is the LARGEST single-area headcount — NOT the sum over areas. The old sum
+    rejected perfectly feasible configs (e.g. 3 people for A:2 + B:2).
+    """
+    template = barrier2.get("template") or barrier1.get("template") or {}
     if not template:
         return
     busiest_day_need = max(
-        sum(int(count) for count in areas.values()) for areas in template.values()
+        max(int(count) for count in areas.values()) for areas in template.values()
     )
     available = len(set(snapshot.active_ids) - set(barrier1["absent_ids"]))
     if available < busiest_day_need:
         absent_count = len(barrier1["absent_ids"])
         raise ValueError(
-            f"可用人员不足：最忙的一天需要 {busiest_day_need} 人，"
+            f"可用人员不足：最忙的一天单个区域最多需要 {busiest_day_need} 人，"
             f"当前仅有 {available} 人可用"
             f"（在册 {len(snapshot.active_ids)} 人"
             + (f"，扣除请假/缺席 {absent_count} 人" if absent_count else "")
             + "）。建议：减少每日所需人数、缩短日期范围，"
               "或通过名单管理恢复/添加成员。"
+        )
+
+    # agent6 may not place the same person twice in one area, so the candidate
+    # pool must also cover the busiest day's largest area — otherwise both
+    # agent6 and the code fallback fail with a cryptic "could not fill".
+    final_pool = list(barrier2.get("final_pool") or [])
+    if final_pool and len(final_pool) < busiest_day_need:
+        raise ValueError(
+            f"可用候选池不足：最忙的一天单个区域最多需要 {busiest_day_need} 人，"
+            f"当前候选池仅 {len(final_pool)} 人。建议：放宽人员规则、减少每日所需人数，"
+            "或通过名单管理增加在岗成员。"
         )
 
 
@@ -394,6 +409,7 @@ def run_multi_agent_schedule(
     # "slot count mismatch" from Agent6 validation / fallback filling.
     _check_capacity(snapshot, barrier1, barrier2)
 
+    completion_source = "llm"
     try:
         _emit_progress(emit_progress_fn, "agent_start", "agent6_assembly started.", {"agent_id": "agent6_assembly"})
         agent6_result, agent6_raw, agent6_meta, agent6_trace = _run_agent(
@@ -431,6 +447,7 @@ def run_multi_agent_schedule(
                 f"兜底错误：{fallback_ex}；Agent6 原始错误：{ex}"
             ) from fallback_ex
         final_ai_response = "fallback_fill"
+        completion_source = "fallback"
 
     _emit_progress(
         emit_progress_fn,
@@ -438,14 +455,44 @@ def run_multi_agent_schedule(
         "Running settlement and atomic commit.",
         {"trace_id": snapshot.trace_id},
     )
-    settlement = finalize_multi_agent_run(
-        ctx,
-        snapshot,
-        barrier1,
-        barrier2,
-        final_schedule,
-        stop_event=stop_event,
-    )
+    try:
+        settlement = finalize_multi_agent_run(
+            ctx,
+            snapshot,
+            barrier1,
+            barrier2,
+            final_schedule,
+            stop_event=stop_event,
+            apply_mode=normalize_apply_mode(input_data.get("apply_mode")),
+        )
+    except ValueError as ex:
+        # Final validation failed (e.g. a rule the assembled schedule violates
+        # but the deterministic fallback satisfies). Route it through the same
+        # fallback path as an agent6 failure instead of failing the whole run.
+        _emit_progress(
+            emit_progress_fn,
+            "settlement_fallback",
+            f"Final validation failed, trying code fallback: {ex}",
+            {"agent_id": "settlement"},
+        )
+        try:
+            final_schedule = fallback_fill_schedule(barrier2)
+        except Exception as fallback_ex:
+            raise RuntimeError(
+                "排班装配失败：终表校验未通过，代码兜底同样失败。"
+                f"兜底错误：{fallback_ex}；终表校验错误：{ex}"
+            ) from fallback_ex
+        final_ai_response = "fallback_fill"
+        completion_source = "fallback"
+        settlement = finalize_multi_agent_run(
+            ctx,
+            snapshot,
+            barrier1,
+            barrier2,
+            final_schedule,
+            stop_event=stop_event,
+            apply_mode=normalize_apply_mode(input_data.get("apply_mode")),
+        )
     _emit_progress(
         emit_progress_fn,
         "commit",
@@ -458,6 +505,7 @@ def run_multi_agent_schedule(
 
     return {
         "status": "success",
+        "completion_source": completion_source,
         "ai_response": final_ai_response[:20000],
         "trace_id": snapshot.trace_id,
         "selected_executor": execution_plan.runtime_mode,
@@ -469,6 +517,7 @@ def run_multi_agent_schedule(
             "priority_pool_size": len(barrier2["priority_pool"]),
             "pointer_pool_size": len(barrier2["pointer_pool"]),
             "final_pool_size": len(barrier2["final_pool"]),
+            "fallback_used": completion_source == "fallback",
         },
         "execution_trace": execution_trace,
     }

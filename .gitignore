@@ -5,6 +5,24 @@ obj/
 *.userosscache
 *.sln.docstates
 
+# MSIX / Desktop Bridge 构建产物
+DutyAgent.Client.Package/AppPackages/
+DutyAgent.Client.Package/staging/
+DutyAgent.Client.Package/publish/
+*.msix
+*.msixupload
+*.appx
+*.appxupload
+*.p7x
+Package.StoreAssociation.txt
+
+# MSIX 打包工作区（winapp 暂存目录 / 调试证书 / 实测产出）
+.msix-work/
+.winapp-probe/
+
+# 智能体工作数据（非项目产物）
+.workbuddy-ai/
+
 # Python
 __pycache__/
 *.py[cod]

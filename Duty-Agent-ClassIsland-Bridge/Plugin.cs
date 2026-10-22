@@ -177,6 +177,28 @@ public interface IBridgePaths
     /// <summary>独立软件写入的 meta 文件完整路径。</summary>
     string MetaFilePath { get; }
 
+    /// <summary>
+    /// meta 备用路径：%LOCALAPPDATA%\ClassIsland\Config\DutyAgentBridge\.duty-agent-meta.json。
+    /// 带包身份的客户端（微软商店 MSIX）无法可靠写入宿主布局目录，会退到这里；
+    /// 桥接对两条路径都读都监听，主路径优先。
+    /// </summary>
+    string AlternateMetaFilePath { get; }
+
+    /// <summary>全部 meta 候选路径（主路径在前，已去重）。</summary>
+    IReadOnlyList<string> MetaFilePaths { get; }
+
+    /// <summary>
+    /// 兜底层候选路径：扫描 <c>%LOCALAPPDATA%\Packages\&lt;任意包&gt;\{LocalCache\Local,LocalState}\
+    /// ClassIsland\Config\DutyAgentBridge</c>。
+    ///
+    /// 为什么需要：MSIX 的 AppData 访问可能被重定向，且 Win32 的 %LOCALAPPDATA% 与
+    /// <see cref="Windows.Storage.ApplicationData.Current.LocalFolder"/> 在包内不一定是
+    /// 同一个物理目录。桥接跑在 ClassIsland 里（无包身份），只能看到 Win32 视角的那个；
+    /// 若客户端被重定向到 Packages\&lt;PFN&gt;\... 下，就必须靠通配去发现它。
+    /// 主层（MetaFilePaths）有结果时完全不碰这层，因此对非商店部署零成本。
+    /// </summary>
+    IReadOnlyList<string> FallbackMetaFilePaths { get; }
+
     /// <summary>插件日志目录（PluginConfigFolder\logs）。</summary>
     string LogsDirectory { get; }
 
@@ -196,6 +218,9 @@ public sealed class BridgePaths : IBridgePaths
     public string PluginConfigFolder { get; }
     public string SharedConfigFolder { get; }
     public string MetaFilePath { get; }
+    public string AlternateMetaFilePath { get; }
+    public IReadOnlyList<string> MetaFilePaths { get; } = Array.Empty<string>();
+    public IReadOnlyList<string> FallbackMetaFilePaths { get; } = Array.Empty<string>();
     public string LogsDirectory { get; }
     public string MetaSource { get; }
 
@@ -229,5 +254,70 @@ public sealed class BridgePaths : IBridgePaths
         LogsDirectory = Path.Combine(PluginConfigFolder, "logs");
         Directory.CreateDirectory(PluginConfigFolder);
         Directory.CreateDirectory(LogsDirectory);
+
+        AlternateMetaFilePath = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "ClassIsland", "Config", SharedFolderName, MetaFileName);
+
+        // 候选列表：主路径优先；与主路径相同（软链接/极端部署）时不去重造成两个相同监听。
+        MetaFilePaths = string.Equals(MetaFilePath, AlternateMetaFilePath, StringComparison.OrdinalIgnoreCase)
+            ? new[] { MetaFilePath }
+            : new[] { MetaFilePath, AlternateMetaFilePath };
+
+        FallbackMetaFilePaths = DiscoverPackageRedirectedMetaPaths();
+    }
+
+    /// <summary>
+    /// 扫描 MSIX 包身份下可能被重定向到的 meta 落点。仅当主层两个路径都取不到有效
+    /// 握手时才会用到，因此这里做了去重 + 上限保护，避免把候选列表撑爆。
+    /// </summary>
+    private static IReadOnlyList<string> DiscoverPackageRedirectedMetaPaths()
+    {
+        var results = new List<string>();
+        try
+        {
+            var localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+            if (string.IsNullOrWhiteSpace(localAppData))
+            {
+                return results;
+            }
+
+            var packagesRoot = Path.Combine(localAppData, "Packages");
+            if (!Directory.Exists(packagesRoot))
+            {
+                return results;
+            }
+
+            // 已知的两种重定向目标：Win32 视角（LocalCache\Local）与 WinRT 视角（LocalState）。
+            string[] relativeRoots =
+            {
+                Path.Combine("LocalCache", "Local"),
+                "LocalState",
+            };
+
+            foreach (var packageDir in Directory.EnumerateDirectories(packagesRoot))
+            {
+                foreach (var relativeRoot in relativeRoots)
+                {
+                    var candidate = Path.Combine(
+                        packageDir,
+                        relativeRoot,
+                        "ClassIsland",
+                        "Config",
+                        SharedFolderName,
+                        MetaFileName);
+                    if (File.Exists(candidate))
+                    {
+                        results.Add(candidate);
+                    }
+                }
+            }
+        }
+        catch
+        {
+            // 扫描失败只意味着没有兜底层，主层仍然有效。
+        }
+
+        return results;
     }
 }

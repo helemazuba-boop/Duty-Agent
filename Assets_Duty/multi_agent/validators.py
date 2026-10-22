@@ -299,11 +299,12 @@ def validate_agent6_output(raw: Dict[str, Any], barrier2: Dict[str, Any]) -> Dic
         raise ValueError("agent6 schedule must be a non-empty list")
     normalized: List[Dict[str, Any]] = []
     valid_ids = set(barrier2["final_pool"])
+    template = barrier2.get("template") or {}
     for entry in schedule:
         if not isinstance(entry, dict):
             raise ValueError("schedule entry must be an object")
         date_text = str(entry.get("date", "")).strip()
-        if date_text not in barrier2["dates"]:
+        if date_text not in barrier2["dates"] or date_text not in template:
             raise ValueError(f"unexpected date in schedule: {date_text}")
         area_ids = entry.get("area_ids")
         if not isinstance(area_ids, dict):
@@ -318,6 +319,16 @@ def validate_agent6_output(raw: Dict[str, Any], barrier2: Dict[str, Any]) -> Dic
                 "note": str(entry.get("note", "") or "").strip(),
             }
         )
+    # Structural completeness MUST fail here, not only in validate_final_schedule:
+    # the final validator runs after the retry loop and outside the fallback
+    # path, so a missing date / wrong area set / under-staffed area used to
+    # hard-fail the whole run with no model self-repair and no code fallback.
+    # Raising here feeds "Fix this error: ..." back to the model (call_llm_json
+    # retries on any validator exception).
+    try:
+        validate_final_schedule(normalized, barrier2)
+    except KeyError as ex:
+        raise ValueError(f"schedule references unknown template key: {ex}") from ex
     return {"schedule": normalized}
 
 

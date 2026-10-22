@@ -32,7 +32,7 @@ internal sealed class MainForm : Form
     private readonly BackendProcessManager _backend = new();
     private readonly NotifyIcon _trayIcon;
     private readonly System.Windows.Forms.Timer _lifecycleDebounce = new() { Interval = 400 };
-    private readonly RegisteredWaitHandle? _wakeRegistration;
+    private readonly List<RegisteredWaitHandle> _wakeRegistrations = new();
     private DesktopNotificationService? _notificationService;
     private NotificationStreamClient? _notificationStream;
     private FileSystemWatcher? _hostConfigWatcher;
@@ -115,7 +115,7 @@ internal sealed class MainForm : Form
     [DllImport("dwmapi.dll")]
     private static extern int DwmSetWindowAttribute(IntPtr hwnd, int attribute, ref uint value, int size);
 
-    public MainForm(bool startSilent, EventWaitHandle wakeEvent)
+    public MainForm(bool startSilent, EventWaitHandle wakeEvent, EventWaitHandle dataWakeEvent)
     {
         _allowVisible = !startSilent;
 
@@ -145,12 +145,17 @@ internal sealed class MainForm : Form
         FormClosing += OnFormClosing;
 
         // 单实例唤醒：第二个实例启动时只发信号，这里把驻留托盘的窗口拉回前台。
-        _wakeRegistration = ThreadPool.RegisterWaitForSingleObject(
-            wakeEvent,
-            OnWakeSignal,
-            state: null,
-            Timeout.Infinite,
-            executeOnlyOnce: false);
+        // 两个事件：同形态唤醒（带 PFN 作用域）与跨形态数据目录唤醒（不带作用域，
+        // zip 版 ↔ 商店版互相唤醒后由 owner 继续运行）。
+        foreach (var wakeHandle in new[] { wakeEvent, dataWakeEvent })
+        {
+            _wakeRegistrations.Add(ThreadPool.RegisterWaitForSingleObject(
+                wakeHandle,
+                OnWakeSignal,
+                state: null,
+                Timeout.Infinite,
+                executeOnlyOnce: false));
+        }
     }
 
     /// <summary>
@@ -500,6 +505,7 @@ internal sealed class MainForm : Form
 
     private async Task InitializeAsync()
     {
+        ClientLog.Info("初始化流程开始。");
         try
         {
             await _backend.StartAsync(CancellationToken.None).ConfigureAwait(true);
@@ -597,10 +603,20 @@ internal sealed class MainForm : Form
     {
         try
         {
-            var userDataPath = Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                "DutyAgent",
-                "WebView2");
+            string userDataPath;
+            if (PackageIdentityHelper.IsPackaged)
+            {
+                // 包身份下用平台托管的 LocalFolder：卸载时随包一起清理，
+                // 不会在 %LOCALAPPDATA% 留下孤儿缓存目录。
+                userDataPath = Windows.Storage.ApplicationData.Current.LocalFolder.Path;
+            }
+            else
+            {
+                userDataPath = Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                    "DutyAgent",
+                    "WebView2");
+            }
             Directory.CreateDirectory(userDataPath);
 
             var environment = await CoreWebView2Environment.CreateAsync(userDataFolder: userDataPath).ConfigureAwait(true);
@@ -987,7 +1003,15 @@ internal sealed class MainForm : Form
     {
         var (autoStart, closeAction) = ReadLifecycleSettings();
         _closeAction = closeAction;
-        AutoStartManager.Apply(autoStart);
+        if (!AutoStartManager.Apply(autoStart) && autoStart)
+        {
+            // 系统拒绝了自启（组策略禁用 StartupTask）：提示但不阻塞主流程。
+            _trayIcon?.ShowBalloonTip(
+                4000,
+                "自启未生效",
+                "系统禁用了本应用的开机自启，可到系统「设置 → 应用 → 启动」中查看。",
+                System.Windows.Forms.ToolTipIcon.Warning);
+        }
     }
 
     private (bool AutoStart, string CloseAction) ReadLifecycleSettings()
@@ -1083,7 +1107,12 @@ internal sealed class MainForm : Form
     {
         if (disposing)
         {
-            _wakeRegistration?.Unregister(null);
+            foreach (var registration in _wakeRegistrations)
+            {
+                registration.Unregister(null);
+            }
+
+            _wakeRegistrations.Clear();
             _lifecycleDebounce.Dispose();
             _hostConfigWatcher?.Dispose();
             _trayIcon.Dispose();

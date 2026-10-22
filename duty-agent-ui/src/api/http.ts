@@ -80,6 +80,14 @@ export interface ModelProbeResult {
   fix: string;
 }
 
+/** POST /api/v1/duty/model-list 的返回。后端失败时也是 200，靠 ok/status 区分。 */
+export interface ModelListResult {
+  ok: boolean;
+  status: string;
+  detail: string;
+  models: string[];
+}
+
 const http: AxiosInstance = axios.create({
   baseURL: API_BASE_URL,
   timeout: 30000,
@@ -160,8 +168,8 @@ export const api = {
     const { data } = await http.post<ModelProbeResult>('/api/v1/duty/model-probe', payload);
     return data;
   },
-  async fetchModelList(payload: { base_url: string; api_key?: string }): Promise<{ models: string[]; detail?: string }> {
-    const { data } = await http.post<{ models: string[]; detail?: string }>('/api/v1/duty/model-list', payload);
+  async fetchModelList(payload: { base_url: string; api_key?: string }): Promise<ModelListResult> {
+    const { data } = await http.post<ModelListResult>('/api/v1/duty/model-list', payload);
     return data;
   },
   async getNotificationSettings(): Promise<NotificationSettings> {

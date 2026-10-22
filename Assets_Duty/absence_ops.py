@@ -73,8 +73,12 @@ def _parse_until(values: Tuple[int, ...], today: date) -> Optional[date]:
             parsed = date(values[0], values[1], values[2])
         else:
             parsed = date(today.year, values[0], values[1])
-            if parsed <= today:
-                parsed = date(today.year + 1, values[0], values[1])
+            if parsed < today:
+                # "请假到 MM-DD" naming an already-past day cannot be honored
+                # literally. Returning None lets the caller fall back to the
+                # default duration; rolling to NEXT year used to register a
+                # full-year absence from a one-digit typo.
+                return None
         return parsed
     except ValueError:
         return None

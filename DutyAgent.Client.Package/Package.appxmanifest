@@ -1,0 +1,103 @@
+<?xml version="1.0" encoding="utf-8"?>
+
+<Package
+  xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
+  xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
+  xmlns:uap3="http://schemas.microsoft.com/appx/manifest/uap/windows10/3"
+  xmlns:uap10="http://schemas.microsoft.com/appx/manifest/uap/windows10/10"
+  xmlns:desktop="http://schemas.microsoft.com/appx/manifest/desktop/windows10"
+  xmlns:desktop6="http://schemas.microsoft.com/appx/manifest/desktop/windows10/6"
+  xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
+  IgnorableNamespaces="uap uap3 uap10 desktop desktop6 rescap">
+
+  <!--
+    包身份。2026-10-14 起正式上架配置：
+      - Name / Publisher 已换成 Partner Center 账户里的预留应用名与发布者 ID。
+        **PFN 会随之改变**（旧: DutyAgent_3ecm5aq137n80），AUMID 变成本身 <PFN>!App，
+        影响 HKCU Run 键自启值、桥接握手诊断、以及各处硬编码 "%LOCALAPPDATA%..."
+      - 本地签名给侧载用的开发证书，Publisher 必须与这里的 Identity.Publisher 一致，
+        否则 winapp 打包传证书时会因签名者不匹配而失败。
+        scripts\Build-MsixPackage.ps1 会核对这一点并在 Publisher 变化时自动重新生成证书。
+      - 商店提交用 -ForStore 交付：打包时不本地签名，由 Partner Center 签名。
+  -->
+  <Identity
+    Name="HelemaZuba.Duty-Agent"
+    Publisher="CN=B4407923-BF46-468D-B8F8-549EDD96BDC3"
+    Version="1.0.0.0"
+    ProcessorArchitecture="x64" />
+
+  <Properties>
+    <DisplayName>Duty-Agent 值日排班</DisplayName>
+    <PublisherDisplayName>Helema Zuba</PublisherDisplayName>
+    <Logo>Assets\StoreLogo.png</Logo>
+    <Description>班级值日排班助手：LLM 柔性排班 + 确定性兜底引擎，为 ClassIsland 桌面组件供数。</Description>
+    <uap10:PackageIntegrity>
+      <uap10:Content Enforcement="on"/>
+    </uap10:PackageIntegrity>
+  </Properties>
+
+  <Dependencies>
+    <TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.18362.0" MaxVersionTested="10.0.26100.0" />
+  </Dependencies>
+
+  <Resources>
+    <Resource Language="zh-CN" />
+    <Resource Language="en-us" />
+  </Resources>
+
+  <Applications>
+    <Application Id="App"
+                 Executable="duty-agent.exe"
+                 EntryPoint="Windows.FullTrustApplication">
+      <uap:VisualElements
+        DisplayName="Duty-Agent"
+        Description="班级值日排班助手"
+        BackgroundColor="transparent"
+        Square150x150Logo="Assets\MedTile.png"
+        Square44x44Logo="Assets\AppList.png">
+        <uap:DefaultTile Wide310x150Logo="Assets\WideTile.png" />
+      </uap:VisualElements>
+    </Application>
+  </Applications>
+
+  <Capabilities>
+    <!--
+      全信任桌面应用必需。刻意**不**声明 broadFileSystemAccess：客户端数据全部落在
+      %LOCALAPPDATA%\DutyAgent，与 ClassIsland 的握手 meta 采用多路径冗余（含
+      LocalAppData 与 LocalState），无需访问包外任意路径。少一个受限能力，
+      审核摩擦小得多。经典 Win32 I/O 在全 trust 下可读写用户有权限的路径。
+    -->
+    <rescap:Capability Name="runFullTrust" />
+  </Capabilities>
+
+  <!--
+    刻意不声明任何 <Extensions>。实测与工具链结论（2026-10，winapp 0.7.1 +
+    Microsoft.Windows.SDK.BuildTools 10.0.28000）：
+
+    1. windows.fullTrustProcess（python.exe 子进程）：不需要。实测稀疏包身份下
+       客户端可直接拉起并监管 Assets_Duty\python-embed\python.exe（启动、通知流、
+       异常退出自动重启全部正常）；该扩展只用于 FullTrustProcessLauncher 另行
+       拉起进程的场景。
+
+    2. desktop6:startupTask：本机工具链无法验证。NuGet BuildTools 的 makeappx
+       校验用的 schema 集（schemas/10.0.28000.0/winrt/*.xsd）不含 Desktop*，
+       所有 desktop:/desktop6: 扩展元素都会被判 "invalid child element"；
+       winapp package 同理。因此自启改为运行期回退：AutoStartManager 在
+       StartupTask 不可用时写 HKCU Run 键，命令为
+       explorer.exe shell:AppsFolder\<PFN>!App（实测两件事均成立：包身份进程
+       写 HKCU Run 未重定向，AUMID 激活可拉起全信任应用）。
+
+    若改用完整 Windows SDK（带 Desktop* schema）构建，可以恢复下面这段拿到
+    平台原生的自启管理（系统设置里可见、卸载自动清理）；Run 键回退逻辑会继续
+    作为兜底保留，两者不会同时生效：
+
+      <Extensions>
+        <desktop6:Extension Category="windows.startupTask" Executable="duty-agent.exe"
+                            EntryPoint="Windows.FullTrustApplication">
+          <desktop6:StartupTask TaskId="DutyAgentStartup" Enabled="true"
+                                DisplayName="Duty-Agent 值日排班" />
+        </desktop6:Extension>
+      </Extensions>
+  -->
+
+</Package>
