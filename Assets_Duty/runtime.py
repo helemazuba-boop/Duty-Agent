@@ -18,6 +18,27 @@ from diagnostics import DutyDiagnosticsLogger
 from state_ops import Context, claim_auto_run_today, compute_current_duty_date, load_host_config, load_state, update_host_runtime_fields
 from version import APP_VERSION
 
+
+def collect_result_warnings(result: dict) -> list:
+    """Human-readable adjustments a schedule run applied.
+
+    ``single_pass`` reports them as ``adjustment_warnings``; ``multi_agent``
+    nests them under ``agent_summary.warnings``. Both lists describe the same
+    thing - what the deterministic layer changed or refused on the model's
+    behalf - and both must reach the user instead of dying in the return
+    payload.
+    """
+    warnings: list = []
+    direct = (result or {}).get("adjustment_warnings")
+    if isinstance(direct, list):
+        warnings.extend(str(item) for item in direct if str(item or "").strip())
+    summary = (result or {}).get("agent_summary")
+    if isinstance(summary, dict):
+        nested = summary.get("warnings")
+        if isinstance(nested, list):
+            warnings.extend(str(item) for item in nested if str(item or "").strip())
+    return warnings
+
 # A1 provides ``auto_run`` (trigger + catch-up pure functions). It is an optional
 # dependency at import time: if it has not landed yet the worker degrades
 # gracefully (each tick logs + skips) instead of breaking module import, which
@@ -497,6 +518,14 @@ class DutyRuntime:
         duty_item = self._get_duty_schedule_item(duty_date)
         assignments_text = self._format_duty_reminder_body(duty_item, duty_date)
 
+        # Every deterministic repair the run applied (absentee stripped,
+        # shortfall filled, hallucinated ledger dropped, window gaps...) plus
+        # whether the schedule came from the model or the code fallback. These
+        # used to live only in the return payload, which the UI/notification
+        # consumers dropped - so users saw "success" with no idea the backend
+        # had rewritten their schedule.
+        warnings = collect_result_warnings(result)
+
         self.publish_notification(
             "schedule_completed" if success else "schedule_failed",
             "排班完成" if success else "排班失败",
@@ -509,6 +538,8 @@ class DutyRuntime:
                 "status": status or "unknown",
                 "duty_date": duty_date,
                 "assignments": assignments_text,
+                "completion_source": str((result or {}).get("completion_source") or ""),
+                "warnings": warnings,
             },
         )
 

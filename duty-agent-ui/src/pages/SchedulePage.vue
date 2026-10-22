@@ -258,6 +258,21 @@ const fmtTime = (ts: number) =>
                       {{ msg.run!.result }}
                     </div>
 
+                    <!-- 兜底来源:模型不可用,代码兜底仍然算成功,但用户应知道 -->
+                    <div v-if="msg.run!.status === 'success' && msg.run!.completionSource === 'fallback'" class="ai-run__fallback">
+                      模型不可用，本次排班由确定性算法兜底生成（规则全部满足，但未经过模型推理）。
+                    </div>
+
+                    <!-- 后端确定性修正/提示:剔除缺席、缺额补齐、忽略幻觉账本、未覆盖日期… -->
+                    <div v-if="msg.run!.warnings && msg.run!.warnings.length > 0" class="ai-run__warnings">
+                      <div class="ai-run__warnings-title">
+                        自动修正与提示 · {{ msg.run!.warnings.length }} 条
+                      </div>
+                      <div v-for="(warning, wi) in msg.run!.warnings" :key="wi" class="ai-run__warning">
+                        {{ warning }}
+                      </div>
+                    </div>
+
                     <!-- 失败:错误信息 + 重试 / 复制错误 -->
                     <div v-if="msg.run!.status === 'error'" class="ai-run__error">
                       <div class="ai-run__error-text">{{ msg.run!.errorText }}</div>
@@ -588,6 +603,43 @@ const fmtTime = (ts: number) =>
   color: var(--dt-text);
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+/* 兜底来源提示：中性色（不是错误，是"来源不同"） */
+.ai-run__fallback {
+  padding: 8px 12px;
+  border-top: 1px solid var(--dt-border);
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--dt-text-secondary, #8c8c8c);
+  background: color-mix(in srgb, var(--dt-warning, #faad14) 8%, transparent);
+}
+
+/* 后端自动修正/提示：amber 提示条，逐条列出（后端算得出来就必须让人看见） */
+.ai-run__warnings {
+  padding: 8px 12px 10px;
+  border-top: 1px solid var(--dt-border);
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--dt-text-secondary, #8c8c8c);
+}
+
+.ai-run__warnings-title {
+  font-weight: 600;
+  color: var(--dt-text);
+  margin-bottom: 2px;
+}
+
+.ai-run__warning {
+  padding-left: 12px;
+  position: relative;
+}
+
+.ai-run__warning::before {
+  content: '•';
+  position: absolute;
+  left: 2px;
+  color: var(--dt-warning, #faad14);
 }
 
 .ai-run__error {

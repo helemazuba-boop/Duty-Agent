@@ -230,6 +230,15 @@ export function useScheduleWebSocket() {
                 const result: ScheduleResult = { status: msg.status || 'ok' };
                 if (msg.ai_response) result.ai_response = msg.ai_response;
                 if (msg.message) result.message = msg.message;
+                // 后端确定性修正/提示与兜底来源：必须透传给 UI，否则用户只看到
+                // "成功"，看不到班表被代码改过（审计 P1）。
+                if (Array.isArray(msg.adjustment_warnings)) {
+                  result.adjustment_warnings = msg.adjustment_warnings;
+                }
+                if (msg.agent_summary && typeof msg.agent_summary === 'object') {
+                  result.agent_summary = msg.agent_summary;
+                }
+                if (msg.completion_source) result.completion_source = msg.completion_source;
                 if (msg.status === 'success') {
                   result.status = 'success';
                 }

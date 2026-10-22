@@ -1507,5 +1507,60 @@ class MultiAgentRemainingTests(unittest.TestCase):
                 )
 
 
+class ResultVisibilityTests(unittest.TestCase):
+    """后端的确定性修正/兜底来源必须到达通知与 UI（审计 P1）。"""
+
+    def _tmp(self):
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(lambda: __import__("shutil").rmtree(tmp, ignore_errors=True))
+        return Path(tmp)
+
+    def test_collect_result_warnings_from_both_shapes(self):
+        from runtime import collect_result_warnings
+
+        self.assertEqual(
+            collect_result_warnings({"adjustment_warnings": ["a", " ", "b"]}),
+            ["a", "b"],
+        )
+        self.assertEqual(
+            collect_result_warnings({"agent_summary": {"warnings": ["c"]}}),
+            ["c"],
+        )
+        self.assertEqual(collect_result_warnings({}), [])
+        self.assertEqual(collect_result_warnings({"adjustment_warnings": "nope"}), [])
+
+    def test_schedule_notification_carries_warnings_and_source(self):
+        from runtime import create_runtime
+
+        tmp = self._tmp()
+        runtime = create_runtime(tmp)
+        self.addCleanup(runtime.stop_auto_run_worker)
+        self.addCleanup(runtime.stop_notification_workers)
+        captured = runtime.subscribe_notifications()
+        try:
+            runtime.publish_schedule_result_notification(
+                {
+                    "status": "success",
+                    "message": "done",
+                    "adjustment_warnings": ["10-22/教室: 剔除缺席人员 1001"],
+                    "completion_source": "llm",
+                }
+            )
+            events = []
+            while True:
+                try:
+                    events.append(captured.get(timeout=2.0))
+                except Exception:
+                    break
+        finally:
+            runtime.unsubscribe_notifications(captured)
+
+        completed = [event for event in events if event.get("type") == "schedule_completed"]
+        self.assertEqual(len(completed), 1)
+        data = completed[0].get("data") or {}
+        self.assertEqual(data.get("warnings"), ["10-22/教室: 剔除缺席人员 1001"])
+        self.assertEqual(data.get("completion_source"), "llm")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

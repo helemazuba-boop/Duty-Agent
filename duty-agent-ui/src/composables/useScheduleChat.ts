@@ -32,6 +32,10 @@ export interface RunInfo {
   /** 成功后的 ai_response 摘要,渲染在同一张 run card 正文里 */
   result?: string;
   errorText?: string;
+  /** 后端确定性修正/提示(剔除缺席、缺额补齐、忽略幻觉账本、未覆盖日期...) */
+  warnings?: string[];
+  /** 排班来源: 'llm' | 'fallback'(代码兜底仍算成功,但用户应知道) */
+  completionSource?: string;
 }
 
 export interface ChatMsg {
@@ -58,6 +62,26 @@ let lastInstruction = '';
 
 function genId() {
   return `msg_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+}
+
+/**
+ * 从排班结果里取后端确定性修正/提示。
+ * single_pass 用 adjustment_warnings；multi_agent 藏在 agent_summary.warnings。
+ */
+export function warningsOf(result: { [key: string]: unknown }): string[] {
+  const out: string[] = [];
+  const direct = result.adjustment_warnings;
+  if (Array.isArray(direct)) {
+    out.push(...direct.map((item) => String(item)).filter((text) => text.trim().length > 0));
+  }
+  const summary = result.agent_summary;
+  if (summary && typeof summary === 'object') {
+    const nested = (summary as { warnings?: unknown }).warnings;
+    if (Array.isArray(nested)) {
+      out.push(...nested.map((item) => String(item)).filter((text) => text.trim().length > 0));
+    }
+  }
+  return out;
 }
 
 /** 进度按 phase 分组;同组连续相同文本折叠为一条 + 计数 */
@@ -126,7 +150,13 @@ export function useScheduleChat() {
 
     if (result.status === 'success') {
       run.result = result.ai_response || result.message || '排班已完成';
-      antdMessage.success('排班完成');
+      run.warnings = warningsOf(result);
+      run.completionSource = typeof result.completion_source === 'string' ? result.completion_source : undefined;
+      if (run.completionSource === 'fallback') {
+        antdMessage.warning('排班完成（模型不可用，已由确定性算法兜底生成）');
+      } else {
+        antdMessage.success('排班完成');
+      }
       await fetchPlan();
     } else {
       run.errorText = result.message || '未知错误';
