@@ -37,17 +37,16 @@ jobs:
             # directly, one interpreter per file, and the job fails if any of
             # them exits non-zero. test_stderr.txt / test_output.txt are not
             # .py files and never match the filter.
-            $skipped = @{
-              # 3/15 cases still assert pre-D5 auto-run semantics: Wave 1 moved
-              # the "last_auto_run_date = today" stamp into
-              # state_ops.claim_auto_run_today, which claims (and stamps) the
-              # date BEFORE the run executes, so the "sub-limit failure
-              # preserves the old date" expectations are stale. The file fails
-              # identically under system Python 3.13 and python-embed 3.11
-              # (not an environment gap). Skipped until the expectations are
-              # reconciled with the D5 claim semantics (Wave 2E / Agent E).
-              "test_auto_run_runtime.py" = "stale pre-D5 expectations: claim_auto_run_today now stamps today at claim time"
-            }
+            #
+            # Skip list is intentionally EMPTY. It used to hold
+            # test_auto_run_runtime.py ("stale pre-D5 expectations"), but those
+            # expectations were reconciled with the D5 claim-first semantics
+            # (claim_auto_run_today stamps the date at claim time) and the file
+            # passes 15/15 under python-embed 3.11 with the same dependency set
+            # CI installs. Keeping it skipped left the whole auto-run chain -
+            # the only unattended entry point into scheduling - with zero
+            # regression protection.
+            $skipped = @{}
             $passed = @()
             $skippedList = @()
             $failed = @()

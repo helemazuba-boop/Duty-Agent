@@ -230,7 +230,11 @@ def normalize_multi_area_schedule_ids(
 
         for dynamic_area_name, raw_value in area_mapping.items():
             name = str(dynamic_area_name).strip()
-            if not name or name in day_assignments or name.isdigit():
+            # NOTE: do NOT skip purely numeric names. A model (or the offline
+            # generator learning structure from a pool) can legitimately declare
+            # an area called "2026"; skipping `isdigit()` here silently dropped
+            # the whole area together with its people.
+            if not name or name in day_assignments:
                 continue
             day_assignments[name] = _parse_area_ids(
                 raw_value,

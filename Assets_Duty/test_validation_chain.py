@@ -1349,6 +1349,56 @@ def save_schedule_entry_edit_safely(ctx, **payload):
 class MultiAgentRemainingTests(unittest.TestCase):
     """multi_agent 剩余项：must_run、day_overrides/config 区域、本轮新增积分、取消语义。"""
 
+    def test_fallback_completion_is_marked(self):
+        """兜底成功仍是 success，但必须带 completion_source=fallback（可解释性）。"""
+        import multi_agent.executor as executor_module
+        from unittest.mock import patch
+
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(lambda: __import__("shutil").rmtree(tmp, ignore_errors=True))
+        ctx = make_ctx(Path(tmp))
+
+        from multi_agent.contracts import AgentTrace
+
+        payloads = {
+            "agent1_anchor": {
+                "dates": ["2026-10-22"],
+                "template": {"2026-10-22": {"教室": 2}},
+                "area_names": ["教室"],
+                "total_slots": 2,
+            },
+            "agent2_accountant": {
+                "absent_ids": [], "must_run_ids": [], "new_debt_ids": [],
+                "new_credit_ids": [], "volunteer_ids": [], "warnings": [],
+            },
+            "agent3_rule": {"supported_rules": [], "unsupported_rules": [], "warnings": []},
+            "agent4_priority": {"priority_pool": [1, 2], "notes": []},
+            "agent5_pointer": {
+                "pointer_pool": [3], "pointer_after": 1,
+                "consumed_credit_ids": [], "notes": [],
+            },
+        }
+
+        def _fake_run_agent(agent_id, *args, **kwargs):
+            if agent_id == "agent6_assembly":
+                raise RuntimeError("agent6 exploded")  # 触发代码兜底
+            trace = AgentTrace(agent_id=agent_id, status="ok", attempts=1, duration_ms=1)
+            return payloads[agent_id], "{}", {}, trace
+
+        with patch.object(executor_module, "_run_agent", side_effect=_fake_run_agent), \
+                patch.object(executor_module, "_freeze_snapshot", return_value=self._snapshot()), \
+                patch.object(executor_module, "load_config", return_value=dict(BASE_CONFIG)):
+            result = executor_module.run_multi_agent_schedule(
+                ctx, {"instruction": "x"}, _tool_loop_plan(), None, None,
+            )
+
+        self.assertEqual(result["status"], "success")  # 兜底完整成功 = success
+        self.assertEqual(result["completion_source"], "fallback")
+        self.assertTrue(result["agent_summary"]["fallback_used"])
+        # 兜底结果必须真的落盘
+        pool = load_state(ctx.paths["state"])["schedule_pool"]
+        self.assertEqual(len(pool), 1)
+
     def _snapshot(self, **overrides):
         from multi_agent.contracts import FrozenSnapshot
 
@@ -1560,6 +1610,110 @@ class ResultVisibilityTests(unittest.TestCase):
         data = completed[0].get("data") or {}
         self.assertEqual(data.get("warnings"), ["10-22/教室: 剔除缺席人员 1001"])
         self.assertEqual(data.get("completion_source"), "llm")
+
+class MaliciousCompletionTableTests(unittest.TestCase):
+    """恶意/退化 completion 表：一条数据驱动 解析→校验→规范化→修正→结算 全链。
+
+    这些是 LLM 最常见的失败形态。每一行都钉死"该拒的拒、该修的修、该说的说"，
+    覆盖此前零测试的解析器分支（空 ID、坏 token、未知 state 键、纯数字区名…）。
+    """
+
+    START = "2026-10-22"
+
+    def _settle(self, completion, roster=ROSTER, state=None):
+        """跑到结算（落盘到 temp data dir），返回 (status, warnings, pool)。"""
+        from single_pass_executor import apply_single_pass_completion
+
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: __import__("shutil").rmtree(tmp, ignore_errors=True))
+        ctx = make_ctx(tmp, roster=roster, state=state)
+        result = apply_single_pass_completion(
+            ctx, completion, {"mode": "single_pass", "start_date": self.START, "trace_id": "t"},
+        )
+        pool = load_state(ctx.paths["state"])["schedule_pool"]
+        return result, pool
+
+    def _rejected(self, completion, roster=ROSTER, state=None):
+        with self.assertRaises(ValueError):
+            self._settle(completion, roster=roster, state=state)
+
+    def test_empty_schedule_section_rejected(self):
+        self._rejected("[areas]\nA = 教室\n[schedule]\n")
+
+    def test_unknown_alias_rejected(self):
+        self._rejected("[areas]\nA = 教室\n[schedule]\n10-22 = Z:1001\n")
+
+    def test_unknown_person_id_rejected(self):
+        self._rejected("[areas]\nA = 教室\n[schedule]\n10-22 = A:9999\n")
+
+    def test_inactive_person_id_rejected_or_stripped(self):
+        """停用人员：要么拒，要么剔除并告警（两条都可接受，但不许静默入池）。"""
+        roster = "id,name,active\n1001,张三,1\n1002,李四,1\n1009,老赵,0\n"
+        result, pool = self._settle(
+            "[areas]\nA = 教室\n[schedule]\n10-22 = A:1001 1009\n", roster=roster
+        )
+        names = pool[-1]["area_assignments"]["教室"]
+        self.assertNotIn("老赵", names)
+        self.assertTrue(any("停用" in warning for warning in result["adjustment_warnings"]))
+
+    def test_same_area_duplicate_id_rejected(self):
+        self._rejected("[areas]\nA = 教室\n[schedule]\n10-22 = A:1001 1001\n")
+
+    def test_cross_area_same_person_is_allowed(self):
+        """设计约束：同日跨区域复用允许，只禁止同区重复。"""
+        result, pool = self._settle(
+            "[areas]\nA = 教室\nB = 走廊\n[schedule]\n10-22 = A:1001 1002 | B:1001 1003\n"
+        )
+        self.assertEqual(result["status"], "success")
+        assignments = pool[-1]["area_assignments"]
+        self.assertEqual(assignments["教室"], ["张三", "李四"])
+        self.assertEqual(assignments["走廊"], ["张三", "王五"])
+
+    def test_bad_state_key_rejected(self):
+        self._rejected(
+            "[areas]\nA = 教室\n[schedule]\n10-22 = A:1001 1002\n[state]\nround = 1\n"
+        )
+
+    def test_illegal_count_token_rejected(self):
+        self._rejected(
+            "[areas]\nA = 教室\n[schedule]\n10-22 = A:1001 1002\n[state]\ndebt = 1001*-1\n"
+        )
+
+    def test_out_of_order_dates_rejected(self):
+        self._rejected(
+            "[areas]\nA = 教室\n[schedule]\n10-23 = A:1001\n10-22 = A:1002\n"
+        )
+
+    def test_numeric_area_name_is_not_silently_dropped(self):
+        """纯数字区名：不得静默丢弃区域及其人员（结算侧曾 skip isdigit）。"""
+        result, pool = self._settle(
+            "[areas]\nA = 2026\n[schedule]\n10-22 = A:1001 1002\n"
+        )
+        self.assertEqual(result["status"], "success")
+        self.assertIn("2026", pool[-1]["area_assignments"])
+
+    def test_half_window_warns_but_settles(self):
+        result, pool = self._settle(
+            "[areas]\nA = 教室\n[schedule]\n10-22 = A:1001 1002\n10-23 = A:1001 1003\n"
+        )
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(len(pool), 2)
+        self.assertTrue(any("未覆盖日期" in warning for warning in result["adjustment_warnings"]))
+
+    def test_prose_after_ini_is_rejected_with_readable_message(self):
+        with self.assertRaises(ValueError) as caught:
+            self._settle("[areas]\nA = 教室\n[schedule]\n10-22 = A:1001 1002\nHope this helps!\n")
+        self.assertIn("Parse failed", str(caught.exception))
+
+    def test_absent_id_in_state_strips_only_that_person(self):
+        result, pool = self._settle(
+            "[areas]\nA = 教室\n[schedule]\n10-22 = A:1001 1002\n[state]\nabsent = 1002\n"
+        )
+        self.assertEqual(result["status"], "success")
+        names = pool[-1]["area_assignments"]["教室"]
+        self.assertNotIn("李四", names)
+        self.assertIn("张三", names)
+
 
 
 if __name__ == "__main__":
