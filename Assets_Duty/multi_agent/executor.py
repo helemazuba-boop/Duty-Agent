@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import json
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, wait
 from datetime import datetime, timedelta
-from typing import Any, Callable, Dict, List, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from absence_ops import (
     absences_for_window,
@@ -215,24 +215,52 @@ def _run_batch(
                 agent_id = entry[0]
                 _emit_progress(emit_progress_fn, "agent_start", f"{agent_id} started.", {"agent_id": agent_id})
                 future_map[executor.submit(_execute, entry)] = agent_id
-            for future in as_completed(future_map):
-                agent_id = future_map[future]
-                try:
-                    _, payload = future.result(timeout=AGENT_TIMEOUT_SECONDS)
-                except Exception as ex:
-                    _emit_progress(
-                        emit_progress_fn,
-                        "agent_fail",
-                        f"{agent_id} failed: {ex}",
-                        {"agent_id": agent_id, "error": str(ex)},
-                    )
-                    raise RuntimeError(f"{agent_id} failed: {ex}") from ex
-                result, raw_text, metadata, trace = payload
-                results[agent_id] = result
-                raw_texts[agent_id] = raw_text
-                prompt_metadata[agent_id] = metadata
-                traces.append(trace.__dict__)
-                _emit_progress(emit_progress_fn, "agent_done", f"{agent_id} completed.", {"agent_id": agent_id, "duration_ms": trace.duration_ms})
+            # Real timeout: `future.result(timeout=...)` after `as_completed`
+            # never fires (as_completed only yields finished futures), so a
+            # stalled agent used to hang until the socket read timed out.
+            # wait() enforces the deadline for the whole batch.
+            deadline = AGENT_TIMEOUT_SECONDS
+            pending = set(future_map)
+            first_error: Optional[BaseException] = None
+            while pending:
+                done, pending = wait(pending, timeout=max(0.1, deadline))
+                if not done and pending:
+                    for future in pending:
+                        future.cancel()
+                    if first_error is None:
+                        first_error = TimeoutError(
+                            f"agents exceeded {AGENT_TIMEOUT_SECONDS}s: "
+                            + ", ".join(sorted(future_map[future] for future in pending))
+                        )
+                    break
+                for future in done:
+                    agent_id = future_map[future]
+                    try:
+                        _, payload = future.result()
+                    except InterruptedError:
+                        raise
+                    except Exception as ex:
+                        _emit_progress(
+                            emit_progress_fn,
+                            "agent_fail",
+                            f"{agent_id} failed: {ex}",
+                            {"agent_id": agent_id, "error": str(ex)},
+                        )
+                        if first_error is None:
+                            first_error = RuntimeError(f"{agent_id} failed: {ex}")
+                        # Stop launching more work; remaining futures are
+                        # cancelled when the context manager exits.
+                        if stop_event is not None and hasattr(stop_event, "set"):
+                            stop_event.set()
+                        continue
+                    result, raw_text, metadata, trace = payload
+                    results[agent_id] = result
+                    raw_texts[agent_id] = raw_text
+                    prompt_metadata[agent_id] = metadata
+                    traces.append(trace.__dict__)
+                    _emit_progress(emit_progress_fn, "agent_done", f"{agent_id} completed.", {"agent_id": agent_id, "duration_ms": trace.duration_ms})
+            if first_error is not None:
+                raise first_error
     else:
         for entry in batch:
             agent_id = entry[0]
@@ -430,6 +458,11 @@ def run_multi_agent_schedule(
         execution_trace.append(agent6_trace.__dict__)
         prompt_trace["agent6_assembly"] = agent6_meta
         _emit_progress(emit_progress_fn, "agent_done", "agent6_assembly completed.", {"agent_id": "agent6_assembly", "duration_ms": agent6_trace.duration_ms})
+    except InterruptedError:
+        # Cancellation is not an agent failure: never route it into the code
+        # fallback (which would keep computing and then surface a confusing
+        # "Cancelled while waiting for file lock" error).
+        raise
     except Exception as ex:
         _emit_progress(
             emit_progress_fn,

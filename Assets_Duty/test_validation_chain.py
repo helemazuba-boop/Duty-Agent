@@ -1346,5 +1346,166 @@ def save_schedule_entry_edit_safely(ctx, **payload):
     return save_schedule_entry_edit(ctx, payload)
 
 
+class MultiAgentRemainingTests(unittest.TestCase):
+    """multi_agent 剩余项：must_run、day_overrides/config 区域、本轮新增积分、取消语义。"""
+
+    def _snapshot(self, **overrides):
+        from multi_agent.contracts import FrozenSnapshot
+
+        base = dict(
+            trace_id="", request_source="", instruction="",
+            request_time=datetime(2026, 10, 21), start_date=date(2026, 10, 21),
+            config={}, state={}, name_to_id={}, id_to_name={},
+            all_ids=[1, 2, 3], active_ids=[1, 2, 3], inactive_ids=[],
+            id_to_active={}, debt_list=[], credit_list=[], last_pointer=0,
+            previous_note="", duty_rule="",
+        )
+        base.update(overrides)
+        return FrozenSnapshot(**base)
+
+    def _barrier1(self, **overrides):
+        base = {
+            "dates": ["2026-10-22"],
+            "template": {"2026-10-22": {"教室": 2}},
+            "area_names": ["教室"],
+            "total_slots": 2,
+            "absent_ids": [],
+            "new_debt_ids": [],
+            "new_credit_ids": [],
+            "must_run_ids": [],
+            "volunteer_ids": [],
+            "supported_rules": [],
+            "unsupported_rules": [],
+            "warnings": [],
+        }
+        base.update(overrides)
+        return base
+
+    def test_agent5_accepts_credit_granted_this_round(self):
+        """prompt 把本轮新增积分喂给 agent5 消费，校验器却只认旧积分 → 必然被拒。"""
+        from multi_agent.validators import validate_agent5_output
+
+        snapshot = self._snapshot(credit_list=[])
+        barrier1 = self._barrier1(new_credit_ids=[3])
+        result = validate_agent5_output(
+            {"pointer_pool": [1], "consumed_credit_ids": [3], "pointer_after": 1},
+            snapshot,
+            barrier1,
+        )
+        self.assertEqual(result["consumed_credit_ids"], [3])
+
+    def test_must_run_dropped_when_absent_warns(self):
+        from multi_agent.validators import merge_barrier1
+
+        snapshot = self._snapshot()
+        anchor = {
+            "dates": ["2026-10-22"],
+            "template": {"2026-10-22": {"教室": 2}},
+            "area_names": ["教室"],
+            "total_slots": 2,
+        }
+        barrier1 = merge_barrier1(
+            snapshot,
+            anchor,
+            {"absent_ids": [3], "must_run_ids": [3], "new_debt_ids": [], "new_credit_ids": [], "volunteer_ids": [], "warnings": []},
+            {"supported_rules": [], "unsupported_rules": [], "warnings": []},
+        )
+        self.assertEqual(barrier1["must_run_ids"], [])
+        self.assertTrue(any("3" in warning for warning in barrier1["warnings"]))
+
+    def test_final_schedule_requires_must_run_ids(self):
+        from multi_agent.validators import validate_final_schedule
+
+        barrier2 = {
+            "template": {"2026-10-22": {"教室": 2}},
+            "dates": ["2026-10-22"],
+            "final_pool": [1, 2, 3],
+            "supported_rules": [],
+            "must_run_ids": [3],
+        }
+        schedule = [{"date": "2026-10-22", "area_ids": {"教室": [1, 2]}, "note": ""}]
+        with self.assertRaises(ValueError) as caught:
+            validate_final_schedule(schedule, barrier2)
+        self.assertIn("must_run", str(caught.exception))
+
+        ok_schedule = [{"date": "2026-10-22", "area_ids": {"教室": [2, 3]}, "note": ""}]
+        validate_final_schedule(ok_schedule, barrier2)  # 不抛错
+
+    def test_agent1_template_disagreeing_with_config_warns(self):
+        """用户配置了区域/人数时，agent1 自创模板必须留下 warning（不得静默生效）。"""
+        from multi_agent.validators import validate_agent1_output
+
+        snapshot = self._snapshot(
+            config={"areas": ["教室"], "area_per_day_counts": {"教室": 2}},
+            day_overrides={},
+        )
+        raw = {
+            "dates": ["2026-10-22"],
+            "template": {"2026-10-22": {"走廊": 3}},
+            "total_slots": 3,
+        }
+        result = validate_agent1_output(raw, snapshot)
+        self.assertTrue(any("教室" in warning for warning in result["warnings"]))
+
+    def test_agent1_template_matching_config_has_no_warning(self):
+        from multi_agent.validators import validate_agent1_output
+
+        snapshot = self._snapshot(
+            config={"areas": ["教室"], "area_per_day_counts": {"教室": 2}},
+            day_overrides={},
+        )
+        raw = {
+            "dates": ["2026-10-22"],
+            "template": {"2026-10-22": {"教室": 2}},
+            "total_slots": 2,
+        }
+        result = validate_agent1_output(raw, snapshot)
+        self.assertEqual(result["warnings"], [])
+
+    def test_cancellation_during_agent6_is_not_swallowed_by_fallback(self):
+        """用户在 agent6 阶段取消 → 必须抛 InterruptedError，不得被兜底吞掉。"""
+        import multi_agent.executor as executor_module
+        from unittest.mock import patch
+
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(lambda: __import__("shutil").rmtree(tmp, ignore_errors=True))
+        ctx = make_ctx(Path(tmp))
+
+        from multi_agent.contracts import AgentTrace
+
+        payloads = {
+            "agent1_anchor": {
+                "dates": ["2026-10-22"],
+                "template": {"2026-10-22": {"教室": 2}},
+                "area_names": ["教室"],
+                "total_slots": 2,
+            },
+            "agent2_accountant": {
+                "absent_ids": [], "must_run_ids": [], "new_debt_ids": [],
+                "new_credit_ids": [], "volunteer_ids": [], "warnings": [],
+            },
+            "agent3_rule": {"supported_rules": [], "unsupported_rules": [], "warnings": []},
+            "agent4_priority": {"priority_pool": [1, 2], "notes": []},
+            "agent5_pointer": {
+                "pointer_pool": [3], "pointer_after": 1,
+                "consumed_credit_ids": [], "notes": [],
+            },
+        }
+
+        def _fake_run_agent(agent_id, *args, **kwargs):
+            if agent_id == "agent6_assembly":
+                raise InterruptedError("Cancelled.")
+            trace = AgentTrace(agent_id=agent_id, status="ok", attempts=1, duration_ms=1)
+            return payloads[agent_id], "{}", {}, trace
+
+        with patch.object(executor_module, "_run_agent", side_effect=_fake_run_agent), \
+                patch.object(executor_module, "_freeze_snapshot", return_value=self._snapshot()), \
+                patch.object(executor_module, "load_config", return_value=dict(BASE_CONFIG)):
+            with self.assertRaises(InterruptedError):
+                executor_module.run_multi_agent_schedule(
+                    ctx, {"instruction": "x"}, _tool_loop_plan(), None, None,
+                )
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

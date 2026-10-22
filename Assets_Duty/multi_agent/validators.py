@@ -3,7 +3,12 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Sequence
 
-from state_ops import DEFAULT_SINGLE_AREA_NAME
+from absence_ops import day_override_count
+from state_ops import (
+    DEFAULT_SINGLE_AREA_NAME,
+    get_configured_area_names,
+    get_configured_area_per_day_counts,
+)
 
 from .contracts import FrozenSnapshot
 
@@ -46,7 +51,6 @@ def validate_agent1_output(raw: Dict[str, Any], snapshot: FrozenSnapshot) -> Dic
     dates = _ensure_string_list(raw.get("dates"))
     if not dates:
         raise ValueError("agent1 dates is empty")
-
     parsed_dates = []
     for item in dates:
         try:
@@ -93,11 +97,37 @@ def validate_agent1_output(raw: Dict[str, Any], snapshot: FrozenSnapshot) -> Dic
     if declared_total != total_slots:
         raise ValueError("total_slots mismatch")
 
+    # The model invents the area template from the instruction; when the user
+    # configured areas/headcounts, a silently different template means the
+    # product-level contract (and day_overrides like a deep-clean day) is not
+    # honored. Surface it as a warning instead of hard-failing the run.
+    warnings: List[str] = []
+    configured_areas = get_configured_area_names(snapshot.config or {})
+    if configured_areas:
+        configured_counts = get_configured_area_per_day_counts(snapshot.config or {}, configured_areas)
+        overrides = getattr(snapshot, "day_overrides", None) or {}
+        for date_text in dates:
+            override_for_day = overrides.get(date_text, {}) if isinstance(overrides, dict) else {}
+            for area in configured_areas:
+                expected = day_override_count(
+                    override_for_day, date_text, area, int(configured_counts.get(area, 0) or 0)
+                )
+                actual = normalized_template[date_text].get(area)
+                if actual is None:
+                    warnings.append(
+                        f"{date_text}: 模型未安排配置区域「{area}」（要求 {expected} 人/天）"
+                    )
+                elif int(actual) != int(expected):
+                    warnings.append(
+                        f"{date_text}/{area}: 模型安排 {actual} 人，配置要求 {expected} 人"
+                    )
+
     return {
         "dates": dates,
         "template": normalized_template,
         "area_names": area_names,
         "total_slots": total_slots,
+        "warnings": warnings,
     }
 
 
@@ -182,8 +212,17 @@ def merge_barrier1(snapshot: FrozenSnapshot, anchor: Dict[str, Any], accounting:
         if person_id in active_ids and person_id not in absent_ids:
             absent_ids.append(person_id)
     must_run_ids = [person_id for person_id in accounting["must_run_ids"] if person_id in active_ids and person_id not in absent_ids]
+    dropped_must_run = [
+        person_id for person_id in accounting["must_run_ids"] if person_id not in must_run_ids
+    ]
     if len(must_run_ids) > anchor["total_slots"]:
         raise ValueError("must_run_ids exceed total slots")
+    warnings = list(accounting["warnings"]) + list(rules["warnings"])
+    if dropped_must_run:
+        # "必须让 3 号上" 被静默丢弃是用户最容易被骗的一类：明说没人看到。
+        warnings.append(
+            "must_run 人员因请假/停用被剔除: " + " ".join(str(pid) for pid in dropped_must_run)
+        )
 
     supported_rules = [
         _normalize_rule(rule, set(snapshot.all_ids), anchor["area_names"])
@@ -202,7 +241,7 @@ def merge_barrier1(snapshot: FrozenSnapshot, anchor: Dict[str, Any], accounting:
         "volunteer_ids": accounting["volunteer_ids"],
         "supported_rules": supported_rules,
         "unsupported_rules": rules["unsupported_rules"],
-        "warnings": accounting["warnings"] + rules["warnings"],
+        "warnings": warnings,
     }
 
 
@@ -225,7 +264,11 @@ def validate_agent4_output(raw: Dict[str, Any], snapshot: FrozenSnapshot, barrie
 def validate_agent5_output(raw: Dict[str, Any], snapshot: FrozenSnapshot, barrier1: Dict[str, Any]) -> Dict[str, Any]:
     active_ids = set(snapshot.active_ids)
     pointer_pool = _ensure_list_of_ints(raw.get("pointer_pool", []), active_ids)
-    consumed_credit_ids = _ensure_list_of_ints(raw.get("consumed_credit_ids", []), set(snapshot.credit_list))
+    # Credit granted THIS round is consumable this round: the prompt hands
+    # agent5 `credit_list + new_credit_ids`, so validating against the old
+    # credit list alone made every such consumption fail (and burn retries).
+    consumable_credit = set(snapshot.credit_list) | set(barrier1.get("new_credit_ids", []))
+    consumed_credit_ids = _ensure_list_of_ints(raw.get("consumed_credit_ids", []), consumable_credit)
     notes = _ensure_string_list(raw.get("notes", []))
     try:
         pointer_after = int(raw.get("pointer_after", snapshot.last_pointer))
@@ -289,6 +332,7 @@ def merge_barrier2(snapshot: FrozenSnapshot, barrier1: Dict[str, Any], priority_
         "final_pool": final_pool,
         "pointer_after": pointer_result["pointer_after"],
         "consumed_credit_ids": pointer_result["consumed_credit_ids"],
+        "must_run_ids": list(barrier1.get("must_run_ids", [])),
         "slots": build_slots(barrier1["template"]),
     }
 
@@ -338,6 +382,22 @@ def validate_final_schedule(schedule: List[Dict[str, Any]], barrier2: Dict[str, 
 
     if len(schedule) != len(barrier2["dates"]):
         raise ValueError("schedule date count mismatch")
+
+    # "必须让 X 上" 是硬要求：出现在最终排班里，否则整轮校验失败（ agent6 会
+    # 因此收到错误反馈并重试，或落入代码兜底）。
+    must_run_ids = list(barrier2.get("must_run_ids") or [])
+    if must_run_ids:
+        scheduled_ids = {
+            person_id
+            for entry in schedule
+            for ids in entry.get("area_ids", {}).values()
+            for person_id in ids
+        }
+        missing_must_run = [person_id for person_id in must_run_ids if person_id not in scheduled_ids]
+        if missing_must_run:
+            raise ValueError(
+                "must_run 人员未被排班: " + " ".join(str(pid) for pid in missing_must_run)
+            )
 
     seen_dates = set()
     schedule_by_person: Dict[int, set[datetime.date]] = {}
