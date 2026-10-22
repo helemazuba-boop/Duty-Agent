@@ -147,6 +147,22 @@ class DutyBackendConfigPatch(BaseModel):
     validation_mode: Optional[str] = None
 
 
+class DutyDataResetRequest(BaseModel):
+    """数据重置请求（班级换届 / 学期重置）。
+
+    ``confirm`` 必须与 scope 的中文标签一致（"清空排班" / "换届重置" / "恢复出厂"），
+    服务器端校验，防止误调用或误 curl 直接清掉全班数据。``expected_version`` 只在
+    该 scope 真的会写 config.json 时生效（handover 勾选清规则、factory）。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    scope: Literal["schedule", "handover", "factory"]
+    clear_areas_and_rule: bool = False
+    expected_version: Optional[int] = None
+    confirm: str = ""
+
+
 class DutyNotificationSettingsPatch(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

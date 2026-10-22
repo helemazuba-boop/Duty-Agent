@@ -985,6 +985,241 @@ def rollback_state(
         release_state_file_lock(lock_path)
 
 
+# ---------------------------------------------------------------------------
+# Data reset (class handover / mid-term restart)
+#
+# Python owns state.json and roster.csv, so this is the only place a wipe may
+# happen. host-config.json is deliberately absent from every scope: it carries
+# this installation's identity (token mode, fixed port, MCP switch), and the
+# client rewrites it with defaults on any watchdog restart — deleting it would
+# silently drop a static token or a pinned port.
+# ---------------------------------------------------------------------------
+
+RESET_SCOPE_LABELS = {
+    "schedule": "清空排班",
+    "handover": "换届重置",
+    "factory": "恢复出厂",
+}
+
+# What each scope deletes / keeps, as the labels the UI shows. "kept" is what
+# survives so the user can see the model credentials are not going anywhere.
+RESET_SCOPE_ITEMS = {
+    "schedule": {
+        "removed": ["排班记录", "欠班/抵扣账本", "值日指针", "请假记录", "排班备注", "区域人数覆盖"],
+        "kept": ["花名册", "模型与方案配置", "值日区域与班级规则", "宿主配置"],
+    },
+    "handover": {
+        "removed": ["排班记录", "欠班/抵扣账本", "值日指针", "请假记录", "排班备注", "区域人数覆盖", "花名册"],
+        "kept": ["模型与方案配置", "值日区域与班级规则", "宿主配置"],
+    },
+    "factory": {
+        "removed": [
+            "排班记录",
+            "欠班/抵扣账本",
+            "值日指针",
+            "请假记录",
+            "排班备注",
+            "区域人数覆盖",
+            "花名册",
+            "模型与方案配置",
+        ],
+        "kept": ["宿主配置"],
+    },
+}
+
+# Files copied into an archive before a reset. Logs and transient artifacts
+# (.tmp / .lock / .prev) are excluded: they are either not class data or stale
+# the moment the reset lands.
+RESET_ARCHIVE_FILES = ("config.json", "state.json", "roster.csv", "host-config.json")
+RESET_ARCHIVE_DIRNAME = "archive"
+RESET_ARCHIVE_KEEP = 10
+
+
+def _reset_empty_state() -> dict:
+    """Canonical empty state: the same literal load_state() returns for a
+    missing file, minus roster_fingerprint (only ever written by a roster save
+    or a settlement, so it must not survive into an empty state)."""
+    return {
+        "schedule_pool": [],
+        "next_run_note": "",
+        "absences": [],
+        "user_notes": [],
+        "day_overrides": {},
+        "debt_counts": {},
+        "credit_counts": {},
+        "last_pointer": 0,
+    }
+
+
+def _prune_reset_archives(archive_root: Path) -> None:
+    """Keep the newest RESET_ARCHIVE_KEEP archives. Older ones are the user's to
+    delete by hand once they are sure the new class year is fine."""
+    try:
+        entries = sorted((p for p in archive_root.iterdir() if p.is_dir()), key=lambda p: p.name)
+    except OSError:
+        return
+    if RESET_ARCHIVE_KEEP <= 0:
+        return
+    for stale in entries[:-RESET_ARCHIVE_KEEP]:
+        shutil.rmtree(str(stale), ignore_errors=True)
+
+
+def archive_class_data(data_dir: Path, scope: str, *, now: datetime | None = None) -> dict:
+    """Snapshot the class-data files into <data_dir>/archive/<label>-<ts>/.
+
+    Runs before any deletion so a failed reset leaves the data untouched. An
+    empty file list means there was nothing to archive (fresh install), which is
+    not an error.
+    """
+    if scope not in RESET_SCOPE_LABELS:
+        raise ValueError(f"未知的重置范围: {scope}")
+    data_dir = Path(data_dir)
+    stamp = (now or datetime.now()).strftime("%Y%m%d-%H%M%S")
+    archive_root = data_dir / RESET_ARCHIVE_DIRNAME
+    archive_root.mkdir(parents=True, exist_ok=True)
+    # Two resets inside the same second would otherwise collapse into one
+    # folder, and the second would silently overwrite the first archive.
+    base_name = f"{RESET_SCOPE_LABELS[scope]}-{stamp}"
+    name = base_name
+    collision = 2
+    while (archive_root / name).exists():
+        name = f"{base_name}-{collision}"
+        collision += 1
+    target = archive_root / name
+    target.mkdir(parents=True, exist_ok=True)
+    copied: List[str] = []
+    for filename in RESET_ARCHIVE_FILES:
+        source = data_dir / filename
+        if not source.exists():
+            continue
+        # copy2, not move: the originals stay in place until the wipe below
+        # succeeds, so an exception here aborts the reset with data intact.
+        shutil.copy2(str(source), str(target / filename))
+        copied.append(filename)
+    _prune_reset_archives(archive_root)
+    return {"name": name, "path": str(target), "files": copied}
+
+
+def list_reset_archives(data_dir: Path) -> List[dict]:
+    """Existing archives, newest first, for the settings page."""
+    archive_root = Path(data_dir) / RESET_ARCHIVE_DIRNAME
+    try:
+        entries = [p for p in archive_root.iterdir() if p.is_dir()]
+    except OSError:
+        return []
+    result: List[dict] = []
+    for path in sorted(entries, key=lambda p: p.name, reverse=True):
+        try:
+            files = sorted(p.name for p in path.iterdir() if p.is_file())
+            total = sum(p.stat().st_size for p in path.iterdir() if p.is_file())
+        except OSError:
+            continue
+        result.append({"name": path.name, "path": str(path), "files": files, "size_bytes": total})
+    return result
+
+
+def reset_class_data(ctx: Context, scope: str, *, clear_areas_and_rule: bool = False,
+                    expected_version: Optional[int] = None) -> dict:
+    """Wipe class data for a handover or mid-term reset.
+
+    The caller must already hold runtime.schedule_run_lock; this function takes
+    the state file lock so operational writes (absences / notes / day
+    overrides) cannot land mid-wipe. ``expected_version`` is only consulted when
+    the scope actually writes config.json — the schedule scope leaves config
+    alone, so a stale version there is harmless.
+    """
+    if scope not in RESET_SCOPE_LABELS:
+        raise ValueError(f"未知的重置范围: {scope}")
+
+    items = RESET_SCOPE_ITEMS[scope]
+    removed = list(items["removed"])
+    kept = list(items["kept"])
+    if clear_areas_and_rule and scope != "factory" and "值日区域与班级规则" in kept:
+        kept.remove("值日区域与班级规则")
+        removed.append("值日区域与班级规则")
+
+    # The version check has to happen BEFORE anything is deleted: a 409 must
+    # leave the workspace untouched, not half-wiped with the roster already
+    # gone. patch_config re-checks under its own lock as the final guard, so a
+    # config write racing in between is still caught — it just cannot un-delete
+    # the roster, which is why the pre-check exists at all.
+    will_write_config = scope == "factory" or bool(clear_areas_and_rule)
+    if expected_version is not None and will_write_config:
+        wanted = _normalize_config_version(expected_version)
+        current_version = _normalize_config_version(
+            _load_persisted_config_unlocked(ctx.paths["config"])[0].get("version", DEFAULT_CONFIG_VERSION)
+        )
+        if wanted != current_version:
+            raise ConfigVersionConflictError(
+                f"Config version mismatch: expected {wanted}, current {current_version}"
+            )
+
+    archive = archive_class_data(ctx.data_dir, scope)
+
+    state_path = ctx.paths["state"]
+    state_lock = state_path.with_suffix(state_path.suffix + ".lock")
+    acquire_state_file_lock(state_lock, timeout_seconds=STATE_LOCK_TIMEOUT_SECONDS)
+    try:
+        # .prev has to go with the state: it holds the pre-reset generation, and
+        # leaving it behind would let "rollback" silently resurrect the old
+        # class's schedule after a handover. The archive is the undo path now.
+        state_path.with_suffix(state_path.suffix + ".tmp").unlink(missing_ok=True)
+        state_path.with_suffix(".prev" + state_path.suffix).unlink(missing_ok=True)
+        # Write the empty state instead of deleting the file: load_state()'s
+        # missing-file branch returns the same shape, but a real file keeps
+        # mtime_ns moving so the bridge's mtime-based debounce actually fires.
+        save_json_atomic(state_path, _reset_empty_state())
+
+        if scope in ("handover", "factory"):
+            roster_path = ctx.paths["roster"]
+            roster_path.with_suffix(roster_path.suffix + ".tmp").unlink(missing_ok=True)
+            roster_path.with_suffix(roster_path.suffix + ".lock").unlink(missing_ok=True)
+            # Delete rather than write an empty roster: load_roster() raises
+            # FileNotFoundError for a missing file, which is exactly the
+            # first-run state the wizard already knows how to handle.
+            roster_path.unlink(missing_ok=True)
+    finally:
+        release_state_file_lock(state_lock)
+
+    config_changed = False
+    if scope == "factory":
+        # patch_config owns the config lock and the version bump, and it bumps
+        # only when the persisted body actually differs — so re-running a
+        # factory reset on an already-default config does not churn the version.
+        defaults = _create_default_persisted_config()
+        patch_payload = {key: value for key, value in defaults.items() if key not in ("version", "polling")}
+        if expected_version is not None:
+            patch_payload["expected_version"] = expected_version
+        patch_config(ctx, patch_payload)
+        config_changed = True
+    elif clear_areas_and_rule:
+        patch_payload = {"areas": [], "area_per_day_counts": {}, "duty_rule": ""}
+        if expected_version is not None:
+            patch_payload["expected_version"] = expected_version
+        patch_config(ctx, patch_payload)
+        config_changed = True
+
+    _log(
+        ctx,
+        "INFO",
+        "DataReset",
+        "Workspace reset.",
+        reset_scope=scope,
+        archive=archive["name"],
+        archived_files=archive["files"],
+        clear_areas_and_rule=str(bool(clear_areas_and_rule)).lower(),
+        config_rewritten=str(config_changed).lower(),
+    )
+    return {
+        "scope": scope,
+        "label": RESET_SCOPE_LABELS[scope],
+        "removed": removed,
+        "kept": kept,
+        "archive": archive,
+        "config_rewritten": config_changed,
+    }
+
+
 def _quarantine_corrupt_file(path: Path, ex: Exception) -> None:
     """Move an unparseable config aside as <name>.bad-<epoch> so the caller can
     regenerate defaults. Without this, one corrupt config file kept the whole

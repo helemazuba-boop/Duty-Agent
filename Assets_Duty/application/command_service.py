@@ -7,7 +7,7 @@ from absence_ops import merge_absence_entries
 from engine import run_schedule
 from execution_profiles import build_execution_plan, resolve_execution_profile
 from single_pass_executor import apply_single_pass_completion, build_single_pass_request
-from state_ops import Context, compute_roster_fingerprint, has_previous_state, load_config, load_roster, load_roster_entries, load_state, patch_config, patch_host_config, remap_state_ids, rollback_state, save_roster_entries, save_schedule_entry_edit, save_state, update_state, _is_roster_order_changed
+from state_ops import Context, compute_roster_fingerprint, has_previous_state, load_config, load_roster, load_roster_entries, load_state, patch_config, patch_host_config, remap_state_ids, reset_class_data, rollback_state, save_roster_entries, save_schedule_entry_edit, save_state, update_state, _is_roster_order_changed
 
 
 def _messages_to_prompt_text(messages: list[dict]) -> str:
@@ -777,4 +777,83 @@ class CommandService:
         return {
             "status": "success",
             "state": rolled_back,
+        }
+
+    def reset_data(
+        self,
+        scope: str,
+        clear_areas_and_rule: bool = False,
+        expected_version: Optional[int] = None,
+        trace_id: str | None = None,
+        request_source: str = "api",
+    ) -> Dict[str, Any]:
+        """Wipe class data for a handover / mid-term reset.
+
+        Refuses while a schedule run is in flight — either one this process
+        holds, or one another entrance owns through the duty/live WebSocket —
+        so a reset can never land mid-settlement and half-clear the ledger.
+        The route has already verified the typed confirmation.
+        """
+        effective_trace_id = trace_id or self._runtime.new_trace_id()
+        self._runtime.logger.info(
+            "CommandService",
+            "Starting reset_data.",
+            trace_id=effective_trace_id,
+            request_source=request_source,
+            reset_scope=scope,
+            clear_areas_and_rule=str(bool(clear_areas_and_rule)).lower(),
+        )
+        if not self._runtime.schedule_run_lock.acquire(blocking=False):
+            self._runtime.logger.warn(
+                "CommandService",
+                "Rejected reset_data: schedule run in progress.",
+                trace_id=effective_trace_id,
+                request_source=request_source,
+                reset_scope=scope,
+            )
+            raise ValueError("正在排班中，请等待本次排班结束后再重置数据。")
+        try:
+            live_owner = self._runtime.get_duty_live_owner()
+            if live_owner:
+                self._runtime.logger.warn(
+                    "CommandService",
+                    "Rejected reset_data: duty/live owner present.",
+                    trace_id=effective_trace_id,
+                    request_source=request_source,
+                    reset_scope=scope,
+                    live_owner=str(live_owner),
+                )
+                raise ValueError("其它入口正在进行排班（界面 / MCP / 桥接），请先结束后再重置数据。")
+            context = Context(
+                self._runtime.data_dir,
+                logger=self._runtime.logger,
+                trace_id=effective_trace_id,
+                request_source=request_source,
+            )
+            result = reset_class_data(
+                context,
+                scope,
+                clear_areas_and_rule=clear_areas_and_rule,
+                expected_version=expected_version,
+            )
+        finally:
+            self._runtime.schedule_run_lock.release()
+
+        self._runtime.publish_snapshot_changed("data-reset", effective_trace_id)
+        self._runtime.logger.info(
+            "CommandService",
+            "Finished reset_data.",
+            trace_id=effective_trace_id,
+            request_source=request_source,
+            reset_scope=scope,
+            archive=str(result.get("archive", {}).get("name", "")),
+        )
+        return {
+            "status": "success",
+            "scope": result["scope"],
+            "label": result["label"],
+            "removed": result["removed"],
+            "kept": result["kept"],
+            "archive": result["archive"],
+            "config_rewritten": result["config_rewritten"],
         }

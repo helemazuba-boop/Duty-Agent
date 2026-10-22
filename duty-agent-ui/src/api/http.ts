@@ -73,6 +73,38 @@ export interface Readiness {
   next_steps: string[];
 }
 
+/** 数据重置（班级换届 / 学期重置）。scope 决定删多少，confirm 必须与 scope 的中文标签一致。 */
+export type DataResetScope = 'schedule' | 'handover' | 'factory';
+
+export interface DataResetRequest {
+  scope: DataResetScope;
+  clear_areas_and_rule?: boolean;
+  expected_version?: number;
+  confirm: string;
+}
+
+export interface ResetArchiveInfo {
+  name: string;
+  path: string;
+  files: string[];
+  size_bytes: number;
+}
+
+export interface DataResetResult {
+  status: string;
+  scope: DataResetScope;
+  label: string;
+  removed: string[];
+  kept: string[];
+  archive: { name: string; path: string; files: string[] };
+  config_rewritten: boolean;
+}
+
+export interface ResetArchives {
+  data_dir: string;
+  archives: ResetArchiveInfo[];
+}
+
 export interface ModelProbeResult {
   ok: boolean;
   status: string;
@@ -214,6 +246,15 @@ export const api = {
       ledger_mode: "record" as const,
     };
     const { data } = await http.post('/api/v1/duty/schedule-entry', payload);
+    return data;
+  },
+
+  async resetData(payload: DataResetRequest): Promise<DataResetResult> {
+    const { data } = await http.post<DataResetResult>('/api/v1/data-reset', payload);
+    return data;
+  },
+  async getResetArchives(): Promise<ResetArchives> {
+    const { data } = await http.get<ResetArchives>('/api/v1/data-reset/archives');
     return data;
   },
 };

@@ -5,6 +5,7 @@ import {
 } from 'ant-design-vue';
 import { ApiOutlined, SaveOutlined, ThunderboltOutlined } from '@ant-design/icons-vue';
 import AiToolsPanel from '@/components/ai-tools/AiToolsPanel.vue';
+import DataResetPanel from '@/components/settings/DataResetPanel.vue';
 import PageHeader from '@/components/ui/PageHeader.vue';
 import Panel from '@/components/ui/Panel.vue';
 import StatusDot from '@/components/ui/StatusDot.vue';
@@ -980,6 +981,8 @@ onMounted(async () => {
             }}
           </div>
         </Panel>
+
+        <DataResetPanel />
       </a-tab-pane>
     </a-tabs>
   </div>

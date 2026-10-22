@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import time
 
-from state_ops import Context, compute_current_duty_date, load_config, load_host_config, load_roster_entries, load_state
+from state_ops import Context, compute_current_duty_date, list_reset_archives, load_config, load_host_config, load_roster_entries, load_state
 
 try:
     from readiness import evaluate_readiness, probe_model
@@ -248,3 +248,18 @@ class QueryService:
             schedule_count=len(snapshot["state"].get("schedule_pool", [])),
         )
         return snapshot
+
+    def get_reset_archives(self, trace_id: str | None = None, request_source: str = "api") -> dict:
+        effective_trace_id = trace_id or self._runtime.new_trace_id()
+        archives = list_reset_archives(self._runtime.data_dir)
+        self._runtime.logger.info(
+            "QueryService",
+            "Finished get_reset_archives.",
+            trace_id=effective_trace_id,
+            request_source=request_source,
+            archive_count=len(archives),
+        )
+        return {
+            "data_dir": str(self._runtime.data_dir),
+            "archives": archives,
+        }
