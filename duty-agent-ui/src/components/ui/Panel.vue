@@ -50,9 +50,10 @@ const bodyStyle = computed(() =>
 }
 
 .da-panel__subtitle {
-  margin: 2px 0 0;
+  /* 2px 太挤，标题和说明会糊成一块；6px 配合 18px 行高才读得开 */
+  margin: 6px 0 0;
   font-size: 12px;
-  line-height: 16px;
+  line-height: 18px;
   font-weight: 400;
   color: var(--dt-text-2);
   white-space: normal;

@@ -64,6 +64,18 @@ void sentinelEl;
   padding: 0;
 }
 
+/* 标题与副标题之间要有呼吸感：antd 默认把两者贴在同一行，而这里又把 title 的
+   margin 归零了，于是"排班安排共 19 条排班记录"会粘成一坨。用容器 gap 统一
+   控制，避免再去依赖子元素的 margin（会被各自的覆盖规则打断）。 */
+.da-page-header :deep(.ant-page-header-heading-left) {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+}
+
 .da-page-header :deep(.ant-page-header-heading-title) {
   margin: 0;
   font-size: 24px;
@@ -76,9 +88,13 @@ void sentinelEl;
 }
 
 .da-page-header :deep(.ant-page-header-heading-sub-title) {
+  margin: 0;
   font-size: 13px;
   line-height: 18px;
   color: var(--dt-text-2);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .da-page-header :deep(.ant-page-header-heading-extra) {
