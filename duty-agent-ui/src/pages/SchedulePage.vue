@@ -106,16 +106,29 @@ function flattenRows(run: RunInfo): RunRow[] {
   return rows;
 }
 
+/**
+ * 时间轴偏移统一格式化。
+ *
+ * 后端开头的几条进度事件（planning / prompt_ready / stream_start）几乎是同一
+ * 毫秒发出的，0.1s 分辨率下会全部显示 "+0.0s"，看起来像计时坏了。不足 100ms
+ * 一律显示 "<0.1s"：既诚实又不至于让人误判成 0。
+ */
+function formatDuration(ms: number): string {
+  const clamped = Math.max(0, ms);
+  if (clamped < 100) return '<0.1s';
+  return `${(clamped / 1000).toFixed(1)}s`;
+}
+
 function runDuration(run: RunInfo): string {
   // running 时 endedAt 还没落地,用当前时间让秒数继续走——否则标题里的计时
-  // 会停在进入 running 那一刻(nowTick 每 1000ms 推一次,驱动这里重算)。
-  const end = run.endedAt ?? nowTick.value;
+  // 会停在进入 running 那一刻(nowTick 每 200ms 推一次,驱动这里重算)。
   if (!run.startedAt) return '';
-  return `${(Math.max(0, end - run.startedAt) / 1000).toFixed(1)}s`;
+  const end = run.endedAt ?? nowTick.value;
+  return formatDuration(end - run.startedAt);
 }
 
 function stepOffset(run: RunInfo, ts: number): string {
-  return `+${((ts - run.startedAt) / 1000).toFixed(1)}s`;
+  return `+${formatDuration(ts - run.startedAt)}`;
 }
 
 function stepTotal(run: RunInfo): number {

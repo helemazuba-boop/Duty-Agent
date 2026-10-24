@@ -79,10 +79,12 @@ let ticker: number | undefined;
 
 function startTicker() {
   if (ticker !== undefined) return;
+  // 200ms：标题秒数按 0.1s 显示，1s 一次的心跳看起来一格一格地跳，
+  // 长排班时甚至像"计时没动"。200ms 的重算成本可以忽略。
   ticker = window.setInterval(() => {
     nowTick.value = Date.now();
     if (!activeRun.value) stopTicker();
-  }, 1000);
+  }, 200);
 }
 
 function stopTicker() {
