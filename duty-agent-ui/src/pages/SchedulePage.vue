@@ -22,6 +22,8 @@ import {
 
 const instruction = ref('');
 const messagesEl = ref<HTMLElement | null>(null);
+// 是否跟随到底部：用户往上翻看历史时置 false，滚回贴底再恢复。
+const stickToBottom = ref(true);
 const inputEl = ref<{ focus: (opts?: object) => void } | null>(null);
 const planDrawerOpen = ref(false);
 const expandedRuns = ref(new Set<string>());
@@ -76,7 +78,8 @@ function handleClear() {
   clear();
 }
 
-function scrollToBottom() {
+function scrollToBottom(force = false) {
+  if (!force && !stickToBottom.value) return;
   nextTick(() => {
     if (messagesEl.value) {
       messagesEl.value.scrollTop = messagesEl.value.scrollHeight;
@@ -84,9 +87,35 @@ function scrollToBottom() {
   });
 }
 
-watch(() => messages.value.length, scrollToBottom);
-watch(() => messages.value[messages.value.length - 1]?.run?.groups.length, scrollToBottom);
-watch(() => messages.value[messages.value.length - 1]?.content, scrollToBottom);
+/**
+ * 思考块有独立的内部滚动条（max-height 420px），外层滚到底不会带动它。
+ * 流式思考增长时必须单独把它滚到末尾，否则用户只能看着开头那几行。
+ */
+function scrollReasoningToBottom() {
+  nextTick(() => {
+    const live = messagesEl.value?.querySelector<HTMLElement>('pre[data-streaming="1"]');
+    if (live) live.scrollTop = live.scrollHeight;
+  });
+}
+
+/** 用户往上翻看历史时不要抢滚动条；贴底时（<80px）才继续跟随。 */
+function onMessagesScroll() {
+  const el = messagesEl.value;
+  if (!el) return;
+  stickToBottom.value = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+}
+
+watch(() => messages.value.length, () => scrollToBottom(true));
+watch(() => messages.value[messages.value.length - 1]?.run?.groups.length, () => scrollToBottom());
+watch(() => messages.value[messages.value.length - 1]?.content, () => scrollToBottom());
+// 思考流式增长：先滚内部 pre，再跟随外层容器
+watch(
+  () => messages.value[messages.value.length - 1]?.run?.reasoning?.length ?? 0,
+  () => {
+    scrollReasoningToBottom();
+    scrollToBottom();
+  },
+);
 
 // ======== run card 渲染辅助 ========
 interface RunRow {
@@ -207,7 +236,7 @@ const fmtTime = (ts: number) =>
     <div class="ai-layout">
       <!-- ======== 左栏:对话流 ======== -->
       <section class="ai-chat">
-        <div ref="messagesEl" class="ai-chat__scroll">
+        <div ref="messagesEl" class="ai-chat__scroll" @scroll.passive="onMessagesScroll">
           <div class="ai-chat__inner">
             <!-- 空状态 -->
             <div v-if="!messages.length" class="ai-chat__empty">
@@ -320,7 +349,10 @@ const fmtTime = (ts: number) =>
                             复制
                           </a-button>
                         </div>
-                        <pre class="ai-run__model-body ai-run__model-body--reasoning">{{ msg.run!.reasoning }}</pre>
+                        <pre
+                          class="ai-run__model-body ai-run__model-body--reasoning"
+                          :data-streaming="msg.run!.status === 'running' ? '1' : undefined"
+                        >{{ msg.run!.reasoning }}</pre>
                       </div>
                     </div>
 
