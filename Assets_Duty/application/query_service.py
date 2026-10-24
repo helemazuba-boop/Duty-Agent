@@ -99,7 +99,8 @@ class QueryService:
             "auto_run_parameter": str(host_config.get("auto_run_parameter", "") or ""),
             "auto_run_time": str(host_config.get("auto_run_time", "08:00") or "08:00"),
             "auto_run_retry_times": int(host_config.get("auto_run_retry_times", 3) or 0),
-            "client_auto_start": bool(host_config.get("client_auto_start", True)),
+            # 默认 False：自启是用户明确选择的结果，不是安装的副作用（商店合规）。
+            "client_auto_start": bool(host_config.get("client_auto_start", False)),
             "client_close_action": str(host_config.get("client_close_action", "ask") or "ask"),
             "component_refresh_time": str(host_config.get("component_refresh_time", "08:00") or "08:00"),
         }

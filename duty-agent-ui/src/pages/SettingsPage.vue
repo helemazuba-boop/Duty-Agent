@@ -13,6 +13,28 @@ import { api, type NotificationSettings } from '@/api/http';
 import { useBackendConnection } from '@/composables/useBackendConnection';
 import { useModelList } from '@/composables/useModelList';
 import { hasHost, onHostMessage, sendToHost } from '@/utils/hostBridge';
+import {
+  PRIVACY_URL, SUPPORT_URL, FEEDBACK_URL, SUPPORT_EMAIL,
+} from '@/config/links';
+
+// ======== 关于 ========
+const engineVersion = ref('');
+
+const openExternal = (url: string) => {
+  // 客户端内交给宿主用默认浏览器打开；浏览器预览里退回 window.open。
+  if (!sendToHost({ type: 'open-external', url })) {
+    window.open(url, '_blank', 'noopener');
+  }
+};
+
+onMounted(async () => {
+  try {
+    const health = await api.health();
+    engineVersion.value = health.version || '';
+  } catch {
+    // 后端没起来时「关于」页仍应可读，版本留空即可。
+  }
+});
 
 const activeTab = ref('ai-schedule');
 
@@ -259,7 +281,7 @@ const scheduleCompletionNotificationEnabled = ref(true);
 const notificationSettingsLoading = ref(false);
 
 // ======== 系统与自启 ========
-const clientAutoStart = ref(true);
+const clientAutoStart = ref(false);
 const clientCloseAction = ref<'ask' | 'tray' | 'exit'>('ask');
 const systemSettingsSaving = ref(false);
 
@@ -358,7 +380,7 @@ const applyNotificationSettings = (settings: NotificationSettings) => {
   reminderTimes.value = (settings.duty_reminder_times || []).join(', ');
   notificationDuration.value = settings.notification_duration_seconds || 8;
   componentRefreshTime.value = settings.component_refresh_time || '08:00';
-  clientAutoStart.value = settings.client_auto_start !== false;
+  clientAutoStart.value = settings.client_auto_start === true;
   clientCloseAction.value = (['ask', 'tray', 'exit'] as const).includes(settings.client_close_action as any)
     ? settings.client_close_action
     : 'ask';
@@ -984,6 +1006,55 @@ onMounted(async () => {
 
         <DataResetPanel />
       </a-tab-pane>
+
+      <!-- ======== 关于与隐私 ======== -->
+      <a-tab-pane key="about" tab="关于">
+        <div class="tab-content">
+          <Panel title="版本与运行" class="mb-16">
+            <div class="form-grid">
+              <div class="config-item">
+                <div class="config-label">引擎版本</div>
+                <div class="config-desc">排班引擎版本号，反馈问题时请附上</div>
+                <div class="status-tags">
+                  <Tag color="blue" class="da-tnum">{{ engineVersion || '读取中…' }}</Tag>
+                </div>
+              </div>
+              <div class="config-item">
+                <div class="config-label">数据存放位置</div>
+                <div class="config-desc">
+                  名单、排班、配置与日志都在本机 %LOCALAPPDATA%\DutyAgent，不上传开发者服务器
+                </div>
+              </div>
+            </div>
+          </Panel>
+
+          <Panel title="AI 生成内容说明" class="mb-16">
+            <div class="about-text">
+              <p>
+                本软件的「AI 排班」功能使用生成式 AI（由你自行配置的模型服务提供）生成值日安排。
+                AI 输出可能不准确、遗漏或不符合你的实际规则，生成结果会经过本地确定性校验，
+                并且你可以在排班页面逐条查看和手工修改后再生效。
+              </p>
+              <p>
+                模型服务地址与 API Key 由你自行填写并承担相应费用；软件本身不提供、也不转售模型额度。
+                如不想使用 AI，可在「设置 → AI 排班」切换为<strong>离线算法</strong>，此时排班完全在本机完成，不联网。
+              </p>
+            </div>
+          </Panel>
+
+          <Panel title="隐私与支持" class="mb-16">
+            <div class="about-links">
+              <Button size="small" @click="openExternal(PRIVACY_URL)">隐私政策</Button>
+              <Button size="small" @click="openExternal(SUPPORT_URL)">使用说明</Button>
+              <Button size="small" @click="openExternal(FEEDBACK_URL)">问题反馈</Button>
+              <Button size="small" @click="openExternal(`mailto:${SUPPORT_EMAIL}`)">联系作者</Button>
+            </div>
+            <div class="config-desc" style="margin-top: 10px">
+              反馈 AI 生成的不当内容或隐私问题，请用上面任一渠道；请勿在公开页面提交真实学生名单。
+            </div>
+          </Panel>
+        </div>
+      </a-tab-pane>
     </a-tabs>
   </div>
 </template>
@@ -991,6 +1062,23 @@ onMounted(async () => {
 <style scoped>
 .settings-tabs :deep(.ant-tabs-tab) {
   padding: 10px 2px;
+}
+
+.about-text p {
+  margin: 0 0 10px;
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--dt-text-2);
+}
+
+.about-text p:last-child {
+  margin-bottom: 0;
+}
+
+.about-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
 }
 
 .tab-content {
@@ -1006,8 +1094,7 @@ onMounted(async () => {
 }
 
 .mb-16 {
-  margin-bottom: 16px;
-}
+  margin-bottom: 16px;}
 
 /* 连接 */
 .conn-list {

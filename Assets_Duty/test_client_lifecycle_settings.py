@@ -24,8 +24,13 @@ def _auth_headers(runtime) -> dict:
 class TestClientLifecycleNormalization(unittest.TestCase):
     def test_defaults(self):
         normalized = _normalize_persisted_host_config({})
-        self.assertTrue(normalized["client_auto_start"])
+        # 自启默认关闭：必须由用户在首次向导/设置页明确开启（商店合规）。
+        self.assertFalse(normalized["client_auto_start"])
         self.assertEqual(normalized["client_close_action"], "ask")
+
+    def test_explicit_auto_start_is_kept(self):
+        normalized = _normalize_persisted_host_config({"client_auto_start": True})
+        self.assertTrue(normalized["client_auto_start"])
 
     def test_close_action_values_and_fallback(self):
         for value, expected in (("tray", "tray"), ("EXIT", "exit"), ("Ask", "ask"), ("garbage", "ask"), (None, "ask")):
@@ -54,7 +59,7 @@ class TestClientLifecycleSettingsApi(unittest.TestCase):
                     initial = client.get("/api/v1/notifications/settings", headers=_auth_headers(runtime))
                     self.assertEqual(initial.status_code, 200)
                     payload = initial.json()
-                    self.assertTrue(payload["client_auto_start"])
+                    self.assertFalse(payload["client_auto_start"])
                     self.assertEqual(payload["client_close_action"], "ask")
 
                     patched = client.patch(

@@ -5,6 +5,7 @@ import ctypes
 import dpapi_compat
 import hashlib
 import json
+import logging
 import os
 import re
 import shutil
@@ -19,6 +20,8 @@ from typing import Callable, Dict, Iterable, List, Optional, Tuple
 
 from diagnostics import truncate_for_log
 from validation_policy import DEFAULT_VALIDATION_MODE, normalize_validation_mode, resolve_validation_mode
+
+_STDLIB_LOGGER = logging.getLogger("duty.config")
 
 # Re-exported for use by other modules (engine, routers, etc.)
 def sanitize_error_for_client(msg: str) -> str:
@@ -441,9 +444,67 @@ def _normalize_persisted_config(config: dict | None) -> dict:
     }
 
 
+def _protect_plan_api_keys(plan_presets: list, ctx=None) -> list:
+    """把 plan_presets 里的明文 api_key 换成 DPAPI 密文（幂等）。
+
+    为什么要做：config.json 是明文 JSON，同机任何进程都能读；API Key 是用户自己
+    掏钱买的凭据，落盘就该是密文。DPAPI 的 CurrentUser 作用域还保证"拷走文件也
+    解不开"。
+
+    约定（与 dpapi_compat 一致）：
+    * 已经是 ``dpapi:v1:`` 前缀的原样保留（幂等，重复保存不会套娃）；
+    * 空值不动；
+    * 加密失败（非 Windows / DPAPI 异常）**保留明文**并告警——宁可少一层保护，
+      也不能因为加密把用户配好的 Key 弄丢。
+    """
+    protected: list = []
+    for preset in plan_presets or []:
+        if not isinstance(preset, dict):
+            protected.append(preset)
+            continue
+        item = dict(preset)
+        raw = str(item.get("api_key", "") or "")
+        if raw and not raw.startswith(dpapi_compat.DPAPI_PREFIX):
+            try:
+                item["api_key"] = dpapi_compat.protect(raw)
+            except Exception as ex:  # noqa: BLE001 — 加密失败不阻塞保存
+                if ctx is not None:
+                    _log(
+                        ctx,
+                        "WARN",
+                        "ConfigStore",
+                        "api_key 未能加密保存，将以明文写入（不影响功能）。",
+                        error_type=type(ex).__name__,
+                    )
+                else:
+                    _STDLIB_LOGGER.warning("api_key 加密失败，保留明文: %s", type(ex).__name__)
+        protected.append(item)
+    return protected
+
+
+def _mask_plan_secrets(plan_presets: list) -> list:
+    """只用于"配置有没有变"的相等性比较：密文每次加密都不同，必须屏蔽后比。"""
+    masked: list = []
+    for preset in plan_presets or []:
+        if not isinstance(preset, dict):
+            masked.append(preset)
+            continue
+        item = dict(preset)
+        item["api_key"] = "<secret>" if str(item.get("api_key", "") or "") else ""
+        masked.append(item)
+    return masked
+
+
 def _hydrate_runtime_config(persisted: dict, logger=None) -> dict:
     normalized = _normalize_persisted_config(persisted)
-    plan_presets = normalized["plan_presets"]
+    # 落盘是密文、运行期是明文：执行器、模型探测、设置页都只认明文，解密集中在
+    # 这一层，别处不再各自 unprotect（否则又会出现第二个真相源）。
+    plan_presets = [
+        {**preset, "api_key": dpapi_compat.unprotect(preset.get("api_key"), logger=logger)}
+        if isinstance(preset, dict)
+        else preset
+        for preset in normalized["plan_presets"]
+    ]
     selected_plan_id = normalized["selected_plan_id"]
     selected_plan = _get_plan_by_id(plan_presets, selected_plan_id)
     selected_mode_id = normalize_plan_mode_id(selected_plan.get("mode_id"))
@@ -1298,6 +1359,8 @@ def load_config(ctx: Context) -> dict:
 
 def save_config(ctx: Context, config: dict) -> dict:
     persisted = _normalize_persisted_config(config)
+    # 落盘前加密 API Key（幂等）：内存里是明文，文件里是 DPAPI 密文。
+    persisted["plan_presets"] = _protect_plan_api_keys(persisted["plan_presets"], ctx=ctx)
     lock_path = _config_lock_path(ctx)
     acquire_file_lock(lock_path, CONFIG_LOCK_TIMEOUT_SECONDS)
     try:
@@ -1326,7 +1389,9 @@ def _persisted_config_body(config: dict | None) -> dict:
     normalized = _normalize_persisted_config(config)
     return {
         "selected_plan_id": normalized["selected_plan_id"],
-        "plan_presets": normalized["plan_presets"],
+        # 只用于"配置有没有变"的相等性判断：api_key 密文每次加密都不同，
+        # 不屏蔽掉的话，什么都不改保存一次也会平白 bump 版本号。
+        "plan_presets": _mask_plan_secrets(normalized["plan_presets"]),
         "duty_rule": normalized["duty_rule"],
         "polling": normalized.get("polling", {}),
         "offline_schedule_days": normalized.get("offline_schedule_days", 7),
@@ -1382,6 +1447,7 @@ def patch_config(ctx: Context, patch: dict) -> dict:
             candidate[key] = value
 
         persisted = _normalize_persisted_config(candidate)
+        persisted["plan_presets"] = _protect_plan_api_keys(persisted["plan_presets"], ctx=ctx)
         if _persisted_config_body(persisted) != _persisted_config_body(current):
             persisted["version"] = current_version + 1
         else:
@@ -1464,7 +1530,9 @@ def _create_default_persisted_host_config() -> dict:
         "notification_duration_seconds": DEFAULT_NOTIFICATION_DURATION_SECONDS,
         "duty_reminder_enabled": False,
         "duty_reminder_times": [DEFAULT_DUTY_REMINDER_TIME],
-        "client_auto_start": True,
+        # 商店合规：开机自启必须由用户明确选择（首次向导 / 设置页），不能因为
+        # 装完就默认挂到登录项上。默认 False，向导里默认勾选并允许取消。
+        "client_auto_start": False,
         "client_close_action": "ask",
     }
 
@@ -1518,7 +1586,7 @@ def _normalize_persisted_host_config(config: dict | None) -> dict:
         "duty_reminder_times": _normalize_duty_reminder_times(source.get("duty_reminder_times", [DEFAULT_DUTY_REMINDER_TIME])),
         # Standalone-client lifecycle switches: stored centrally so the Web
         # settings page edits them and the C# client observes + applies them.
-        "client_auto_start": parse_bool(source.get("client_auto_start"), True),
+        "client_auto_start": parse_bool(source.get("client_auto_start"), False),
         "client_close_action": _normalize_client_close_action(source.get("client_close_action", "ask")),
     }
     # Preserve keys this version doesn't know (written by a newer build on

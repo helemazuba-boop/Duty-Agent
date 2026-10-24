@@ -390,7 +390,10 @@ if (-not (Test-Path -LiteralPath $mainExe)) {
 
 Write-Host "[5/7] Copying backend assets..."
 $releaseAssetsDir = Join-Path $clientReleaseDir "Assets_Duty"
-Copy-DirectoryContents -Source $assetsDir -Destination $releaseAssetsDir -SkipTopLevelNames @("data", "__pycache__")
+# data/ 是运行期用户数据，logs/ 是开发机日志：两者都不属于发布产物。
+# （2026-10-23：实测 MSIX 里曾带进 Assets_Duty\logs\duty-backend-20260912.log，
+#  属于商店"无关文件"与隐私两方面的风险，一并排除。）
+Copy-DirectoryContents -Source $assetsDir -Destination $releaseAssetsDir -SkipTopLevelNames @("data", "logs", "__pycache__")
 
 foreach ($cacheDir in Get-ChildItem -LiteralPath $releaseAssetsDir -Directory -Recurse -Filter "__pycache__" -ErrorAction SilentlyContinue) {
     Remove-Item -LiteralPath $cacheDir.FullName -Recurse -Force
@@ -399,6 +402,13 @@ foreach ($cacheDir in Get-ChildItem -LiteralPath $releaseAssetsDir -Directory -R
 foreach ($compiledFile in Get-ChildItem -LiteralPath $releaseAssetsDir -File -Recurse -ErrorAction SilentlyContinue |
     Where-Object { $_.Extension -in @(".pyc", ".pyo") }) {
     Remove-Item -LiteralPath $compiledFile.FullName -Force
+}
+
+# 单元测试不进发布包：Assets_Duty 下 30 个 test_*.py 是开发期回归用的，
+# 商店审核把"夹带测试脚本"视为无关内容；它们还会暴露内部接口与测试数据。
+foreach ($devTest in Get-ChildItem -LiteralPath $releaseAssetsDir -File -Recurse -ErrorAction SilentlyContinue |
+    Where-Object { $_.Name -match '^(test_.*|_test_.*)\.py$' }) {
+    Remove-Item -LiteralPath $devTest.FullName -Force
 }
 
 if (-not (Test-Path -LiteralPath (Join-Path $releaseAssetsDir "python-embed\python.exe"))) {

@@ -1,16 +1,21 @@
 # -*- coding: utf-8 -*-
-"""DPAPI 兼容层（C2 契约：B 写密文 → A 读明文）。
+"""DPAPI 兼容层（写密文 → 读明文）。
 
-api_key 由 C# 客户端以 Windows DPAPI（``CryptProtectData``，CurrentUser 作用域）
-加密后写入 config.json，形如 ``dpapi:v1:<base64>``；Python 侧只负责读取解密，
-无前缀的旧明文键原样透传（兼容加密上线前的存量数据）。
+**写入方是 Python 后端自己**（2026-10-23 起）：``state_ops.save_config`` /
+``patch_config`` 在落盘前把 plan preset 的 ``api_key`` 用 Windows DPAPI
+（``CryptProtectData``，CurrentUser 作用域）加密成 ``dpapi:v1:<base64>``，
+读取时在 ``_hydrate_runtime_config`` 里解回明文。C# 客户端不碰 api_key。
+
+历史上这里假设"密文由 C# 写、Python 只读"，但客户端从未实现加密，
+于是 config.json 里一直是明文——商店上架前的隐私核查把这条挑了出来。
 
 契约要点（REPAIR_PLAN §0 D4 / §2 C2）：
 
 * 密文格式 ``dpapi:v1:`` + base64(CryptProtectData(utf8(plain)))；
-* 与 C# 侧约定不使用 pOptionalEntropy（否则两边互相解不开）；
+* 不使用 pOptionalEntropy（否则两边互相解不开）；
 * :func:`unprotect` 失败 → 置空 key + 告警日志，**绝不抛出**——密钥损坏不能
-  拖垮整个排班流程（D4 明文键兼容读取同理）。
+  拖垮整个排班流程（D4 明文键兼容读取同理）；无前缀的旧明文键原样透传，
+  下次保存时自动升级为密文。
 """
 from __future__ import annotations
 
@@ -93,7 +98,11 @@ def _dpapi_invoke(ciphertext: bytes, *, protect: bool) -> bytes:
 
 
 def protect(value: str) -> str:
-    """明文 → ``dpapi:v1:`` 密文（测试/排障用途；生产写入在 C# 侧）。非 Windows 抛 RuntimeError。"""
+    """明文 → ``dpapi:v1:`` 密文。非 Windows 抛 RuntimeError。
+
+    调用方是 ``state_ops._protect_plan_api_keys``（保存配置时）；它捕获异常后
+    保留明文并告警，绝不因为加密失败丢用户的 Key。
+    """
     if os.name != "nt":
         raise RuntimeError("DPAPI is only available on Windows.")
     ciphertext = _dpapi_invoke(value.encode("utf-8"), protect=True)

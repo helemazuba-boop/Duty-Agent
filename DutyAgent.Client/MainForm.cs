@@ -531,6 +531,13 @@ internal sealed class MainForm : Form
                     "自动排班与提醒已就绪，双击托盘图标打开主界面。");
             }
         }
+        catch (WebViewRuntimeMissingException ex)
+        {
+            // 缺运行时不该整程序退出：后端、托盘、自动排班、提醒、ClassIsland 联动
+            // 都不依赖主界面，把它们一起关掉只会让用户以为"装了个坏软件"。
+            ClientLog.Warn("主界面未加载：缺少 WebView2 Runtime。后台继续运行。");
+            ShowWebViewRuntimeMissing(ex);
+        }
         catch (Exception ex)
         {
             await ShowFatalErrorAsync("启动失败", ex).ConfigureAwait(true);
@@ -601,6 +608,16 @@ internal sealed class MainForm : Form
 
     private async Task InitializeWebViewAsync()
     {
+        // 运行时缺失必须单独判定：它决定上层弹"去装运行时"还是"启动失败"。
+        // 不在这里探测的话，EnsureCoreWebView2Async 抛的是无上下文的 COM 异常。
+        if (!WebViewRuntime.TryGetVersion(out var runtimeVersion))
+        {
+            ClientLog.Warn("未检测到 WebView2 Runtime，主界面无法初始化。");
+            throw new WebViewRuntimeMissingException();
+        }
+
+        ClientLog.Info($"WebView2 Runtime 版本: {runtimeVersion}");
+
         try
         {
             string userDataPath;
@@ -638,6 +655,16 @@ internal sealed class MainForm : Form
                     "1",
                     StringComparison.OrdinalIgnoreCase);
             _webView.CoreWebView2.WebMessageReceived += OnWebMessageReceived;
+            // 只允许留在本地后端页面上：界面是同源网页，任何外部导航都意味着
+            // "别的站点拿到了宿主消息通道"，必须拦掉。外链统一走 open-external。
+            _webView.CoreWebView2.NavigationStarting += (_, args) =>
+            {
+                if (!IsLocalAppNavigation(args.Uri))
+                {
+                    args.Cancel = true;
+                    ClientLog.Warn($"拦截非本地导航: {args.Uri}");
+                }
+            };
             // 网页刷新(F5)会丢掉 web 侧状态:每次导航完成后重推铬配置与窗口状态
             _webView.CoreWebView2.NavigationCompleted += (_, _) => PushHostInfo();
         }
@@ -680,6 +707,9 @@ internal sealed class MainForm : Form
                 case "get-host-info":
                     PushHostInfo();
                     break;
+                case "open-external":
+                    HandleOpenExternal(root);
+                    break;
                 case "drag-window":
                     BeginNativeMove();
                     break;
@@ -710,6 +740,59 @@ internal sealed class MainForm : Form
         catch (JsonException)
         {
             // 非 JSON 消息(如纯字符串)直接忽略
+        }
+    }
+
+    /// <summary>
+    /// 是否允许 WebView 导航到该地址。只放行回环地址（本地后端）与 about: 空白页，
+    /// 其余一律取消——界面不需要访问任何外部站点。
+    /// </summary>
+    internal static bool IsLocalAppNavigation(string? uri)
+    {
+        if (string.IsNullOrWhiteSpace(uri)
+            || !Uri.TryCreate(uri, UriKind.Absolute, out var parsed))
+        {
+            return false;
+        }
+
+        if (parsed.Scheme == "about")
+        {
+            return true;
+        }
+
+        return parsed.Scheme == Uri.UriSchemeHttp && parsed.IsLoopback;
+    }
+
+    /// <summary>
+    /// 打开外部链接（隐私政策、支持邮箱、反馈入口）。
+    /// 只放行 http/https/mailto：web 侧内容是本地打包的，但这条通道等价于"让页面调起
+    /// 系统程序"，白名单协议是必须的，否则任何脚本注入都能变成任意 URI 执行。
+    /// </summary>
+    private void HandleOpenExternal(JsonElement root)
+    {
+        if (!root.TryGetProperty("url", out var urlEl)
+            || urlEl.ValueKind != JsonValueKind.String
+            || urlEl.GetString() is not string url
+            || string.IsNullOrWhiteSpace(url)
+            || !Uri.TryCreate(url, UriKind.Absolute, out var uri))
+        {
+            return;
+        }
+
+        if (uri.Scheme != Uri.UriSchemeHttps && uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeMailto)
+        {
+            ClientLog.Warn($"拒绝打开非 http(s)/mailto 链接: {uri.Scheme}");
+            return;
+        }
+
+        try
+        {
+            Process.Start(new ProcessStartInfo(uri.AbsoluteUri) { UseShellExecute = true });
+            ClientLog.Info($"已打开外部链接: {uri.Host}");
+        }
+        catch (Exception ex)
+        {
+            ClientLog.Warn($"打开外部链接失败: {ex.Message}");
         }
     }
 
@@ -1024,8 +1107,10 @@ internal sealed class MainForm : Form
                 using var document = JsonDocument.Parse(File.ReadAllText(path, Encoding.UTF8));
                 var root = document.RootElement;
 
-                var autoStart = !(root.TryGetProperty("client_auto_start", out var autoStartElement)
-                    && autoStartElement.ValueKind == JsonValueKind.False);
+                // 缺省 False：自启只由用户明确开启（首次向导 / 设置页），
+                // 不能因为装了软件就默认写登录项。
+                var autoStart = root.TryGetProperty("client_auto_start", out var autoStartElement)
+                    && autoStartElement.ValueKind == JsonValueKind.True;
 
                 var action = root.TryGetProperty("client_close_action", out var actionElement)
                     && actionElement.ValueKind == JsonValueKind.String
@@ -1043,7 +1128,8 @@ internal sealed class MainForm : Form
         {
         }
 
-        return (true, "ask");
+        // 配置缺失/损坏时按"用户没开自启"处理：宁可少一条登录项，也不要静默写入。
+        return (false, "ask");
     }
 
     private void StartHostConfigWatcher()
@@ -1156,6 +1242,25 @@ internal sealed class MainForm : Form
 
         var targetUrl = _backend.BuildWebAppUrl(route);
         _webView.CoreWebView2?.Navigate(targetUrl);
+    }
+
+    /// <summary>
+    /// WebView2 运行时缺失：给出可操作的安装指引，并保留后台运行。
+    /// 不做成"致命错误 + 退出"，是因为后台能力（自动排班/提醒/桥接供数）与主界面无关。
+    /// </summary>
+    private void ShowWebViewRuntimeMissing(WebViewRuntimeMissingException exception)
+    {
+        _statusLabel.Text = "主界面无法显示：缺少 Microsoft Edge WebView2 Runtime（后台仍在运行）";
+        var result = MessageBox.Show(
+            this,
+            exception.Message + "\n\n现在打开官方下载页？",
+            "缺少 WebView2 运行时",
+            MessageBoxButtons.YesNo,
+            MessageBoxIcon.Warning);
+        if (result == DialogResult.Yes)
+        {
+            WebViewRuntime.OpenDownloadPage();
+        }
     }
 
     private async Task ShowFatalErrorAsync(string title, Exception exception)

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref } from 'vue';
 import {
-  Modal, Steps, Step, Input, Button, Space, message, Alert, Table, Select,
+  Modal, Steps, Step, Input, Button, Space, message, Alert, Table, Select, Checkbox,
 } from 'ant-design-vue';
 import { api, getToken } from '@/api/http';
 import type { RosterPerson } from '@/types';
@@ -18,6 +18,18 @@ const current = ref(0);
 const rosterText = ref('');
 const rosterSaving = ref(false);
 const rosterSaved = ref(false);
+// 自启必须由用户明确选择（商店合规：不能因为装完就默认写登录项）。
+// 向导里默认勾选并给出说明，用户可以取消；结果写入 host-config，客户端即时生效。
+const enableAutoStart = ref(true);
+
+const persistAutoStart = async () => {
+  try {
+    await api.updateNotificationSettings({ client_auto_start: enableAutoStart.value });
+  } catch {
+    // 自启是便利项，写失败不该挡住首次使用；设置页里还能再改。
+    message.warning('开机自启设置未保存，可稍后在「设置 → 系统」里调整');
+  }
+};
 
 const parseRoster = (): RosterPerson[] => rosterText.value
   .split(/[\r\n,，]+/)
@@ -35,6 +47,7 @@ const saveRoster = async () => {
   try {
     await api.updateRoster(roster);
     rosterSaved.value = true;
+    await persistAutoStart();
     message.success(`已保存 ${roster.length} 人`);
     current.value = 1;
   } catch {
@@ -116,6 +129,34 @@ const saveModel = async () => {
   }
 };
 
+// 没有模型也能用：切到「离线算法」方案（纯本地确定性排班，不联网、不需要 Key）。
+// 这条路径同时是商店审核员的默认可测路径——不能要求审核方自备付费 API Key。
+const offlineSaving = ref(false);
+const useOfflineMode = async () => {
+  offlineSaving.value = true;
+  try {
+    const config = await api.getConfig();
+    const presets = Array.isArray(config.plan_presets) ? config.plan_presets : [];
+    const offline = presets.find((p: any) => p.mode_id === 'offline');
+    if (!offline) {
+      message.error('未找到离线算法方案，请稍后在「设置 → AI 排班」里手动切换');
+      return;
+    }
+    await api.updateConfig({
+      expected_version: config.version,
+      selected_plan_id: offline.id,
+      plan_presets: presets,
+    });
+    message.success('已切换到离线算法：无需模型、不联网');
+    current.value = 2;
+  } catch (e: any) {
+    if (e?.response?.status === 409) message.warning('配置已被更新，请重试');
+    else message.error('切换离线算法失败');
+  } finally {
+    offlineSaving.value = false;
+  }
+};
+
 // Step 3: trial run
 const sse = useScheduleSSE();
 const trialRows = ref<Array<{ date: string; area: string; people: string }>>([]);
@@ -171,6 +212,9 @@ const finish = () => {
     <div v-if="current === 0">
       <p class="wizard-hint">每行一个名字（也可用逗号分隔）。ID 会自动分配。</p>
       <Input.TextArea v-model:value="rosterText" :rows="6" placeholder="张三&#10;李四&#10;王五" />
+      <Checkbox v-model:checked="enableAutoStart" class="wizard-check">
+        登录 Windows 后自动在后台运行（开机自启，可随时在设置里关闭）
+      </Checkbox>
       <div class="wizard-actions">
         <Button type="primary" :loading="rosterSaving" @click="saveRoster">保存并继续</Button>
       </div>
@@ -179,6 +223,13 @@ const finish = () => {
     <!-- Step 2 -->
     <div v-else-if="current === 1">
       <p class="wizard-hint">选择一个模型来源，填写模型名称后测试连接。</p>
+      <Alert
+        type="info"
+        show-icon
+        class="wizard-consent"
+        message="使用在线模型时，会把哪些数据发出去？"
+        description="发送到你填写的模型服务地址的是：人员编号（不是姓名）、日期、值日区域与人数、以及你输入的排班指令。姓名不会离开本机。该模型服务如何处理数据由它自己的隐私政策约束；不想发送任何数据，请用下面的离线算法。"
+      />
       <Space wrap style="margin-bottom: 12px">
         <Button v-for="p in MODEL_PRESETS" :key="p.label" @click="applyPreset(p)">{{ p.label }}</Button>
       </Space>
@@ -222,6 +273,12 @@ const finish = () => {
           <Button :loading="probing" @click="testConnection">测试连接</Button>
           <Button type="primary" :loading="modelSaving" @click="saveModel">保存并继续</Button>
         </Space>
+      </div>
+      <div class="wizard-offline">
+        <span>没有模型服务？</span>
+        <Button type="link" size="small" :loading="offlineSaving" @click="useOfflineMode">
+          使用离线算法（无需 API Key，不联网）
+        </Button>
       </div>
     </div>
 
@@ -276,5 +333,23 @@ const finish = () => {
 .wizard-actions {
   margin-top: 20px;
   text-align: right;
+}
+
+.wizard-check {
+  display: block;
+  margin-top: 12px;
+  font-size: 13px;
+  color: var(--dt-text-2);
+}
+
+.wizard-offline {
+  margin-top: 12px;
+  font-size: 13px;
+  color: var(--dt-text-2);
+  text-align: right;
+}
+
+.wizard-consent {
+  margin-bottom: 12px;
 }
 </style>

@@ -43,6 +43,9 @@ from typing import Any, Optional
 
 import httpx
 
+# 版本单一事实源：只认 version.py，别在这里再抄一份字符串（历史上两处漂移过）。
+from version import APP_VERSION
+
 DEFAULT_PORT = 8765
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_REQUEST_SOURCE = "cli"
@@ -53,8 +56,6 @@ SERVE_LOG_NAME = "duty-serve.log"
 DEV_TOKEN_NAME = ".dev-token"
 SERVE_HEALTH_TIMEOUT_SECONDS = 30.0
 SERVE_LOG_MAX_BYTES = 5 * 1024 * 1024
-# Keep in sync with runtime.APP_VERSION; single-sourcing tracked in HANDOFF §24.
-APP_VERSION = "0.50.0"
 _TOKEN_MODE_LOG_RE = re.compile(r"__DUTY_SERVER_TOKEN_MODE__:([A-Za-z_]+)")
 _TOKEN_LOG_RE = re.compile(r"__DUTY_SERVER_TOKEN__:(\S+)")
 

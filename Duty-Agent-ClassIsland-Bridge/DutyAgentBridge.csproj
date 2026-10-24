@@ -5,7 +5,7 @@
     <EnableDynamicLoading>True</EnableDynamicLoading>
     <RootNamespace>DutyAgentBridge</RootNamespace>
     <AssemblyName>DutyAgentBridge</AssemblyName>
-    <Version>0.50.0</Version>
+    <Version>1.0.0</Version>
     <Authors>helemazuba-boop</Authors>
     <Description>与独立 Duty-Agent 软件联动，在 ClassIsland 中显示通知和组件</Description>
     <ImplicitUsings>enable</ImplicitUsings>

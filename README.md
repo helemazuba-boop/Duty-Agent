@@ -2,7 +2,7 @@
   <img src="icon.png" width="128" alt="Duty-Agent Logo" />
   <h1>Duty-Agent</h1>
   <p><em>"Reasoning via LLM, Reliability via Code." —— 面向 Windows 的下一代混合智能排班系统</em></p>
-  <p><strong>当前版本: v0.51.8 Beta</strong></p>
+  <p><strong>当前版本: v1.0.0</strong></p>
 </div>
 
 > **注意：项目理论上的逻辑已经通过，正在真实环境下优化细节。如果您需要在生产环境中应用，请稍等正式版。**
@@ -341,26 +341,40 @@ build_client.bat                                                                
 
 前置条件：
 
-- Node/npm 的 `@microsoft/winappcli`（`npm install -g @microsoft/winappcli`）——
-  **不需要 Visual Studio 或 Windows Kits**，winapp 用 NuGet 的 Windows SDK BuildTools 打包
-- Partner Center 开发者账号
+- .NET 8 SDK + Node/npm；`@microsoft/winappcli` **不必事先安装**——`build_msix.bat` 找不到会
+  自己全局装，全局装失败再落到仓库内 `.msix-work\tools`。想手动装就是
+  `npm install -g @microsoft/winappcli`。winapp 用 NuGet 的 Windows SDK BuildTools 打包，
+  **不需要 Visual Studio 或 Windows Kits**
+- 默认要发布到阿里云，所以 `ssh` / `scp` 需在 PATH 里，且 `~/.ssh/config` 有 `aliyun` 这个
+  Host；只想本地产出加 `-NoUpload`
+- Partner Center 开发者账号（仅 `-ForStore` 提交商店时才需要）
 - WebView2 运行时：Win11 预装；Win10 绝大多数设备已随 Edge 更新获得，但仍有少量
-  缺失。当前客户端**还没有**做运行期版本探测，缺失时是 `InitializeWebViewAsync` 抛异常、
-  由 `InitializeAsync` 兜成"启动失败"对话框（托盘与后端仍正常），这是待补项
-  （不随包分发 Fixed Version——那会让包体再涨 250MB+）
+  缺失。客户端**启动时会显式探测**（`WebViewRuntime.TryGetVersion`），缺失时弹出
+  带官方下载地址的提示，并保留托盘与后端继续运行（自动排班/提醒/桥接供数不受影响），
+  不再是一句笼统的"启动失败"。不随包分发 Fixed Version——那会让包体再涨 250MB+
 
 构建：
 
 ```bat
-build_msix.bat                                  :: 默认（版本沿用清单，并自动组装测试包）
-build_msix.bat -ReleaseVersion 1.2.3
-build_msix.bat -ForStore
+build_msix.bat                          :: 本地侧载包：版本固定 1.0.0，签名后可直接装
+build_msix.bat -NoUpload                :: 只本地产出，不传阿里云
+build_msix.bat -PackageVersion 1.0.1    :: 换包版本（引擎版本不受影响）
+build_msix.bat -StampEngineVersion 1.0.1 :: 连 version.py 等四处一起盖（会改工作区）
+build_msix.bat -ForStore                :: 商店提交：不本地签名，交给 Partner Center
 ```
 
 等价于 `powershell -ExecutionPolicy Bypass -File scripts\Build-MsixPackage.ps1 <同样的参数>`。
 
-产物在 `.msix-work\HelemaZuba.Duty-Agent_1.2.3_x64.msix`（本机已实证产出约 107MB，含完整内嵌 Python
-后端的包）。提交商店前必须做的事：
+产物在 `.release\HelemaZuba.Duty-Agent_1.0.0_x64.msix`——和 zip 发布同一个目录，实测约 107MB，
+含完整内嵌 Python 后端、随包桥接插件、`README.txt` 与 `duty-cli.bat`。同目录还有
+`build-info.json`；侧载用的开发证书公钥在 `.msix-work\cert\devcert.cer`，**装包前必须先信任它**，
+所以默认上传时这三件一起传到阿里云 `<RemoteRoot>/msix/`，传完两侧 md5 校验。
+
+> **包版本 ≠ 引擎版本**：`Identity.Version` 由 `-PackageVersion` 决定（默认固定 1.0.0，本地测试
+> 用）；`Assets_Duty\version.py` 的 `APP_VERSION` 是引擎版本（UI 里显示的那个），默认**不动**，
+> 免得每次出包都把工作区弄脏。要让四处版本面一致，显式传 `-StampEngineVersion`。
+
+提交商店前必须做的事：
 
 1. `Package.appxmanifest` 里的 `Publisher` 与 `Name` 已换成 Partner Center 账户的发布者 ID
    与应用名（当前 `Name="HelemaZuba.Duty-Agent"` / `Publisher="CN=B4407923-BF46-468D-B8F8-549EDD96BDC3"`），
@@ -368,12 +382,25 @@ build_msix.bat -ForStore
    本地签名证书按清单 Publisher 派生：清单换了 Publisher 会自动重新生成，避免旧 subject 签名失败
 2. 商店图标（`DutyAgent.Client.Package/Assets/`）需最终确认合规；当前由
    `winapp manifest update-assets icon.png` 生成
+3. 出商店包用 `build_msix.bat -ForStore -NoUpload`：不本地签名、不生成侧载测试包，
+   产物同样是 `.release\HelemaZuba.Duty-Agent_<版本>_x64.msix`（未签名，约 108MB），
+   直接上传 Partner Center（它接受 `.msix`，要带符号文件才需要 `.msixupload`）。
+
+> **发布包里刻意剔除的东西**（`New-DutyAgentClientRelease.ps1` 第 5 步）：
+> `Assets_Duty\data`（运行期用户数据）、`Assets_Duty\logs`（开发机日志）、
+> 全部 `test_*.py` / `_test_*.py`（30 个单元测试）、`__pycache__` 与 `.pyc`。
+> 2026-10-23 实测旧包里曾带进一份开发日志与 30 个测试脚本，属商店"无关文件"与
+> 隐私两方面的风险，已修。
+
+> **凭据落盘**：模型 API Key 由后端在保存时用 Windows DPAPI（当前用户作用域）加密，
+> `config.json` 里只有 `dpapi:v1:<base64>`，运行期投影才解回明文
+> （`state_ops._protect_plan_api_keys` / `dpapi_compat`，回归见 `test_config_secrets.py`）。
 
 行为差异（包身份 vs zip 分发）：
 
 | 能力 | zip 分发 | MSIX |
 |---|---|---|
-| 开机自启 | 写 `HKCU\...\Run`（exe 路径） | 优先系统 `StartupTask`；清单未声明该扩展时回退 `HKCU\...\Run`（值名带 PFN 后缀，命令 `explorer.exe shell:AppsFolder\<PFN>!App`，两条路都已实测）。**MSIX 自启无法传 `--silent`**：登录后会显示主窗口，而不是静默驻留托盘 |
+| 开机自启 | 写 `HKCU\...\Run`（exe 路径） | 优先系统 `StartupTask`；清单未声明该扩展时回退 `HKCU\...\Run`（值名带 PFN 后缀，命令 `explorer.exe shell:AppsFolder\<PFN>!App`，两条路都已实测）。**默认关闭**，仅在首次向导或「设置 → 系统」中由用户明确开启后生效。**MSIX 自启无法传 `--silent`**：登录后会显示主窗口，而不是静默驻留托盘 |
 | 开始菜单快捷方式 | 客户端自建 `.lnk` | 平台托管，客户端不再自建 |
 | 通知 AUMID | 自建 `.lnk` 上的硬编码 ID | `<PackageFamilyName>!App` |
 | 单实例互斥体 | `Local\DutyAgent.Client.*` | 同上加 `PackageFamilyName\` 前缀；跨形态另有**不带前缀**的数据目录 owner 互斥——zip 版与商店版可并存安装，但同机只允许一个客户端持有后端，后启动者唤醒前者后退出 |
@@ -391,10 +418,10 @@ build_msix.bat -ForStore
 > 现清单注释里留有现成 XML；Run 键回退逻辑继续兜底。`fullTrustProcess` 扩展经实测不需要
 > （Python 子进程在稀疏包身份下启动/监管/自动重启均正常）。
 
-> **触摸适配**：标题栏拖拽与边框缩放对触摸走 `WM_SYSCOMMAND + SC_MOVE/SC_SIZE`
-> （`PostMessage` 投递，避免在 WebView 回调内同步重入消息泵）；窄窗口热区与控件在
-> `any-pointer: coarse` 下放大。`DUTY_CHROME_PROBE=1` 可把 native / web 两条命中
-> 路径写进客户端日志，用于真机定位。细节见 `docs/store-touch-remediation-plan.md`。
+> **触摸适配未落地**：`docs/store-touch-remediation-plan.md` 里的批次 0/1
+> （`DUTY_CHROME_PROBE` 探针、`drag-window-touch`、`any-pointer: coarse` 热区）只在
+> 另一台机器的分支上，**没有合入本仓库**。当前触摸下可用鼠标等价路径操作，但窄边框
+> 缩放热区没有为触摸放大。上架不阻塞，属后续质量项。
 
 约束：仅 x64；未接 Store 商业化与增量更新通道；同机同时只运行一个客户端
 （跨形态由数据目录 owner 互斥保证，否则会抢后端端口、写坏共享 state）。

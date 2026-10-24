@@ -182,6 +182,12 @@ export const api = {
     return data;
   },
 
+  /** 引擎版本等运行信息（「关于」页展示、排障时让用户直接报版本号）。 */
+  async health(): Promise<{ status: string; version: string; auth_bypassed?: boolean }> {
+    const { data } = await http.get('/api/v1/health');
+    return data;
+  },
+
   async getConfig() {
     const { data } = await http.get('/api/v1/config');
     return data;

@@ -6,4 +6,4 @@
 csproj 与 manifest，四处的版本号以本文件为准。
 """
 
-APP_VERSION = "0.50.0"
+APP_VERSION = "1.0.0"
