@@ -15,5 +15,9 @@ fastapi==0.135.1
 starlette==0.52.1
 pydantic==2.12.5
 uvicorn==0.41.0
+# uvicorn 的 WebSocket 实现要单独装：没有它时 `ws="auto"` 会静默降级成"不支持
+# 升级"，`/api/v1/duty/live` 直接 404，前端只能退回 SSE（排班照跑，但实时通道
+# 全废，还会在控制台报错）。2026-10-29 之前 python-embed 里确实缺这个包。
+websockets==15.0.1
 httpx==0.28.1
 mcp==1.20.0
