@@ -4,7 +4,7 @@
 > 本文是同一份内容的仓库副本；对外提供（商店列表、软件内「设置 → 关于」）一律用上面的地址。
 > 修改政策时请同步更新托管页，否则对外展示的仍是旧条款。
 
-**更新日期 / Last updated: 2026-10-13**  
+**更新日期 / Last updated: 2026-10-28**  
 **适用产品 / Product: Duty-Agent**  
 **隐私联系邮箱 / Privacy contact: <helemazuba@gmail.com>**
 
