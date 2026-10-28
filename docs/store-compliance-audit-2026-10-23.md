@@ -69,8 +69,8 @@
 | 项 | 状态 | 证据 |
 |---|---|---|
 | `PRIVACY.md` 已合入 | ✅ | 在 `independent-agent` 分支（**origin/main 上还没有**） |
-| 发布在无需登录的 HTTPS 地址 | ⚠️ **部分** | 现指向 `github.com/…/blob/independent-agent/PRIVACY.md`（GitHub 渲染、免登录）。**分支被删会 404**，建议合并进 `main` 或挂到你自己的域名后改成稳定 URL |
-| Partner Center 填写该 URL | ❌ 待你填 | 见上 |
+| 发布在无需登录的 HTTPS 地址 | ✅ **2026-10-28 已解决** | 正式托管 <https://legal.helema.cn/>（免登录、HTTPS、中英双语）。`duty-agent-ui/src/config/links.ts` 的 `PRIVACY_URL` 已指向它，Partner Center 填同一个值 |
+| Partner Center 填写该 URL | ❌ 待你填 | 填 `https://legal.helema.cn/` |
 | 客户端内可查看隐私政策 | ✅ 本次修复 | 设置 → 关于 → 「隐私政策」 |
 | 实际行为与政策一致 | ✅ 抽查 | 离线不联网、日志 14 天过期、数据落 `%LOCALAPPDATA%\DutyAgent` 均与政策一致 |
 | 说明姓名/名单/编号/历史/规则/日志/Key 的用途 | ✅ | 政策 §2、§3.2 |
