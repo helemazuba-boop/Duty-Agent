@@ -423,6 +423,18 @@ if (-not (Test-Path -LiteralPath (Join-Path $releaseAssetsDir "web\index.html"))
     throw "Release is missing Assets_Duty\web\index.html"
 }
 
+# 运行时关键依赖：缺了不会崩，只会静默降级——2026-10-28 就踩过一次：
+# python-embed 里没有 websockets，uvicorn 的 ws="auto" 直接变成"不支持升级"，
+# /api/v1/duty/live 404，前端悄悄退回 SSE，实时通道全废而没人发现。
+# 这里显式断言，让缺包在构建期就炸，而不是上线后靠人翻日志。
+$requiredRuntimeDeps = @("websockets", "uvicorn", "fastapi", "starlette", "httpx")
+foreach ($dep in $requiredRuntimeDeps) {
+    $depPath = Join-Path $releaseAssetsDir "python-embed\Lib\site-packages\$dep"
+    if (-not (Test-Path -LiteralPath $depPath)) {
+        throw "Release is missing python-embed site-packages\$dep（运行期依赖不完整，uvicorn 会静默降级）"
+    }
+}
+
 Write-Host "[6/7] Publishing ClassIsland bridge..."
 $bridgePublishArgs = @(
     "publish",
