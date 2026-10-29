@@ -161,7 +161,7 @@ const formatSize = (bytes: number) => {
 
 <template>
   <Panel
-    class="mb-16"
+    class="da-gap-bottom"
     title="数据管理"
     subtitle="班级换届或学期重置时清空旧数据。删除前会自动归档到数据目录的 archive 文件夹，随时可查"
   >

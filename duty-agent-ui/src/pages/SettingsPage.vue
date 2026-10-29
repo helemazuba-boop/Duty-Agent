@@ -521,7 +521,7 @@ onMounted(async () => {
       <a-tab-pane key="ai-schedule" tab="AI 排班">
         <div class="tab-content">
           <!-- 连接状态 -->
-          <Panel title="连接" :padded="false" class="mb-16">
+          <Panel title="连接" :padded="false" class="da-gap-bottom">
             <div class="conn-list">
               <div class="conn-row">
                 <StatusDot :status="backendConnected ? 'ok' : 'error'" :label="backendConnected ? '后端已启动' : '后端未连接'" />
@@ -545,7 +545,7 @@ onMounted(async () => {
           </Panel>
 
           <!-- AI 长期规则 -->
-          <Panel class="mb-16" title="AI 长期规则" subtitle="作为固定要求附加到每次排班请求,无需每次手动填写">
+          <Panel class="da-gap-bottom" title="AI 长期规则" subtitle="作为固定要求附加到每次排班请求,无需每次手动填写">
             <template #actions>
               <Button
                 type="primary"
@@ -573,7 +573,7 @@ onMounted(async () => {
           </Panel>
 
           <!-- 方案与模型 -->
-          <Panel class="mb-16" title="方案与模型" subtitle="切换后端使用的执行方案与模型服务">
+          <Panel class="da-gap-bottom" title="方案与模型" subtitle="切换后端使用的执行方案与模型服务">
             <template #actions>
               <Space>
                 <Button size="small" :loading="planProbing" @click="testPlanConnection">测试连接</Button>
@@ -726,7 +726,7 @@ onMounted(async () => {
 
           <!-- 校验策略 -->
           <Panel
-            class="mb-16"
+            class="da-gap-bottom"
             title="校验策略"
             subtitle="模型输出与本地规则冲突时,后端是拒绝、只警告、还是自动修正"
           >
@@ -765,21 +765,23 @@ onMounted(async () => {
               </div>
             </div>
 
-            <Alert
-              class="mt-12"
-              :type="validationMode === 'strict' ? 'warning' : 'info'"
-              show-icon
-              :message="validationModeLabels[validationMode] || validationMode"
-              :description="validationModeDetails[validationMode] || ''"
-            />
+            <!-- 间距交给包裹层的 gap:antd 给 .ant-alert 根节点写了未分层的
+                 margin: 0,直接挂 mt-12 这类工具类会被静默吃掉(见 styles/index.css) -->
+            <div class="alert-stack">
+              <Alert
+                :type="validationMode === 'strict' ? 'warning' : 'info'"
+                show-icon
+                :message="validationModeLabels[validationMode] || validationMode"
+                :description="validationModeDetails[validationMode] || ''"
+              />
 
-            <Alert
-              class="mt-12"
-              type="info"
-              show-icon
-              message="以下检查在任何档位下都生效"
-              description="协议解析失败、日期乱序或重复、同一区域重复安排同一人、账本幂等、历史排班保留、回滚的名单代际校验。这些保护的是数据一致性,而不是模型的发挥空间,因此不随档位关闭。"
-            />
+              <Alert
+                type="info"
+                show-icon
+                message="以下检查在任何档位下都生效"
+                description="协议解析失败、日期乱序或重复、同一区域重复安排同一人、账本幂等、历史排班保留、回滚的名单代际校验。这些保护的是数据一致性,而不是模型的发挥空间,因此不随档位关闭。"
+              />
+            </div>
           </Panel>
 
           <!-- 自动排班 -->
@@ -840,7 +842,7 @@ onMounted(async () => {
 
       <!-- ======== 通知设置 ======== -->
       <a-tab-pane key="notification" tab="通知">
-        <Panel class="mb-16" title="通知入口" subtitle="选择 Duty-Agent 通知投递到哪里">
+        <Panel class="da-gap-bottom" title="通知入口" subtitle="选择 Duty-Agent 通知投递到哪里">
           <template #actions>
             <Space>
               <Button size="small" @click="sendTestNotification">测试通知</Button>
@@ -948,6 +950,7 @@ onMounted(async () => {
       <!-- ======== 系统与自启 ======== -->
       <a-tab-pane key="system" tab="系统">
         <Panel
+          class="da-gap-bottom"
           title="后台驻留与开机自启"
           subtitle="驻留后台时后端持续运行,自动排班、提醒与补跑才能长期生效;本页开关仅对独立客户端生效"
         >
@@ -980,7 +983,7 @@ onMounted(async () => {
         </Panel>
 
         <Panel
-          class="mb-16"
+          class="da-gap-bottom"
           title="ClassIsland 桥接插件"
           subtitle="把值日安排投递到 ClassIsland 卡片;安装动作由客户端完成"
         >
@@ -1010,7 +1013,7 @@ onMounted(async () => {
       <!-- ======== 关于与隐私 ======== -->
       <a-tab-pane key="about" tab="关于">
         <div class="tab-content">
-          <Panel title="版本与运行" class="mb-16">
+          <Panel title="版本与运行" class="da-gap-bottom">
             <div class="form-grid">
               <div class="config-item">
                 <div class="config-label">引擎版本</div>
@@ -1028,7 +1031,7 @@ onMounted(async () => {
             </div>
           </Panel>
 
-          <Panel title="AI 生成内容说明" class="mb-16">
+          <Panel title="AI 生成内容说明" class="da-gap-bottom">
             <div class="about-text">
               <p>
                 本软件的「AI 排班」功能使用生成式 AI（由你自行配置的模型服务提供）生成值日安排。
@@ -1042,7 +1045,7 @@ onMounted(async () => {
             </div>
           </Panel>
 
-          <Panel title="隐私与支持" class="mb-16">
+          <Panel title="隐私与支持" class="da-gap-bottom">
             <div class="about-links">
               <Button size="small" @click="openExternal(PRIVACY_URL)">隐私政策</Button>
               <Button size="small" @click="openExternal(SUPPORT_URL)">使用说明</Button>
@@ -1093,8 +1096,13 @@ onMounted(async () => {
   min-width: 0;
 }
 
-.mb-16 {
-  margin-bottom: 16px;}
+/* 校验策略下方的两块提示:间距走包裹层,别挂在 Alert 根节点上 */
+.alert-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 12px;
+}
 
 /* 连接 */
 .conn-list {

@@ -39,7 +39,7 @@ const openCreate = () => {
 <template>
   <div class="ai-tools-panel">
     <!-- 启用开关:行自带 12px 20px 内边距,面板保持 flush -->
-    <Panel class="mb-16" :padded="false">
+    <Panel class="da-gap-bottom" :padded="false">
       <div class="enable-row">
         <Switch v-model:checked="store.config.enabled" />
         <span class="enable-row__label">启用 AI 工具调用</span>
@@ -50,7 +50,7 @@ const openCreate = () => {
     </Panel>
 
     <!-- 工具服务器:卡片列表 -->
-    <Panel class="mb-16" title="工具服务器" :padded="false">
+    <Panel class="da-gap-bottom" title="工具服务器" :padded="false">
       <template #actions>
         <Button type="primary" size="small" @click="openCreate">
           <template #icon><PlusOutlined /></template>
@@ -97,7 +97,7 @@ const openCreate = () => {
     </Panel>
 
     <!-- 可用工具预览 -->
-    <div class="mb-16">
+    <div class="da-gap-bottom">
       <ToolPreview />
     </div>
 
@@ -137,10 +137,6 @@ const openCreate = () => {
 <style scoped>
 .ai-tools-panel {
   min-width: 0;
-}
-
-.mb-16 {
-  margin-bottom: 16px;
 }
 
 .enable-row {

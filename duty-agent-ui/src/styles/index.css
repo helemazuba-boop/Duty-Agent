@@ -5,6 +5,10 @@
    - tokens.generated.css / tokens.css 保持未分层(变量定义与 @theme)
    - base.css 进 layer(components):AntD 的未分层运行时样式天然压过它,
      但 Tailwind utility 可以覆盖 base 里的过渡类
+   - overrides.css 必须未分层,放在最后:它专门用来覆盖 antd 组件根节点。
+     antd 的 cssinjs 样式没有 @layer,未分层声明压过任何 layer —— 所以
+     @layer utilities 里的间距工具类打不过 :where(.css-x).ant-alert{margin:0}。
+     规则细节见 overrides.css 顶部。
    旧 --da-* 别名已删除:业务代码引用数为零(2026-09-05),
    若 git 历史外还有分支引用,恢复 pages/~40 行别名块即可。
    ============================================================= */
@@ -12,3 +16,4 @@
 @import './tokens.generated.css';
 @import './tokens.css';
 @import './base.css' layer(components);
+@import './overrides.css';

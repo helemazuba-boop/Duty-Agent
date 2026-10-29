@@ -1,0 +1,27 @@
+/* =============================================================
+   Duty-Agent UI — 未分层覆盖层
+
+   为什么这一层不能带 layer():
+   antd 的组件样式由 cssinjs 在运行时注入,没有 @layer。按 CSS 层叠规则,
+   未分层的声明压过任何 @layer 里的声明 —— 与选择器权重无关。
+   所以 @layer utilities 里的 .mt-12 / .mb-16 一旦挂在 antd 组件根节点上,
+   就会被 :where(.css-xxx).ant-alert { margin: 0 } 静默吃掉。
+   2026-10-30 实测:同一个 .mt-12,普通 div 上 48px,<Alert> 上 0px。
+
+   两条规矩:
+   1. 不要用 Tailwind 间距工具类调 antd 组件自身的间距。包一层普通元素、
+      用 flex/grid 的 gap 更稳(见 SettingsPage 的 .alert-stack)。
+   2. 确实要覆盖 antd 根节点时写在这里,并且用双类选择器把权重抬到 0-2-0,
+      免得和 antd 的 0-1-0 打平后变成"谁后注入谁赢"。
+   ============================================================= */
+
+/* 面板之间的纵向节奏。注意语义是 16px —— 旧写法 mb-16 在 Tailwind 里是 64px,
+   只因为组件内各写了一份同名的 scoped 规则才碰巧正确。 */
+.da-gap-bottom {
+  margin-bottom: 16px;
+}
+
+/* antd 的 resetComponent 给每个组件根节点写了 margin: 0,抬高权重后不依赖注入顺序 */
+.da-panel.da-gap-bottom {
+  margin-bottom: 16px;
+}
