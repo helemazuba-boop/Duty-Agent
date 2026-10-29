@@ -311,20 +311,21 @@ const formatSize = (bytes: number) => {
   line-height: 18px;
 }
 
+/* 用 token 派生,别写死浅色:深色主题下 #fff1f0 / #f6ffed 会在近黑底上炸开 */
 .reset-row__tag--del {
-  color: #cf1322;
-  background: #fff1f0;
+  color: var(--dt-danger);
+  background: color-mix(in srgb, var(--dt-danger) 12%, transparent);
 }
 
 .reset-row__tag--keep {
-  color: #389e0d;
-  background: #f6ffed;
+  color: var(--dt-success);
+  background: color-mix(in srgb, var(--dt-success) 12%, transparent);
 }
 
 .reset-archives {
   margin-top: 16px;
   padding-top: 14px;
-  border-top: 1px dashed var(--dt-border, #f0f0f0);
+  border-top: 1px dashed var(--dt-border);
 }
 
 .reset-archives__head {
@@ -382,7 +383,7 @@ const formatSize = (bytes: number) => {
 .reset-archives__path code {
   padding: 1px 4px;
   border-radius: 4px;
-  background: var(--dt-fill, #f5f5f5);
+  background: var(--dt-surface-2);
   font-size: 11px;
 }
 
