@@ -27,7 +27,7 @@
     ProcessorArchitecture="x64" />
 
   <Properties>
-    <DisplayName>Duty-Agent 值日排班</DisplayName>
+    <DisplayName>Duty-Agent</DisplayName>
     <PublisherDisplayName>Helema Zuba</PublisherDisplayName>
     <Logo>Assets\StoreLogo.png</Logo>
     <Description>班级值日排班助手：LLM 柔性排班 + 确定性兜底引擎，为 ClassIsland 桌面组件供数。</Description>

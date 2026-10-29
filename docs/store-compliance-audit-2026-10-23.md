@@ -120,7 +120,7 @@
 
 | 项 | 状态 |
 |---|---|
-| 应用名称 | ✅ `Duty-Agent 值日排班`（清单 DisplayName） |
+| 应用名称 | ✅ `Duty-Agent`（清单 Properties/DisplayName；2026-10-30 从「Duty-Agent 值日排班」改短，与 Partner Center 里预留的保留名称保持一致） |
 | 分类 | ⚠️ 建议 **Productivity**（次选 Education） |
 | 中文描述 | 草稿见 §4 |
 | 区分独立客户端/桥接/云端 AI | 草稿已按此结构写 |
