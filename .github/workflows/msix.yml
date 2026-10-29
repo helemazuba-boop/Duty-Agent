@@ -100,7 +100,9 @@ jobs:
           $ErrorActionPreference = "Stop"
           # %TEMP% 已在脚本内部被改指到 .msix-work\temp：winapp package 会先把
           # 约 260MB 的布局复制过去再压缩，C: 空间不足时会假死（本机实测 19 分钟）。
-          ./scripts/Build-MsixPackage.ps1
+          # -NoUpload：脚本默认把产物发到 aliyun 个人网盘，CI 上没有那条 ssh 别名，
+          # 不关掉就会以 "ssh mkdir 失败，exit=255" 红掉整个构建。
+          ./scripts/Build-MsixPackage.ps1 -NoUpload
 
       - name: Locate the built MSIX
         id: msix

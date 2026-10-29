@@ -515,6 +515,13 @@ if ($ForStore) {
 #   devcert.cer     必须先信任的公钥
 #   build-info.json 包身份 + 版本 + 证书指纹，远程机器据此确认该信任哪个证书
 # 只想本地产出时加 -NoUpload。
+if (-not $NoUpload -and $env:CI) {
+    # CI 上没有 aliyun 这条 ssh 别名（也不该把包传到个人网盘），
+    # 忘了传 -NoUpload 时不该整个构建红掉——只在日志里说清楚跳过了。
+    Write-Host "[msix] 检测到 CI 环境：自动跳过上传（等价于 -NoUpload）。"
+    $NoUpload = $true
+}
+
 if ($NoUpload) {
     Write-Host "[msix] -NoUpload：跳过上传，产物只在 $releaseRoot"
 } else {
