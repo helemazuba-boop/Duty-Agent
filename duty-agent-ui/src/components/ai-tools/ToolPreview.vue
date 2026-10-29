@@ -96,7 +96,7 @@ const handleTest = async () => {
     @cancel="testModalOpen = false"
     @ok="handleTest"
     :confirm-loading="testing"
-    width="600"
+    :width="600"
   >
     <div style="display: flex; flex-direction: column; gap: 12px; width: 100%">
       <div>

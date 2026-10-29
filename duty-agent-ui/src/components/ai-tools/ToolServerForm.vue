@@ -98,7 +98,7 @@ const handleSubmit = () => {
     :title="editingId ? '编辑服务器' : '添加工具服务器'"
     @cancel="emit('close')"
     @ok="handleSubmit"
-    width="520"
+    :width="520"
   >
     <div style="display: flex; flex-direction: column; gap: 12px; width: 100%">
       <div>

@@ -199,7 +199,7 @@ const finish = () => {
     title="首次使用向导"
     :footer="null"
     :mask-closable="false"
-    width="560px"
+    :width="560"
     @update:open="(v: boolean) => emit('update:open', v)"
   >
     <Steps :current="current" size="small" class="wizard-steps">
