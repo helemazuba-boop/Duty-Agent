@@ -6,7 +6,7 @@
  * 不是一个量级，这里用 Modal + 键入档位名才放行，且 Modal 里始终并列展示
  * "将删除 / 将保留" 两列——模型密钥与令牌不参与任何一档，必须让人看见。
  */
-import { computed, ref } from 'vue';
+import { computed, onMounted, ref } from 'vue';
 import { useRouter } from 'vue-router';
 import { Button, Input, Modal, Spin, message } from 'ant-design-vue';
 import { DeleteOutlined, ExclamationCircleOutlined, SafetyCertificateOutlined } from '@ant-design/icons-vue';
@@ -70,6 +70,27 @@ const WIZARD_DISMISS_KEY = 'duty_first_run_dismissed';
 
 const archives = ref<ResetArchives | null>(null);
 const archivesLoading = ref(false);
+/** 归档明细默认收起,只留一行状态;需要翻旧账时再展开 */
+const archivesOpen = ref(false);
+
+const archiveItems = computed(() => archives.value?.archives ?? []);
+const hasArchives = computed(() => archiveItems.value.length > 0);
+const archiveTotalBytes = computed(() =>
+  archiveItems.value.reduce((sum, item) => sum + item.size_bytes, 0),
+);
+
+const formatSize = (bytes: number) => {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+};
+
+const archiveSummary = computed(() => {
+  if (archivesLoading.value && !archives.value) return '读取中…';
+  if (!archives.value) return '未读取';
+  if (!archiveItems.value.length) return '暂无归档,每次重置前自动生成,仅保留最近 10 份';
+  return `最近 ${archiveItems.value.length} 份 · ${formatSize(archiveTotalBytes.value)}`;
+});
 
 const active = ref<ScopeDef | null>(null);
 const confirmText = ref('');
@@ -89,6 +110,9 @@ const loadArchives = async () => {
     archivesLoading.value = false;
   }
 };
+
+// 状态行要能说"最近 N 份",所以进面板时先读一次;失败就退回"未读取",不影响操作。
+onMounted(loadArchives);
 
 const open = (def: ScopeDef) => {
   active.value = def;
@@ -151,12 +175,6 @@ const goOnboarding = () => {
   close();
   router.push('/dashboard');
 };
-
-const formatSize = (bytes: number) => {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
-};
 </script>
 
 <template>
@@ -165,40 +183,48 @@ const formatSize = (bytes: number) => {
     title="数据管理"
     subtitle="班级换届或学期重置时清空旧数据。删除前会自动归档到数据目录的 archive 文件夹，随时可查"
   >
-    <div class="reset-list">
-      <div v-for="def in SCOPES" :key="def.scope" class="reset-row">
+    <ul class="reset-list">
+      <li v-for="def in SCOPES" :key="def.scope" class="reset-row">
         <div class="reset-row__text">
           <div class="reset-row__title">{{ def.title }}</div>
           <div class="reset-row__desc">{{ def.desc }}</div>
-          <div class="reset-row__tags">
-            <span class="reset-row__tag reset-row__tag--del">删除 {{ def.removed.length }} 项</span>
-            <span class="reset-row__tag reset-row__tag--keep">保留 {{ def.kept.length }} 项</span>
-          </div>
         </div>
-        <Button danger size="small" @click="open(def)">
+        <Button class="reset-row__action" danger size="small" @click="open(def)">
           <template #icon><DeleteOutlined /></template>
           {{ def.label }}
         </Button>
-      </div>
-    </div>
+      </li>
+    </ul>
 
     <div class="reset-archives">
       <div class="reset-archives__head">
-        <SafetyCertificateOutlined />
-        <span>自动归档</span>
-        <Button type="link" size="small" :loading="archivesLoading" @click="loadArchives">刷新</Button>
+        <SafetyCertificateOutlined class="reset-archives__icon" />
+        <span class="reset-archives__title">自动归档</span>
+        <span class="reset-archives__summary">{{ archiveSummary }}</span>
+        <div class="reset-archives__actions">
+          <Button
+            v-if="hasArchives"
+            type="link"
+            size="small"
+            :aria-expanded="archivesOpen"
+            @click="archivesOpen = !archivesOpen"
+          >
+            {{ archivesOpen ? '收起' : '展开' }}
+          </Button>
+          <Button type="link" size="small" :loading="archivesLoading" @click="loadArchives">刷新</Button>
+        </div>
       </div>
-      <Spin :spinning="archivesLoading">
-        <div v-if="archives && archives.archives.length" class="reset-archives__list">
-          <div v-for="item in archives.archives" :key="item.name" class="reset-archives__item">
+
+      <div v-show="archivesOpen && hasArchives" class="reset-archives__list">
+        <Spin :spinning="archivesLoading" size="small">
+          <div v-for="item in archiveItems" :key="item.name" class="reset-archives__item">
             <span class="reset-archives__name">{{ item.name }}</span>
             <span class="reset-archives__meta">{{ item.files.join(' · ') }} · {{ formatSize(item.size_bytes) }}</span>
           </div>
-        </div>
-        <div v-else class="reset-archives__empty">还没有归档。每次重置前都会自动生成一份，仅保留最近 10 份。</div>
-      </Spin>
-      <div v-if="archives" class="reset-archives__path">
-        归档位置：<code>{{ archives.data_dir }}\archive</code>
+          <div class="reset-archives__path">
+            归档位置：<code>{{ archives?.data_dir }}\archive</code>
+          </div>
+        </Spin>
       </div>
     </div>
   </Panel>
@@ -210,7 +236,7 @@ const formatSize = (bytes: number) => {
     :ok-button-props="{ disabled: !confirmMatched || !!result, danger: true }"
     ok-text="确认删除"
     cancel-text="取消"
-    width="560"
+    :width="560"
     @ok="submit"
     @cancel="close"
   >
@@ -269,10 +295,11 @@ const formatSize = (bytes: number) => {
 </template>
 
 <style scoped>
+/* 无边框列表:靠行间分隔线和留白分层,不再套三个小卡片 */
 .reset-list {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
 }
 
 .reset-row {
@@ -280,9 +307,18 @@ const formatSize = (bytes: number) => {
   align-items: flex-start;
   justify-content: space-between;
   gap: 16px;
-  padding: 12px 14px;
-  border: 1px solid var(--dt-border, #f0f0f0);
-  border-radius: 8px;
+  padding: 14px 0;
+  border-bottom: 1px solid var(--dt-border);
+}
+
+.reset-row:last-child {
+  padding-bottom: 0;
+  border-bottom: 0;
+}
+
+.reset-row__text {
+  flex: 1 1 auto;
+  min-width: 0;
 }
 
 .reset-row__title {
@@ -298,52 +334,54 @@ const formatSize = (bytes: number) => {
   color: var(--dt-text-2);
 }
 
-.reset-row__tags {
-  display: flex;
-  gap: 8px;
-  margin-top: 8px;
+.reset-row__action {
+  flex: 0 0 auto;
 }
 
-.reset-row__tag {
-  padding: 1px 8px;
-  border-radius: 10px;
-  font-size: 11px;
-  line-height: 18px;
-}
-
-/* 用 token 派生,别写死浅色:深色主题下 #fff1f0 / #f6ffed 会在近黑底上炸开 */
-.reset-row__tag--del {
-  color: var(--dt-danger);
-  background: color-mix(in srgb, var(--dt-danger) 12%, transparent);
-}
-
-.reset-row__tag--keep {
-  color: var(--dt-success);
-  background: color-mix(in srgb, var(--dt-success) 12%, transparent);
-}
-
+/* 归档:一行状态,明细默认收起 */
 .reset-archives {
   margin-top: 16px;
   padding-top: 14px;
-  border-top: 1px dashed var(--dt-border);
+  border-top: 1px solid var(--dt-border);
 }
 
 .reset-archives__head {
   display: flex;
   align-items: center;
-  gap: 6px;
-  font-size: 13px;
-  font-weight: 600;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: 12px;
+  line-height: 18px;
 }
 
-.reset-archives__head .ant-btn-link {
+.reset-archives__icon {
+  color: var(--dt-text-3);
+}
+
+.reset-archives__title {
+  font-weight: 600;
+  color: var(--dt-text);
+}
+
+.reset-archives__summary {
+  min-width: 0;
+  color: var(--dt-text-3);
+}
+
+.reset-archives__actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
   margin-left: auto;
+}
+
+.reset-archives__actions .ant-btn-link {
   padding: 0;
   height: auto;
 }
 
 .reset-archives__list {
-  margin-top: 8px;
+  margin-top: 10px;
   display: flex;
   flex-direction: column;
   gap: 4px;
@@ -359,18 +397,13 @@ const formatSize = (bytes: number) => {
 
 .reset-archives__name {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  word-break: break-all;
 }
 
 .reset-archives__meta {
+  flex: 0 0 auto;
   color: var(--dt-text-3);
   text-align: right;
-}
-
-.reset-archives__empty {
-  margin-top: 8px;
-  font-size: 12px;
-  line-height: 18px;
-  color: var(--dt-text-3);
 }
 
 .reset-archives__path {
@@ -407,11 +440,11 @@ const formatSize = (bytes: number) => {
 }
 
 .reset-modal__col-title--del {
-  color: #cf1322;
+  color: var(--dt-danger);
 }
 
 .reset-modal__col-title--keep {
-  color: #389e0d;
+  color: var(--dt-success);
 }
 
 .reset-modal__areas {
@@ -450,5 +483,32 @@ const formatSize = (bytes: number) => {
 .reset-modal__done-path code {
   font-size: 11px;
   word-break: break-all;
+}
+
+/* 窄窗口:说明与操作按钮不抢同一行,归档元信息允许折行 */
+@media (max-width: 640px) {
+  .reset-row {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 8px;
+  }
+
+  .reset-row__action {
+    align-self: flex-start;
+  }
+
+  .reset-archives__item {
+    flex-wrap: wrap;
+  }
+
+  .reset-archives__meta {
+    text-align: left;
+  }
+}
+
+@media (max-width: 560px) {
+  .reset-modal__cols {
+    grid-template-columns: 1fr;
+  }
 }
 </style>
