@@ -7,6 +7,7 @@
 """
 
 import json
+import os
 import queue
 import tempfile
 import unittest
@@ -40,6 +41,16 @@ def _auth_headers(runtime, extra: dict | None = None) -> dict:
     if extra:
         headers.update(extra)
     return headers
+
+
+def _canonical_path(value) -> str:
+    """把路径规范化成可比较的形式。
+
+    Windows 上同一个目录可能以 8.3 短名出现（CI runner 是 ``C:\\Users\\runneradmin``，
+    某些解析路径会返回 ``RUNNER~1``）。字符串不同但目录相同，比较前统一
+    realpath + normcase，避免把"同一目录的两种写法"判成失败。
+    """
+    return os.path.normcase(os.path.realpath(str(value)))
 
 
 def _seed_class_data(data_dir: Path) -> dict:
@@ -406,7 +417,13 @@ class TestResetApi(_RuntimeCase):
         body = response.json()
         self.assertEqual(len(body["archives"]), 1)
         self.assertIn("roster.csv", body["archives"][0]["files"])
-        self.assertEqual(Path(body["data_dir"]), self.data_dir)
+        # 不能直接比 Path 对象：Windows 上同一个目录可能以 8.3 短名返回
+        # （CI 的 runner 路径是 C:\Users\runneradmin，解析后可能变成 RUNNER~1），
+        # 字符串不同但指的是同一个目录。比对规范化后的真实路径。
+        self.assertEqual(
+            _canonical_path(body["data_dir"]),
+            _canonical_path(self.data_dir),
+        )
 
 
 class TestResetConcurrency(_RuntimeCase):

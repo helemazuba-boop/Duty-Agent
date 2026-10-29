@@ -75,8 +75,19 @@ def _cli_routed_to(client: TestClient):
 
 def _run_cli(argv: list[str]) -> tuple[int, dict]:
     buffer = io.StringIO()
-    with contextlib.redirect_stdout(buffer):
-        exit_code = cli.main(argv)
+    # 隔离后端发现：开发机上 CLASSISLAND_CONFIG_PATH 指向真实客户端，CLI 会读到
+    # 它的 meta（端口 + 动态令牌），于是请求打到真后端、拿到 401，用例变成
+    # "取决于本机有没有开客户端"。CI 上没这个文件，本地却必然失败。
+    # 这里统一清掉所有发现用变量，只走用例显式传入的 --base-url / --token。
+    discovery_env = (
+        "DUTY_AGENT_META",
+        "CLASSISLAND_CONFIG_PATH",
+        "DUTY_AGENT_BASE_URL",
+        "DUTY_AGENT_TOKEN",
+    )
+    with mock.patch.dict(os.environ, {key: "" for key in discovery_env}):
+        with contextlib.redirect_stdout(buffer):
+            exit_code = cli.main(argv)
     stdout = buffer.getvalue().strip()
     return exit_code, (json.loads(stdout) if stdout else {})
 
