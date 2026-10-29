@@ -3,7 +3,7 @@ import { computed, ref, watch, onBeforeUnmount, onMounted } from 'vue';
 import {
   Input, Button, Space, Divider, Alert, message, Select, Switch, Slider, Tag, InputNumber,
 } from 'ant-design-vue';
-import { ApiOutlined, SaveOutlined, ThunderboltOutlined } from '@ant-design/icons-vue';
+import { ApiOutlined, DownOutlined, SaveOutlined, ThunderboltOutlined } from '@ant-design/icons-vue';
 import AiToolsPanel from '@/components/ai-tools/AiToolsPanel.vue';
 import DataResetPanel from '@/components/settings/DataResetPanel.vue';
 import PageHeader from '@/components/ui/PageHeader.vue';
@@ -129,11 +129,26 @@ const validationModeLabels: Record<string, string> = {
 };
 
 const validationModeDetails: Record<string, string> = {
-  relaxed: '尊重模型输出:人数缺口、日期覆盖、区域结构等问题只警告,不自动修改排班。仅当与本地已知事实冲突(人员不在花名册、已停用、当天请假)或同一区域重复安排时才拒绝提交。',
-  strict: '完整检查区域人数、目标日期与业务规则,任一不满足即拒绝提交并列出具体违例。排班窗口必须完整覆盖,区域人数必须等于配置。',
-  repair: '由确定性代码自动补齐、裁剪和调整,每一次修改都会在排班结果里列出。适合 0.8B 级本地小模型。',
-  auto: '本地/受限模型画像(campus_small、edge)使用智能修复,其余使用宽松模式。',
+  relaxed: '只警告不修改:人数缺口、日期覆盖、区域结构问题仅提示;与花名册、停用、请假冲突或同区域重复安排时才拒绝。',
+  strict: '完整校验区域人数、目标日期与业务规则,任一不满足即拒绝提交并列出违例;排班窗口须完整覆盖。',
+  repair: '确定性代码自动补齐、裁剪与调整,每一次修改都会在排班结果里列出。',
+  auto: '按模型画像选择:本地/受限模型用智能修复,其余用宽松模式。',
 };
+
+// 任何档位都生效的一致性校验。原文是一段连排的说明,这里拆成条目,
+// 内容与顺序保持原样,只是放进默认收起的折叠区,免得常驻占版面。
+const ALWAYS_ON_RULES = [
+  '协议解析失败',
+  '日期乱序或重复',
+  '同一区域重复安排同一人',
+  '账本幂等',
+  '历史排班保留',
+  '回滚的名单代际校验',
+];
+const ALWAYS_ON_NOTE = '这些保护的是数据一致性,而不是模型的发挥空间,因此不随档位关闭。';
+
+// 折叠区默认收起:正常配置不需要天天看这六条
+const rulesOpen = ref(false);
 
 const validationModeOptions = Object.entries(validationModeLabels).map(([value, label]) => ({ value, label }));
 
@@ -765,22 +780,28 @@ onMounted(async () => {
               </div>
             </div>
 
-            <!-- 间距交给包裹层的 gap:antd 给 .ant-alert 根节点写了未分层的
-                 margin: 0,直接挂 mt-12 这类工具类会被静默吃掉(见 styles/index.css) -->
-            <div class="alert-stack">
-              <Alert
-                :type="validationMode === 'strict' ? 'warning' : 'info'"
-                show-icon
-                :message="validationModeLabels[validationMode] || validationMode"
-                :description="validationModeDetails[validationMode] || ''"
-              />
+            <!-- 当前档位说明:一行帮助文本,随档位切换。不用常驻 Alert ——
+                 这里只是配置解释,不是系统警告,而且 Alert 根节点上的
+                 间距工具类会被 antd 的未分层 margin:0 吃掉(见 styles/index.css) -->
+            <p class="config-help">{{ validationModeDetails[validationMode] }}</p>
 
-              <Alert
-                type="info"
-                show-icon
-                message="以下检查在任何档位下都生效"
-                description="协议解析失败、日期乱序或重复、同一区域重复安排同一人、账本幂等、历史排班保留、回滚的名单代际校验。这些保护的是数据一致性,而不是模型的发挥空间,因此不随档位关闭。"
-              />
+            <!-- 任何档位都生效的一致性校验:默认收起,需要时再展开 -->
+            <div class="rule-block">
+              <button
+                type="button"
+                class="rule-block__toggle"
+                :aria-expanded="rulesOpen"
+                @click="rulesOpen = !rulesOpen"
+              >
+                <DownOutlined class="rule-block__chevron" :class="{ 'is-open': rulesOpen }" />
+                查看完整校验规则
+              </button>
+              <div v-show="rulesOpen" class="rule-block__body">
+                <ul class="rule-block__list">
+                  <li v-for="rule in ALWAYS_ON_RULES" :key="rule">{{ rule }}</li>
+                </ul>
+                <p class="rule-block__note">{{ ALWAYS_ON_NOTE }}</p>
+              </div>
             </div>
           </Panel>
 
@@ -1096,12 +1117,68 @@ onMounted(async () => {
   min-width: 0;
 }
 
-/* 校验策略下方的两块提示:间距走包裹层,别挂在 Alert 根节点上 */
-.alert-stack {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
+/* 校验策略:档位说明是一行帮助文本,不是警告框 */
+.config-help {
+  margin: 12px 0 0;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--dt-text-2);
+}
+
+.rule-block {
   margin-top: 12px;
+}
+
+.rule-block__toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0;
+  border: 0;
+  background: none;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--dt-text-2);
+  cursor: pointer;
+  transition: color 0.15s ease;
+}
+
+.rule-block__toggle:hover {
+  color: var(--dt-text);
+}
+
+.rule-block__chevron {
+  font-size: 10px;
+  transition: transform 0.15s ease;
+}
+
+.rule-block__chevron.is-open {
+  transform: rotate(180deg);
+}
+
+/* 展开区用 surface-2 做面板内分区,不再套一层卡片 */
+.rule-block__body {
+  margin-top: 8px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: var(--dt-surface-2);
+}
+
+.rule-block__list {
+  margin: 0;
+  padding-left: 18px;
+  /* Tailwind preflight 把 ul 的 marker 去掉了,这里显式加回来 */
+  list-style: disc;
+  font-size: 12px;
+  line-height: 20px;
+  color: var(--dt-text-2);
+}
+
+.rule-block__note {
+  margin: 6px 0 0;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--dt-text-3);
 }
 
 /* 连接 */
