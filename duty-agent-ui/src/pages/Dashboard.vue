@@ -238,7 +238,7 @@ const copyContact = async (name: string) => {
 
 <template>
   <div class="page-container animate-fade-in">
-    <PageHeader title="仪表盘">
+    <PageHeader title="仪表盘" variant="inline">
       <template #subtitle>
         <StatusDot :status="dotStatus" :label="statusLabel" />
       </template>
