@@ -428,4 +428,11 @@ build_msix.bat -ForStore                :: 商店提交：不本地签名，交�
 
 ## 许可证
 
-MIT License
+MIT License —— 见 [LICENSE](LICENSE)。Copyright (c) 2026 Helema Zuba。
+
+可以自由使用、修改、再分发，包括商用；保留版权声明与许可声明即可。
+
+> 随包分发的第三方组件（内嵌 CPython、FastAPI / uvicorn / pydantic 等 Python 包、
+> 前端 npm 依赖、ClassIsland 桥接引用的库）各自保留其原始许可，不受本项目的
+> MIT 许可影响。完整清单可分别用 `Assets_Duty/python-embed/python.exe -m pip list`
+> 与 `npm ls` 查看。
