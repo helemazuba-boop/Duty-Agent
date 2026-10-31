@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
     [string]$OutputRoot = "",
     [string]$Configuration = "Release",
@@ -8,6 +8,13 @@ param(
     # csproj/manifest defaults apply — which used to mean every release shipped
     # as 0.50.0 forever and ClassIsland's plugin update check never fired.
     [string]$ReleaseVersion = "",
+    # 桥接插件自己的版本。留空 = 跟随 ReleaseVersion（历史行为，tag 流程靠它）；
+    # 传值 = 桥接保持该版本不动 —— 自动版本模式下客户端每次构建都涨号，
+    # 但 ClassIsland 插件不该跟着涨，否则每发一次客户端就顶高一次插件版本。
+    [string]$BridgeVersion = "",
+    # 自动版本：按源码变更把三段号的 build 段 +1（见 scripts\Version.ps1）。
+    [switch]$AutoVersion,
+    [switch]$NoAutoVersion,
     [string]$SshHost = "aliyun",
     [string]$RemoteRoot = "/www/wwwroot/alist_storage/Duty-Agent",
     [switch]$SkipWebBuild,
@@ -206,6 +213,25 @@ $clientProject = Join-Path $root "DutyAgent.Client\DutyAgent.Client.csproj"
 $bridgeDir = Join-Path $root "Duty-Agent-ClassIsland-Bridge"
 $bridgeProject = Join-Path $bridgeDir "DutyAgentBridge.csproj"
 $bridgeManifest = Join-Path $bridgeDir "manifest.yml"
+
+if ($NoAutoVersion) {
+    $AutoVersion = $false
+}
+
+if ($AutoVersion) {
+    if (-not [string]::IsNullOrWhiteSpace($ReleaseVersion)) {
+        throw "-AutoVersion 与 -ReleaseVersion 不能同时使用：前者自动算版本，后者显式指定。"
+    }
+
+    . (Join-Path $PSScriptRoot "Version.ps1")
+    $ReleaseVersion = Step-AppVersion -RepoRoot $root
+    # 桥接钉住不动：把它的现值显式传下去，别让客户端版本把它盖掉。
+    $BridgeVersion = Get-BridgeDeclaredVersion -RepoRoot $root
+    Write-Host "[release] 自动版本: $ReleaseVersion（客户端 + 引擎），桥接保持 $BridgeVersion"
+}
+
+# 桥接盖章用的版本：显式给了就用自己的，没给就沿用旧行为跟随 ReleaseVersion。
+$effectiveBridgeVersion = if ([string]::IsNullOrWhiteSpace($BridgeVersion)) { $ReleaseVersion } else { $BridgeVersion }
 
 if ([string]::IsNullOrWhiteSpace($OutputRoot)) {
     $OutputRoot = Join-Path $root ".release"
@@ -446,14 +472,14 @@ $bridgePublishArgs = @(
     "--no-self-contained",
     "/p:BaseOutputPath=$bridgeMsbuildBinDir"
 )
-if (-not [string]::IsNullOrWhiteSpace($ReleaseVersion)) {
-    $bridgePublishArgs += "/p:Version=$ReleaseVersion"
+if (-not [string]::IsNullOrWhiteSpace($effectiveBridgeVersion)) {
+    $bridgePublishArgs += "/p:Version=$effectiveBridgeVersion"
 }
 Invoke-Tool -FilePath "dotnet" -Arguments $bridgePublishArgs -WorkingDirectory $root
 
 Copy-Item -LiteralPath $bridgeManifest -Destination (Join-Path $bridgeReleaseDir "manifest.yml") -Force
 
-if (-not [string]::IsNullOrWhiteSpace($ReleaseVersion)) {
+if (-not [string]::IsNullOrWhiteSpace($effectiveBridgeVersion)) {
     # Stamp the STAGING manifest only (source stays untouched): ClassIsland's
     # plugin update check keys off manifest version, so shipping every release
     # as the hardcoded 0.50.0 silently disabled upgrade detection.
@@ -469,7 +495,7 @@ if (-not [string]::IsNullOrWhiteSpace($ReleaseVersion)) {
     $manifestText = [System.Text.RegularExpressions.Regex]::Replace(
         $manifestText,
         $manifestVersionPattern,
-        ("version: {0}" -f $ReleaseVersion))
+        ("version: {0}" -f $effectiveBridgeVersion))
     Write-Utf8Text -Path $stagedManifest -Text $manifestText
 }
 
@@ -501,28 +527,37 @@ if ($stagedManifestVersionMatch.Success) {
 $surfaceSummary = ($appVersionSurfaces.GetEnumerator() | ForEach-Object { "  {0}: {1}" -f $_.Key, $_.Value }) -join "`r`n"
 
 if (-not [string]::IsNullOrWhiteSpace($ReleaseVersion)) {
+    # 客户端面跟随 ReleaseVersion，桥接面跟随它自己的版本（自动版本模式下二者
+    # 刻意不同：客户端每次构建涨号，插件不该跟着涨）。
+    $expectedBySurface = @{
+        "Assets_Duty\version.py APP_VERSION" = $ReleaseVersion
+        "duty-agent.exe FileVersion"         = $ReleaseVersion
+        "DutyAgentBridge.dll FileVersion"    = $effectiveBridgeVersion
+        "bridge manifest.yml version"        = $effectiveBridgeVersion
+    }
     foreach ($surface in $appVersionSurfaces.GetEnumerator()) {
-        if (-not (Test-SameVersionValue -Actual $surface.Value -Expected $ReleaseVersion)) {
-            throw "Version stamp mismatch (expected $ReleaseVersion everywhere):`r`n$surfaceSummary"
+        $expected = $expectedBySurface[$surface.Key]
+        if (-not (Test-SameVersionValue -Actual $surface.Value -Expected $expected)) {
+            throw ("Version stamp mismatch (expected $expected for '$($surface.Key)'):`r`n" +
+                "$surfaceSummary`r`n  client/engine = $ReleaseVersion, bridge = $effectiveBridgeVersion")
         }
     }
-    Write-Host "[6/7] Version consistency OK: all four surfaces report $ReleaseVersion."
+    Write-Host ("[6/7] Version consistency OK: client/engine $ReleaseVersion, bridge $effectiveBridgeVersion.")
 }
 else {
-    # No explicit stamp: defaults apply. The bridge dll and the manifest then
-    # carry their checked-in versions, which must still agree with version.py.
-    # duty-agent.exe is exempt: DutyAgent.Client.csproj declares no <Version>,
-    # so MSBuild's 1.0.0 default is expected there until it gets one.
-    $defaultVersion = $appVersionSurfaces["Assets_Duty\version.py APP_VERSION"]
-    if ([string]::IsNullOrWhiteSpace($defaultVersion)) {
+    # 没盖章：各面用自己 checked-in 的值。桥接是独立节奏，不再要求它等于
+    # version.py（自动版本只推客户端），只要求它自己的两个面彼此一致。
+    # duty-agent.exe 豁免：DutyAgent.Client.csproj 没有 <Version>，MSBuild 默认值。
+    $bridgeDllVersion = $appVersionSurfaces["DutyAgentBridge.dll FileVersion"]
+    $bridgeManifestVersion = $appVersionSurfaces["bridge manifest.yml version"]
+    if (-not (Test-SameVersionValue -Actual $bridgeDllVersion -Expected $bridgeManifestVersion)) {
+        throw "Bridge version drift between dll and manifest.yml:`r`n$surfaceSummary"
+    }
+    $engineVersion = $appVersionSurfaces["Assets_Duty\version.py APP_VERSION"]
+    if ([string]::IsNullOrWhiteSpace($engineVersion)) {
         throw "Assets_Duty\version.py carries no APP_VERSION value (contract C3 broken)."
     }
-    foreach ($surfaceName in @("DutyAgentBridge.dll FileVersion", "bridge manifest.yml version")) {
-        if (-not (Test-SameVersionValue -Actual $appVersionSurfaces[$surfaceName] -Expected $defaultVersion)) {
-            throw "Default versions drift from version.py (expected $defaultVersion everywhere it is declared):`r`n$surfaceSummary"
-        }
-    }
-    Write-Host "[6/7] Default version consistency OK: $defaultVersion (duty-agent.exe not stamped; MSBuild default applies)."
+    Write-Host "[6/7] Default version consistency OK: bridge $bridgeManifestVersion, engine $engineVersion (nothing stamped)."
 }
 
 # Bundle the bridge inside the client package so the client's one-click

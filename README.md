@@ -356,23 +356,41 @@ build_client.bat                                                                
 构建：
 
 ```bat
-build_msix.bat                          :: 本地侧载包：版本固定 1.0.0，签名后可直接装
+build_msix.bat                          :: 本地侧载包：版本自动 +1，签名后可直接装
 build_msix.bat -NoUpload                :: 只本地产出，不传阿里云
-build_msix.bat -PackageVersion 1.0.1    :: 换包版本（引擎版本不受影响）
+build_msix.bat -NoAutoVersion           :: 沿用仓库里已提交的版本号（可复现）
+build_msix.bat -PackageVersion 1.0.1    :: 手动指定包版本（引擎版本不受影响）
 build_msix.bat -StampEngineVersion 1.0.1 :: 连 version.py 等四处一起盖（会改工作区）
 build_msix.bat -ForStore                :: 商店提交：不本地签名，交给 Partner Center
 ```
 
 等价于 `powershell -ExecutionPolicy Bypass -File scripts\Build-MsixPackage.ps1 <同样的参数>`。
 
-产物在 `.release\HelemaZuba.Duty-Agent_1.0.0_x64.msix`——和 zip 发布同一个目录，实测约 107MB，
+产物在 `.release\HelemaZuba.Duty-Agent_<版本>_x64.msix`——和 zip 发布同一个目录，实测约 107MB，
 含完整内嵌 Python 后端、随包桥接插件、`README.txt` 与 `duty-cli.bat`。同目录还有
 `build-info.json`；侧载用的开发证书公钥在 `.msix-work\cert\devcert.cer`，**装包前必须先信任它**，
 所以默认上传时这三件一起传到阿里云 `<RemoteRoot>/msix/`，传完两侧 md5 校验。
 
-> **包版本 ≠ 引擎版本**：`Identity.Version` 由 `-PackageVersion` 决定（默认固定 1.0.0，本地测试
-> 用）；`Assets_Duty\version.py` 的 `APP_VERSION` 是引擎版本（UI 里显示的那个），默认**不动**，
-> 免得每次出包都把工作区弄脏。要让四处版本面一致，显式传 `-StampEngineVersion`。
+> **版本号：三段，末位自动**
+>
+> `Assets_Duty\version.py` 的 `APP_VERSION` 是唯一源，形如 `1.0.7`，包身份固定补成四段
+> `<major>.<minor>.<build>.0`（商店要求第四段恒为 0）。
+>
+> - **前两位手动**：想切大版本就直接改成 `1.1.0`。构建时不会再 +1（视为主动切版本），
+>   之后从 `1.1.1` 起继续自动递增。
+> - **第三位自动**：`build_msix.bat` / `build_client.bat` 默认带 `-AutoVersion`，按**源码指纹**
+>   判断（HEAD 的文件哈希 + 未提交改动，排除 `version.py` / `README.md` / `Assets_Duty\web`），
+>   有变更才 +1。同一份代码连构建两次版本不变，包能稳定对应一个提交。
+> - **桥接插件不跟随**：它保持 `DutyAgentBridge.csproj` 里的版本，否则每发一次客户端就把
+>   ClassIsland 插件的版本顶高一次。
+> - 构建记录在 `.release\.version-stamp.json`（gitignored）；删掉它只会让下一次构建多涨一号，
+>   不会倒退。
+> - **降级会被拦下**：把版本改得比上次构建还小会直接报错——MSIX 不允许降级安装（0x80073CF9）。
+> - 构建会把新版本写回 `version.py` 与 README 顶部徽标，记得随下次提交一起带上。
+> - CI 不带 `-AutoVersion`，用仓库里已提交的版本号，构建可复现。
+
+> **包版本 ≠ 引擎版本**：手动用 `-PackageVersion` 时只改包身份，`APP_VERSION` 不动；
+> 自动版本模式（`-AutoVersion`）会把两者一起盖章，保证 UI 里显示的版本和包一致。
 
 提交商店前必须做的事：
 

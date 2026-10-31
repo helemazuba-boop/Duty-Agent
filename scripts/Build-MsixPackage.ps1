@@ -22,7 +22,12 @@ param(
     [switch]$NoUpload,
     [string]$SshHost = "aliyun",
     [string]$RemoteRoot = "/www/wwwroot/alist_storage/Duty-Agent",
-    [string]$RemoteSubdir = "msix"
+    [string]$RemoteSubdir = "msix",
+    # 自动版本：三段号 <major>.<minor>.<build> 里的 build 段按源码变更 +1
+    # （见 scripts\Version.ps1）。build_msix.bat 默认带上，CI 不带 —— CI 用仓库里
+    # 已提交的版本号，产物可复现。
+    [switch]$AutoVersion,
+    [switch]$NoAutoVersion
 )
 
 $ErrorActionPreference = "Stop"
@@ -39,6 +44,27 @@ $pkgDir = Join-Path $workRoot "pkg"
 $tempDir = Join-Path $workRoot "temp"
 # .msix 直接落这里，和 zip 发布同一个目录（.release/ 已在 .gitignore 里）。
 $releaseRoot = Join-Path $root ".release"
+
+# ---------- 自动版本 ----------
+# 三段版本号：major/minor 手改 Assets_Duty\version.py，build 段由 Version.ps1 自增。
+# 同一份源码重复构建不涨（按源码指纹判定），所以包能稳定对应一个提交。
+$bridgeVersion = ""
+if ($NoAutoVersion) {
+    $AutoVersion = $false
+}
+
+if ($AutoVersion) {
+    if ($ReleaseVersion) {
+        throw "-AutoVersion 与 -ReleaseVersion 不能同时使用：前者自动算版本，后者显式指定。"
+    }
+
+    . (Join-Path $PSScriptRoot "Version.ps1")
+    $ReleaseVersion = Step-AppVersion -RepoRoot $root
+    # 桥接插件版本不跟随：读它自己声明的值原样传下去，否则每构建一次客户端
+    # 就把 ClassIsland 插件的版本顶高一次。
+    $bridgeVersion = Get-BridgeDeclaredVersion -RepoRoot $root
+    Write-Host "[msix] 自动版本: $ReleaseVersion（包 + 引擎），桥接保持 $bridgeVersion"
+}
 
 if ($ReleaseVersion) {
     if ($StampEngineVersion -and $StampEngineVersion -ne $ReleaseVersion) {
@@ -157,6 +183,8 @@ $releaseArgs = @{
 # 引擎版本盖章默认关闭：只有显式给了 -StampEngineVersion 才往下传。
 # 本地测试只出包，不该顺手把 tracked 的 Assets_Duty\version.py 改掉。
 if ($StampEngineVersion) { $releaseArgs['ReleaseVersion'] = $StampEngineVersion }
+# 桥接不跟随自动版本：显式把它自己声明的版本传下去，让发布脚本别拿客户端版本盖它。
+if ($bridgeVersion) { $releaseArgs['BridgeVersion'] = $bridgeVersion }
 if ($SkipWebBuild) { $releaseArgs['SkipWebBuild'] = $true }
 
 & (Join-Path $PSScriptRoot "New-DutyAgentClientRelease.ps1") @releaseArgs
