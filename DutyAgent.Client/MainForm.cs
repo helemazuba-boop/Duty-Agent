@@ -53,6 +53,7 @@ internal sealed class MainForm : Form
     // 最终窗口几何：启动页期间窗口是小窗，web 就绪后才套用这个值。
     private WindowPlacement.Placement _finalPlacement;
     private bool _finalBoundsApplied;
+    private long _attachStartedAt;
     private bool _webViewInitializing;
     private bool _allowVisible;
     private bool _exitRequested;
@@ -704,17 +705,28 @@ internal sealed class MainForm : Form
             return;
         }
 
-        // 先从小窗扩到最终几何，再挂 WebView：这样用户看到的是"启动页 → 主界面"，
-        // 而不是"小窗里的启动页 → 先变大 → 再出界面"。
+        // 顺序很关键：**先撤启动页，再放大窗口**。
+        // 反过来的话，窗口已经变成 1280×800 而启动页还在，用户看到的就是
+        // "一个大窗口里孤零零一行 logo"——比原来的空白更难解释。
+        // 中间那点空档是主题底色（与页面同色），比一帧大号启动页干净。
+        _splash.Visible = false;
         ApplyFinalBounds();
 
-        // WebView2 是独立子窗口，挂上来就会盖住 windowless 的启动页，所以顺序是
-        // 「先挂 WebView → 再隐藏启动页」，避免出现一帧两边都空着的窗口。
         Controls.Add(_webView);
         _webView.BringToFront();
-        _splash.Visible = false;
         _webView.Source = new Uri(_backend.WebAppUrl);
         _webViewReady = true;
+
+        // 记录"从撤下启动页到界面首帧"的耗时：这段空档如果偏长，
+        // 用户看到的就是一扇黑窗口，得知道真实数字才能优化。
+        _attachStartedAt = Environment.TickCount64;
+        if (_webView.CoreWebView2 is { } core)
+        {
+            core.NavigationCompleted -= OnFirstNavigationCompleted;
+            core.NavigationCompleted += OnFirstNavigationCompleted;
+        }
+
+        ClientLog.Info($"启动页撤下，窗口恢复为 {Width}x{Height}。");
     }
 
     /// <summary>WebView2 延迟到窗口首次可见时才初始化：静默自启不付这笔成本。</summary>
@@ -1526,6 +1538,17 @@ internal sealed class MainForm : Form
         _splash.ActionRequested += OnSplashActionRequested;
     }
 
+    /// <summary>界面首帧：只用来量一次"撤下启动页 → 有内容"的空档。</summary>
+    private void OnFirstNavigationCompleted(object? sender, Microsoft.Web.WebView2.Core.CoreWebView2NavigationCompletedEventArgs e)
+    {
+        if (_webView.CoreWebView2 is { } core)
+        {
+            core.NavigationCompleted -= OnFirstNavigationCompleted;
+        }
+
+        var elapsed = Environment.TickCount64 - _attachStartedAt;
+        ClientLog.Info($"界面首帧完成（成功={e.IsSuccess}），距撤下启动页 {elapsed}ms。");
+    }
     private void OnSplashActionRequested(object? sender, EventArgs e)
     {
         try
