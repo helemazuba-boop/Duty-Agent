@@ -12,6 +12,11 @@ internal sealed class BackendProcessManager : IDisposable
     private static readonly Regex TokenRegex = new(@"^__DUTY_SERVER_TOKEN__\s*[:=]\s*(.+)\s*$", RegexOptions.Compiled);
     private static readonly TimeSpan StartupTimeout = TimeSpan.FromSeconds(20);
     private static readonly TimeSpan ShutdownTimeout = TimeSpan.FromSeconds(5);
+
+    // 引导还没完成（端口与 token 尚未输出）时不存在"优雅关停"：进程可能仍在
+    // 导入模块，既接不了 HTTP 关停请求，也没什么可等。按 ShutdownTimeout 干等
+    // 5 秒，用户看到的就是一个点了退出却没反应的窗口（启动过程中点 X 的路径）。
+    private static readonly TimeSpan EarlyShutdownTimeout = TimeSpan.FromMilliseconds(1200);
     private const string BridgeMetaFileName = ".duty-agent-meta.json";
 
     // ======== watchdog（启动成功后的意外退出自动重启） ========
@@ -187,9 +192,12 @@ internal sealed class BackendProcessManager : IDisposable
 
         await TryRequestShutdownAsync().ConfigureAwait(false);
 
+        // 只有本轮引导真的走完（TCS 成功完成）才值得等它优雅退出；
+        // 否则（启动中被关掉 / 引导失败）按短超时收尾，别让退出流程陪着它熬。
+        var bootstrapped = _bootstrapTcs is { Task.IsCompletedSuccessfully: true };
         try
         {
-            using var cts = new CancellationTokenSource(ShutdownTimeout);
+            using var cts = new CancellationTokenSource(bootstrapped ? ShutdownTimeout : EarlyShutdownTimeout);
             await process.WaitForExitAsync(cts.Token).ConfigureAwait(false);
         }
         catch (OperationCanceledException)

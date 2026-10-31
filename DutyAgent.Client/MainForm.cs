@@ -33,6 +33,10 @@ internal sealed class MainForm : Form
     private readonly NotifyIcon _trayIcon;
     private readonly System.Windows.Forms.Timer _lifecycleDebounce = new() { Interval = 400 };
     private readonly List<RegisteredWaitHandle> _wakeRegistrations = new();
+
+    // 启动流程的取消源：关闭窗口时先取消它，让 InitializeAsync 就地停下，
+    // 而不是把它正在使用的后端进程从背后拆掉（那会让引导失败被当成"启动失败"）。
+    private readonly CancellationTokenSource _startupCts = new();
     private DesktopNotificationService? _notificationService;
     private NotificationStreamClient? _notificationStream;
     private FileSystemWatcher? _hostConfigWatcher;
@@ -505,10 +509,13 @@ internal sealed class MainForm : Form
 
     private async Task InitializeAsync()
     {
+        var cancellationToken = _startupCts.Token;
         ClientLog.Info("初始化流程开始。");
         try
         {
-            await _backend.StartAsync(CancellationToken.None).ConfigureAwait(true);
+            await _backend.StartAsync(cancellationToken).ConfigureAwait(true);
+            cancellationToken.ThrowIfCancellationRequested();
+
             _backend.BackendRestarted += OnBackendRestarted;
             _notificationService = new DesktopNotificationService(this);
             _notificationService.Initialize();
@@ -518,6 +525,7 @@ internal sealed class MainForm : Form
 
             ApplyLifecycleSettings();
             StartHostConfigWatcher();
+            cancellationToken.ThrowIfCancellationRequested();
             _trayIcon.Visible = true;
 
             if (_allowVisible)
@@ -531,6 +539,12 @@ internal sealed class MainForm : Form
                     "自动排班与提醒已就绪，双击托盘图标打开主界面。");
             }
         }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            // 用户在启动过程中关掉了窗口：这是正常退出路径，不是故障，
+            // 既不该弹"启动失败"，也不该在日志里留一条 error。
+            ClientLog.Info("启动过程中收到退出请求，初始化已中止。");
+        }
         catch (WebViewRuntimeMissingException ex)
         {
             // 缺运行时不该整程序退出：后端、托盘、自动排班、提醒、ClassIsland 联动
@@ -540,6 +554,14 @@ internal sealed class MainForm : Form
         }
         catch (Exception ex)
         {
+            if (_shutdownStarted)
+            {
+                // 关停把后端进程收走了，启动流程必然收到异常；此时窗口正在关闭，
+                // 再弹一个"启动失败"只会让用户以为自己点错了按钮。
+                ClientLog.Warn($"启动流程在退出过程中失败，已忽略：{ex.Message}");
+                return;
+            }
+
             await ShowFatalErrorAsync("启动失败", ex).ConfigureAwait(true);
         }
     }
@@ -553,6 +575,13 @@ internal sealed class MainForm : Form
         if (InvokeRequired)
         {
             BeginInvoke(() => OnBackendRestarted(sender, e));
+            return;
+        }
+
+        if (_shutdownStarted)
+        {
+            // 关停途中 watchdog 恰好拉起了一个新后端：不要再导航/重订阅，
+            // 收尾的 StopAsync 会把它收掉。
             return;
         }
 
@@ -585,7 +614,7 @@ internal sealed class MainForm : Form
     /// <summary>WebView2 延迟到窗口首次可见时才初始化：静默自启不付这笔成本。</summary>
     private async Task EnsureWebViewLoadedAsync()
     {
-        if (_webViewReady || _webViewInitializing)
+        if (_webViewReady || _webViewInitializing || _shutdownStarted)
         {
             return;
         }
@@ -594,6 +623,12 @@ internal sealed class MainForm : Form
         try
         {
             await InitializeWebViewAsync().ConfigureAwait(true);
+            if (_shutdownStarted)
+            {
+                // 初始化 WebView2 期间用户已经退出：别再往正在关闭的窗口里塞控件。
+                return;
+            }
+
             Controls.Remove(_statusLabel);
             Controls.Add(_webView);
             _webView.BringToFront();
@@ -1051,15 +1086,15 @@ internal sealed class MainForm : Form
         }
 
         _shutdownStarted = true;
+
+        // 先掐掉启动流程：否则它会继续初始化 WebView/托盘，并在后端被收走之后
+        // 把"引导失败"当成启动错误弹窗（用户明明只是点了退出）。
+        CancelStartup();
+
         _trayIcon.Visible = false;
         RestoreWindowForShutdownStatus();
         Enabled = false;
-        _statusLabel.Text = "正在关闭后端服务...";
-        if (!Controls.Contains(_statusLabel))
-        {
-            Controls.Add(_statusLabel);
-            _statusLabel.BringToFront();
-        }
+        ShowShutdownStatus();
 
         if (_notificationStream is not null)
         {
@@ -1068,6 +1103,41 @@ internal sealed class MainForm : Form
 
         await _backend.StopAsync().ConfigureAwait(true);
         Close();
+    }
+
+    /// <summary>取消启动流程（重复调用与已释放都安全）。</summary>
+    private void CancelStartup()
+    {
+        try
+        {
+            _startupCts.Cancel();
+        }
+        catch (ObjectDisposedException)
+        {
+            // 已经在 Dispose 之后：启动流程早已结束，无需再取消。
+        }
+    }
+
+    /// <summary>
+    /// 关停期间的可见反馈。WebView2 是独立子窗口，会整个盖住 Label（WinForms 的
+    /// airspace 限制），所以必须先隐藏它——否则用户点完退出看到的是一张冻住的
+    /// 页面，最长 5 秒，和"卡死"没有区别。
+    /// </summary>
+    private void ShowShutdownStatus()
+    {
+        if (_webViewReady)
+        {
+            _webView.Visible = false;
+        }
+
+        _statusLabel.Text = "正在关闭后端服务...";
+        _statusLabel.Visible = true;
+        if (!Controls.Contains(_statusLabel))
+        {
+            Controls.Add(_statusLabel);
+        }
+
+        _statusLabel.BringToFront();
     }
 
     private void RestoreWindowForShutdownStatus()
@@ -1200,6 +1270,7 @@ internal sealed class MainForm : Form
 
             _wakeRegistrations.Clear();
             _lifecycleDebounce.Dispose();
+            _startupCts.Dispose();
             _hostConfigWatcher?.Dispose();
             _trayIcon.Dispose();
             _webView.Dispose();
