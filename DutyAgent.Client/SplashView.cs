@@ -237,7 +237,8 @@ internal sealed class SplashView : Control
     private Rectangle ButtonRect(int index, float scale, int barHeight)
     {
         var width = (int)Math.Round(ButtonWidth * scale);
-        var right = Width - (2 - index) * width;
+        // index 0=最小化 1=最大化 2=关闭；最右那颗必须贴住右边缘，所以是 (3 - index)。
+        var right = Width - (3 - index) * width;
         return new Rectangle(right, 0, width, barHeight);
     }
 
@@ -257,14 +258,14 @@ internal sealed class SplashView : Control
         }
 
         y += (int)Math.Round(20 * scale);
-        using (var font = CreateFont("Segoe UI Variable Display", 22f * scale, FontStyle.Regular))
+        using (var font = CreateFont("Segoe UI Variable Display", 22f, FontStyle.Regular))
         {
             DrawCentered(g, "Duty-Agent", font, Dark ? DarkText : LightText, y);
             y += LineHeight(font);
         }
 
         y += (int)Math.Round(6 * scale);
-        using (var font = CreateFont(null, 13f * scale, FontStyle.Regular))
+        using (var font = CreateFont(null, 13f, FontStyle.Regular))
         {
             DrawCentered(g, "值日排班 · 本地运行", font, Dark ? DarkText2 : LightText2, y);
             y += LineHeight(font);
@@ -282,7 +283,7 @@ internal sealed class SplashView : Control
             y += (int)Math.Round(ProgressHeight * scale);
             y += (int)Math.Round(14 * scale);
         }
-        using (var font = CreateFont(null, 12f * scale, FontStyle.Regular))
+        using (var font = CreateFont(null, 12f, FontStyle.Regular))
         {
             var color = _isError
                 ? (Dark ? Color.FromArgb(0xF0, 0x95, 0x95) : Color.FromArgb(0xDC, 0x26, 0x26))
@@ -294,7 +295,7 @@ internal sealed class SplashView : Control
         if (!string.IsNullOrEmpty(_hint))
         {
             y += (int)Math.Round(6 * scale);
-            using var font = CreateFont(null, 11f * scale, FontStyle.Regular);
+            using var font = CreateFont(null, 11f, FontStyle.Regular);
             DrawCentered(g, _hint, font, Dark ? DarkText3 : LightText3, y);
             y += LineHeight(font);
         }
@@ -328,7 +329,7 @@ internal sealed class SplashView : Control
     /// <summary>错误态补救按钮：一个浅底小胶囊，比裸文字更像"能点"。</summary>
     private void DrawAction(Graphics g, float scale, int top)
     {
-        using var font = CreateFont(null, 12f * scale, FontStyle.Regular);
+        using var font = CreateFont(null, 12f, FontStyle.Regular);
         var textSize = TextRenderer.MeasureText(g, _actionText!, font, Size.Empty, TextFormatFlags.NoPadding);
         var padX = (int)Math.Round(14 * scale);
         var padY = (int)Math.Round(7 * scale);
@@ -402,7 +403,7 @@ internal sealed class SplashView : Control
             return;
         }
 
-        using var font = CreateFont(null, 11f * scale, FontStyle.Regular);
+        using var font = CreateFont(null, 11f, FontStyle.Regular);
         var color = Dark ? DarkText3 : LightText3;
         var size = TextRenderer.MeasureText(g, _version, font, Size.Empty, TextFormatFlags.NoPadding);
         var margin = (int)Math.Round(16 * scale);
@@ -421,13 +422,13 @@ internal sealed class SplashView : Control
         }
 
         height += (int)Math.Round(20 * scale);
-        using (var font = CreateFont("Segoe UI Variable Display", 22f * scale, FontStyle.Regular))
+        using (var font = CreateFont("Segoe UI Variable Display", 22f, FontStyle.Regular))
         {
             height += LineHeight(font);
         }
 
         height += (int)Math.Round(6 * scale);
-        using (var font = CreateFont(null, 13f * scale, FontStyle.Regular))
+        using (var font = CreateFont(null, 13f, FontStyle.Regular))
         {
             height += LineHeight(font);
         }
@@ -442,7 +443,7 @@ internal sealed class SplashView : Control
             height += (int)Math.Round(ProgressHeight * scale);
             height += (int)Math.Round(14 * scale);
         }
-        using (var font = CreateFont(null, 12f * scale, FontStyle.Regular))
+        using (var font = CreateFont(null, 12f, FontStyle.Regular))
         {
             height += LineHeight(font);
         }
@@ -450,14 +451,14 @@ internal sealed class SplashView : Control
         if (!string.IsNullOrEmpty(_hint))
         {
             height += (int)Math.Round(6 * scale);
-            using var font = CreateFont(null, 11f * scale, FontStyle.Regular);
+            using var font = CreateFont(null, 11f, FontStyle.Regular);
             height += LineHeight(font);
         }
 
         if (!string.IsNullOrEmpty(_actionText))
         {
             height += (int)Math.Round(16 * scale);
-            using var font = CreateFont(null, 12f * scale, FontStyle.Regular);
+            using var font = CreateFont(null, 12f, FontStyle.Regular);
             height += LineHeight(font) + (int)Math.Round(7 * scale) * 2;
         }
 
@@ -591,8 +592,15 @@ internal sealed class SplashView : Control
         }
     }
 
-    private Font CreateFont(string? family, float size, FontStyle style)
+    /// <summary>
+    /// 按**逻辑像素**建字体。Font 的构造函数吃的是磅值，而且 GDI+ 渲染时
+    /// 已经按屏幕 DPI 缩放过一次；这里再乘 DPI 就会二次放大（150% 屏上
+    /// 文字变成设计值的两倍，内容块直接溢出窗口——踩过）。
+    /// 换算成磅后 DPI 由 GDI+ 自己处理，各 DPI 下视觉尺寸一致。
+    /// </summary>
+    private Font CreateFont(string? family, float pixels, FontStyle style)
     {
+        var size = pixels * 72f / 96f;
         if (!string.IsNullOrEmpty(family))
         {
             try

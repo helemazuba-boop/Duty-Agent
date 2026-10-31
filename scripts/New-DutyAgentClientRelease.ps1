@@ -359,7 +359,36 @@ if (-not $SkipWebBuild) {
     $webBuildDir = Join-Path $root (".msix-work\web-dist-" + (Get-Date -Format "yyyyMMdd-HHmmss"))
 
     Write-Host "[1/7] Building web UI -> $webBuildDir ..."
-    Invoke-Tool -FilePath "npm.cmd" -Arguments @("run", "build", "--", "--outDir", $webBuildDir) -WorkingDirectory $uiDir
+    # 宿主可能通过 NODE_OPTIONS 注入"安全删除"垫片（把 fs.rm 转给回收站程序）。
+    # 那个程序在本机时常超时，vite 清输出目录时就报 ETIMEDOUT 把构建打死，
+    # 而且日志里只有一句 "transforming..."。构建不需要这个垫片，先摘掉。
+    $savedNodeOptions = $env:NODE_OPTIONS
+    $env:NODE_OPTIONS = $null
+    try {
+        # 环境偶发抽风时重试一次：这一步只有十几秒，比整单重跑便宜。
+        $webBuilt = $false
+        for ($attempt = 1; $attempt -le 2; $attempt++) {
+            try {
+                Invoke-Tool -FilePath "npm.cmd" -Arguments @("run", "build", "--", "--outDir", $webBuildDir) -WorkingDirectory $uiDir
+                $webBuilt = $true
+                break
+            }
+            catch {
+                if ($attempt -eq 2) {
+                    throw
+                }
+
+                Write-Warning "Web UI build failed (attempt $attempt), retrying: $($_.Exception.Message)"
+            }
+        }
+
+        if (-not $webBuilt) {
+            throw "Web UI build did not produce output."
+        }
+    }
+    finally {
+        $env:NODE_OPTIONS = $savedNodeOptions
+    }
 }
 else {
     Write-Host "[1/7] Skipping web UI build."
