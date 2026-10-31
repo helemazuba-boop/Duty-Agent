@@ -297,12 +297,13 @@ const notificationSettingsLoading = ref(false);
 
 // ======== 系统与自启 ========
 const clientAutoStart = ref(false);
-const clientCloseAction = ref<'ask' | 'tray' | 'exit'>('ask');
+// 与后端 state_ops.DEFAULT_CLIENT_CLOSE_ACTION 保持一致：默认驻留后台。
+const clientCloseAction = ref<'ask' | 'tray' | 'exit'>('tray');
 const systemSettingsSaving = ref(false);
 
 const CLOSE_ACTION_OPTIONS = [
-  { value: 'ask', label: '每次询问' },
   { value: 'tray', label: '驻留后台(托盘)' },
+  { value: 'ask', label: '每次询问' },
   { value: 'exit', label: '退出程序' },
 ];
 
@@ -398,7 +399,7 @@ const applyNotificationSettings = (settings: NotificationSettings) => {
   clientAutoStart.value = settings.client_auto_start === true;
   clientCloseAction.value = (['ask', 'tray', 'exit'] as const).includes(settings.client_close_action as any)
     ? settings.client_close_action
-    : 'ask';
+    : 'tray';
 
   autoRunMode.value = (settings.auto_run_mode as any) || 'Off';
   autoRunTime.value = settings.auto_run_time || '08:00';
@@ -993,7 +994,7 @@ onMounted(async () => {
 
             <div class="config-item">
               <div class="config-label">关闭主窗口时</div>
-              <div class="config-desc">选“驻留后台”后点 X 不再退出程序,仅隐藏到托盘</div>
+              <div class="config-desc">默认驻留后台：点 X 只隐藏到托盘,自动排班与提醒继续跑;真退出请用托盘菜单</div>
               <Select
                 v-model:value="clientCloseAction"
                 :options="CLOSE_ACTION_OPTIONS"

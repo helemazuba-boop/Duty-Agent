@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import time
 
-from state_ops import Context, compute_current_duty_date, list_reset_archives, load_config, load_host_config, load_roster_entries, load_state
+from state_ops import DEFAULT_CLIENT_CLOSE_ACTION, Context, compute_current_duty_date, list_reset_archives, load_config, load_host_config, load_roster_entries, load_state
 
 try:
     from readiness import evaluate_readiness, probe_model
@@ -101,7 +101,7 @@ class QueryService:
             "auto_run_retry_times": int(host_config.get("auto_run_retry_times", 3) or 0),
             # 默认 False：自启是用户明确选择的结果，不是安装的副作用（商店合规）。
             "client_auto_start": bool(host_config.get("client_auto_start", False)),
-            "client_close_action": str(host_config.get("client_close_action", "ask") or "ask"),
+            "client_close_action": str(host_config.get("client_close_action", DEFAULT_CLIENT_CLOSE_ACTION) or DEFAULT_CLIENT_CLOSE_ACTION),
             "component_refresh_time": str(host_config.get("component_refresh_time", "08:00") or "08:00"),
         }
         self._runtime.logger.info(

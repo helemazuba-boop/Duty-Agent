@@ -26,14 +26,14 @@ class TestClientLifecycleNormalization(unittest.TestCase):
         normalized = _normalize_persisted_host_config({})
         # 自启默认关闭：必须由用户在首次向导/设置页明确开启（商店合规）。
         self.assertFalse(normalized["client_auto_start"])
-        self.assertEqual(normalized["client_close_action"], "ask")
+        self.assertEqual(normalized["client_close_action"], "tray")
 
     def test_explicit_auto_start_is_kept(self):
         normalized = _normalize_persisted_host_config({"client_auto_start": True})
         self.assertTrue(normalized["client_auto_start"])
 
     def test_close_action_values_and_fallback(self):
-        for value, expected in (("tray", "tray"), ("EXIT", "exit"), ("Ask", "ask"), ("garbage", "ask"), (None, "ask")):
+        for value, expected in (("tray", "tray"), ("EXIT", "exit"), ("Ask", "ask"), ("garbage", "tray"), (None, "tray")):
             normalized = _normalize_persisted_host_config({"client_close_action": value})
             self.assertEqual(normalized["client_close_action"], expected, f"value={value!r}")
 
@@ -60,7 +60,7 @@ class TestClientLifecycleSettingsApi(unittest.TestCase):
                     self.assertEqual(initial.status_code, 200)
                     payload = initial.json()
                     self.assertFalse(payload["client_auto_start"])
-                    self.assertEqual(payload["client_close_action"], "ask")
+                    self.assertEqual(payload["client_close_action"], "tray")
 
                     patched = client.patch(
                         "/api/v1/notifications/settings",

@@ -72,6 +72,12 @@ def compute_current_duty_date(host_config: dict, now: datetime | None = None) ->
 DEFAULT_NOTIFICATION_DURATION_SECONDS = 8
 DEFAULT_NOTIFICATION_ENTRY = "system"
 DEFAULT_DUTY_REMINDER_TIME = "07:40"
+
+# 独立客户端点 X 的默认行为：隐藏到托盘。
+# 以前默认 "ask"（每次弹模态框问"驻留还是退出"）——第一次见面就问一个用户
+# 还没法判断的问题，之后每次关闭都被打断。后台驻留本来就是这程序的常态
+# （自动排班、值日提醒都靠后台进程），真退出走托盘菜单或设置页。
+DEFAULT_CLIENT_CLOSE_ACTION = "tray"
 STATE_LOCK_TIMEOUT_SECONDS = 20
 STATE_LOCK_RETRY_INTERVAL_SECONDS = 0.2
 STATE_LOCK_STALE_SECONDS = 120
@@ -1504,7 +1510,7 @@ def _normalize_notification_entry(value: object) -> str:
 def _normalize_client_close_action(value: object) -> str:
     """Standalone-client window close behavior: ask | tray | exit."""
     normalized = str(value or "").strip().lower()
-    return normalized if normalized in {"ask", "tray", "exit"} else "ask"
+    return normalized if normalized in {"ask", "tray", "exit"} else DEFAULT_CLIENT_CLOSE_ACTION
 
 
 def _create_default_persisted_host_config() -> dict:
@@ -1533,7 +1539,7 @@ def _create_default_persisted_host_config() -> dict:
         # 商店合规：开机自启必须由用户明确选择（首次向导 / 设置页），不能因为
         # 装完就默认挂到登录项上。默认 False，向导里默认勾选并允许取消。
         "client_auto_start": False,
-        "client_close_action": "ask",
+        "client_close_action": DEFAULT_CLIENT_CLOSE_ACTION,
     }
 
 
@@ -1587,7 +1593,7 @@ def _normalize_persisted_host_config(config: dict | None) -> dict:
         # Standalone-client lifecycle switches: stored centrally so the Web
         # settings page edits them and the C# client observes + applies them.
         "client_auto_start": parse_bool(source.get("client_auto_start"), False),
-        "client_close_action": _normalize_client_close_action(source.get("client_close_action", "ask")),
+        "client_close_action": _normalize_client_close_action(source.get("client_close_action", DEFAULT_CLIENT_CLOSE_ACTION)),
     }
     # Preserve keys this version doesn't know (written by a newer build on
     # either side of the C#↔Python boundary). Wholesale dropping turned every
