@@ -10,6 +10,15 @@ namespace DutyAgent.Client;
 
 internal sealed class MainForm : Form
 {
+    /// <summary>
+    /// 没配置过时的关窗行为：隐藏到托盘。
+    ///
+    /// 以前默认是 "ask"——每次点 X 都弹一个模态框问"驻留还是退出"，打断感强，
+    /// 而且第一次见面就问一个用户还没法判断的问题。驻留后台才是这个程序的常态
+    /// （自动排班、提醒都靠后台进程），真退出走托盘菜单"退出"或设置页。
+    /// </summary>
+    private const string DefaultCloseAction = "tray";
+
     private enum CloseChoice
     {
         Tray,
@@ -43,11 +52,12 @@ internal sealed class MainForm : Form
     private bool _shutdownStarted;
     private bool _initializeQueued;
     private bool _webViewReady;
+    private bool _webViewPrepared;
     private bool _webViewInitializing;
     private bool _allowVisible;
     private bool _exitRequested;
     private bool _trayBalloonShown;
-    private string _closeAction = "ask";
+    private string _closeAction = DefaultCloseAction;
     private bool _chromeDark;
 
     // ======== 自定义窗口铬:web 画标题条与三键,宿主管窗口消息 ========
@@ -128,6 +138,8 @@ internal sealed class MainForm : Form
         Height = 800;
         MinimumSize = new Size(900, 600);
         StartPosition = FormStartPosition.CenterScreen;
+        // 上次的窗口大小/位置（含最大化）优先于默认的 1280×800 居中。
+        WindowPlacement.Apply(this);
         Icon = LoadIconOrDefault();
         var baseFont = SystemFonts.MessageBoxFont ?? Font;
         _statusLabel.Font = new Font(baseFont.FontFamily, 12f);
@@ -511,6 +523,21 @@ internal sealed class MainForm : Form
     {
         var cancellationToken = _startupCts.Token;
         ClientLog.Info("初始化流程开始。");
+
+        // WebView2 的初始化（建用户数据目录 + 环境 + CoreWebView2）与后端启动互不依赖。
+        // 以前是串行：后端 2-6s 等完，才开始 WebView 的 1-2s，两段等待直接相加。
+        // 这里先把它挂起来跑，等后端就绪、拿到端口和 token 之后再挂控件 + 导航。
+        Task? webViewTask = null;
+        if (_allowVisible)
+        {
+            webViewTask = PrepareWebViewAsync();
+            // 后端先失败时可能没人 await 它：挂个观察者，别让异常在 GC 时炸成
+            // UnobservedTaskException。
+            _ = webViewTask.ContinueWith(
+                t => ClientLog.Warn($"WebView 预初始化失败：{t.Exception?.GetBaseException().Message}"),
+                TaskContinuationOptions.OnlyOnFaulted);
+        }
+
         try
         {
             await _backend.StartAsync(cancellationToken).ConfigureAwait(true);
@@ -530,7 +557,14 @@ internal sealed class MainForm : Form
 
             if (_allowVisible)
             {
-                await EnsureWebViewLoadedAsync().ConfigureAwait(true);
+                // 到这一步 WebView 通常已经预热完了；没完就等它，然后才导航。
+                if (webViewTask is not null)
+                {
+                    await webViewTask.ConfigureAwait(true);
+                }
+
+                cancellationToken.ThrowIfCancellationRequested();
+                AttachWebView();
             }
             else
             {
@@ -611,10 +645,13 @@ internal sealed class MainForm : Form
         }
     }
 
-    /// <summary>WebView2 延迟到窗口首次可见时才初始化：静默自启不付这笔成本。</summary>
-    private async Task EnsureWebViewLoadedAsync()
+    /// <summary>
+    /// 预热 WebView2（环境 + CoreWebView2），但不挂到窗口、不导航。
+    /// 与后端启动并行执行；后端就绪后才由 AttachWebView 接管。
+    /// </summary>
+    private async Task PrepareWebViewAsync()
     {
-        if (_webViewReady || _webViewInitializing || _shutdownStarted)
+        if (_webViewPrepared || _webViewInitializing || _shutdownStarted)
         {
             return;
         }
@@ -623,22 +660,39 @@ internal sealed class MainForm : Form
         try
         {
             await InitializeWebViewAsync().ConfigureAwait(true);
-            if (_shutdownStarted)
-            {
-                // 初始化 WebView2 期间用户已经退出：别再往正在关闭的窗口里塞控件。
-                return;
-            }
-
-            Controls.Remove(_statusLabel);
-            Controls.Add(_webView);
-            _webView.BringToFront();
-            _webView.Source = new Uri(_backend.WebAppUrl);
-            _webViewReady = true;
+            _webViewPrepared = true;
         }
         finally
         {
             _webViewInitializing = false;
         }
+    }
+
+    /// <summary>把预热好的 WebView 挂进窗口并导航到后端地址。</summary>
+    private void AttachWebView()
+    {
+        if (_webViewReady || !_webViewPrepared || _shutdownStarted)
+        {
+            return;
+        }
+
+        Controls.Remove(_statusLabel);
+        Controls.Add(_webView);
+        _webView.BringToFront();
+        _webView.Source = new Uri(_backend.WebAppUrl);
+        _webViewReady = true;
+    }
+
+    /// <summary>WebView2 延迟到窗口首次可见时才初始化：静默自启不付这笔成本。</summary>
+    private async Task EnsureWebViewLoadedAsync()
+    {
+        if (_webViewReady || _shutdownStarted)
+        {
+            return;
+        }
+
+        await PrepareWebViewAsync().ConfigureAwait(true);
+        AttachWebView();
     }
 
     private async Task InitializeWebViewAsync()
@@ -973,6 +1027,8 @@ internal sealed class MainForm : Form
 
     private void HideToTray()
     {
+        // 隐藏前记下当前大小/位置：用户可能刚把窗口摆好就点了关闭。
+        WindowPlacement.Save(this);
         Hide();
         ShowTrayBalloonOnce(
             "Duty-Agent 仍在后台运行",
@@ -1004,15 +1060,24 @@ internal sealed class MainForm : Form
             return;
         }
 
+        // 关机 / 注销 / 任务管理器"结束任务"：系统在等我们退出，取消关窗会拖慢
+        // 关机（严重的会弹"此应用阻止你关机"），而且这时候跑完整关停流程也没意义。
+        // 直接放行：进程退出后 Python 侧的父进程看门狗和 Job Object 会收掉后端。
+        if (e.CloseReason is CloseReason.WindowsShutDown
+            or CloseReason.TaskManagerClosing
+            or CloseReason.ApplicationExitCall)
+        {
+            _shutdownStarted = true;
+            CancelStartup();
+            _trayIcon.Visible = false;
+            WindowPlacement.Save(this);
+            ClientLog.Info($"收到系统关闭请求（{e.CloseReason}），直接退出。");
+            return;
+        }
+
         e.Cancel = true;
 
-        // Let the OS/session tear us down cleanly; only intercept ordinary window
-        // closes (X button, Alt+F4, external WM_CLOSE) to apply the tray policy.
-        var forcedClose = e.CloseReason is CloseReason.WindowsShutDown
-            or CloseReason.TaskManagerClosing
-            or CloseReason.ApplicationExitCall;
-
-        if (!_exitRequested && !forcedClose)
+        if (!_exitRequested)
         {
             if (_closeAction == "tray")
             {
@@ -1091,10 +1156,16 @@ internal sealed class MainForm : Form
         // 把"引导失败"当成启动错误弹窗（用户明明只是点了退出）。
         CancelStartup();
 
+        WindowPlacement.Save(this);
         _trayIcon.Visible = false;
-        RestoreWindowForShutdownStatus();
         Enabled = false;
-        ShowShutdownStatus();
+
+        // 从托盘退出时窗口是隐藏的：不要把它弹出来。用户刚说"退出"，
+        // 屏幕上再冒一个窗口会让人以为程序又在抢焦点；托盘图标消失就是信号。
+        if (Visible)
+        {
+            ShowShutdownStatus();
+        }
 
         if (_notificationStream is not null)
         {
@@ -1140,16 +1211,6 @@ internal sealed class MainForm : Form
         _statusLabel.BringToFront();
     }
 
-    private void RestoreWindowForShutdownStatus()
-    {
-        // 从托盘退出时窗口是隐藏的：短暂显示状态页避免"程序无响应"的观感。
-        if (!Visible)
-        {
-            _allowVisible = true;
-            Show();
-        }
-    }
-
     // ======== 宿主配置（client_auto_start / client_close_action）观察与执行 ========
 
     private void ApplyLifecycleSettings()
@@ -1184,8 +1245,8 @@ internal sealed class MainForm : Form
 
                 var action = root.TryGetProperty("client_close_action", out var actionElement)
                     && actionElement.ValueKind == JsonValueKind.String
-                    ? (actionElement.GetString() ?? "ask").Trim().ToLowerInvariant()
-                    : "ask";
+                    ? (actionElement.GetString() ?? DefaultCloseAction).Trim().ToLowerInvariant()
+                    : DefaultCloseAction;
                 if (action != "tray" && action != "exit")
                 {
                     action = "ask";
@@ -1199,7 +1260,7 @@ internal sealed class MainForm : Form
         }
 
         // 配置缺失/损坏时按"用户没开自启"处理：宁可少一条登录项，也不要静默写入。
-        return (false, "ask");
+        return (false, DefaultCloseAction);
     }
 
     private void StartHostConfigWatcher()

@@ -830,6 +830,10 @@ internal sealed class BackendProcessManager : IDisposable
         using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutCts.Token);
         using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(2) };
 
+        // 固定 250ms 间隔意味着"服务刚好在两次探测之间就绪"时白等最多 250ms，
+        // 而这一段全在启动关键路径上。改成 25ms 起、指数退到 100ms：
+        // uvicorn 通常几十毫秒内就绪，前面几轮就能命中。
+        var delayMs = 25;
         try
         {
             while (true)
@@ -847,7 +851,8 @@ internal sealed class BackendProcessManager : IDisposable
                 {
                 }
 
-                await Task.Delay(250, linkedCts.Token).ConfigureAwait(false);
+                await Task.Delay(delayMs, linkedCts.Token).ConfigureAwait(false);
+                delayMs = Math.Min(100, delayMs * 2);
             }
         }
         catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
