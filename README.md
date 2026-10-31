@@ -2,7 +2,7 @@
   <img src="icon.png" width="128" alt="Duty-Agent Logo" />
   <h1>Duty-Agent</h1>
   <p><em>"Reasoning via LLM, Reliability via Code." —— 面向 Windows 的下一代混合智能排班系统</em></p>
-  <p><strong>当前版本: v1.0.5</strong></p>
+  <p><strong>当前版本: v1.0.10</strong></p>
 </div>
 
 > **注意：项目理论上的逻辑已经通过，正在真实环境下优化细节。如果您需要在生产环境中应用，请稍等正式版。**
