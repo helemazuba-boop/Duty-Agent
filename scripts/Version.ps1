@@ -141,7 +141,10 @@ function Get-SourceFingerprint {
     $status = @(& git -C $RepoRoot status --porcelain --untracked-files=normal -- . @excludes)
     $diff = @(& git -C $RepoRoot --no-pager diff --binary -- . @excludes)
 
-    $payload = $head[0].Trim() + "`n" + $treePayload + "`n" + ($status -join "`n") + "`n" + ($diff -join "`n")
+    # 注意：**不要把 HEAD 的 sha 放进 payload**。只改版本号的提交会换掉 HEAD，
+    # 但内容（排除版本文件后）完全一样，那种提交不该换来一次 +1。
+    # 指纹只由内容决定：已提交文件的 blob 哈希 + 未提交改动的名字与内容。
+    $payload = $treePayload + "`n" + ($status -join "`n") + "`n" + ($diff -join "`n")
 
     $sha = [System.Security.Cryptography.SHA256]::Create()
     try {
