@@ -1,9 +1,10 @@
 ﻿[CmdletBinding()]
 param(
-    # 包版本（MSIX Identity.Version，四段）。本地测试固定 1.0.0，换版本显式传。
+    # 包版本（MSIX Identity.Version，四段）。留空 = 用仓库里的 APP_VERSION，
+    # 这样 CI（不传 -AutoVersion）出的包和仓库版本一致，而不是写死 1.0.0。
     # 它只决定"这个包叫什么版本"，与 Assets_Duty\version.py 的引擎版本是两回事，
     # 别用这个参数去盖引擎版本——见 -StampEngineVersion。
-    [string]$PackageVersion = "1.0.0",
+    [string]$PackageVersion = "",
     # 兼容旧调用方（CI 的 tag 流程只传它）：语义 = 包版本和引擎版本一起盖。
     # 本地测试别用：它会改写 tracked 的 Assets_Duty\version.py，把工作区弄脏。
     [string]$ReleaseVersion = "",
@@ -53,12 +54,13 @@ if ($NoAutoVersion) {
     $AutoVersion = $false
 }
 
+. (Join-Path $PSScriptRoot "Version.ps1")
+
 if ($AutoVersion) {
     if ($ReleaseVersion) {
         throw "-AutoVersion 与 -ReleaseVersion 不能同时使用：前者自动算版本，后者显式指定。"
     }
 
-    . (Join-Path $PSScriptRoot "Version.ps1")
     $ReleaseVersion = Step-AppVersion -RepoRoot $root
     # 桥接插件版本不跟随：读它自己声明的值原样传下去，否则每构建一次客户端
     # 就把 ClassIsland 插件的版本顶高一次。
@@ -72,6 +74,13 @@ if ($ReleaseVersion) {
     }
     $PackageVersion = $ReleaseVersion
     $StampEngineVersion = $ReleaseVersion
+}
+
+# 没显式指定包版本时用仓库里的 APP_VERSION：CI 不传任何版本参数，
+# 它出的包应该等于仓库版本，而不是某个写死的常量。
+if ([string]::IsNullOrWhiteSpace($PackageVersion)) {
+    $PackageVersion = Get-AppVersionFromPyFile -Path (Join-Path $assetsDir "version.py")
+    Write-Host "[msix] 包版本取自 version.py: $PackageVersion"
 }
 
 # 包版本归一化成四段：MSIX Identity.Version 必须是 Major.Minor.Build.Revision。
