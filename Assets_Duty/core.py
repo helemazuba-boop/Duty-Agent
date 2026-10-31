@@ -36,7 +36,6 @@ from auth import (
     pop_current_request_bearer_token,
     push_current_request_bearer_token,
 )
-from mcp_server import build_mcp_http_app
 from runtime import create_runtime
 from routers import bridge, config, duty, notifications, readiness, roster
 from version import APP_VERSION
@@ -48,9 +47,21 @@ WEB_DIRECTORY = Path(__file__).resolve().parent / "web"
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     print(f"[Lifespan] Engine starting in {os.getcwd()}", flush=True)
-    app.state.mcp_http_app = build_mcp_http_app(app)
-    async with app.state.mcp_http_app.router.lifespan_context(app.state.mcp_http_app):
+    # MCP 默认关闭（host-config 的 enable_mcp=false），关闭时 /mcp 由中间件直接
+    # 404，这个子应用根本用不到。而 mcp_server 会把 mcp SDK 整个拉起来
+    # （fastmcp / jsonschema / httpx…），实测占启动 import 的 0.75s ——
+    # 没人用的功能不该压在启动关键路径上，所以改成按需导入 + 按需构建。
+    runtime = getattr(app.state, "runtime", None)
+    if runtime is not None and getattr(runtime, "enable_mcp", False):
+        from mcp_server import build_mcp_http_app
+
+        app.state.mcp_http_app = build_mcp_http_app(app)
+        async with app.state.mcp_http_app.router.lifespan_context(app.state.mcp_http_app):
+            yield
+    else:
+        app.state.mcp_http_app = None
         yield
+
     app.state.mcp_http_app = None
     runtime = getattr(app.state, "runtime", None)
     if runtime is not None:
