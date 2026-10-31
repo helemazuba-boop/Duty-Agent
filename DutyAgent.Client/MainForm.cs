@@ -32,12 +32,7 @@ internal sealed class MainForm : Form
         // 透明默认底色:页面加载前后由窗体 BackColor 兜底,杜绝导航间隙的白闪
         DefaultBackgroundColor = Color.Transparent,
     };
-    private readonly Label _statusLabel = new()
-    {
-        Dock = DockStyle.Fill,
-        Text = "正在启动 Duty-Agent...",
-        TextAlign = ContentAlignment.MiddleCenter,
-    };
+    private readonly SplashView _splash = new();
     private readonly BackendProcessManager _backend = new();
     private readonly NotifyIcon _trayIcon;
     private readonly System.Windows.Forms.Timer _lifecycleDebounce = new() { Interval = 400 };
@@ -53,6 +48,8 @@ internal sealed class MainForm : Form
     private bool _initializeQueued;
     private bool _webViewReady;
     private bool _webViewPrepared;
+    // 缺 WebView2 运行时：启动页停在错误态，别再重试初始化（RestoreWindow 会重复触发）。
+    private bool _webViewUnavailable;
     private bool _webViewInitializing;
     private bool _allowVisible;
     private bool _exitRequested;
@@ -141,12 +138,18 @@ internal sealed class MainForm : Form
         // 上次的窗口大小/位置（含最大化）优先于默认的 1280×800 居中。
         WindowPlacement.Apply(this);
         Icon = LoadIconOrDefault();
-        var baseFont = SystemFonts.MessageBoxFont ?? Font;
-        _statusLabel.Font = new Font(baseFont.FontFamily, 12f);
 
         // 应用名与全部操作都在 web 内;原生层只留托盘,标题栏由 web 绘制(可经配置回退原生)
         _customChrome = ReadCustomChromeEnabled();
-        Controls.Add(_statusLabel);
+
+        // 启动页：自绘 44px 标题条 + 品牌块。三键是真的能用的（见 SplashView）。
+        // client_custom_chrome=false 时窗口有原生标题栏，启动页就别再画一条。
+        _splash.ShowTitleBar = _customChrome;
+        _splash.Version = Application.ProductVersion;
+        _splash.MinimizeRequested += (_, _) => WindowState = FormWindowState.Minimized;
+        _splash.MaximizeRequested += (_, _) => ToggleMaximize();
+        _splash.CloseRequested += (_, _) => Close();
+        Controls.Add(_splash);
 
         // 首帧前先按系统深浅排好窗口底色,web 起来后由 theme-sync 消息纠正
         _chromeDark = SystemPrefersDark();
@@ -540,6 +543,11 @@ internal sealed class MainForm : Form
 
         try
         {
+            // 首次启动（还没有名单）在 Windows 上要额外付一次杀毒扫描 + 冷缓存的钱，
+            // 实测 5 秒 vs 3 秒。这行小字专门解释那次"怎么这么久"。
+            var firstRun = !File.Exists(Path.Combine(_backend.DataDirectory, "roster.csv"));
+            _splash.SetStage("正在启动排班引擎…", firstRun ? "首次启动需要多等几秒" : null);
+
             await _backend.StartAsync(cancellationToken).ConfigureAwait(true);
             cancellationToken.ThrowIfCancellationRequested();
 
@@ -564,6 +572,7 @@ internal sealed class MainForm : Form
                 }
 
                 cancellationToken.ThrowIfCancellationRequested();
+                _splash.SetStage("正在加载界面…");
                 AttachWebView();
             }
             else
@@ -596,6 +605,10 @@ internal sealed class MainForm : Form
                 return;
             }
 
+            // 启动页先切到错误态，别让它停在"正在启动排班引擎…"上——
+            // 弹窗后面那块地方会一直亮着，看起来像还在等。
+            _splash.IsError = true;
+            _splash.SetStage("排班引擎启动失败");
             await ShowFatalErrorAsync("启动失败", ex).ConfigureAwait(true);
         }
     }
@@ -651,7 +664,7 @@ internal sealed class MainForm : Form
     /// </summary>
     private async Task PrepareWebViewAsync()
     {
-        if (_webViewPrepared || _webViewInitializing || _shutdownStarted)
+        if (_webViewPrepared || _webViewInitializing || _webViewUnavailable || _shutdownStarted)
         {
             return;
         }
@@ -676,9 +689,11 @@ internal sealed class MainForm : Form
             return;
         }
 
-        Controls.Remove(_statusLabel);
+        // WebView2 是独立子窗口，挂上来就会盖住 windowless 的启动页，所以顺序是
+        // 「先挂 WebView → 再隐藏启动页」，避免出现一帧两边都空着的窗口。
         Controls.Add(_webView);
         _webView.BringToFront();
+        _splash.Visible = false;
         _webView.Source = new Uri(_backend.WebAppUrl);
         _webViewReady = true;
     }
@@ -936,10 +951,9 @@ internal sealed class MainForm : Form
         }
 
         var bg = dark ? BgDark : BgLight;
-        var text = dark ? TextDark : TextLight;
         BackColor = bg;
-        _statusLabel.BackColor = bg;
-        _statusLabel.ForeColor = text;
+        // 启动页自己按主题画（令牌色），不能靠 Label 的 ForeColor 继承。
+        _splash.Dark = dark;
 
         if (!IsHandleCreated)
         {
@@ -1190,8 +1204,8 @@ internal sealed class MainForm : Form
     }
 
     /// <summary>
-    /// 关停期间的可见反馈。WebView2 是独立子窗口，会整个盖住 Label（WinForms 的
-    /// airspace 限制），所以必须先隐藏它——否则用户点完退出看到的是一张冻住的
+    /// 关停期间的可见反馈。WebView2 是独立子窗口，会整个盖住同级的 windowless 控件
+    /// （airspace 限制），所以必须先隐藏它——否则用户点完退出看到的是一张冻住的
     /// 页面，最长 5 秒，和"卡死"没有区别。
     /// </summary>
     private void ShowShutdownStatus()
@@ -1201,14 +1215,16 @@ internal sealed class MainForm : Form
             _webView.Visible = false;
         }
 
-        _statusLabel.Text = "正在关闭后端服务...";
-        _statusLabel.Visible = true;
-        if (!Controls.Contains(_statusLabel))
+        _splash.IsError = false;
+        _splash.ActionText = null;
+        _splash.SetStage("正在关闭后端服务…");
+        _splash.Visible = true;
+        if (!Controls.Contains(_splash))
         {
-            Controls.Add(_statusLabel);
+            Controls.Add(_splash);
         }
 
-        _statusLabel.BringToFront();
+        _splash.BringToFront();
     }
 
     // ======== 宿主配置（client_auto_start / client_close_action）观察与执行 ========
@@ -1332,6 +1348,7 @@ internal sealed class MainForm : Form
             _wakeRegistrations.Clear();
             _lifecycleDebounce.Dispose();
             _startupCts.Dispose();
+            _splash.Dispose();
             _hostConfigWatcher?.Dispose();
             _trayIcon.Dispose();
             _webView.Dispose();
@@ -1377,21 +1394,36 @@ internal sealed class MainForm : Form
     }
 
     /// <summary>
-    /// WebView2 运行时缺失：给出可操作的安装指引，并保留后台运行。
+    /// WebView2 运行时缺失：把启动页变成错误态并给出"下载运行时"入口，后台继续运行。
     /// 不做成"致命错误 + 退出"，是因为后台能力（自动排班/提醒/桥接供数）与主界面无关。
     /// </summary>
     private void ShowWebViewRuntimeMissing(WebViewRuntimeMissingException exception)
     {
-        _statusLabel.Text = "主界面无法显示：缺少 Microsoft Edge WebView2 Runtime（后台仍在运行）";
-        var result = MessageBox.Show(
-            this,
-            exception.Message + "\n\n现在打开官方下载页？",
-            "缺少 WebView2 运行时",
-            MessageBoxButtons.YesNo,
-            MessageBoxIcon.Warning);
-        if (result == DialogResult.Yes)
+        _webViewUnavailable = true;
+        ClientLog.Warn($"界面不可用：{exception.Message}");
+
+        // 静默自启时窗口是隐藏的：这种错误必须让用户看见，否则等于装了个没界面的软件。
+        if (!Visible)
+        {
+            RestoreWindow();
+        }
+
+        _splash.IsError = true;
+        _splash.SetStage("界面组件缺失：需要 Microsoft Edge WebView2 Runtime", "后台仍在运行，自动排班与提醒不受影响");
+        _splash.ActionText = "下载运行时";
+        _splash.ActionRequested -= OnSplashActionRequested;
+        _splash.ActionRequested += OnSplashActionRequested;
+    }
+
+    private void OnSplashActionRequested(object? sender, EventArgs e)
+    {
+        try
         {
             WebViewRuntime.OpenDownloadPage();
+        }
+        catch (Exception ex)
+        {
+            ClientLog.Warn($"打开 WebView2 下载页失败：{ex.Message}");
         }
     }
 
