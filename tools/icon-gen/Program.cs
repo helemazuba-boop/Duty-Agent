@@ -11,7 +11,7 @@ namespace IconGen;
 /// 原图是一张 AI 生成的 3D 插画，奶油色背景铺满整个画布、四角是直角，
 /// 放进任务栏/开始菜单的圆角格子里就显得"方"。这里做三件事：
 ///   1. 用超椭圆（|x|^n + |y|^n = 1，n≈4）把轮廓裁成 Windows 的 squircle；
-///   2. 四周留 4–6% 透明边，磁贴不会顶到格子边缘；
+///   2. **不留透明边**——Win11 的图标铺满格子，留白会让系统垫的底色透出来；
 ///   3. 小尺寸放大主体（16–32px 时细节本来就是糊的，不如让机器人占满）。
 ///
 /// 4× 超采样后再缩回去，等于给边缘做抗锯齿——GDI+ 的裁剪路径本身不抗锯齿。
@@ -101,7 +101,7 @@ internal static class Program
                             using (var mg = Graphics.FromImage(masked))
                             {
                                 mg.InterpolationMode = InterpolationMode.HighQualityBicubic;
-                                var margin = size * (size >= 48 ? 0.06 : 0.05);
+                                var margin = 0.0;
                                 var content = size - margin * 2;
                                 using var clip = Superellipse(new RectangleF((float)margin, (float)margin, (float)content, (float)content));
                                 mg.SetClip(clip);
@@ -158,8 +158,12 @@ internal static class Program
 
     private static void Render(Bitmap source, int size, string path)
     {
-        // 小尺寸多留一点边、放大主体；大尺寸按标准网格。
-        var marginRatio = size >= 48 ? 0.06 : size >= 32 ? 0.05 : 0.04;
+        // Windows 11 的图标是**铺满格子**的 squircle：圆角由图标自己画，格子之间的
+        // 间距由系统负责。之前按 macOS/web 的习惯留了 6% 透明边，结果安装器/开始
+        // 菜单给透明图标垫的底色就从那一圈留白里透出来，变成"蓝底 + 白图标"。
+        // 所以这里不留边，只把四角裁圆。
+        var marginRatio = 0.0;
+        // 小尺寸放大主体：16-24px 时清单和扫帚本来就是噪点，脸才是识别点。
         var zoom = size <= 24 ? 1.22 : size <= 32 ? 1.12 : size <= 44 ? 1.04 : 1.0;
         var supersample = size <= 64 ? 4 : 2;
 
