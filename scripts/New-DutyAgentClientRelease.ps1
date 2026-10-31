@@ -94,6 +94,31 @@ function New-UniqueDirectory {
     return (Get-NormalizedFullPath $candidate)
 }
 
+function Remove-DirectoryHard {
+    # 构建产物目录一律用 .NET 直删，不走 Remove-Item：
+    #   * 某些环境把 Remove-Item 接管到回收站（safe-delete 垫片），几千个文件既慢
+    #     又可能 ETIMEDOUT / Access denied，直接把整次发布打断；
+    #   * 刚写完的文件可能被杀毒软件短暂占用，所以这里重试几次再放弃。
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    if (-not (Test-Path -LiteralPath $Path)) {
+        return
+    }
+
+    for ($attempt = 1; $attempt -le 5; $attempt++) {
+        try {
+            [System.IO.Directory]::Delete($Path, $true)
+            return
+        }
+        catch [System.IO.IOException], [System.UnauthorizedAccessException] {
+            if ($attempt -eq 5) {
+                throw
+            }
+
+            Start-Sleep -Milliseconds (150 * $attempt)
+        }
+    }
+}
 function Copy-DirectoryContents {
     param(
         [Parameter(Mandatory = $true)][string]$Source,
@@ -327,6 +352,21 @@ if (-not $SkipWebBuild) {
         Invoke-Tool -FilePath "npm.cmd" -Arguments @("install") -WorkingDirectory $uiDir
     }
 
+    # 先自己删掉 dist：vite 的 emptyOutDir 会走 fs.rm，而本机把 rm 接管到了
+    # "safe-delete" 垫片（转回收站），几千个文件会 ETIMEDOUT 把整个构建打断。
+    # 用 .NET 直删既快又不经过垫片；vite 看到目录不存在就直接建，不再 emptyDir。
+    $staleDist = Join-Path $uiDir "dist"
+    if (Test-Path -LiteralPath $staleDist) {
+        try {
+            Remove-DirectoryHard -Path $staleDist
+        }
+        catch {
+            # 有文件被占用（杀毒/索引器）时删不干净是常事：这里不该阻断构建，
+            # 剩下的交给 vite 的 emptyOutDir 处理（它只面对少量残留，不会再超时）。
+            Write-Warning "无法完全清空 duty-agent-ui\dist：$($_.Exception.Message)"
+        }
+    }
+
     Write-Host "[1/7] Building web UI..."
     Invoke-Tool -FilePath "npm.cmd" -Arguments @("run", "build") -WorkingDirectory $uiDir
 }
@@ -365,7 +405,7 @@ if ($builtIndexHtml -match '__DEV_TOKEN__') {
 Write-Host "[2/7] Syncing web UI to Assets_Duty\web..."
 $safeWebDir = Assert-PathInside -Path $webDir -Parent $root -Description "Web output directory"
 if (Test-Path -LiteralPath $safeWebDir) {
-    Remove-Item -LiteralPath $safeWebDir -Recurse -Force
+    Remove-DirectoryHard -Path $safeWebDir
 }
 Copy-DirectoryContents -Source $distDir -Destination $safeWebDir
 
@@ -422,19 +462,19 @@ $releaseAssetsDir = Join-Path $clientReleaseDir "Assets_Duty"
 Copy-DirectoryContents -Source $assetsDir -Destination $releaseAssetsDir -SkipTopLevelNames @("data", "logs", "__pycache__")
 
 foreach ($cacheDir in Get-ChildItem -LiteralPath $releaseAssetsDir -Directory -Recurse -Filter "__pycache__" -ErrorAction SilentlyContinue) {
-    Remove-Item -LiteralPath $cacheDir.FullName -Recurse -Force
+    Remove-DirectoryHard -Path $cacheDir.FullName
 }
 
 foreach ($compiledFile in Get-ChildItem -LiteralPath $releaseAssetsDir -File -Recurse -ErrorAction SilentlyContinue |
     Where-Object { $_.Extension -in @(".pyc", ".pyo") }) {
-    Remove-Item -LiteralPath $compiledFile.FullName -Force
+    [System.IO.File]::Delete($compiledFile.FullName)
 }
 
 # 单元测试不进发布包：Assets_Duty 下 30 个 test_*.py 是开发期回归用的，
 # 商店审核把"夹带测试脚本"视为无关内容；它们还会暴露内部接口与测试数据。
 foreach ($devTest in Get-ChildItem -LiteralPath $releaseAssetsDir -File -Recurse -ErrorAction SilentlyContinue |
     Where-Object { $_.Name -match '^(test_.*|_test_.*)\.py$' }) {
-    Remove-Item -LiteralPath $devTest.FullName -Force
+    [System.IO.File]::Delete($devTest.FullName)
 }
 
 if (-not (Test-Path -LiteralPath (Join-Path $releaseAssetsDir "python-embed\python.exe"))) {

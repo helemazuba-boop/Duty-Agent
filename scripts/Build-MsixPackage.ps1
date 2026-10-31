@@ -213,7 +213,7 @@ Write-Host "[msix] 客户端产物: $clientReleaseDir"
 # ---------- 4. 组装 winapp 包布局 ----------
 # winapp 接受"发布目录 + 同级的 Package.appxmanifest 与 Assets"布局。
 # 直接用发布产物本身，不复制（winapp 会自己复制到 %TEMP%）。
-if (Test-Path -LiteralPath $pkgDir) { Remove-Item -LiteralPath $pkgDir -Recurse -Force }
+if (Test-Path -LiteralPath $pkgDir) { [System.IO.Directory]::Delete($pkgDir, $true) }
 Move-Item -LiteralPath $clientReleaseDir -Destination $pkgDir
 
 Copy-Item -LiteralPath $manifestSource -Destination (Join-Path $pkgDir "Package.appxmanifest") -Force
@@ -468,7 +468,7 @@ if ($ForStore) {
     try {
         Expand-Archive -LiteralPath $tempZip -DestinationPath $unpackDir -Force
     } finally {
-        Remove-Item -LiteralPath $tempZip -Force -ErrorAction SilentlyContinue
+        if (Test-Path -LiteralPath $tempZip) { [System.IO.File]::Delete($tempZip) }
     }
 
     $packagedManifest = Join-Path $unpackDir "AppxManifest.xml"
