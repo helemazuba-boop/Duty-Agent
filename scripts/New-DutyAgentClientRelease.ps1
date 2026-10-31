@@ -352,29 +352,25 @@ if (-not $SkipWebBuild) {
         Invoke-Tool -FilePath "npm.cmd" -Arguments @("install") -WorkingDirectory $uiDir
     }
 
-    # 先自己删掉 dist：vite 的 emptyOutDir 会走 fs.rm，而本机把 rm 接管到了
-    # "safe-delete" 垫片（转回收站），几千个文件会 ETIMEDOUT 把整个构建打断。
-    # 用 .NET 直删既快又不经过垫片；vite 看到目录不存在就直接建，不再 emptyDir。
-    $staleDist = Join-Path $uiDir "dist"
-    if (Test-Path -LiteralPath $staleDist) {
-        try {
-            Remove-DirectoryHard -Path $staleDist
-        }
-        catch {
-            # 有文件被占用（杀毒/索引器）时删不干净是常事：这里不该阻断构建，
-            # 剩下的交给 vite 的 emptyOutDir 处理（它只面对少量残留，不会再超时）。
-            Write-Warning "无法完全清空 duty-agent-ui\dist：$($_.Exception.Message)"
-        }
-    }
+    # 每次构建到一个**新的**输出目录，全程不删任何已有文件。
+    # 本机对仓库内文件删除是硬拒绝（EPERM / 回收站垫片超时），vite 的 emptyOutDir
+    # 因此会把构建打死；换个新目录等于让 emptyOutDir 无事可做。
+    # 代价是 dist-* 会累积（已 gitignore），旧目录留给 .msix-work 清理。
+    $webBuildDir = Join-Path $root (".msix-work\web-dist-" + (Get-Date -Format "yyyyMMdd-HHmmss"))
 
-    Write-Host "[1/7] Building web UI..."
-    Invoke-Tool -FilePath "npm.cmd" -Arguments @("run", "build") -WorkingDirectory $uiDir
+    Write-Host "[1/7] Building web UI -> $webBuildDir ..."
+    Invoke-Tool -FilePath "npm.cmd" -Arguments @("run", "build", "--", "--outDir", $webBuildDir) -WorkingDirectory $uiDir
 }
 else {
     Write-Host "[1/7] Skipping web UI build."
 }
 
-$distDir = Join-Path $uiDir "dist"
+if (-not $SkipWebBuild) {
+    $distDir = $webBuildDir
+}
+else {
+    $distDir = Join-Path $uiDir "dist"
+}
 if (-not (Test-Path -LiteralPath (Join-Path $distDir "index.html"))) {
     throw "Missing UI build output: $(Join-Path $distDir "index.html")"
 }
