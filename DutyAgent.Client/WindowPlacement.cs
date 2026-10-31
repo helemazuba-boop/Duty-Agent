@@ -26,32 +26,49 @@ internal static class WindowPlacement
 
     private static string StoragePath => Path.Combine(ClientLog.DataDirectory, "client-window.json");
 
-    public static void Apply(Form form)
+    /// <summary>解析出来的目标几何（已按最小尺寸与屏幕校验过）。</summary>
+    internal readonly record struct Placement(Rectangle Bounds, bool Maximized);
+
+    /// <summary>
+    /// 读出上次的几何。没有记录、或记录已经不在任何屏幕上（拔了副屏/改了分辨率）时
+    /// 返回 null，由调用方决定默认值（启动页要小窗，主界面要 1280x800）。
+    /// </summary>
+    public static Placement? Load(Size minimum)
     {
         var state = Read();
         if (state is null)
         {
-            return;
+            return null;
         }
 
-        var width = Math.Max(form.MinimumSize.Width, state.Width);
-        var height = Math.Max(form.MinimumSize.Height, state.Height);
+        var width = Math.Max(minimum.Width, state.Width);
+        var height = Math.Max(minimum.Height, state.Height);
         var bounds = new Rectangle(state.Left, state.Top, width, height);
         if (!IsOnScreen(bounds))
         {
-            // 保存的坐标已经不在任何屏幕上（换了显示器/分辨率）：回到居中，
-            // 而不是让窗口跑到看不见的地方。
-            return;
+            return null;
         }
 
+        return new Placement(bounds, state.Maximized);
+    }
+
+    public static void ApplyTo(Form form, Placement placement)
+    {
         form.StartPosition = FormStartPosition.Manual;
-        form.Bounds = bounds;
-        if (state.Maximized)
+        form.Bounds = placement.Bounds;
+        if (placement.Maximized)
         {
             form.WindowState = FormWindowState.Maximized;
         }
     }
 
+    public static void Apply(Form form)
+    {
+        if (Load(form.MinimumSize) is { } placement)
+        {
+            ApplyTo(form, placement);
+        }
+    }
     public static void Save(Form form)
     {
         try

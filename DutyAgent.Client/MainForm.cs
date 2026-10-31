@@ -50,6 +50,9 @@ internal sealed class MainForm : Form
     private bool _webViewPrepared;
     // 缺 WebView2 运行时：启动页停在错误态，别再重试初始化（RestoreWindow 会重复触发）。
     private bool _webViewUnavailable;
+    // 最终窗口几何：启动页期间窗口是小窗，web 就绪后才套用这个值。
+    private WindowPlacement.Placement _finalPlacement;
+    private bool _finalBoundsApplied;
     private bool _webViewInitializing;
     private bool _allowVisible;
     private bool _exitRequested;
@@ -131,12 +134,24 @@ internal sealed class MainForm : Form
         _allowVisible = !startSilent;
 
         Text = "Duty-Agent";
-        Width = 1280;
-        Height = 800;
-        MinimumSize = new Size(900, 600);
+        MinimumSize = FinalMinimumSize;
         StartPosition = FormStartPosition.CenterScreen;
-        // 上次的窗口大小/位置（含最大化）优先于默认的 1280×800 居中。
-        WindowPlacement.Apply(this);
+
+        // 上次的窗口几何先记下来，**不马上套用**：启动页只占屏幕中央一小块，
+        // 一个 1280×800 的空窗口挂在那里等 2-5 秒，比别的应用的 splash 大一圈。
+        _finalPlacement = WindowPlacement.Load(FinalMinimumSize)
+            ?? new WindowPlacement.Placement(DefaultWindowBounds(), false);
+
+        if (_allowVisible)
+        {
+            ApplySplashBounds();
+        }
+        else
+        {
+            // 静默自启没有启动页，直接按最终几何建窗口（反正不可见）。
+            ApplyFinalBounds();
+        }
+
         Icon = LoadIconOrDefault();
 
         // 应用名与全部操作都在 web 内;原生层只留托盘,标题栏由 web 绘制(可经配置回退原生)
@@ -145,7 +160,7 @@ internal sealed class MainForm : Form
         // 启动页：自绘 44px 标题条 + 品牌块。三键是真的能用的（见 SplashView）。
         // client_custom_chrome=false 时窗口有原生标题栏，启动页就别再画一条。
         _splash.ShowTitleBar = _customChrome;
-        _splash.Version = Application.ProductVersion;
+        _splash.Version = FormatProductVersion();
         _splash.MinimizeRequested += (_, _) => WindowState = FormWindowState.Minimized;
         _splash.MaximizeRequested += (_, _) => ToggleMaximize();
         _splash.CloseRequested += (_, _) => Close();
@@ -689,6 +704,10 @@ internal sealed class MainForm : Form
             return;
         }
 
+        // 先从小窗扩到最终几何，再挂 WebView：这样用户看到的是"启动页 → 主界面"，
+        // 而不是"小窗里的启动页 → 先变大 → 再出界面"。
+        ApplyFinalBounds();
+
         // WebView2 是独立子窗口，挂上来就会盖住 windowless 的启动页，所以顺序是
         // 「先挂 WebView → 再隐藏启动页」，避免出现一帧两边都空着的窗口。
         Controls.Add(_webView);
@@ -1042,7 +1061,10 @@ internal sealed class MainForm : Form
     private void HideToTray()
     {
         // 隐藏前记下当前大小/位置：用户可能刚把窗口摆好就点了关闭。
-        WindowPlacement.Save(this);
+        if (_finalBoundsApplied)
+        {
+            WindowPlacement.Save(this);
+        }
         Hide();
         ShowTrayBalloonOnce(
             "Duty-Agent 仍在后台运行",
@@ -1084,7 +1106,10 @@ internal sealed class MainForm : Form
             _shutdownStarted = true;
             CancelStartup();
             _trayIcon.Visible = false;
+            if (_finalBoundsApplied)
+        {
             WindowPlacement.Save(this);
+        }
             ClientLog.Info($"收到系统关闭请求（{e.CloseReason}），直接退出。");
             return;
         }
@@ -1170,7 +1195,10 @@ internal sealed class MainForm : Form
         // 把"引导失败"当成启动错误弹窗（用户明明只是点了退出）。
         CancelStartup();
 
-        WindowPlacement.Save(this);
+        if (_finalBoundsApplied)
+        {
+            WindowPlacement.Save(this);
+        }
         _trayIcon.Visible = false;
         Enabled = false;
 
@@ -1358,6 +1386,89 @@ internal sealed class MainForm : Form
         }
 
         base.Dispose(disposing);
+    }
+
+    // 主界面最小尺寸 / 启动页尺寸（后者按 DPI 缩放）。
+    private static readonly Size FinalMinimumSize = new(900, 600);
+    private static readonly Size SplashSize = new(520, 340);
+
+    private static Rectangle DefaultWindowBounds()
+    {
+        var area = Screen.PrimaryScreen?.WorkingArea ?? new Rectangle(0, 0, 1280, 800);
+        var width = Math.Min(1280, area.Width);
+        var height = Math.Min(800, area.Height);
+        return new Rectangle(
+            area.X + (area.Width - width) / 2,
+            area.Y + (area.Height - height) / 2,
+            width,
+            height);
+    }
+
+    private static double PrimaryScale()
+    {
+        try
+        {
+            using var g = Graphics.FromHwnd(IntPtr.Zero);
+            return g.DpiX / 96.0;
+        }
+        catch
+        {
+            return 1.0;
+        }
+    }
+
+    /// <summary>
+    /// 启动页的窗口：屏幕中央一小块，居中在"最终窗口"的位置上，
+    /// 这样页面出来时像是原地展开，而不是先跳到别处再变大。
+    /// </summary>
+    private void ApplySplashBounds()
+    {
+        var scale = PrimaryScale();
+        var width = (int)Math.Round(SplashSize.Width * scale);
+        var height = (int)Math.Round(SplashSize.Height * scale);
+        MinimumSize = new Size((int)Math.Round(360 * scale), (int)Math.Round(260 * scale));
+
+        var anchor = _finalPlacement.Bounds;
+        if (anchor.Width <= 0 || anchor.Height <= 0)
+        {
+            anchor = Screen.PrimaryScreen?.WorkingArea ?? new Rectangle(0, 0, width, height);
+        }
+
+        StartPosition = FormStartPosition.Manual;
+        Bounds = new Rectangle(
+            anchor.X + (anchor.Width - width) / 2,
+            anchor.Y + (anchor.Height - height) / 2,
+            width,
+            height);
+    }
+
+    /// <summary>web 就绪后把窗口还原成上次的几何（或默认 1280×800 居中）。</summary>
+    private void ApplyFinalBounds()
+    {
+        if (_finalBoundsApplied)
+        {
+            return;
+        }
+
+        _finalBoundsApplied = true;
+        MinimumSize = FinalMinimumSize;
+        WindowPlacement.ApplyTo(this, _finalPlacement);
+    }
+    /// <summary>
+    /// 只取版本号本身。Application.ProductVersion 拿到的是 InformationalVersion，
+    /// .NET SDK 会把 git 提交哈希拼在后面（1.0.13+55312c0e5d08…），直接显示在启动页
+    /// 底部就是一整行乱码——那串哈希该进日志，不该进界面。
+    /// </summary>
+    private static string FormatProductVersion()
+    {
+        var raw = Application.ProductVersion ?? string.Empty;
+        var plus = raw.IndexOf('+');
+        if (plus > 0)
+        {
+            raw = raw[..plus];
+        }
+
+        return raw.Trim();
     }
 
     private static Icon? LoadIconOrDefault()
