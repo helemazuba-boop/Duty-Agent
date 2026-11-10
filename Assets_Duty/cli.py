@@ -43,6 +43,11 @@ from typing import Any, Optional
 
 import httpx
 
+# python-embed 带 `python311._pth`，启用隔离模式后脚本目录不会进 sys.path。
+# core.py 早就用同一行自举过（见 core.py 顶部）；CLI 缺这一步，导致
+# `duty-cli.bat describe` 直接报 "No module named 'version'"。
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
 # 版本单一事实源：只认 version.py，别在这里再抄一份字符串（历史上两处漂移过）。
 from version import APP_VERSION
 
