@@ -15,7 +15,13 @@ from absence_ops import (
     trim_excess,
 )
 from execution_profiles import ExecutionPlan
-from llm_transport import call_llm_raw, get_and_clear_last_reasoning, parse_schedule_completion
+from llm_transport import (
+    call_llm_raw,
+    get_and_clear_last_reasoning,
+    new_reasoning_collector,
+    parse_schedule_completion,
+    reset_last_reasoning,
+)
 from postprocess import (
     estimate_pointer_progress,
     merge_schedule_pool,
@@ -29,6 +35,7 @@ from postprocess import (
     validate_llm_schedule_entries,
 )
 from prompt_gateway import build_single_pass_prompt_messages
+from schedule_window import resolve_schedule_dates
 from state_ops import (
     Context,
     anonymize_instruction,
@@ -370,7 +377,13 @@ def build_single_pass_request(
     area_names = get_configured_area_names(ctx.config)
     area_per_day_counts = get_configured_area_per_day_counts(ctx.config, area_names)
     default_days = int(ctx.config.get("default_days", 7) or 7)
-    window_end = start_date + timedelta(days=max(1, default_days) - 1)
+    scheduled_dates = resolve_schedule_dates(
+        instruction,
+        start_date,
+        default_days,
+        str(ctx.config.get("duty_rule", "") or ""),
+    )
+    window_end = date.fromisoformat(scheduled_dates[-1])
     window_absent_ids = absences_for_window(
         state_data.get("absences", []), start_date, window_end
     )
@@ -394,6 +407,7 @@ def build_single_pass_request(
         last_pointer=int(state_data.get("last_pointer", 0) or 0),
         absent_ids=window_absent_ids,
         day_overrides=day_overrides,
+        schedule_window=scheduled_dates,
     )
 
     if emit_progress_fn:
@@ -409,6 +423,9 @@ def build_single_pass_request(
         "mode": execution_plan.runtime_mode,
         "start_date": start_date.isoformat(),
         "window_end": window_end.isoformat(),
+        # Explicit dates make the settle-time window audit agree with the
+        # prompt instead of re-deriving a fixed 7-calendar-day range.
+        "expected_dates": list(scheduled_dates),
         "apply_mode": normalize_apply_mode(input_data.get("apply_mode")),
         "trace_id": trace_id,
         "prompt_metadata": prompt_metadata,
@@ -424,6 +441,7 @@ def apply_single_pass_completion(
     completion_text: str,
     resume_context: dict,
     stop_event=None,
+    reasoning_text: str | None = None,
 ) -> dict:
     """Parse an already-produced completion (V2 INI / CSV fallback) and settle it
     into persisted state.
@@ -432,7 +450,16 @@ def apply_single_pass_completion(
     (:func:`run_single_pass_schedule`) or from an external AI via the CLI
     plan-ingest flow. Roster/state are re-read here so the settle is atomic and
     stateless with respect to ``resume_context``.
+
+    ``reasoning_text`` is the request-scoped CoT collected by the transport.
+    Inline ``<think>`` blocks are still captured into the legacy compatibility
+    sink during parsing; that sink is cleared on entry so a failed previous run
+    can never leak into this one.
     """
+    # Only parse-time <think> capture uses the module-level sink. Clearing it
+    # here makes this function safe for the external-AI plan-ingest path, where
+    # no transport call happened in this process at all.
+    reset_last_reasoning()
     resume_context = dict(resume_context or {})
     trace_id = str(resume_context.get("trace_id", "")).strip()
     start_date_value = resume_context.get("start_date")
@@ -587,26 +614,34 @@ def apply_single_pass_completion(
             prune_operational_state(next_state)
             return next_state
 
+        # Roster rotation is deterministic. ``last_pointer`` is a 0-based index
+        # into all_ids, not a person ID; models routinely confuse the two, and
+        # trusting their declaration used to skip a person on the next run.
+        # The model value is now a hint only — the committed schedule decides.
+        pointer_progress = estimate_pointer_progress(
+            all_ids,
+            [person_id for person_id in all_ids if id_to_active.get(person_id, 1) != 0],
+            int(state_data.get("last_pointer", 0) or 0),
+            debt_counts,
+            credit_counts,
+            settled_schedule,
+        )
+        # Model-declared credit consumption is still honoured (and deduped),
+        # merged with whatever the deterministic pass detected.
+        merged_consumed = sorted(
+            set(consumed_credit_ids)
+            | set(int(pid) for pid in (pointer_progress.get("consumed_credit_ids") or []))
+        )
+        pointer_progress["consumed_credit_ids"] = merged_consumed
         if llm_pointer_after is not None:
             safe_pointer = max(0, min(int(llm_pointer_after), len(all_ids) - 1)) if all_ids else 0
-            pointer_progress = {
-                "pointer_after": safe_pointer,
-                "consumed_credit_ids": consumed_credit_ids,
-            }
-            if safe_pointer < int(state_data.get("last_pointer", 0) or 0):
+            computed_pointer = int(pointer_progress.get("pointer_after", 0) or 0)
+            if safe_pointer != computed_pointer:
                 adjustment_warnings.append(
-                    f"模型申请的指针 {safe_pointer} 早于当前指针 "
-                    f"{int(state_data.get('last_pointer', 0) or 0)}，已按申请值落盘"
+                    f"模型声明的指针 {safe_pointer} 与按排班计算的 "
+                    f"{computed_pointer} 不一致（指针是名单索引，不是人员编号），"
+                    "已按代码计算结果落盘"
                 )
-        else:
-            pointer_progress = estimate_pointer_progress(
-                all_ids,
-                [person_id for person_id in all_ids if id_to_active.get(person_id, 1) != 0],
-                int(state_data.get("last_pointer", 0) or 0),
-                debt_counts,
-                credit_counts,
-                settled_schedule,
-            )
 
         next_state["debt_counts"] = recover_missing_debts(
             current_debt_counts,
@@ -657,10 +692,13 @@ def apply_single_pass_completion(
         "transport_overrides": transport_overrides,
         "adjustment_warnings": adjustment_warnings,
     }
-    # The model's chain-of-thought, if the provider sent one. Captured by
-    # llm_transport as a side channel (reasoning never enters `content`, so the
-    # parser is unaffected) and surfaced here purely for the user to read.
-    reasoning = get_and_clear_last_reasoning().strip()
+    # Chain-of-thought from two sources: the request-scoped transport collector
+    # (reasoning_content / SSE deltas) and the parse-time compatibility sink
+    # (inline <think> blocks). Both are cleared before/after this run, so no
+    # stale text from a failed or concurrent run can appear here.
+    streamed_reasoning = (reasoning_text or "").strip()
+    inline_reasoning = get_and_clear_last_reasoning().strip()
+    reasoning = "\n".join(part for part in (streamed_reasoning, inline_reasoning) if part)
     if reasoning:
         result_payload["reasoning_content"] = reasoning[:AI_RESPONSE_MAX_CHARS]
     return result_payload
@@ -685,12 +723,24 @@ def run_single_pass_schedule(
         stop_event=stop_event,
     )
 
+    # One collector per run: nothing is shared with another request, another
+    # agent, or a retry of this very call.
+    collector = new_reasoning_collector(
+        scope=str(resume_context.get("trace_id") or "single-pass")
+    )
     content = call_llm_raw(
         messages,
         ctx.config,
         emit_progress_fn,
         stop_event,
         resume_context.get("transport_overrides") or None,
+        reasoning_collector=collector,
     )
 
-    return apply_single_pass_completion(ctx, content, resume_context, stop_event=stop_event)
+    return apply_single_pass_completion(
+        ctx,
+        content,
+        resume_context,
+        stop_event=stop_event,
+        reasoning_text=collector.text,
+    )

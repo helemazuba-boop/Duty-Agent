@@ -81,6 +81,7 @@ def build_prompt_messages(
     last_pointer: int = 0,
     absent_ids: List[int] | None = None,
     day_overrides: Dict[str, Dict[str, int]] | None = None,
+    schedule_window: List[str] | None = None,
 ) -> List[Dict[str, str]]:
     inactive_ids = [person_id for person_id, active in id_to_active.items() if active == 0]
     absent_ids = [int(person_id) for person_id in (absent_ids or [])]
@@ -103,7 +104,28 @@ def build_prompt_messages(
         f"user_instruction={instruction}",
     ]
 
+    # Explicit date list + weekday table: the model used to have to recompute
+    # weekdays from `start_date` by hand, and the backend audited a fixed
+    # 7-calendar-day window that did not match "today and next week".
+    window_dates = [str(item).strip() for item in (schedule_window or []) if str(item).strip()]
+    if window_dates:
+        params_list.append("scheduled_dates=" + ", ".join(window_dates))
+        weekday_names = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
+        hints = []
+        for iso_text in window_dates:
+            parsed = _parse_iso_date(iso_text)
+            if parsed is not None:
+                hints.append(f"{parsed:%m-%d}={weekday_names[parsed.weekday()]}")
+        if hints:
+            params_list.append("weekday_hints=" + ", ".join(hints))
+
     methods_list: List[str] = []
+    methods_list.append(PROMPTS["rule_pointer"])
+    methods_list.append(PROMPTS["rule_id_notation"])
+    if is_module_active("multi_day", instruction, bool(window_dates)):
+        methods_list.append(PROMPTS["rule_multi_day"])
+    if window_dates:
+        methods_list.append(PROMPTS["rule_scheduled_dates"])
 
     # Configured areas/headcounts: previously accepted but never rendered, so
     # single-pass prompts left the area template entirely to the model's guess.
@@ -117,17 +139,25 @@ def build_prompt_messages(
         methods_list.append(
             "Area requirement: cover every required area on every scheduled date "
             "with exactly the required headcount per area per day. "
-            "Declare an alias for every required area in [areas] first."
+            "Declare an alias for every required area in [areas] first. "
+            "user_defined_rule takes priority when it specifies a different per-day shape."
         )
     else:
         # No areas configured = dynamic mode: the model's own [areas]
         # declarations are the real area set. It must still emit the section
         # (the V2 INI protocol requires it), and the backend will neither
         # invent nor auto-fill an area the model did not declare.
+        #
+        # The old wording demanded that EVERY declared alias appear on EVERY
+        # date, which is impossible when user_defined_rule gives Saturday a
+        # single area and weekdays two. That contradiction consumed most of a
+        # reasoning model's CoT budget without ever being resolvable.
         methods_list.append(
-            "Area requirement: no areas are pre-configured. Declare the areas "
-            "this schedule needs in [areas] (at least one alias) and cover the "
-            "ones you declared on every scheduled date."
+            "Area requirement: no areas are pre-configured. Declare in [areas] the "
+            "aliases this schedule needs (at least one). On each scheduled date, "
+            "assign exactly the areas that date requires; an alias does NOT have "
+            "to appear on every date, but every declared alias must be used at "
+            "least once. user_defined_rule takes priority over this generic rule."
         )
 
     if is_module_active("debt", instruction, bool(debt_counts)):
@@ -166,8 +196,10 @@ def build_prompt_messages(
         "Use `MM-DD = A:1001 1002 | B:1003 1004` in [schedule]. "
         "Use spaces between IDs and `|` only between area assignments. "
         "If a date needs a note, append it as a trailing `# ...` comment on that schedule line. "
-        "Use `debt = ...` and `credit = ...` lines in [state]. "
-        "Use `pointer = <int>` in [state] to declare the next roster index after the last inspected candidate. "
+        "Optionally use `debt = ...` and `credit = ...` lines in [state] "
+        "(empty lines or an omitted [state] are valid when nothing changed). "
+        "Use `pointer = <int>` in [state] for a 0-based index into all_roster_ids, not a person ID; "
+        "the backend recomputes the authoritative pointer from the committed schedule. "
         "Use `consumed_credit = 1001 1002` in [state] to list IDs whose credit was consumed this round. "
         "Same-day cross-area reuse is allowed. Same-area duplicate IDs are forbidden."
     )

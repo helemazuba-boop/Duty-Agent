@@ -52,20 +52,38 @@ Deterministic helpers (no AI): `inspect`, `get-config`, `update-config`,
 
 ## V2 INI grammar (strict)
 
+`prompt_text` from `plan-prompt` is the authoritative protocol. This section is
+the same grammar as a quick reference — the two must stay in sync.
+
 ```
 [areas]
 A = Classroom
+B = Corridor
 [schedule]
-07-28 = A:1
-07-29 = A:2
+07-28 = A:1 2 | B:3 4
+07-29 = A:5 6
 [state]
-pointer = 2
+pointer = 6
 ```
 
-- `[areas]`: `ALIAS = Area Name`, alias is UPPERCASE (e.g. A, B).
-- `[schedule]`: one line per day, `MM-DD = ALIAS:<space-separated IDs>`, dates
-  strictly ascending, IDs are numeric roster IDs.
-- `[state]` (optional): `pointer = <int>`; `debt = <id>` or `<id>*<count>`;
-  `absent = <space-separated IDs>` declares leave/absence IDs that must not be
-  scheduled this round; never use `:` in `[state]`.
-- Output the INI only. No prose, no markdown fences.
+- `[areas]`: `ALIAS = Area Name`, alias UPPERCASE (e.g. A, B, S). Declare every
+  alias before using it. An alias does **not** have to appear on every date;
+  assign the areas each date actually requires. `user_defined_rule` wins when
+  it specifies a per-day shape (e.g. Saturday has one area).
+- `[schedule]`: one line per date, `MM-DD = ALIAS:<space-separated IDs>`; use `|`
+  between area assignments when a date has several areas. Dates strictly
+  ascending, IDs are numeric roster IDs from `all_roster_ids`. `N#` in the
+  instruction means roster ID N. Optional trailing `# 备注` comment.
+- Only emit dates listed in `scheduled_dates` (with `weekday_hints`). Do not add
+  or omit dates.
+- `[state]` is **optional**: omit the whole section when nothing changed; empty
+  `debt =` / `credit =` lines are also valid. Never use `:` in `[state]`.
+  - `pointer = <int>` — a **0-based index into `all_roster_ids`** (0..N-1), NOT a
+    person ID. The backend recomputes the authoritative pointer from the
+    committed schedule; treat this as a hint.
+  - `debt = <id>` or `<id>*<count>`; `credit = <id>` or `<id>*<count>`.
+  - `consumed_credit = <space-separated IDs>` — credits consumed by pointer
+    advancement this round.
+  - `absent = <space-separated IDs>` — leave/absence IDs that must not be
+    scheduled this round.
+- Output the INI only. No prose, no reasoning, no markdown fences.

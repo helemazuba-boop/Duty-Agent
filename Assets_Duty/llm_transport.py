@@ -46,26 +46,116 @@ _stream_final_json: Optional[dict] = None
 # feeds that straight into the parser. Mixing reasoning into it would break the
 # protocol.
 _last_reasoning: str = ""
+_last_reasoning_lock = threading.Lock()
+
+
+class ReasoningCollector:
+    """Request-scoped, attempt-scoped chain-of-thought sink.
+
+    Replaces the process-global ``_last_reasoning`` side channel for every
+    transport call: each caller owns a collector, so overlapping single-pass
+    runs, parallel multi-agent calls and retries cannot cross-contaminate.
+    ``start_attempt`` deliberately drops the previous attempt's text — a retry
+    is a fresh answer, not a continuation of the failed one.
+    """
+
+    def __init__(self, scope: str = "llm") -> None:
+        self.scope = str(scope or "llm")
+        self._lock = threading.Lock()
+        self._chunks: List[str] = []
+        self._attempt_index = 0
+        self._attempt_id = ""
+        self.attempts: List[Dict[str, Any]] = []
+
+    @property
+    def attempt_id(self) -> str:
+        with self._lock:
+            return self._attempt_id
+
+    @property
+    def attempt_index(self) -> int:
+        with self._lock:
+            return self._attempt_index
+
+    def start_attempt(self, attempt_index: int = 1) -> str:
+        """Begin a new attempt, discarding reasoning from any earlier attempt."""
+        with self._lock:
+            self._attempt_index = int(attempt_index)
+            self._attempt_id = f"{self.scope}-a{self._attempt_index}"
+            self._chunks = []
+            self.attempts.append(
+                {
+                    "attempt_id": self._attempt_id,
+                    "attempt": self._attempt_index,
+                    "chars": 0,
+                }
+            )
+            return self._attempt_id
+
+    def add(self, text: str) -> None:
+        cleaned = str(text or "")
+        if not cleaned.strip():
+            return
+        with self._lock:
+            self._chunks.append(cleaned)
+            if self.attempts:
+                self.attempts[-1]["chars"] += len(cleaned)
+
+    @property
+    def text(self) -> str:
+        with self._lock:
+            return "".join(self._chunks).strip()
+
+    def summary(self) -> Dict[str, Any]:
+        with self._lock:
+            return {
+                "scope": self.scope,
+                "attempts": [dict(item) for item in self.attempts],
+                "chars": sum(len(chunk) for chunk in self._chunks),
+            }
+
+
+def new_reasoning_collector(scope: str = "llm") -> ReasoningCollector:
+    """Factory kept separate so callers never need to import the class name."""
+    return ReasoningCollector(scope)
 
 
 def get_and_clear_last_reasoning() -> str:
-    """Return the reasoning captured from the most recent call, then clear it."""
+    """Return the reasoning captured from the most recent call, then clear it.
+
+    Compatibility path for reasoning that only becomes visible at parse time
+    (inline ``<think>`` blocks). Transport-time reasoning now goes to an
+    explicit :class:`ReasoningCollector` instead.
+    """
     global _last_reasoning
-    text = _last_reasoning
-    _last_reasoning = ""
-    return text
+    with _last_reasoning_lock:
+        text = _last_reasoning
+        _last_reasoning = ""
+        return text
 
 
 def reset_last_reasoning() -> None:
     """Drop any reasoning left over from a previous call (e.g. a failed one)."""
     global _last_reasoning
-    _last_reasoning = ""
+    with _last_reasoning_lock:
+        _last_reasoning = ""
 
 
-def _record_reasoning(text: str) -> None:
-    global _last_reasoning
+def _record_reasoning(text: str, collector: Optional[ReasoningCollector] = None) -> None:
+    """Append reasoning to an explicit collector, else to the legacy global.
+
+    The legacy branch is only reachable for parse-time ``<think>`` blocks and
+    for callers that have not been migrated yet; it is always cleared at the
+    start of a run so stale text cannot leak into the next one.
+    """
     cleaned = str(text or "")
-    if cleaned.strip():
+    if not cleaned.strip():
+        return
+    if collector is not None:
+        collector.add(cleaned)
+        return
+    global _last_reasoning
+    with _last_reasoning_lock:
         _last_reasoning += cleaned
 
 
@@ -248,9 +338,30 @@ def execute_with_retries(
     mode: str,
     progress_callback=None,
     stop_event: Optional[threading.Event] = None,
+    reasoning_collector: Optional[ReasoningCollector] = None,
+    attempt_offset: int = 0,
 ) -> str:
+    """Run ``request_fn`` with bounded retries.
+
+    Every attempt gets its own reasoning scope. A retry is a fresh answer, so
+    both the backend collector and the frontend display are reset before the
+    next attempt starts; previously streamed deltas cannot be retracted after
+    the fact, so the explicit ``reasoning_reset`` phase is mandatory.
+    """
     last_error: Optional[Exception] = None
     for attempt in range(LLM_MAX_RETRIES + 1):
+        attempt_id = ""
+        if reasoning_collector is not None:
+            attempt_id = reasoning_collector.start_attempt(int(attempt_offset) + attempt + 1)
+        if attempt > 0:
+            reset_last_reasoning()
+            if progress_callback:
+                progress_callback(
+                    "reasoning_reset",
+                    f"LLM attempt {attempt + 1}/{LLM_MAX_RETRIES + 1} started; "
+                    "discarding reasoning from the failed attempt.",
+                    attempt_id,
+                )
         try:
             return request_fn()
         except StreamUnsupportedError:
@@ -258,6 +369,15 @@ def execute_with_retries(
         except urllib.error.HTTPError as ex:
             detail = ex.read().decode("utf-8", errors="ignore")
             if (ex.code == 429 or 500 <= ex.code < 600) and attempt < LLM_MAX_RETRIES:
+                # HTTP retries used to be silent: the UI and the log had no way
+                # to tell that the answer was restarted.
+                if progress_callback:
+                    progress_callback(
+                        "llm_retry",
+                        f"LLM attempt {attempt + 1} failed (HTTP {ex.code}); "
+                        f"retrying {attempt + 2}/{LLM_MAX_RETRIES + 1}.",
+                        attempt_id,
+                    )
                 time.sleep(LLM_RETRY_BACKOFF_SECONDS * (attempt + 1))
                 continue
             if mode == "stream" and ex.code in (400, 404, 405, 415, 422, 426, 501):
@@ -279,7 +399,7 @@ def execute_with_retries(
                         "llm_retry",
                         f"LLM attempt {attempt + 1} failed ({ex}); "
                         f"retrying {attempt + 2}/{LLM_MAX_RETRIES + 1} in {backoff}s.",
-                        "",
+                        attempt_id,
                     )
                 # 可取消的退避等待：用户点取消时立刻中止，而不是睡满整个 backoff。
                 if stop_event is not None:
@@ -292,7 +412,46 @@ def execute_with_retries(
     raise RuntimeError(f"LLM request failed after retries: {last_error}")
 
 
-def request_llm_non_stream(url: str, payload: dict, api_key: str, stop_event: Optional[threading.Event] = None) -> str:
+def _extract_response_meta(event_obj: Any) -> Dict[str, Any]:
+    """Pull non-content telemetry out of a provider response without failing."""
+    if not isinstance(event_obj, dict):
+        return {}
+    meta: Dict[str, Any] = {}
+    model = event_obj.get("model")
+    if model:
+        meta["model"] = str(model)
+    usage = event_obj.get("usage")
+    if isinstance(usage, dict):
+        for key in ("prompt_tokens", "completion_tokens", "total_tokens"):
+            if usage.get(key) is not None:
+                meta[key] = usage[key]
+    for choice in event_obj.get("choices") or []:
+        if not isinstance(choice, dict):
+            continue
+        if choice.get("finish_reason"):
+            meta["finish_reason"] = str(choice["finish_reason"])
+            break
+    return meta
+
+
+def _emit_response_meta(progress_callback, meta: Dict[str, Any]) -> None:
+    if not progress_callback or not meta:
+        return
+    progress_callback(
+        "llm_response_meta",
+        "Model response metadata.",
+        json.dumps(meta, ensure_ascii=False),
+    )
+
+
+def request_llm_non_stream(
+    url: str,
+    payload: dict,
+    api_key: str,
+    stop_event: Optional[threading.Event] = None,
+    reasoning_collector: Optional[ReasoningCollector] = None,
+    progress_callback=None,
+) -> str:
     if stop_event and stop_event.is_set():
         raise InterruptedError("Cancelled.")
     request = create_llm_request(url, payload, api_key)
@@ -311,6 +470,7 @@ def request_llm_non_stream(url: str, payload: dict, api_key: str, stop_event: Op
     finally:
         response.close()
     parsed = json.loads(raw)
+    _emit_response_meta(progress_callback, _extract_response_meta(parsed))
     # Extract tool_calls if present (qwen3.5 may not put them in message.content)
     tc = _extract_tool_calls_from_obj(parsed)
     if tc:
@@ -318,14 +478,21 @@ def request_llm_non_stream(url: str, payload: dict, api_key: str, stop_event: Op
             {"function": {"name": t["name"], "arguments": json.dumps(t["arguments"])}}
             for t in tc
         ]})
-    _record_reasoning(extract_reasoning_from_stream_event(parsed))
+    _record_reasoning(extract_reasoning_from_stream_event(parsed), reasoning_collector)
     content = extract_text_from_non_stream_response(parsed)
     if not content.strip():
         raise RuntimeError("LLM returned empty content.")
     return content
 
 
-def request_llm_stream(url: str, payload: dict, api_key: str, progress_callback=None, stop_event=None) -> str:
+def request_llm_stream(
+    url: str,
+    payload: dict,
+    api_key: str,
+    progress_callback=None,
+    stop_event=None,
+    reasoning_collector: Optional[ReasoningCollector] = None,
+) -> str:
     stream_payload = dict(payload)
     stream_payload["stream"] = True
     request = create_llm_request(url, stream_payload, api_key)
@@ -334,6 +501,7 @@ def request_llm_stream(url: str, payload: dict, api_key: str, progress_callback=
     buffered_for_progress: List[str] = []
     raw_lines: List[str] = []
     saw_sse_data = False
+    response_meta: Dict[str, Any] = {}
     last_progress_emit_at = time.time()
     global _stream_final_json
     _stream_final_json = None
@@ -379,6 +547,7 @@ def request_llm_stream(url: str, payload: dict, api_key: str, progress_callback=
                     try:
                         event_obj = json.loads(line)
                         _stream_final_json = event_obj
+                        response_meta.update(_extract_response_meta(event_obj))
                         # Detect tool_calls in the non-SSE message
                         msg = event_obj.get("choices", [{}])[0].get("message", {})
                         if msg.get("tool_calls"):
@@ -387,7 +556,7 @@ def request_llm_stream(url: str, payload: dict, api_key: str, progress_callback=
                         reasoning = extract_reasoning_from_stream_event(event_obj)
                         if reasoning:
                             reasoning_chunks.append(reasoning)
-                            _record_reasoning(reasoning)
+                            _record_reasoning(reasoning, reasoning_collector)
                             _emit_reasoning_progress()
                         text = extract_text_from_stream_event(event_obj)
                         if text:
@@ -419,10 +588,11 @@ def request_llm_stream(url: str, payload: dict, api_key: str, progress_callback=
             except Exception:
                 continue
 
+            response_meta.update(_extract_response_meta(event_obj))
             reasoning = extract_reasoning_from_stream_event(event_obj)
             if reasoning:
                 reasoning_chunks.append(reasoning)
-                _record_reasoning(reasoning)
+                _record_reasoning(reasoning, reasoning_collector)
                 _emit_reasoning_progress()
 
             text = extract_text_from_stream_event(event_obj)
@@ -438,6 +608,7 @@ def request_llm_stream(url: str, payload: dict, api_key: str, progress_callback=
                 last_progress_emit_at = now
 
     _emit_reasoning_progress(force=True)
+    _emit_response_meta(progress_callback, response_meta)
 
     if not saw_sse_data:
         raw_text = "".join(raw_lines).strip()
@@ -511,7 +682,12 @@ def call_llm_raw(
     stop_event=None,
     transport_overrides: Optional[dict] = None,
     tools: Optional[List[dict]] = None,
+    reasoning_collector: Optional[ReasoningCollector] = None,
 ) -> str:
+    # Compatibility sink only (inline <think> blocks are captured at parse
+    # time). Clearing here prevents a failed previous run from leaking into
+    # this one; transport-time reasoning goes to the explicit collector.
+    reset_last_reasoning()
     url, payload, api_key = _build_llm_target(config, messages, transport_overrides, tools)
     if tools:
         payload["tools"] = list(tools)
@@ -531,10 +707,13 @@ def call_llm_raw(
     if stream_enabled:
         try:
             content = execute_with_retries(
-                lambda: request_llm_stream(url, payload, api_key, progress_callback, stop_event),
+                lambda: request_llm_stream(
+                    url, payload, api_key, progress_callback, stop_event, reasoning_collector
+                ),
                 mode="stream",
                 progress_callback=progress_callback,
                 stop_event=stop_event,
+                reasoning_collector=reasoning_collector,
             )
         except StreamUnsupportedError:
             if progress_callback:
@@ -554,10 +733,13 @@ def call_llm_raw(
                 "",
             )
         content = execute_with_retries(
-            lambda: request_llm_non_stream(url, payload, api_key, stop_event),
+            lambda: request_llm_non_stream(
+                url, payload, api_key, stop_event, reasoning_collector, progress_callback
+            ),
             mode="non_stream",
             progress_callback=progress_callback,
             stop_event=stop_event,
+            reasoning_collector=reasoning_collector,
         )
 
     # Handle streaming tool_calls: when content is the [TOOL_CALL] marker,
@@ -947,9 +1129,13 @@ def call_llm_json(
     stop_event=None,
     transport_overrides: Optional[dict] = None,
     max_parse_retries: int = 2,
+    reasoning_collector: Optional[ReasoningCollector] = None,
 ) -> Tuple[dict, str]:
     url, payload, api_key = _build_llm_target(config, messages, transport_overrides)
-    content = call_llm_raw(messages, config, None, stop_event, transport_overrides)
+    content = call_llm_raw(
+        messages, config, None, stop_event, transport_overrides,
+        reasoning_collector=reasoning_collector,
+    )
     original_message_count = len(payload["messages"])
     last_parse_error: Optional[Exception] = None
 
@@ -977,9 +1163,13 @@ def call_llm_json(
                 ]
             )
             content = execute_with_retries(
-                lambda: request_llm_non_stream(url, payload, api_key, stop_event),
+                lambda: request_llm_non_stream(
+                    url, payload, api_key, stop_event, reasoning_collector, None
+                ),
                 mode="non_stream",
                 stop_event=stop_event,
+                reasoning_collector=reasoning_collector,
+                attempt_offset=reasoning_collector.attempt_index if reasoning_collector else 0,
             )
 
     raise RuntimeError(f"JSON parse failed: {last_parse_error}")

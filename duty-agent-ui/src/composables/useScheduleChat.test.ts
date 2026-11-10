@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { warningsOf } from './useScheduleChat';
+import { warningsOf, applyReasoningProgress } from './useScheduleChat';
+import type { RunInfo } from './useScheduleChat';
 
 describe('warningsOf', () => {
   it('读取 single_pass 的 adjustment_warnings', () => {
@@ -37,6 +38,32 @@ describe('warningsOf', () => {
     expect(warningsOf({ status: 'success' })).toEqual([]);
     expect(warningsOf({ adjustment_warnings: 'not-a-list' })).toEqual([]);
     expect(warningsOf({ agent_summary: { warnings: 'nope' } })).toEqual([]);
+  });
+});
+
+describe('reasoning 重试隔离', () => {
+  const mkRun = (): RunInfo => ({ status: 'running', startedAt: 0, groups: [] });
+
+  it('重试时丢弃上一段思考并按 attempt 分组', () => {
+    const run = mkRun();
+    applyReasoningProgress(run, 'stream_reasoning', '第一次推理…');
+    applyReasoningProgress(run, 'stream_reasoning', '继续…');
+    expect(run.reasoning).toBe('第一次推理…继续…');
+
+    applyReasoningProgress(run, 'reasoning_reset', 'trace-a2');
+    expect(run.reasoning).toBe('');
+    expect(run.sawReasoning).toBe(false);
+    expect(run.currentAttemptId).toBe('trace-a2');
+
+    applyReasoningProgress(run, 'stream_reasoning', '第二次推理…');
+    expect(run.reasoning).toBe('第二次推理…');
+  });
+
+  it('正文流不会污染 reasoning', () => {
+    const run = mkRun();
+    applyReasoningProgress(run, 'stream_chunk', '[areas]\nA = 教室');
+    expect(run.reasoning).toBeUndefined();
+    expect(run.sawReasoning).toBeUndefined();
   });
 });
 

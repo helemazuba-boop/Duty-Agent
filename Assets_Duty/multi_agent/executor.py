@@ -13,7 +13,12 @@ from absence_ops import (
     merge_absence_entries,
 )
 from execution_profiles import ExecutionPlan
-from llm_transport import call_llm_json, get_and_clear_last_reasoning, reset_last_reasoning
+from llm_transport import (
+    call_llm_json,
+    get_and_clear_last_reasoning,
+    new_reasoning_collector,
+    reset_last_reasoning,
+)
 from postprocess import normalize_apply_mode
 from prompt_gateway import build_agent_prompt
 from state_ops import (
@@ -90,6 +95,18 @@ def _emit_progress(emit_progress_fn, phase: str, message: str, payload: Dict[str
     if not emit_progress_fn:
         return
     emit_progress_fn(phase, message, json.dumps(payload or {}, ensure_ascii=False))
+
+
+def _unpack_agent_payload(payload):
+    """Accept both the 4-tuple legacy agent result and the 5-tuple with CoT.
+
+    Tests and older callers still return the 4-tuple; keeping both shapes
+    avoids breaking them while new agents carry their own reasoning.
+    """
+    if len(payload) == 5:
+        return payload[0], payload[1], payload[2], payload[3], str(payload[4] or "")
+    result, raw_text, metadata, trace = payload
+    return result, raw_text, metadata, trace, ""
 
 
 def _agent_transport_overrides(plan: ExecutionPlan) -> Dict[str, Any] | None:
@@ -173,6 +190,9 @@ def _run_agent(
 
     started_at = time.perf_counter()
     messages, prompt_metadata = build_agent_prompt(agent_id, agent_context, plan)
+    # Every agent owns its CoT sink. Parallel agents run in ThreadPoolExecutor
+    # worker threads, so a module-level buffer would concatenate all of them.
+    collector = new_reasoning_collector(scope=f"{snapshot.trace_id or 'ma'}:{agent_id}")
     result, raw_text = call_llm_json(
         messages,
         snapshot.config,
@@ -180,6 +200,7 @@ def _run_agent(
         stop_event=stop_event,
         transport_overrides=_agent_transport_overrides(plan),
         max_parse_retries=AGENT_JSON_RETRIES,
+        reasoning_collector=collector,
     )
     duration_ms = int((time.perf_counter() - started_at) * 1000)
     trace = AgentTrace(
@@ -188,7 +209,7 @@ def _run_agent(
         attempts=AGENT_JSON_RETRIES + 1,
         duration_ms=duration_ms,
     )
-    return result, raw_text, prompt_metadata, trace
+    return result, raw_text, prompt_metadata, trace, collector.text
 
 
 def _run_batch(
@@ -198,11 +219,18 @@ def _run_batch(
     parallel: bool,
     emit_progress_fn=None,
     stop_event=None,
-) -> Tuple[Dict[str, Dict[str, Any]], Dict[str, str], Dict[str, Dict[str, Any]], List[Dict[str, Any]]]:
+) -> Tuple[
+    Dict[str, Dict[str, Any]],
+    Dict[str, str],
+    Dict[str, Dict[str, Any]],
+    List[Dict[str, Any]],
+    Dict[str, str],
+]:
     results: Dict[str, Dict[str, Any]] = {}
     raw_texts: Dict[str, str] = {}
     prompt_metadata: Dict[str, Dict[str, Any]] = {}
     traces: List[Dict[str, Any]] = []
+    reasoning_by_agent: Dict[str, str] = {}
 
     def _execute(entry):
         agent_id, agent_context, validator = entry
@@ -253,11 +281,13 @@ def _run_batch(
                         if stop_event is not None and hasattr(stop_event, "set"):
                             stop_event.set()
                         continue
-                    result, raw_text, metadata, trace = payload
+                    result, raw_text, metadata, trace, agent_reasoning = _unpack_agent_payload(payload)
                     results[agent_id] = result
                     raw_texts[agent_id] = raw_text
                     prompt_metadata[agent_id] = metadata
                     traces.append(trace.__dict__)
+                    if agent_reasoning:
+                        reasoning_by_agent[agent_id] = agent_reasoning
                     _emit_progress(emit_progress_fn, "agent_done", f"{agent_id} completed.", {"agent_id": agent_id, "duration_ms": trace.duration_ms})
             if first_error is not None:
                 raise first_error
@@ -275,14 +305,16 @@ def _run_batch(
                     {"agent_id": agent_id, "error": str(ex)},
                 )
                 raise RuntimeError(f"{agent_id} failed: {ex}") from ex
-            result, raw_text, metadata, trace = payload
+            result, raw_text, metadata, trace, agent_reasoning = _unpack_agent_payload(payload)
             results[agent_id] = result
             raw_texts[agent_id] = raw_text
             prompt_metadata[agent_id] = metadata
             traces.append(trace.__dict__)
+            if agent_reasoning:
+                reasoning_by_agent[agent_id] = agent_reasoning
             _emit_progress(emit_progress_fn, "agent_done", f"{agent_id} completed.", {"agent_id": agent_id, "duration_ms": trace.duration_ms})
 
-    return results, raw_texts, prompt_metadata, traces
+    return results, raw_texts, prompt_metadata, traces, reasoning_by_agent
 
 
 def run_multi_agent_schedule(
@@ -292,6 +324,8 @@ def run_multi_agent_schedule(
     emit_progress_fn=None,
     stop_event=None,
 ) -> dict:
+    # Clear the legacy parse-time sink; every agent now owns a collector.
+    reset_last_reasoning()
     snapshot = _freeze_snapshot(ctx, input_data)
     parallel = execution_plan.runtime_mode == "multi_agent_parallel"
     execution_trace: List[Dict[str, Any]] = []
@@ -345,7 +379,7 @@ def run_multi_agent_schedule(
             lambda raw: validate_agent3_output(raw, snapshot),
         ),
     ]
-    stage1_results, _, stage1_meta, stage1_trace = _run_batch(
+    stage1_results, _, stage1_meta, stage1_trace, stage1_reasoning = _run_batch(
         stage1_batch,
         snapshot,
         execution_plan,
@@ -406,7 +440,7 @@ def run_multi_agent_schedule(
             lambda raw: validate_agent5_output(raw, snapshot, barrier1),
         ),
     ]
-    stage2_results, _, stage2_meta, stage2_trace = _run_batch(
+    stage2_results, _, stage2_meta, stage2_trace, stage2_reasoning = _run_batch(
         stage2_batch,
         snapshot,
         execution_plan,
@@ -438,9 +472,16 @@ def run_multi_agent_schedule(
     _check_capacity(snapshot, barrier1, barrier2)
 
     completion_source = "llm"
+    agent6_reasoning = ""
     try:
         _emit_progress(emit_progress_fn, "agent_start", "agent6_assembly started.", {"agent_id": "agent6_assembly"})
-        agent6_result, agent6_raw, agent6_meta, agent6_trace = _run_agent(
+        (
+            agent6_result,
+            agent6_raw,
+            agent6_meta,
+            agent6_trace,
+            agent6_reasoning,
+        ) = _unpack_agent_payload(_run_agent(
             "agent6_assembly",
             {
                 "dates": barrier2["dates"],
@@ -452,7 +493,7 @@ def run_multi_agent_schedule(
             snapshot,
             execution_plan,
             stop_event,
-        )
+        ))
         final_schedule = agent6_result["schedule"]
         final_ai_response = agent6_raw
         execution_trace.append(agent6_trace.__dict__)
@@ -554,13 +595,20 @@ def run_multi_agent_schedule(
         },
         "execution_trace": execution_trace,
     }
-    # Chain-of-thought from whichever agent ran last. Each agent's reasoning is
-    # captured by llm_transport as a side channel and overwritten by the next
-    # call, so this is the thinking behind the final assembly — which is the
-    # part the user actually wants to read. Only present when the model sent
-    # one, and never when the code fallback produced the schedule.
+    # Chain-of-thought is now collected per agent, so sections are explicitly
+    # labelled instead of being an undifferentiated concatenation from a shared
+    # process-global buffer. The assembly agent's reasoning is the part the
+    # user wants most; earlier stages are kept as separate labelled blocks.
+    # Never shown when the code fallback produced the schedule.
     if completion_source == "llm":
-        reasoning = get_and_clear_last_reasoning().strip()
+        parts: List[str] = []
+        for label, by_agent in (("stage1", stage1_reasoning), ("stage2", stage2_reasoning)):
+            block = "\n".join(str(by_agent[key]).strip() for key in sorted(by_agent) if by_agent[key])
+            if block:
+                parts.append(f"[{label}]\n{block}")
+        if agent6_reasoning.strip():
+            parts.append(f"[assembly]\n{agent6_reasoning.strip()}")
+        reasoning = "\n\n".join(parts) or get_and_clear_last_reasoning().strip()
         if reasoning:
             result_payload["reasoning_content"] = reasoning[:20000]
     else:

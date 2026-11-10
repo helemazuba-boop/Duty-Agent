@@ -42,6 +42,9 @@ export interface RunInfo {
   reasoning?: string;
   /** 运行中是否已收到过 reasoning 增量(用于区分"没有思考"与"还没到") */
   sawReasoning?: boolean;
+  /** 当前模型尝试的 ID。后端重试时会下发 reasoning_reset,据此把上一段
+   *  CoT 与新一段分开,避免把两次回答显示成一次连续推理。 */
+  currentAttemptId?: string;
 }
 
 export interface ChatMsg {
@@ -147,11 +150,39 @@ function pushProgress(phase: string, text: string) {
  * schedule_complete 会带完整的 reasoning_content 覆盖它(某些 provider 的
  * 增量在末段被截断,完整版更可靠)。
  */
+/**
+ * 纯函数形式的 reasoning 状态转移,便于单测覆盖"重试不拼接"这条契约。
+ * `reasoning_reset` 的 chunk 携带 attempt id;流式增量一旦发出就无法撤回,
+ * 所以必须在前端显式清空,否则第一次失败的 CoT 会与第二次回答拼成一段看似
+ * 连续的推理(2026-11 审计发现的 40k 字符异常)。
+ */
+export function applyReasoningProgress(
+  run: RunInfo,
+  phase: string,
+  chunk: string | null | undefined,
+): void {
+  if (phase === 'reasoning_reset') {
+    run.reasoning = '';
+    run.sawReasoning = false;
+    run.currentAttemptId = chunk || undefined;
+    return;
+  }
+  if (phase === 'stream_reasoning' && chunk) {
+    run.sawReasoning = true;
+    run.reasoning = (run.reasoning ?? '') + chunk;
+  }
+}
+
 function appendReasoning(chunk: string) {
   const run = activeRun.value;
-  if (!run || !chunk) return;
-  run.sawReasoning = true;
-  run.reasoning = (run.reasoning ?? '') + chunk;
+  if (!run) return;
+  applyReasoningProgress(run, 'stream_reasoning', chunk);
+}
+
+function resetReasoning(attemptId: string) {
+  const run = activeRun.value;
+  if (!run) return;
+  applyReasoningProgress(run, 'reasoning_reset', attemptId);
 }
 
 /** 排班内容签名:iso → 去重人名(供 diff) */
@@ -199,6 +230,12 @@ export function useScheduleChat() {
         // 思考与正文是两条独立的流:phase 决定去向,绝不合并。
         if (p.phase === 'stream_reasoning') {
           appendReasoning(p.stream_chunk ?? '');
+          return;
+        }
+        // 重试 = 全新回答,丢弃上一段已展示的思考并按 attempt 分组。
+        if (p.phase === 'reasoning_reset') {
+          resetReasoning(p.stream_chunk ?? '');
+          pushProgress('重试', p.message);
           return;
         }
         pushProgress(p.phase || '执行', p.message);

@@ -40,6 +40,47 @@ except ImportError:
 
 router = APIRouter(prefix="/api/v1/duty", tags=["Duty"])
 
+# Progress phases are normally WebSocket/SSE-only. A subset is mirrored into
+# the diagnostics log so an incident can be reconstructed from disk: without
+# this, "did a retry happen?" is unanswerable after the client disconnects.
+_PROGRESS_LOG_PHASES = frozenset({
+    "prompt_ready",
+    "stream_start",
+    "stream_end",
+    "stream_fallback",
+    "llm_retry",
+    "reasoning_reset",
+    "llm_response_meta",
+})
+_ATTEMPT_PHASES = frozenset({"reasoning_reset", "llm_retry", "stream_start"})
+
+
+def _log_progress_phase(runtime, phase, message, stream_chunk, trace_id, request_source) -> None:
+    if phase not in _PROGRESS_LOG_PHASES:
+        return
+    try:
+        payload = str(stream_chunk or "")
+        data: dict = {"phase": phase}
+        if phase in _ATTEMPT_PHASES:
+            data["attempt_id"] = payload
+        elif phase == "llm_response_meta":
+            # model / finish_reason / token usage, needed to reconstruct an
+            # incident (e.g. a truncated reasoning stream).
+            try:
+                data.update(json.loads(payload))
+            except (TypeError, ValueError):
+                data["raw"] = payload[:500]
+        runtime.logger.info(
+            "LLMTransport",
+            f"{phase}: {message}",
+            trace_id=trace_id,
+            request_source=request_source,
+            **data,
+        )
+    except Exception:
+        # Diagnostics must never break a schedule run.
+        pass
+
 
 def _resolve_request_meta(request: Request, runtime, request_data) -> tuple[str, str]:
     trace_value = str(getattr(request_data, "trace_id", "") or "").strip()
@@ -97,6 +138,7 @@ async def schedule(request_data: DutyRequest, request: Request):
         queue = asyncio.Queue()
 
         def put_progress(phase, message, stream_chunk=None):
+            _log_progress_phase(runtime, phase, message, stream_chunk, trace_id, request_source)
             loop.call_soon_threadsafe(queue.put_nowait, {
                 "type": "progress",
                 "data": {"phase": phase, "message": message, "stream_chunk": stream_chunk}
@@ -426,6 +468,7 @@ def _start_schedule_run(
         queue: asyncio.Queue = asyncio.Queue()
 
         def put_progress(phase, msg, stream_chunk=None):
+            _log_progress_phase(runtime, phase, msg, stream_chunk, trace_id, request_source)
             loop.call_soon_threadsafe(queue.put_nowait, {
                 "type": "progress",
                 "data": {"phase": phase, "message": msg, "stream_chunk": stream_chunk},
