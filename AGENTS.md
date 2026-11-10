@@ -74,8 +74,11 @@ pointer = 6
   between area assignments when a date has several areas. Dates strictly
   ascending, IDs are numeric roster IDs from `all_roster_ids`. `N#` in the
   instruction means roster ID N. Optional trailing `# 备注` comment.
-- Only emit dates listed in `scheduled_dates` (with `weekday_hints`). Do not add
-  or omit dates.
+- `date_span` in `prompt_text` is a **loose upper bound**, not a checklist of
+  dates to fill. Decide from `user_instruction` and `user_defined_rule` which
+  days actually need duty — including whether weekends count. `weekday_hints`
+  is a factual weekday table, not a schedule. Never emit a date outside
+  `date_span`; you may emit fewer dates than it covers.
 - `[state]` is **optional**: omit the whole section when nothing changed; empty
   `debt =` / `credit =` lines are also valid. Never use `:` in `[state]`.
   - `pointer = <int>` — a **0-based index into `all_roster_ids`** (0..N-1), NOT a

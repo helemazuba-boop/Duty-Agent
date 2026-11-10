@@ -1,28 +1,37 @@
-"""Resolve a natural-language date scope into an explicit list of ISO dates.
+"""Deterministic DATE FACTS and a loose upper bound for scheduling runs.
 
-The single-pass backend used to audit every run against a fixed ``default_days``
-calendar window starting today. That cannot represent "今天及下周值日": the
-following Saturday falls outside 7 days, while an unrequested Sunday falls
-inside and is reported as a missing date. ``strict`` validation mode even
-refused to commit an otherwise correct schedule.
+Which days actually need duty (weekends included or not) is a semantic decision
+that belongs to the LLM. ``duty_rule`` is free-form natural language written for
+the model (see build_prompt.py / multi_agent/prompts.py) and is deliberately
+NEVER parsed here. Code contributes only:
 
-This module keeps the legacy behaviour for instructions that do NOT ask for a
-week-scale span, and only derives an explicit date list when the instruction
-clearly names a week. The same list is injected into the prompt (so the model
-never has to guess weekdays) and into ``resume_context.expected_dates`` (which
-``apply_single_pass_completion`` already knows how to consume).
+* ``weekday_hints`` — a factual ``MM-DD=Mon`` table, so the model does not have
+  to recompute weekdays from ``start_date`` by hand;
+* ``date_span`` — a LOOSE upper bound that rejects obvious hallucinations
+  (a date next year), NOT a checklist of dates that must all be filled.
+
+``offline`` mode is the one legitimate exception: it has no LLM, so it owns its
+own structured ``offline_skip_weekends`` / ``offline_schedule_days`` and emits
+exact target dates. That path is deliberately untouched here.
 """
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import date, timedelta
-from typing import List
+from typing import Tuple
 
+# Only used to WIDEN the allowed upper bound. They never produce a list of
+# dates the model must schedule, and they never decide whether a weekend has
+# duty — that is up to user_instruction / user_defined_rule and the LLM.
 _NEXT_WEEK_TOKENS = ("下周", "下星期", "下个星期", "next week", "nextweek")
 _THIS_WEEK_TOKENS = ("本周", "这周", "整周", "this week")
-_TODAY_TOKENS = ("今天", "今日", "从今天", "today")
-_SATURDAY_TOKENS = ("周六", "星期六", "周末", "saturday")
-_SUNDAY_TOKENS = ("周日", "周天", "星期天", "星期日", "周末", "sunday")
+_VAGUE_SPAN_TOKENS = (
+    "两周", "两个星期", "半个月", "一个月", "下个月", "连续", "几天", "多天", "到", "~", "至",
+)
+_WEEKDAY_NAMES = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
+
+_RELAXED_SPAN_DAYS = 30
 
 
 def _contains(text: str, tokens) -> bool:
@@ -30,52 +39,70 @@ def _contains(text: str, tokens) -> bool:
     return any(token.lower() in lowered for token in tokens)
 
 
-def _legacy_window(start_date: date, default_days: int) -> List[str]:
-    days = max(1, int(default_days or 7))
-    return [(start_date + timedelta(days=offset)).isoformat() for offset in range(days)]
+@dataclass(frozen=True)
+class DateContext:
+    """Facts and bounds only. Never a schedule.
+
+    ``anchor_recognized`` says whether the instruction named a week-scale span;
+    it is diagnostic and is used solely to widen ``span_end``. It must NOT be
+    used to require coverage of any particular date.
+    """
+
+    anchor_recognized: bool
+    span_start: date
+    span_end: date
+    weekday_hints: Tuple[str, ...]
+    reason: str
+
+    @property
+    def date_span_text(self) -> str:
+        return f"{self.span_start:%m-%d}..{self.span_end:%m-%d}"
 
 
-def resolve_schedule_dates(
+def resolve_date_context(
     instruction: str,
     start_date: date,
     default_days: int = 7,
-    duty_rule: str = "",
-) -> List[str]:
-    """Return the exact ISO dates this run is expected to cover.
+) -> DateContext:
+    """Return a loose allowed date range plus a factual weekday table.
 
-    Only week-scale instructions change the window. In that case weekends not
-    mentioned by ``duty_rule`` are skipped, because a rule such as
-    "周一至周五两个区域, 周六教室2人" describes no Sunday duty at all.
+    No weekend/workday filtering happens here. The span is an upper bound for
+    the hallucination guard, so an unparseable span hint is answered by
+    WIDENING the bound rather than by guessing which days the user meant.
     """
     text = str(instruction or "").strip()
-    rule = str(duty_rule or "")
-    legacy = _legacy_window(start_date, default_days)
-    if not text:
-        return legacy
-
-    has_next_week = _contains(text, _NEXT_WEEK_TOKENS)
-    has_this_week = _contains(text, _THIS_WEEK_TOKENS)
-    if not (has_next_week or has_this_week):
-        return legacy
-
-    has_today = _contains(text, _TODAY_TOKENS)
+    lowered = text.lower()
+    default_end = start_date + timedelta(days=max(1, int(default_days or 7)) - 1)
     week_monday = start_date - timedelta(days=start_date.weekday())
-    if has_next_week:
-        begin = start_date if has_today else week_monday + timedelta(days=7)
-        end = week_monday + timedelta(days=13)  # Sunday of next week
-    else:
-        begin = start_date
-        end = week_monday + timedelta(days=6)  # Sunday of this week
 
-    include_saturday = _contains(rule, _SATURDAY_TOKENS)
-    include_sunday = _contains(rule, _SUNDAY_TOKENS)
-    dates: List[str] = []
-    cursor = begin
-    while cursor <= end:
-        weekday = cursor.weekday()  # Mon=0 .. Sun=6
-        if (weekday == 5 and not include_saturday) or (weekday == 6 and not include_sunday):
-            cursor += timedelta(days=1)
-            continue
-        dates.append(cursor.isoformat())
-        cursor += timedelta(days=1)
-    return dates or legacy
+    anchor_recognized = False
+    span_end = default_end
+    reason = "default window"
+
+    if _contains(lowered, _NEXT_WEEK_TOKENS):
+        anchor_recognized = True
+        span_end = week_monday + timedelta(days=13)  # Sunday of next week
+        reason = "next-week anchor widened the upper bound"
+    elif _contains(lowered, _THIS_WEEK_TOKENS):
+        anchor_recognized = True
+        span_end = week_monday + timedelta(days=6)  # Sunday of this week
+        reason = "this-week anchor widened the upper bound"
+    elif _contains(lowered, _VAGUE_SPAN_TOKENS):
+        # "连续三天" / "11-10 到 11-20" cannot be resolved exactly here. Widen
+        # the bound so strict validation cannot reject a legitimate schedule.
+        span_end = start_date + timedelta(days=_RELAXED_SPAN_DAYS - 1)
+        reason = "unparsed span hint; upper bound relaxed"
+
+    span_end = max(span_end, default_end)
+    day_count = (span_end - start_date).days + 1
+    hints = tuple(
+        f"{day:%m-%d}={_WEEKDAY_NAMES[day.weekday()]}"
+        for day in (start_date + timedelta(days=offset) for offset in range(day_count))
+    )
+    return DateContext(
+        anchor_recognized=anchor_recognized,
+        span_start=start_date,
+        span_end=span_end,
+        weekday_hints=hints,
+        reason=reason,
+    )

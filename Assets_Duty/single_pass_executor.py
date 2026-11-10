@@ -35,7 +35,7 @@ from postprocess import (
     validate_llm_schedule_entries,
 )
 from prompt_gateway import build_single_pass_prompt_messages
-from schedule_window import resolve_schedule_dates
+from schedule_window import resolve_date_context
 from state_ops import (
     Context,
     anonymize_instruction,
@@ -239,54 +239,34 @@ def _is_known_person(person_id, all_ids: List[int]) -> bool:
 
 def _audit_schedule_window(
     normalized_ids: List[dict],
-    expected_dates: Optional[List[str]],
+    span_start: date,
+    span_end: date,
     policy: Optional[ValidationPolicy] = None,
 ) -> List[str]:
-    """Non-blocking window audit.
+    """Hallucination guard only: reject dates outside the allowed span.
 
-    A run must not silently deliver half a window, nor silently schedule
-    outside it (the prompt calls over-generation fatal, but nothing enforced
-    it). Returns warning strings — never raises, never rewrites the schedule.
-
-    ``strict`` is the exception: it refuses the commit instead of warning,
-    because "the requested dates" is part of the contract there. No mode
-    rewrites the date set — dropping an out-of-window day or inventing a
-    missing one is a bigger decision than a headcount tweak.
+    There is deliberately NO coverage check. Which days need duty (weekends
+    included or not) is a semantic decision made by the LLM from
+    ``user_instruction`` / ``user_defined_rule``. The old "every expected date
+    must be scheduled" rule warned "未覆盖日期" for a correct one-day schedule
+    and refused it outright in strict mode, effectively overriding the model.
+    No mode rewrites the date set here — it only reports / rejects out-of-span
+    dates.
     """
     policy = policy or ValidationPolicy(DEFAULT_VALIDATION_MODE)
-    if not expected_dates:
-        return []
-    expected = {str(day).strip() for day in expected_dates if str(day).strip()}
-    if not expected:
-        return []
-    scheduled: set = set()
-    out_of_window: List[str] = []
+    out_of_span: List[str] = []
     for entry in normalized_ids:
         parsed = try_parse_iso_date(entry.get("date", ""))
         if parsed is None:
             continue
-        iso = parsed.isoformat()
-        scheduled.add(iso)
-        if iso not in expected:
-            out_of_window.append(iso)
-
-    warnings: List[str] = []
-    missing = sorted(expected - scheduled)
-    if missing:
-        detail = (
-            "未覆盖日期 "
-            + " ".join(day[5:] for day in missing)
-            + f"（期望 {len(expected)} 天；若指令明确要求更少天数可忽略）"
-        )
-        if policy.is_fatal("window_gap"):
-            raise ValueError(f"{detail}。严格模式拒绝提交不完整的排班窗口。")
-        warnings.append(detail)
-    if out_of_window:
-        detail = "超出排班窗口的日期: " + " ".join(sorted(out_of_window))
-        if policy.is_fatal("out_of_window"):
-            raise ValueError(f"{detail}。严格模式拒绝提交窗口之外的排班。")
-        warnings.append(detail)
-    return warnings
+        if parsed < span_start or parsed > span_end:
+            out_of_span.append(parsed.isoformat())
+    if not out_of_span:
+        return []
+    detail = "超出允许日期范围的日期: " + " ".join(sorted(set(out_of_span)))
+    if policy.is_fatal("out_of_window"):
+        raise ValueError(f"{detail}。严格模式拒绝提交窗口之外的排班。")
+    return [detail]
 
 
 def _resolve_transport_overrides(plan: ExecutionPlan) -> Dict[str, Any] | None:
@@ -377,15 +357,18 @@ def build_single_pass_request(
     area_names = get_configured_area_names(ctx.config)
     area_per_day_counts = get_configured_area_per_day_counts(ctx.config, area_names)
     default_days = int(ctx.config.get("default_days", 7) or 7)
-    scheduled_dates = resolve_schedule_dates(
-        instruction,
-        start_date,
-        default_days,
-        str(ctx.config.get("duty_rule", "") or ""),
-    )
-    window_end = date.fromisoformat(scheduled_dates[-1])
+    # Facts + a loose upper bound only. Which days need duty (weekends or not)
+    # is decided by the LLM from user_instruction / user_defined_rule; duty_rule
+    # is intentionally NOT parsed here.
+    date_context = resolve_date_context(instruction, start_date, default_days)
+    window_end = date_context.span_end
+    # Leave hints stay tied to the DEFAULT window, independent of date_span:
+    # widening the span for "next week" must not pull two weeks of leave into
+    # `absent_ids` and make them look unavailable for the whole round. The
+    # settle side resolves persisted leave per DAY anyway.
+    absent_window_end = start_date + timedelta(days=max(1, default_days) - 1)
     window_absent_ids = absences_for_window(
-        state_data.get("absences", []), start_date, window_end
+        state_data.get("absences", []), start_date, absent_window_end
     )
     day_overrides = dict(state_data.get("day_overrides", {}) or {})
     previous_note = compose_run_notes(state_data, today=run_now.date())
@@ -407,7 +390,7 @@ def build_single_pass_request(
         last_pointer=int(state_data.get("last_pointer", 0) or 0),
         absent_ids=window_absent_ids,
         day_overrides=day_overrides,
-        schedule_window=scheduled_dates,
+        date_context=date_context,
     )
 
     if emit_progress_fn:
@@ -422,10 +405,10 @@ def build_single_pass_request(
     resume_context = {
         "mode": execution_plan.runtime_mode,
         "start_date": start_date.isoformat(),
+        # LOOSE upper bound for the hallucination guard. There is deliberately
+        # no `expected_dates`: the backend must not prescribe which days the
+        # LLM should schedule.
         "window_end": window_end.isoformat(),
-        # Explicit dates make the settle-time window audit agree with the
-        # prompt instead of re-deriving a fixed 7-calendar-day range.
-        "expected_dates": list(scheduled_dates),
         "apply_mode": normalize_apply_mode(input_data.get("apply_mode")),
         "trace_id": trace_id,
         "prompt_metadata": prompt_metadata,
@@ -480,21 +463,19 @@ def apply_single_pass_completion(
     area_names = get_configured_area_names(config)
     area_per_day_counts = get_configured_area_per_day_counts(config, area_names)
 
-    # Expected schedule dates for the window audit: the producer states them
-    # explicitly (offline mode knows its exact target dates); otherwise derive
-    # them from the window_end recorded at prompt-build time, falling back to
-    # the configured default window for older handles that carry neither.
-    expected_dates = resume_context.get("expected_dates")
-    if not expected_dates:
-        window_end = try_parse_iso_date(resume_context.get("window_end"))
-        if window_end is None:
-            window_days = int(config.get("default_days", 7) or 7)
-            window_end = run_start_date + timedelta(days=max(1, window_days) - 1)
-        if window_end >= run_start_date:
-            expected_dates = [
-                (run_start_date + timedelta(days=offset)).isoformat()
-                for offset in range((window_end - run_start_date).days + 1)
-            ]
+    # Loose upper bound for the hallucination guard — NOT a list of dates the
+    # model must fill. Offline mode (no LLM) still ships its exact target dates
+    # in `expected_dates`; take their maximum as the bound so a weekend-skipping
+    # offline run is not flagged as out of span, but never use them as a
+    # coverage checklist.
+    window_end = try_parse_iso_date(resume_context.get("window_end"))
+    if window_end is None:
+        window_days = int(config.get("default_days", 7) or 7)
+        window_end = run_start_date + timedelta(days=max(1, window_days) - 1)
+    for raw_date in (resume_context.get("expected_dates") or []):
+        parsed = try_parse_iso_date(raw_date)
+        if parsed is not None and parsed > window_end:
+            window_end = parsed
 
     debt_counts = clone_count_map(state_data.get("debt_counts", {}), set(all_ids))
     credit_counts = clone_count_map(state_data.get("credit_counts", {}), set(all_ids))
@@ -538,7 +519,7 @@ def apply_single_pass_completion(
         policy=validation_policy,
     )
     adjustment_warnings.extend(
-        _audit_schedule_window(normalized_ids, expected_dates, validation_policy)
+        _audit_schedule_window(normalized_ids, run_start_date, window_end, validation_policy)
     )
 
     restored = restore_schedule(normalized_ids, id_to_name, area_names, {})

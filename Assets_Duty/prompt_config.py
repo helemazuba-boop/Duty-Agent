@@ -3,9 +3,12 @@
 KEYWORD_REGISTRY = {
     "debt": ["欠", "补", "优先", "debt", "罚"],
     "credit": ["奖", "休息", "抵扣", "credit", "奖励"],
-    "inactive": ["假", "离开", "不要", "生病", "屏蔽", "inactive", "请假"],
-    "absent": ["假", "离开", "生病", "缺席", "inactive", "请假"],
-    "multi_day": ["到", "几天", "连续", "整周", "多天", "下周", "本周", "这周"],
+    # "停用/屏蔽" is a roster status; "请假/缺席" is a per-round leave. These
+    # used to share keywords, so one "请假" instruction injected BOTH rules.
+    "inactive": ["停用", "屏蔽", "离职", "退出", "inactive"],
+    "absent": ["请假", "缺席", "生病", "休假", "absent", "leave"],
+    # No "multi_day" module: date scope is no longer decided by keyword
+    # matching. See rule_date_scope and schedule_window.resolve_date_context.
 }
 
 # Single source of truth for the V2 INI wire protocol. Both the full and the
@@ -70,8 +73,8 @@ Output protocol:
     ),
     "param_inactive": "inactive_ids={inactive_ids}",
     "rule_absent": (
-        "Absent IDs (leave/sickness) are unavailable in this schedule window "
-        "and must never be assigned. Declare them with `absent = ...` in [state]."
+        "Absent IDs (leave/sickness) must not be assigned on their affected "
+        "dates. Declare any additional ones with `absent = ...` in [state]."
     ),
     "param_absent": "absent_ids={absent_ids}",
     "rule_day_override": (
@@ -80,8 +83,12 @@ Output protocol:
         "day) instead of its normal per-day count."
     ),
     "param_day_overrides": "day_headcount_overrides={day_overrides}",
-    "rule_multi_day": (
-        "Only generate the exact requested dates. Over-generation is fatal."
+    "rule_date_scope": (
+        "Date scope: `date_span` is the LATEST allowed date range, NOT a checklist. "
+        "Decide from user_instruction and user_defined_rule which days actually need "
+        "duty (including whether weekends count) — that is your decision, not the "
+        "backend's. `weekday_hints` is a factual weekday table, not a schedule. "
+        "Never emit a date outside date_span; you may emit fewer dates than it covers."
     ),
     "rule_pointer": (
         "Pointer semantics: last_pointer and `[state] pointer` are 0-based INDICES "
@@ -94,9 +101,5 @@ Output protocol:
         "ID notation: `N#` in user_instruction means roster ID N. Every ID in "
         "[schedule]/[state] must be a numeric ID present in all_roster_ids. The "
         "1001/1002 numbers in the format examples are placeholders, not real IDs."
-    ),
-    "rule_scheduled_dates": (
-        "Date scope: generate exactly the dates listed in scheduled_dates "
-        "(weekday_hints gives their weekday). Do not add or omit dates."
     ),
 }

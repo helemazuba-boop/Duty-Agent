@@ -26,7 +26,7 @@ from llm_transport import (  # noqa: E402
     get_and_clear_last_reasoning,
     new_reasoning_collector,
 )
-from schedule_window import resolve_schedule_dates  # noqa: E402
+from schedule_window import resolve_date_context  # noqa: E402
 from single_pass_executor import apply_single_pass_completion  # noqa: E402
 from state_ops import Context, load_state, save_json_atomic  # noqa: E402
 
@@ -247,17 +247,29 @@ class PromptContractTests(unittest.TestCase):
         kwargs.update(overrides)
         return build_prompt_messages(**kwargs)[0]["content"]
 
-    def test_explicit_dates_and_weekdays_reach_the_prompt(self):
-        window = resolve_schedule_dates(
-            "从今天19#，20#开始，安排今天及下周值日",
-            __import__("datetime").date(2026, 11, 7),
-            7,
-            "周一至周五分为教室清洁区两个区域，每个区域2人 周六安排教室2人",
+    def test_date_scope_is_facts_not_a_checklist(self):
+        """Code must not prescribe which days (weekends included) to schedule."""
+        from datetime import date
+
+        ctx = resolve_date_context(
+            "从今天19#，20#开始，安排今天及下周值日", date(2026, 11, 7), 7
         )
-        content = self._prompt(schedule_window=window)
-        self.assertIn("scheduled_dates=2026-11-07, 2026-11-09", content)
-        self.assertIn("weekday_hints=11-07=Sat", content)
-        self.assertIn("Only generate the exact requested dates", content)
+        content = self._prompt(date_context=ctx)
+        self.assertNotIn("scheduled_dates=", content)
+        self.assertNotIn("Only generate the exact requested dates", content)
+        self.assertNotIn("Do not add or omit dates", content)
+        self.assertNotIn("Over-generation is fatal", content)
+        self.assertIn("date_span=", content)
+        self.assertIn("weekday_hints=", content)
+        self.assertIn("11-07=Sat", content)
+        self.assertIn("11-08=Sun", content)  # weekend facts still present
+        self.assertIn("NOT a checklist", content)
+        self.assertIn("including whether weekends count", content)
+
+    def test_no_date_context_still_has_no_checklist(self):
+        content = self._prompt()
+        self.assertNotIn("scheduled_dates=", content)
+        self.assertNotIn("Over-generation is fatal", content)
 
     def test_pointer_and_id_notation_are_defined(self):
         content = self._prompt()

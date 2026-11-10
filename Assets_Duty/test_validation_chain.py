@@ -666,7 +666,7 @@ class PerDayAbsenceTests(unittest.TestCase):
 
 
 class WindowCoverageTests(unittest.TestCase):
-    """排班窗口覆盖不再静默：缺日/越界日期进 adjustment_warnings（不阻断）。"""
+    """日期只做越界防护：排哪些天（含周末）由 LLM 决定，缺日不再告警。"""
 
     def _tmp(self):
         tmp = tempfile.mkdtemp()
@@ -680,14 +680,14 @@ class WindowCoverageTests(unittest.TestCase):
             ctx, completion, {"mode": "single_pass", "start_date": start_date, "trace_id": "t"},
         )
 
-    def test_partial_window_warns_but_succeeds(self):
+    def test_partial_window_is_a_valid_llm_decision(self):
+        """Only two days scheduled is fine: coverage is not code's business."""
         tmp = self._tmp()
         ctx = make_ctx(tmp)
         result = self._apply(ctx, "[areas]\nA = 教室\n[schedule]\n10-22 = A:1001 1002\n10-23 = A:1001 1003\n")
         self.assertEqual(result["status"], "success")
-        warnings = result["adjustment_warnings"]
-        self.assertTrue(any("未覆盖日期" in warning for warning in warnings))
-        self.assertTrue(any("10-28" in warning for warning in warnings))
+        self.assertEqual(len(load_state(ctx.paths["state"])["schedule_pool"]), 2)
+        self.assertFalse(any("未覆盖日期" in w for w in result["adjustment_warnings"]))
 
     def test_full_window_has_no_coverage_warning(self):
         tmp = self._tmp()
@@ -704,7 +704,7 @@ class WindowCoverageTests(unittest.TestCase):
         ctx = make_ctx(tmp)
         result = self._apply(ctx, "[areas]\nA = 教室\n[schedule]\n10-22 = A:1001 1002\n11-30 = A:1001 1002\n")
         self.assertEqual(result["status"], "success")
-        self.assertTrue(any("超出排班窗口" in warning for warning in result["adjustment_warnings"]))
+        self.assertTrue(any("超出允许日期范围" in warning for warning in result["adjustment_warnings"]))
 
 
 def _snapshot(active_ids):
@@ -1719,13 +1719,14 @@ class MaliciousCompletionTableTests(unittest.TestCase):
         self.assertEqual(result["status"], "success")
         self.assertIn("2026", pool[-1]["area_assignments"])
 
-    def test_half_window_warns_but_settles(self):
+    def test_half_window_settles_without_coverage_warning(self):
+        """Two days is a legitimate LLM decision; no '未覆盖日期' warning."""
         result, pool = self._settle(
             "[areas]\nA = 教室\n[schedule]\n10-22 = A:1001 1002\n10-23 = A:1001 1003\n"
         )
         self.assertEqual(result["status"], "success")
         self.assertEqual(len(pool), 2)
-        self.assertTrue(any("未覆盖日期" in warning for warning in result["adjustment_warnings"]))
+        self.assertFalse(any("未覆盖日期" in warning for warning in result["adjustment_warnings"]))
 
     def test_prose_after_ini_is_rejected_with_readable_message(self):
         with self.assertRaises(ValueError) as caught:

@@ -4,6 +4,7 @@ from datetime import date, datetime
 from typing import Dict, List
 
 from prompt_config import KEYWORD_REGISTRY, PROMPTS
+from schedule_window import DateContext
 
 
 def is_module_active(module_name: str, instruction: str, data_present: bool) -> bool:
@@ -81,7 +82,7 @@ def build_prompt_messages(
     last_pointer: int = 0,
     absent_ids: List[int] | None = None,
     day_overrides: Dict[str, Dict[str, int]] | None = None,
-    schedule_window: List[str] | None = None,
+    date_context: DateContext | None = None,
 ) -> List[Dict[str, str]]:
     inactive_ids = [person_id for person_id, active in id_to_active.items() if active == 0]
     absent_ids = [int(person_id) for person_id in (absent_ids or [])]
@@ -104,28 +105,20 @@ def build_prompt_messages(
         f"user_instruction={instruction}",
     ]
 
-    # Explicit date list + weekday table: the model used to have to recompute
-    # weekdays from `start_date` by hand, and the backend audited a fixed
-    # 7-calendar-day window that did not match "today and next week".
-    window_dates = [str(item).strip() for item in (schedule_window or []) if str(item).strip()]
-    if window_dates:
-        params_list.append("scheduled_dates=" + ", ".join(window_dates))
-        weekday_names = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
-        hints = []
-        for iso_text in window_dates:
-            parsed = _parse_iso_date(iso_text)
-            if parsed is not None:
-                hints.append(f"{parsed:%m-%d}={weekday_names[parsed.weekday()]}")
-        if hints:
-            params_list.append("weekday_hints=" + ", ".join(hints))
+    # Date FACTS only. No `scheduled_dates` checklist: whether a given day
+    # (weekend included) needs duty is a semantic decision for the LLM, made
+    # from user_instruction + user_defined_rule. `date_span` is a loose upper
+    # bound for the hallucination guard, and `weekday_hints` is a factual
+    # weekday table so the model need not recompute weekdays by hand.
+    if date_context is not None:
+        params_list.append(f"date_span={date_context.date_span_text}")
+        if date_context.weekday_hints:
+            params_list.append("weekday_hints=" + ", ".join(date_context.weekday_hints))
 
     methods_list: List[str] = []
+    methods_list.append(PROMPTS["rule_date_scope"])
     methods_list.append(PROMPTS["rule_pointer"])
     methods_list.append(PROMPTS["rule_id_notation"])
-    if is_module_active("multi_day", instruction, bool(window_dates)):
-        methods_list.append(PROMPTS["rule_multi_day"])
-    if window_dates:
-        methods_list.append(PROMPTS["rule_scheduled_dates"])
 
     # Configured areas/headcounts: previously accepted but never rendered, so
     # single-pass prompts left the area template entirely to the model's guess.

@@ -450,25 +450,30 @@ class EnforcementDispatchTests(unittest.TestCase):
         self.assertEqual(schedule[0]["area_ids"]["楼道"], [1001, 1003])
         self.assertEqual(warnings, [])
 
-    def test_strict_window_gap_refuses(self):
+    def test_missing_days_are_no_longer_a_window_gap(self):
+        """LLM decides which days need duty; a one-day schedule is not a gap."""
         from single_pass_executor import _audit_schedule_window
 
         schedule = [{"date": "2026-09-14", "area_ids": {"教室": [1001]}, "note": ""}]
-        with self.assertRaises(ValueError) as caught:
-            _audit_schedule_window(
-                schedule, ["2026-09-13", "2026-09-14"], vp.ValidationPolicy("strict")
+        for mode in ("relaxed", "strict", "repair"):
+            warnings = _audit_schedule_window(
+                schedule, date(2026, 9, 13), date(2026, 9, 20), vp.ValidationPolicy(mode)
             )
-        self.assertIn("未覆盖日期", str(caught.exception))
+            self.assertEqual(warnings, [])
+        self.assertEqual(len(schedule), 1)  # never rewrites the date set
 
-    def test_relaxed_window_gap_only_warns(self):
+    def test_out_of_span_is_reported_and_strict_refuses(self):
         from single_pass_executor import _audit_schedule_window
 
-        schedule = [{"date": "2026-09-14", "area_ids": {"教室": [1001]}, "note": ""}]
+        schedule = [{"date": "2026-10-01", "area_ids": {"教室": [1001]}, "note": ""}]
         warnings = _audit_schedule_window(
-            schedule, ["2026-09-13", "2026-09-14"], vp.ValidationPolicy("relaxed")
+            schedule, date(2026, 9, 13), date(2026, 9, 20), vp.ValidationPolicy("relaxed")
         )
-        self.assertTrue(any("未覆盖日期" in w for w in warnings))
-        self.assertEqual(len(schedule), 1)  # never rewrites the date set
+        self.assertTrue(any("超出允许日期范围" in w for w in warnings))
+        with self.assertRaises(ValueError):
+            _audit_schedule_window(
+                schedule, date(2026, 9, 13), date(2026, 9, 20), vp.ValidationPolicy("strict")
+            )
 
 
 class EndToEndModeTests(unittest.TestCase):

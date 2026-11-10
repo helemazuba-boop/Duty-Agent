@@ -43,6 +43,12 @@ class TestBuildPromptMessages(unittest.TestCase):
         self.assertNotIn("RESET", content)
         self.assertNotIn("<csv>", content)
         self.assertNotIn("Assigned_IDs", content)
+        # Date scope is facts + a loose bound, never a checklist the model must
+        # fill. Weekend duty is decided by the LLM, not by code.
+        self.assertNotIn("scheduled_dates=", content)
+        self.assertNotIn("Over-generation is fatal", content)
+        self.assertIn("Date scope:", content)
+        self.assertIn("NOT a checklist", content)
 
     def test_incremental_prompt_uses_same_wire_contract_without_reset(self):
         content = self._build("incremental_thinking")
@@ -53,6 +59,7 @@ class TestBuildPromptMessages(unittest.TestCase):
         self.assertNotIn("_note=", content)
         self.assertNotIn("RESET", content)
         self.assertNotIn("<next_run_note>", content)
+        self.assertNotIn("scheduled_dates=", content)
 
 
 if __name__ == "__main__":
