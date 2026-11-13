@@ -11,7 +11,7 @@ import re
 import shutil
 import sys
 import time
-from datetime import date, datetime, timedelta
+from datetime import date, datetime
 from ctypes import wintypes
 from pathlib import Path
 
@@ -47,27 +47,31 @@ DEFAULT_AUTO_RUN_MODE = "Off"
 DEFAULT_AUTO_RUN_PARAMETER = "Monday"
 DEFAULT_AUTO_RUN_TIME = "08:00"
 DEFAULT_ACCESS_TOKEN_MODE = "dynamic"
+# Deprecated: legacy host-config.json files still carry this key, so keep
+# accepting/normalizing it. It no longer influences any date (see below).
 DEFAULT_COMPONENT_REFRESH_TIME = "08:00"
 
 
 def compute_current_duty_date(host_config: dict, now: datetime | None = None) -> str:
-    """Compute the effective "current duty date" from the component refresh time.
+    """Return the effective "current duty date" — the device's local calendar date.
 
-    If the current time is at or past the configured refresh time, the duty
-    date advances by one day.  This mirrors the C# DutyScheduleOrchestrator
-    GetCurrentScheduleDate() logic so that all three layers (Python backend,
-    Vue frontend, C# Bridge) share the same definition.
+    ``host_config`` is intentionally ignored (kept only for API compatibility
+    with existing callers). No configuration may redefine what "today" is.
+
+    The previous implementation advanced this date by one day once the clock
+    passed ``component_refresh_time`` (default 08:00), mirroring the removed
+    root plugin's ``GetCurrentScheduleDate``. That made "今日值日" show
+    *tomorrow's* duty for most of the day on both the homepage and the
+    ClassIsland component, even though the device clock and ``schedule_pool``
+    were correct. Worse, the Vue side computed it only when its workspace ref
+    changed and the C# side cached the snapshot string until state.json moved,
+    so the jump happened at arbitrary moments — presenting as an intermittent
+    "the client got the time wrong" bug. Today is a fact about the clock, not
+    a derived business date.
     """
-    refresh = str(host_config.get("component_refresh_time", DEFAULT_COMPONENT_REFRESH_TIME) or DEFAULT_COMPONENT_REFRESH_TIME)
     if now is None:
         now = datetime.now()
-    try:
-        h, m = map(int, refresh.split(":"))
-        refresh_time = now.replace(hour=h, minute=m, second=0, microsecond=0)
-    except (ValueError, TypeError):
-        refresh_time = now.replace(hour=8, minute=0, second=0, microsecond=0)
-    target = now.date() if now.time() < refresh_time.time() else now.date() + timedelta(days=1)
-    return target.strftime("%Y-%m-%d")
+    return now.date().strftime("%Y-%m-%d")
 
 DEFAULT_NOTIFICATION_DURATION_SECONDS = 8
 DEFAULT_NOTIFICATION_ENTRY = "system"
@@ -880,6 +884,22 @@ def _read_state_json(path: Path) -> dict:
     return data
 
 
+def _normalize_loaded_pool_weekdays(state: dict) -> dict:
+    """Repair legacy `day` labels on read.
+
+    Pools written before the format was unified carry English labels
+    ("Mon".."Sun") or stale caller-supplied values. Recomputing from `date`
+    here means every consumer (snapshot API, bridge, notifications) sees the
+    single shared label, and the next atomic write migrates the file itself.
+    """
+    pool = state.get("schedule_pool")
+    if isinstance(pool, list):
+        for entry in pool:
+            if isinstance(entry, dict):
+                entry["day"] = normalize_pool_weekday(entry.get("day"), entry.get("date"))
+    return state
+
+
 def load_state(path: Path) -> dict:
     prev_path = path.with_suffix(".prev" + path.suffix)
     if not path.exists():
@@ -894,7 +914,7 @@ def load_state(path: Path) -> dict:
             "last_pointer": 0,
         }
     try:
-        return _read_state_json(path)
+        return _normalize_loaded_pool_weekdays(_read_state_json(path))
     except (OSError, ValueError) as main_error:
         # Corrupt main file (bad disk block / manual edit / power-loss edge).
         # .prev holds the previous generation thanks to the atomic backup in
@@ -907,7 +927,7 @@ def load_state(path: Path) -> dict:
                 file=sys.stderr,
                 flush=True,
             )
-            return recovered
+            return _normalize_loaded_pool_weekdays(recovered)
         except (OSError, ValueError):
             # No usable backup: surface the ORIGINAL corruption, not the
             # missing-backup FileNotFoundError.
@@ -1725,7 +1745,8 @@ def patch_host_config(ctx: Context, patch: dict) -> dict:
         "auto_run_parameter",
         "auto_run_time",
         "auto_run_retry_times",
-        # Duty display boundary.
+        # Deprecated wire/config key: accepted so old host-config files and
+        # older clients keep working, but ignored by every date computation.
         "component_refresh_time",
     }
     unsupported_keys = sorted(
@@ -2149,19 +2170,40 @@ def resolve_debt_credit_conflicts(debt_counts: object, credit_counts: object) ->
     return debt, credit
 
 
+# Single source of truth for the persisted `schedule_pool[].day` label.
+# It is a DERIVED field: callers (frontend, MCP, external AI) must never be
+# able to supply it. Previously any non-empty string was stored verbatim, so
+# editing "today's duty" with a stale/hand-computed weekday silently produced
+# an entry whose `day` disagreed with its `date`.
+WEEKDAY_LABELS = ("周一", "周二", "周三", "周四", "周五", "周六", "周日")
+
+
+def weekday_label(value: date) -> str:
+    """Derive the Chinese weekday label from a date (Mon=0 .. Sun=6)."""
+    return WEEKDAY_LABELS[value.weekday()]
+
+
+def normalize_pool_weekday(day_value: object, date_value: object) -> str:
+    """Recompute `day` from `date`, repairing legacy entries too.
+
+    Legacy pools contain English labels ("Mon".."Sun") written by postprocess
+    before the format was unified; recomputing on read/comparison keeps both
+    old and new data consistent without a state migration.
+    """
+    try:
+        parsed = datetime.strptime(str(date_value or "").strip(), "%Y-%m-%d").date()
+    except (ValueError, TypeError):
+        return ""
+    return weekday_label(parsed)
+
+
 def _normalize_schedule_entry_day(value: object, parsed_date: date) -> str:
-    text = str(value or "").strip()
-    if text:
-        return text
-    return {
-        0: "周一",
-        1: "周二",
-        2: "周三",
-        3: "周四",
-        4: "周五",
-        5: "周六",
-        6: "周日",
-    }.get(parsed_date.weekday(), "")
+    """Ignore ``value`` on purpose. ``day`` is derived from ``parsed_date``.
+
+    ``value`` is kept in the signature for backward compatibility with the
+    manual-edit and MCP paths, which still pass a label (often a stale one).
+    """
+    return weekday_label(parsed_date)
 
 
 def _normalize_schedule_entry_area_assignments(raw_assignments: object) -> Dict[str, List[str]]:
@@ -2277,9 +2319,13 @@ def _clone_schedule_entry_payload(entry: object) -> dict:
             "note": "",
         }
 
+    # Derive `day` from `date` on every read/compare so legacy English labels
+    # and a caller-supplied stale label can never make two identical entries
+    # look different (or leak into confirmation_required payloads).
+    date_text = str(entry.get("date", "") or "").strip()
     return {
-        "date": str(entry.get("date", "") or "").strip(),
-        "day": str(entry.get("day", "") or "").strip(),
+        "date": date_text,
+        "day": normalize_pool_weekday(entry.get("day"), date_text),
         "area_assignments": _normalize_schedule_entry_area_assignments(entry.get("area_assignments")),
         "note": str(entry.get("note", "") or "").strip(),
     }

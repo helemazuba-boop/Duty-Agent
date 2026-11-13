@@ -3,9 +3,20 @@ from __future__ import annotations
 from datetime import date, datetime
 from typing import Dict, Iterable, List, Optional, Sequence
 
-from state_ops import clone_count_map, decrement_count_map_entry, increment_count_map_entry, normalize_count_map, resolve_debt_credit_conflicts
+from state_ops import (
+    WEEKDAY_LABELS,
+    clone_count_map,
+    decrement_count_map_entry,
+    increment_count_map_entry,
+    normalize_count_map,
+    resolve_debt_credit_conflicts,
+    weekday_label,
+)
 
-DAY_NAMES = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+# Single shared truth with state_ops. Kept as an alias for existing callers;
+# both the LLM restore path and the manual-edit path now derive `day` from the
+# date instead of maintaining two different label sets (EN vs CN).
+DAY_NAMES = list(WEEKDAY_LABELS)
 
 # Schedule-pool application policy (see merge_schedule_pool). "append" is the
 # safe default: a rerun only overrides the dates it actually covers, so
@@ -284,7 +295,7 @@ def restore_schedule(
         restored.append(
             {
                 "date": date_str,
-                "day": DAY_NAMES[entry_date.weekday()],
+                "day": weekday_label(entry_date),
                 "area_assignments": area_assignments,
                 "note": note,
             }

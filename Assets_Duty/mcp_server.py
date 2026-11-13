@@ -134,7 +134,11 @@ def build_mcp_http_app(parent_app: FastAPI):
 
     @server.tool(
         name="edit_schedule_entry",
-        description="Save one schedule entry edit through the existing backend schedule-entry API.",
+        description=(
+            "Save one schedule entry edit through the existing backend schedule-entry API. "
+            "The weekday label (`day`) is derived by the backend from target_date; "
+            "the `day` argument is accepted only for backward compatibility and is ignored."
+        ),
     )
     async def edit_schedule_entry(
         target_date: str,
@@ -145,11 +149,14 @@ def build_mcp_http_app(parent_app: FastAPI):
         confirm_overwrite: bool = False,
         ledger_mode: Literal["record", "skip"] = "record",
     ) -> dict[str, Any]:
+        # `day` used to be forwarded verbatim, so an AI could persist a stale or
+        # hand-computed weekday that disagreed with target_date. The backend now
+        # derives it; keep the parameter but never send it.
+        _ = day
         client = create_loopback_client()
         payload = {
             "source_date": source_date,
             "target_date": target_date,
-            "day": day,
             "area_assignments": area_assignments,
             "note": note,
             "confirm_overwrite": confirm_overwrite,

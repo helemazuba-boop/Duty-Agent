@@ -102,6 +102,8 @@ class QueryService:
             # 默认 False：自启是用户明确选择的结果，不是安装的副作用（商店合规）。
             "client_auto_start": bool(host_config.get("client_auto_start", False)),
             "client_close_action": str(host_config.get("client_close_action", DEFAULT_CLIENT_CLOSE_ACTION) or DEFAULT_CLIENT_CLOSE_ACTION),
+            # Legacy field, kept on the wire for older clients. It no longer
+            # shifts the duty date; "today" is always the device calendar date.
             "component_refresh_time": str(host_config.get("component_refresh_time", "08:00") or "08:00"),
         }
         self._runtime.logger.info(
@@ -237,7 +239,9 @@ class QueryService:
             "config": load_config(context),
             "roster": roster,
             "state": load_state(context.paths["state"]),
+            # Always the device's local calendar date; see compute_current_duty_date.
             "current_duty_date": compute_current_duty_date(host_config),
+            # Legacy field, kept on the wire for older clients; no date effect.
             "component_refresh_time": str(host_config.get("component_refresh_time", "08:00") or "08:00"),
         }
         self._runtime.logger.info(

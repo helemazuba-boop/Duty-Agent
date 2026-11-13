@@ -144,7 +144,7 @@ class TestRestoreScheduleDirectDate(unittest.TestCase):
         restored = restore_schedule(normalized, id_to_name, areas)
         self.assertEqual(len(restored), 1)
         self.assertEqual(restored[0]["date"], "2023-10-23")
-        self.assertEqual(restored[0]["day"], "Mon")
+        self.assertEqual(restored[0]["day"], "周一")
         self.assertEqual(restored[0]["area_assignments"]["A"], ["Alice"])
         self.assertEqual(restored[0]["note"], "test")
 

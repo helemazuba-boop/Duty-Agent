@@ -481,7 +481,11 @@ def apply_single_pass_completion(
     credit_counts = clone_count_map(state_data.get("credit_counts", {}), set(all_ids))
     debt_counts, credit_counts = resolve_debt_credit_conflicts(debt_counts, credit_counts)
 
-    llm_result, llm_text = parse_schedule_completion(completion_text, start_date_value)
+    # Pass the already-resolved run_start_date rather than the raw handle value.
+    # Parsing a completion across midnight must use the SAME anchor as the
+    # window audit; otherwise a None/expired handle would make the parser call
+    # date.today() a second time and resolve MM-DD against a different year.
+    llm_result, llm_text = parse_schedule_completion(completion_text, run_start_date)
     validate_llm_schedule_entries(llm_result.get("schedule", []))
 
     normalized_ids = normalize_multi_area_schedule_ids(

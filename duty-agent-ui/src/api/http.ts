@@ -51,7 +51,7 @@ export interface NotificationSettings {
   auto_run_retry_times: number;
   client_auto_start: boolean;
   client_close_action: 'ask' | 'tray' | 'exit';
-  /** component_refresh_time (HH:MM): after this time, "today" shifts to tomorrow for duty display. */
+  /** Legacy wire field, ignored by the UI. "Today" is always the device calendar date. */
   component_refresh_time: string;
 }
 
@@ -245,7 +245,9 @@ export const api = {
     };
     const payload = {
       target_date: fmtDate(entry.date),
-      day: entry.day?.toString() ?? null,
+      // `day` is a derived field: the backend recomputes it from target_date.
+      // Sending the old label back is exactly how a stale weekday used to get
+      // persisted when an entry was moved/edited.
       area_assignments: entry.area_assignments,
       note: entry.note ?? null,
       confirm_overwrite: true,

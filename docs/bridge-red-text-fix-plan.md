@@ -59,20 +59,18 @@
 - `ApplyTextStyle` 增加 `isStale` 参数（灰 `#9e9e9e`）；**只有当既断连又无缓存时才红**。
 - 这样"后端在写盘的 200ms 里心跳抖了一下"最多显示灰字，不会闪红。
 
-### 批次 2 —— 日期语义统一（新发现，务必做）
+### 批次 2 —— 日期语义统一（**已按最终结论修正**）
 
-**2.1 `DutyStateCache.Today`**
+> 2026-11-13 修订：本批次原先的做法（三端对齐到"过了 component_refresh_time 就推进到明天"）本身是错的。设备时间正常、排班池也正常，但主页与组件在一天里的大部分时间都显示**后一天**的值日；而且 Vue 的 `computed` 不随时钟更新、C# 把 `current_duty_date` 缓存到 state.json 变动为止，+1 的跳变时机取决于快照何时重拉，表现成"有概率认错时间"。
 
-现状是"过刷新时间 → **推进**到明天"，与后端 / Web UI 的"**回退**到今天"相反。改为直接采用后端权威值：
+**最终定义："今天" = 设备本地日历日期，任何配置都不能改写它。**
 
-- `RefreshCoreAsync` 里保存 `snapshot.CurrentDutyDate`。
-- `Today` 改为 `_currentDutyDate ?? 本地回退计算`（回退也按 `now.TimeOfDay >= refresh ? now.Date : now.Date-1d`，即后端语义）。
-- `GetTodayItem()` 用 `Date == Today` 匹配（后端 `current_duty_date` 已是 `YYYY-MM-DD`）。
-- 桥接 `Snapshot` 模型补 `CurrentDutyDate` 字段（后端 `get_snapshot` 已返回 `current_duty_date`）。
+- Python `state_ops.compute_current_duty_date` 直接返回 `now.date()`；`component_refresh_time` 仅保留为兼容旧 host-config / 旧客户端的字段，不再参与计算。
+- Vue `useDutyToday` 复用 `useToday` 的模块级响应式 `today`（60s tick + visibilitychange/focus），删掉 workspace 依赖与 +1 分支；设置页移除"值日日期切换时间"控件。
+- C# `DutyStateCache.Today => DateTime.Now.Date`，每次现算；不再缓存 `current_duty_date` / `component_refresh_time`，也不再使用带用户可调偏移的 `IExactTimeService`，避免跨午夜时与另外两端分歧。
+- `GetTodayItem()` 仍用 `Date == Today` 匹配；跨天刷新由 `PostMainTimerTicked` 每分钟兜底。
 
-**2.2 组件兜底**
-
-跨天刷新已由 `PostMainTimerTicked` 每分钟兜底；改为与后端一致后，跨 08:00 的行为才正确。
+`current_duty_date` / `component_refresh_time` 仍留在 API 响应里，仅为兼容旧客户端，语义上是纯信息字段。
 
 ### 批次 3 —— 降负载（低风险，可与 1/2 同批）
 
@@ -85,7 +83,7 @@
 **3.2 安全轮询换轻量端点**
 
 - `DutyStateCache` 的 60s 兜底从 `/api/v1/snapshot` 换 `/api/v1/state`（返回 `{state, mtime_ns}`）。
-- 先比 `mtime_ns`，**变了才** 拉全量 snapshot（复用组件设置里的 `ComponentRefreshTime` 需另拉一次，可在 mtime 变化时一并刷新）。
+- 先比 `mtime_ns`，**变了才** 拉全量 snapshot（配置类字段可在 mtime 变化时一并刷新；日期不再依赖快照，由本机时钟现算）。
 - 意义：稳态下 60s 一次轻量请求替代全量（含 roster + config）。
 - `IpcBridgeService` 补 `GetStateAsync()`。
 
@@ -115,7 +113,7 @@
 |---|---|
 | 心跳容错 | 后端日志级别临时调高 / 手动 `POST /shutdown` 再快速拉起；或把 TTL 临时改 5s，观察是否连续 3 次才红 |
 | 离线态 | 停后端（不关客户端）→ 组件应显示旧数据 + "(离线)"灰字；重启后端 → 自动恢复常规色 |
-| 日期语义 | 把 `component_refresh_time` 设成刚过去的时间，对比组件显示的日期与 Web UI "今天"是否一致 |
+| 日期语义 | 在 08:00 前 / 后 / 23:59 后跨午夜分别查看主页与组件：两者都应显示**同一个设备日期**的值日，不出现"后一天"；把系统时间临时调到跨午夜前后，确认 60s 内一起翻转 |
 | 降负载 | 抓 60s 内 C# 侧请求数（DevTools / 后端 access log），确认 meta stat 降频、安全轮询变轻 |
 | 唤醒 | `powercfg` 进入睡眠再唤醒，观察重连耗时与是否闪红 |
 | 回归 | `dotnet build Duty-Agent-ClassIsland-Bridge/DutyAgentBridge.csproj` + `DutyAgent.Client` 均 0 警告 |

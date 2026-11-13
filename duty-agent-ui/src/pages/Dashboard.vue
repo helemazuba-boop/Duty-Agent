@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue';
+import { computed, onMounted, ref } from 'vue';
 import { useRouter } from 'vue-router';
 import { Empty, message } from 'ant-design-vue';
 import { ReloadOutlined, CopyOutlined } from '@ant-design/icons-vue';
@@ -31,7 +31,7 @@ import {
 const router = useRouter();
 const { resolved } = useTheme();
 const today = useToday();
-const { dutyToday, setWorkspace } = useDutyToday();
+const { dutyToday } = useDutyToday();
 
 /** Hero 头像用人员色板的 solid/onSolid 变量 */
 const personVars = (name: string) => personChipStyle(name, resolved.value);
@@ -43,11 +43,7 @@ const error = computed<string | null>(() =>
   snapshotQuery.isError.value ? String(snapshotQuery.error.value) : null,
 );
 
-watch(
-  () => snapshotQuery.data.value,
-  (ws) => setWorkspace(ws ?? null),
-  { immediate: true },
-);
+// "今天"由 useToday/useDutyToday 的模块级时钟单例驱动，不再依赖快照到达时机。
 
 // 后端连接状态统一消费 useBackendConnection 单例（数据源单一化）。
 const { status: connStatus, errorKind: connErrorKind } = useBackendConnection();

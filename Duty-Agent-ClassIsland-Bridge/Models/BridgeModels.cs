@@ -211,6 +211,7 @@ public sealed class DutyBackendConfig
     [JsonPropertyName("duty_rule")]
     public string DutyRule { get; set; } = "";
 
+    /// 旧版字段，仅为兼容旧后端响应保留，已不参与任何日期计算。
     [JsonPropertyName("component_refresh_time")]
     public string ComponentRefreshTime { get; set; } = "08:00";
 }
@@ -335,17 +336,15 @@ public sealed class DutyBackendSnapshot
     public DutyState State { get; set; } = new();
 
     /// <summary>
-    /// 后端计算出的权威"当前值日日期"（YYYY-MM-DD）。
-    /// 语义：当前时间早于 component_refresh_time 时取今天，否则回退到今天
-    /// （后端 state_ops.compute_current_duty_date，与 Web UI 共用同一定义）。
-    /// 桥接不再自行重算，避免与后端出现"今天/明天"分歧。
+    /// 后端下发的"当前值日日期"（YYYY-MM-DD）= 设备本地日历日期。
+    /// 仅作信息字段保留：桥接的 Today 直接用本机时钟现算，不缓存此值，
+    /// 避免 state.json 长时间不变时把昨天的日期一直显示下去。
     /// </summary>
     [JsonPropertyName("current_duty_date")]
     public string CurrentDutyDate { get; set; } = "";
 
     /// <summary>
-    /// component_refresh_time from host-config.json (HH:MM).
-    /// 仅作为 current_duty_date 缺失时的本地回退依据。
+    /// 旧版 host-config 字段（HH:MM），仅为兼容旧后端响应保留，已不参与任何日期计算。
     /// </summary>
     [JsonPropertyName("component_refresh_time")]
     public string ComponentRefreshTime { get; set; } = "08:00";

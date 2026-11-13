@@ -3,6 +3,7 @@ import { computed } from 'vue';
 import { Table } from 'ant-design-vue';
 import { EditOutlined } from '@ant-design/icons-vue';
 import type { ScheduleEntry } from '@/types';
+import { weekdayShort } from '@/utils/date';
 import PersonChip from '@/components/ui/PersonChip.vue';
 
 interface Props {
@@ -52,7 +53,10 @@ const dataSource = computed<Row[]>(() =>
       return {
         ...entry,
         key: entry.date,
-        weekday: new Date(`${entry.date}T00:00:00`).toLocaleDateString('zh-CN', { weekday: 'short' }),
+        // Pure date math, not toLocaleDateString: ICU/locale differs across
+        // devices and could return "Wed" / "星期三" / "周三" for the same ISO
+        // date. weekdayShort is the one shared weekday definition in this app.
+        weekday: weekdayShort(entry.date),
         weekKey: weekKeyOf(entry.date),
         persons: [...new Set(areas.flatMap(([, list]) => list))],
         areas,

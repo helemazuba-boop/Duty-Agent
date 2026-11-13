@@ -1,6 +1,4 @@
-using System.ComponentModel;
 using System.Timers;
-using ClassIsland.Core.Abstractions.Services;
 using DutyAgentBridge.Models;
 
 namespace DutyAgentBridge.Services;
@@ -15,12 +13,13 @@ namespace DutyAgentBridge.Services;
 /// 3. 60s 低频安全轮询（仅在已连接时执行，兜底静默丢推送的极端情况）。
 ///
 /// 消费方（组件渲染、自动化规则评估）全部读内存，不再各自发 HTTP。
-/// "今天"的判定统一走 IExactTimeService（NTP 校准时间），而非 DateTime.Now。
+/// "今天"只认设备本地日历日期（DateTime.Now），与 Python 后端、Web UI 同源；
+/// 不用 ClassIsland 的 IExactTimeService，因为它带用户可调的时间偏移，
+/// 会让组件在跨午夜时和另外两端落在不同的日期。
 /// </summary>
 public sealed class DutyStateCache : IDisposable
 {
     private readonly IIpcBridgeService _bridge;
-    private readonly IExactTimeService? _exactTimeService;
     private readonly object _gate = new();
 
     private DutyState? _state;
@@ -32,10 +31,9 @@ public sealed class DutyStateCache : IDisposable
     /// <summary>缓存以新快照完成刷新后触发（任意线程）。</summary>
     public event EventHandler? SnapshotUpdated;
 
-    public DutyStateCache(IIpcBridgeService bridge, IExactTimeService? exactTimeService = null)
+    public DutyStateCache(IIpcBridgeService bridge)
     {
         _bridge = bridge;
-        _exactTimeService = exactTimeService;
 
         _bridge.NotificationReceived += OnNotificationReceived;
         _bridge.StateChanged += OnStateChanged;
@@ -96,44 +94,16 @@ public sealed class DutyStateCache : IDisposable
     // 上一次见到的 state.json mtime（st_mtime_ns），安全轮询用它跳过无谓的全量拉取。
     private long? _lastStateMtimeNs;
 
-    private string _componentRefreshTime = "08:00";
-
-    // 后端权威的"当前值日日期"（YYYY-MM-DD），随快照一起下发。
-    // 桥接不再自行重算，避免与后端/ Web UI 出现"今天/明天"分歧。
-    private string? _currentDutyDate;
-
     /// <summary>
-    /// 当前生效的"值日日期"。
-    /// 首选后端下发的 current_duty_date；缺失时按与后端一致的规则本地回退
-    /// （早于 component_refresh_time 取今天，否则回退到今天——注意后端语义是
-    /// "回退"，不是"推进"）。
+    /// "今天" = 设备本地日历日期，每次访问现算，不缓存。
+    ///
+    /// 旧实现把后端快照里的 current_duty_date 缓存起来（该值越过
+    /// component_refresh_time 后被 +1 天，且只在 state.json 变动时才重拉），
+    /// 回退路径又自己做一次 +1。结果组件与主页在一天里的大部分时间都显示
+    /// "明天"的值日，跳变时机还取决于快照何时刷新 —— 即"有概率认错时间"。
+    /// 排班池本身一直是对的，错的只是这个被凭空推算出来的显示日期。
     /// </summary>
-    public DateTime Today
-    {
-        get
-        {
-            lock (_gate)
-            {
-                if (!string.IsNullOrWhiteSpace(_currentDutyDate) &&
-                    DateTime.TryParseExact(_currentDutyDate, "yyyy-MM-dd",
-                        System.Globalization.CultureInfo.InvariantCulture,
-                        System.Globalization.DateTimeStyles.None, out var parsed))
-                {
-                    return parsed;
-                }
-            }
-
-            var now = Now;
-            var refreshTime = TimeSpan.TryParse(_componentRefreshTime, out var t)
-                ? t
-                : new TimeSpan(8, 0, 0);
-            // 后端语义：过刷新时间 = 回退（仍是今天），未到刷新时间 = 今天。
-            // 两者都落在"今天"，区别只在后端把当天视为值的边界；这里保持一致。
-            return now.TimeOfDay >= refreshTime ? now.Date : now.Date.AddDays(-1);
-        }
-    }
-
-    private DateTime Now => _exactTimeService?.GetCurrentLocalDateTime() ?? DateTime.Now;
+    public DateTime Today => DateTime.Now.Date;
 
     public SchedulePoolItem? GetTodayItem()
     {
@@ -141,18 +111,6 @@ public sealed class DutyStateCache : IDisposable
         var state = State;
         return state?.SchedulePool.FirstOrDefault(item =>
             string.Equals(item.Date, today, StringComparison.Ordinal));
-    }
-
-    /// <summary>缓存的"当前值日日期"（后端权威值，YYYY-MM-DD）；未知时为 null。</summary>
-    public string? CurrentDutyDate
-    {
-        get
-        {
-            lock (_gate)
-            {
-                return _currentDutyDate;
-            }
-        }
     }
 
     /// <summary>立即刷新一次（连接建立、组件冷启动时调用）。</summary>
@@ -282,11 +240,8 @@ public sealed class DutyStateCache : IDisposable
             lock (_gate)
             {
                 _state = snapshot.State;
-                _componentRefreshTime = snapshot.ComponentRefreshTime ?? snapshot.Config.ComponentRefreshTime ?? "08:00";
-                if (!string.IsNullOrWhiteSpace(snapshot.CurrentDutyDate))
-                {
-                    _currentDutyDate = snapshot.CurrentDutyDate;
-                }
+                // 不再缓存 current_duty_date / component_refresh_time：
+                // "今天"由本机时钟现算，缓存只会让它在跨天后变成陈旧的日期。
                 _lastRefreshUtc = DateTimeOffset.UtcNow;
             }
             Diagnostics.Log("DutyStateCache", $"Snapshot refreshed ({reason}).", "DEBUG",

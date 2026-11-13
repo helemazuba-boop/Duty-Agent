@@ -20,6 +20,8 @@ class DutyScheduleEntrySaveRequest(BaseModel):
 
     source_date: Optional[str] = None
     target_date: str
+    # Deprecated input: `schedule_pool[].day` is a DERIVED field. The backend
+    # recomputes it from target_date and ignores any caller-supplied label.
     day: Optional[str] = None
     area_assignments: Dict[str, List[str]] = {}
     note: Optional[str] = None
@@ -182,8 +184,8 @@ class DutyNotificationSettingsPatch(BaseModel):
     # Standalone-client lifecycle switches (Web settings "系统与自启" tab).
     client_auto_start: Optional[bool] = None
     client_close_action: Optional[Literal["ask", "tray", "exit"]] = None
-    # Duty display boundary (HH:MM), stored in host-config.json.
-    # After this time, the effective "today" shifts to tomorrow.
+    # Deprecated: accepted for wire/backward compatibility with older clients,
+    # but ignored. "Today" is always the device calendar date.
     component_refresh_time: Optional[str] = None
 
 

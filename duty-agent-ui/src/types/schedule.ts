@@ -1,6 +1,6 @@
 export interface ScheduleEntry {
   date: string;
-  day?: number;
+  day?: string;
   note?: string;
   area_assignments: Record<string, string[]>;
 }

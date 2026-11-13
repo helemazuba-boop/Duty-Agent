@@ -47,6 +47,7 @@ from runtime import create_runtime
 from state_ops import (
     Context,
     claim_auto_run_today,
+    normalize_pool_weekday,
     save_json_atomic,
     update_host_runtime_fields,
 )
@@ -288,9 +289,15 @@ class TestGetStateEndpoint(_Wave1RuntimeTestBase):
         self.assertEqual(payload["state"]["last_pointer"], 3)
         self.assertEqual(payload["state"]["next_run_note"], "wave1")
         self.assertEqual(payload["state"]["debt_counts"], {"1": 2})
+        # `day` is a derived field: load_state() recomputes it from `date`
+        # on read, so even a hand-written state.json comes back normalized.
         self.assertEqual(
             payload["state"]["schedule_pool"],
-            [{"date": TODAY, "area_assignments": {"教室": ["Alice"]}}],
+            [{
+                "date": TODAY,
+                "area_assignments": {"教室": ["Alice"]},
+                "day": normalize_pool_weekday(None, TODAY),
+            }],
         )
 
 
