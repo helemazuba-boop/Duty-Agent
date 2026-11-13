@@ -51,8 +51,10 @@ export interface NotificationSettings {
   auto_run_retry_times: number;
   client_auto_start: boolean;
   client_close_action: 'ask' | 'tray' | 'exit';
-  /** Legacy wire field, ignored by the UI. "Today" is always the device calendar date. */
+  /** 值日预览边界（HH:MM）：到达后主页/组件显示次日值日并标注「明日」。 */
   component_refresh_time: string;
+  /** 是否启用次日值日预告。两者都只影响展示，不改写设备日历今天。 */
+  duty_preview_enabled: boolean;
 }
 
 export type NotificationSettingsPatch = Partial<Omit<NotificationSettings, 'version'>> & {

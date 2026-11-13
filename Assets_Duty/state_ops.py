@@ -11,7 +11,7 @@ import re
 import shutil
 import sys
 import time
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from ctypes import wintypes
 from pathlib import Path
 
@@ -47,31 +47,70 @@ DEFAULT_AUTO_RUN_MODE = "Off"
 DEFAULT_AUTO_RUN_PARAMETER = "Monday"
 DEFAULT_AUTO_RUN_TIME = "08:00"
 DEFAULT_ACCESS_TOKEN_MODE = "dynamic"
-# Deprecated: legacy host-config.json files still carry this key, so keep
-# accepting/normalizing it. It no longer influences any date (see below).
+# 值日预览的切换边界（HH:MM）与开关。与 compute_current_duty_date 完全解耦：
+# 日历今天永远由设备时钟决定，这两个值只决定"展示哪一天的值日"。
 DEFAULT_COMPONENT_REFRESH_TIME = "08:00"
+DEFAULT_DUTY_PREVIEW_ENABLED = True
 
 
 def compute_current_duty_date(host_config: dict, now: datetime | None = None) -> str:
-    """Return the effective "current duty date" — the device's local calendar date.
+    """Return the FACT date: the device's local calendar date.
 
-    ``host_config`` is intentionally ignored (kept only for API compatibility
-    with existing callers). No configuration may redefine what "today" is.
+    ``host_config`` is intentionally ignored. No configuration may redefine
+    what "today" is. State writes, auto-run dedupe, the LLM date context,
+    weekday derivation and calendar comparisons all use this value.
 
-    The previous implementation advanced this date by one day once the clock
-    passed ``component_refresh_time`` (default 08:00), mirroring the removed
-    root plugin's ``GetCurrentScheduleDate``. That made "今日值日" show
-    *tomorrow's* duty for most of the day on both the homepage and the
-    ClassIsland component, even though the device clock and ``schedule_pool``
-    were correct. Worse, the Vue side computed it only when its workspace ref
-    changed and the C# side cached the snapshot string until state.json moved,
-    so the jump happened at arbitrary moments — presenting as an intermittent
-    "the client got the time wrong" bug. Today is a fact about the clock, not
-    a derived business date.
+    The legacy implementation advanced this date after ``component_refresh_time``,
+    which made the homepage / ClassIsland component silently show tomorrow's
+    duty while the page still said "今日". Vue only recomputed when its workspace
+    ref changed and C# cached the date string until state.json moved, so the
+    jump happened at arbitrary moments. The "show tomorrow after HH:MM" feature
+    still exists, but as a separate DISPLAY choice: see compute_display_duty_date.
     """
     if now is None:
         now = datetime.now()
     return now.date().strftime("%Y-%m-%d")
+
+
+def _parse_boundary_hhmm(boundary: str) -> Tuple[int, int]:
+    """Parse the display boundary; malformed values fall back to 08:00."""
+    try:
+        hour_text, minute_text = str(boundary).split(":")
+        hour, minute = int(hour_text), int(minute_text)
+        if 0 <= hour <= 23 and 0 <= minute <= 59:
+            return hour, minute
+    except (ValueError, TypeError):
+        pass
+    return 8, 0
+
+
+def resolve_display_duty_date(now: datetime, boundary: str, enabled: bool) -> str:
+    """Pure display rule — Python / TypeScript / C# implement the same function.
+
+        display_date = calendar_date(now) + (enabled and now >= boundary ? 1 : 0)
+
+    Crossing midnight is continuous: at 00:00 the same date that was labelled
+    "明日" becomes "今日" with no content jump. The jump happens at the boundary,
+    so each date is displayed for a full 24h window (prev-day HH:MM .. HH:MM).
+    Never cache this result in a snapshot/field — it must be recomputed from the
+    device clock on every render, otherwise the flip depends on refresh timing.
+    """
+    target = now.date()
+    if enabled and (now.hour, now.minute) >= _parse_boundary_hhmm(boundary):
+        target += timedelta(days=1)
+    return target.strftime("%Y-%m-%d")
+
+
+def compute_display_duty_date(host_config: dict, now: datetime | None = None) -> str:
+    """Which schedule_pool date the UI should SHOW (not what "today" means)."""
+    if now is None:
+        now = datetime.now()
+    enabled = parse_bool(host_config.get("duty_preview_enabled"), DEFAULT_DUTY_PREVIEW_ENABLED)
+    boundary = str(
+        host_config.get("component_refresh_time", DEFAULT_COMPONENT_REFRESH_TIME)
+        or DEFAULT_COMPONENT_REFRESH_TIME
+    )
+    return resolve_display_duty_date(now, boundary, enabled)
 
 DEFAULT_NOTIFICATION_DURATION_SECONDS = 8
 DEFAULT_NOTIFICATION_ENTRY = "system"
@@ -1550,6 +1589,7 @@ def _create_default_persisted_host_config() -> dict:
         "ai_failures_date": "",
         "last_auto_run_date": "",
         "component_refresh_time": DEFAULT_COMPONENT_REFRESH_TIME,
+        "duty_preview_enabled": DEFAULT_DUTY_PREVIEW_ENABLED,
         "notification_entry": DEFAULT_NOTIFICATION_ENTRY,
         "system_notifications_enabled": True,
         "schedule_completion_notification_enabled": True,
@@ -1596,6 +1636,7 @@ def _normalize_persisted_host_config(config: dict | None) -> dict:
         "ai_failures_date": str(source.get("ai_failures_date", "") or "").strip(),
         "last_auto_run_date": str(source.get("last_auto_run_date", "") or "").strip(),
         "component_refresh_time": _normalize_time_string(source.get("component_refresh_time"), DEFAULT_COMPONENT_REFRESH_TIME),
+        "duty_preview_enabled": parse_bool(source.get("duty_preview_enabled"), DEFAULT_DUTY_PREVIEW_ENABLED),
         "notification_entry": _normalize_notification_entry(source.get("notification_entry", DEFAULT_NOTIFICATION_ENTRY)),
         "system_notifications_enabled": parse_bool(source.get("system_notifications_enabled"), True),
         "schedule_completion_notification_enabled": parse_bool(
@@ -1659,6 +1700,7 @@ def _persisted_host_config_body(config: dict | None) -> dict:
         "ai_failures_date": normalized["ai_failures_date"],
         "last_auto_run_date": normalized["last_auto_run_date"],
         "component_refresh_time": normalized["component_refresh_time"],
+        "duty_preview_enabled": normalized["duty_preview_enabled"],
         "notification_entry": normalized["notification_entry"],
         "system_notifications_enabled": normalized["system_notifications_enabled"],
         "schedule_completion_notification_enabled": normalized["schedule_completion_notification_enabled"],
@@ -1745,9 +1787,9 @@ def patch_host_config(ctx: Context, patch: dict) -> dict:
         "auto_run_parameter",
         "auto_run_time",
         "auto_run_retry_times",
-        # Deprecated wire/config key: accepted so old host-config files and
-        # older clients keep working, but ignored by every date computation.
+        # 值日预览：只影响展示哪一天的值日，不影响日历今天。
         "component_refresh_time",
+        "duty_preview_enabled",
     }
     unsupported_keys = sorted(
         str(key)

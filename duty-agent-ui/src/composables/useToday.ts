@@ -1,28 +1,38 @@
 /**
- * useToday — 全局"今天"，唯一事实源是设备本地日历日期。
+ * useToday — 全局"今天"，唯一事实源是设备本地日历日期（不可被配置改写）。
  * 排班工具会开一整天甚至跨午夜，页面 setup 里算一次 today 会过期；
- * 这里用模块级单例，每分钟、窗口重新可见/获得焦点时刷新。
+ * 这里用模块级单例，对齐到整分钟后每分钟刷新，窗口重新可见/获得焦点时补一次。
  *
- * useDutyToday — 值日显示/提醒用的"今天"，与 useToday 完全同源。
+ * "过了某个时间就显示次日值日"是另一个概念，走 useDutyDisplayDate：
+ * 它只选择展示 schedule_pool 里的哪一天，绝不改写 today。两者共用同一个
+ * 响应式 now，所以边界翻转和跨午夜翻转都由时钟驱动，与快照何时到达无关。
  *
- * 旧实现读取 component_refresh_time，时钟越过该时间就把日期 +1 天，
- * 于是"今日值日"在一天里的大部分时间显示的是明天；而且 dutyToday 是个
- * 只依赖 workspace 的 computed，不随时钟更新，+1 只会在快照恰好重新拉取时
- * 发生 —— 表现为"客户端有概率认错时间"。现在直接复用响应式的 today，
- * 跨午夜由同一个 tick 驱动，所有页面同时翻转。
+ * 旧实现把 +1 塞进 dutyToday 且 computed 只依赖 workspace，导致跳变只在
+ * 快照恰好重拉时发生；C# 又把后端日期字符串缓存起来 —— 表现为"有概率认错时间"。
  */
-import { ref } from 'vue';
-import { fmtDate } from '@/utils/date';
+import { computed, ref } from 'vue';
+import { fmtDate, resolveDisplayDutyDate } from '@/utils/date';
 
-const today = ref(fmtDate(new Date()));
+export interface DutyPreviewRule {
+  /** 切换边界 HH:MM */
+  boundary: string;
+  /** 是否启用次日值日预告 */
+  enabled: boolean;
+}
+
+const now = ref(new Date());
 
 const tick = () => {
-  const next = fmtDate(new Date());
-  if (next !== today.value) today.value = next;
+  now.value = new Date();
 };
 
-// 跨午夜/睡眠恢复后最多 60s 内翻转；visibilitychange 与 focus 立即补一次。
-setInterval(tick, 60_000);
+// 先对齐到下一整分钟，保证 HH:MM:00 立刻翻转；之后固定 60s 一次。
+const initialDelay = 60_000 - (Date.now() % 60_000);
+setTimeout(() => {
+  tick();
+  setInterval(tick, 60_000);
+}, initialDelay);
+
 if (typeof document !== 'undefined') {
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'visible') tick();
@@ -32,11 +42,27 @@ if (typeof window !== 'undefined') {
   window.addEventListener('focus', tick);
 }
 
+/** 设备本地日历日期（响应式）。 */
+const today = computed(() => fmtDate(now.value));
+
 export function useToday() {
   return today;
 }
 
-/** "今日值日"的日期。与 useToday 同值；保留独立命名避免调用方混用语义。 */
+/** "今天"的值日语义别名。日历/排班/规则一律用它，不随预览切换。 */
 export function useDutyToday() {
   return { dutyToday: today };
+}
+
+/**
+ * 值日展示用日期。rule 必须是响应式的 getter（通常读 workspace 快照）。
+ * displayDutyDate 同时依赖 now 与 rule，因此边界到达 / 配置变更都能立即生效。
+ */
+export function useDutyDisplayDate(rule: () => DutyPreviewRule) {
+  const displayDutyDate = computed(() => {
+    const { boundary, enabled } = rule();
+    return resolveDisplayDutyDate(now.value, boundary, enabled);
+  });
+  const isPreview = computed(() => displayDutyDate.value !== today.value);
+  return { displayDutyDate, isPreview };
 }

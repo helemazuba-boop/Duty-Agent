@@ -211,7 +211,7 @@ public sealed class DutyBackendConfig
     [JsonPropertyName("duty_rule")]
     public string DutyRule { get; set; } = "";
 
-    /// 旧版字段，仅为兼容旧后端响应保留，已不参与任何日期计算。
+    /// 值日预览边界（HH:MM），只影响展示哪一天的值日，不改写"今天"。
     [JsonPropertyName("component_refresh_time")]
     public string ComponentRefreshTime { get; set; } = "08:00";
 }
@@ -337,17 +337,26 @@ public sealed class DutyBackendSnapshot
 
     /// <summary>
     /// 后端下发的"当前值日日期"（YYYY-MM-DD）= 设备本地日历日期。
-    /// 仅作信息字段保留：桥接的 Today 直接用本机时钟现算，不缓存此值，
-    /// 避免 state.json 长时间不变时把昨天的日期一直显示下去。
+    /// 仅作信息字段：桥接的 Today 直接用本机时钟现算，不缓存此值。
     /// </summary>
     [JsonPropertyName("current_duty_date")]
     public string CurrentDutyDate { get; set; } = "";
 
-    /// <summary>
-    /// 旧版 host-config 字段（HH:MM），仅为兼容旧后端响应保留，已不参与任何日期计算。
-    /// </summary>
+    /// <summary>值日预览边界（HH:MM）。缓存的是规则，不是算好的日期。</summary>
     [JsonPropertyName("component_refresh_time")]
     public string ComponentRefreshTime { get; set; } = "08:00";
+
+    /// <summary>是否启用次日值日预告；旧后端没有该字段时默认 true（保留既有行为）。</summary>
+    [JsonPropertyName("duty_preview_enabled")]
+    public bool DutyPreviewEnabled { get; set; } = true;
+
+    /// <summary>后端在响应时刻算出的展示日期，仅供诊断；组件不得据此渲染。</summary>
+    [JsonPropertyName("display_duty_date")]
+    public string DisplayDutyDate { get; set; } = "";
+
+    /// <summary>后端在响应时刻算出的预告标志，仅供诊断。</summary>
+    [JsonPropertyName("display_is_preview")]
+    public bool DisplayIsPreview { get; set; }
 }
 
 /// <summary>

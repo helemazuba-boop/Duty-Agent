@@ -1,4 +1,5 @@
 using System.ComponentModel;
+using System.Globalization;
 using Avalonia.Controls;
 using Avalonia.Interactivity;
 using Avalonia.Media;
@@ -18,8 +19,12 @@ namespace DutyAgentBridge.Controls;
 /// 对齐 DutyIsland 的组件规范：XAML 根为 ci:ComponentBase（x:TypeArguments），
 /// Loaded/Unloaded 由 XAML 事件接线，订阅服务事件与 Settings.PropertyChanged
 /// 实时刷新。数据源为 DutyStateCache（后端推送 snapshot_changed / schedule_*，
-/// 60s 安全轮询兜底）；跨天/分钟级兜底挂 ILessonsService.PostMainTimerTicked。
+/// 60s 安全轮询兜底）；跨天/分钟级兜底挂 ILessonsService.PostMainTimerTicked，
+/// 边界精确翻转由 DutyStateCache.DisplayDateChanged 驱动。
 /// 换行模式：不换行 / 按区域一行 / 按人数对半拆两行（Settings.WrapMode）。
+///
+/// 过了配置边界就展示次日值日时，必须显式打一行「明日值日 · MM/dd 周X」：
+/// 组件模板只有 RowsHost，静默换成明天正是"认错时间"的观感来源。
 /// </summary>
 [ComponentInfo(
     "bc83d764-4c0d-4a36-a6da-27c96d2c339b",
@@ -32,6 +37,9 @@ public partial class DutyComponent : ComponentBase<DutyComponentSettings>
     private readonly IIpcBridgeService _bridge = IAppHost.GetService<IIpcBridgeService>();
     private readonly ILessonsService? _lessonsService = IAppHost.GetService<ILessonsService>();
 
+    // 与 Python WEEKDAY_LABELS / TS weekdayShort 同一套中文标签（DayOfWeek: 周日=0）。
+    private static readonly string[] WeekdayLabels = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"];
+
     public DutyComponent()
     {
         InitializeComponent();
@@ -40,6 +48,7 @@ public partial class DutyComponent : ComponentBase<DutyComponentSettings>
     private void Component_OnLoaded(object? sender, RoutedEventArgs e)
     {
         _cache.SnapshotUpdated += OnSnapshotUpdated;
+        _cache.DisplayDateChanged += OnDisplayDateChanged;
         if (_lessonsService != null)
         {
             _lessonsService.PostMainTimerTicked += OnMainTimerTicked;
@@ -61,6 +70,7 @@ public partial class DutyComponent : ComponentBase<DutyComponentSettings>
     private void Component_OnUnloaded(object? sender, RoutedEventArgs e)
     {
         _cache.SnapshotUpdated -= OnSnapshotUpdated;
+        _cache.DisplayDateChanged -= OnDisplayDateChanged;
         if (_lessonsService != null)
         {
             _lessonsService.PostMainTimerTicked -= OnMainTimerTicked;
@@ -88,6 +98,12 @@ public partial class DutyComponent : ComponentBase<DutyComponentSettings>
         Dispatcher.UIThread.Post(RefreshContent);
     }
 
+    private void OnDisplayDateChanged(object? sender, EventArgs e)
+    {
+        // 到达 HH:MM 边界 / 跨午夜时精确重绘，不等快照也不等下一分钟轮询。
+        Dispatcher.UIThread.Post(RefreshContent);
+    }
+
     private void OnBridgeStateChanged(object? sender, IpcBridgeState state)
     {
         Dispatcher.UIThread.Post(RefreshContent);
@@ -105,7 +121,8 @@ public partial class DutyComponent : ComponentBase<DutyComponentSettings>
             return;
         }
 
-        var todayItem = _cache.GetTodayItem();
+        // 展示层用 DisplayDutyDate；规则/自动化仍走 GetTodayItem()（日历今天）。
+        var todayItem = _cache.GetDisplayItem();
 
         if (todayItem == null)
         {
@@ -220,6 +237,24 @@ public partial class DutyComponent : ComponentBase<DutyComponentSettings>
     private void RenderRows(IReadOnlyList<string> lines, bool isError = false, bool isStale = false)
     {
         RowsHost.Children.Clear();
+
+        // 预览态必须显式说明"这是明天"，并且带上真实日期/星期。
+        // 组件模板只有 RowsHost，没有标题行，静默换成次日会让人以为时间错了。
+        if (_cache.IsPreview && !isError)
+        {
+            var date = _cache.DisplayDutyDate;
+            var label = $"明日值日 · {date.ToString("MM/dd", CultureInfo.InvariantCulture)} {WeekdayLabels[(int)date.DayOfWeek]}";
+            RowsHost.Children.Add(new TextBlock
+            {
+                Text = label,
+                FontSize = Math.Max(11, (Settings?.FontSize ?? 14) - 2),
+                Opacity = 0.75,
+                TextWrapping = TextWrapping.NoWrap,
+                HorizontalAlignment = Avalonia.Layout.HorizontalAlignment.Center,
+                Margin = new Avalonia.Thickness(0, 0, 0, 2)
+            });
+        }
+
         foreach (var line in lines)
         {
             var textBlock = new TextBlock

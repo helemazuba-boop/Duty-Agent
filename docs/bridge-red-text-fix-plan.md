@@ -59,18 +59,27 @@
 - `ApplyTextStyle` 增加 `isStale` 参数（灰 `#9e9e9e`）；**只有当既断连又无缓存时才红**。
 - 这样"后端在写盘的 200ms 里心跳抖了一下"最多显示灰字，不会闪红。
 
-### 批次 2 —— 日期语义统一（**已按最终结论修正**）
+### 批次 2 —— 日期语义统一（**2026-11-13 最终定案：两个日期，永不混用**）
 
-> 2026-11-13 修订：本批次原先的做法（三端对齐到"过了 component_refresh_time 就推进到明天"）本身是错的。设备时间正常、排班池也正常，但主页与组件在一天里的大部分时间都显示**后一天**的值日；而且 Vue 的 `computed` 不随时钟更新、C# 把 `current_duty_date` 缓存到 state.json 变动为止，+1 的跳变时机取决于快照何时重拉，表现成"有概率认错时间"。
+原实现把"过了 `component_refresh_time` 就展示次日值日"折叠进 `current_duty_date` 这个**事实字段**：设备时间正常、排班池也正常，主页与组件却在一天里大部分时间显示后一天，且标题仍写「今日」。Vue 的 `computed` 只依赖 workspace 不随时钟更新、C# 把后端日期字符串缓存到 state.json 变动为止，于是 +1 的跳变时机取决于快照何时重拉 —— 表现成"有概率认错时间"。
 
-**最终定义："今天" = 设备本地日历日期，任何配置都不能改写它。**
+**定案：功能保留，但降级为纯展示选择。**
 
-- Python `state_ops.compute_current_duty_date` 直接返回 `now.date()`；`component_refresh_time` 仅保留为兼容旧 host-config / 旧客户端的字段，不再参与计算。
-- Vue `useDutyToday` 复用 `useToday` 的模块级响应式 `today`（60s tick + visibilitychange/focus），删掉 workspace 依赖与 +1 分支；设置页移除"值日日期切换时间"控件。
-- C# `DutyStateCache.Today => DateTime.Now.Date`，每次现算；不再缓存 `current_duty_date` / `component_refresh_time`，也不再使用带用户可调偏移的 `IExactTimeService`，避免跨午夜时与另外两端分歧。
-- `GetTodayItem()` 仍用 `Date == Today` 匹配；跨天刷新由 `PostMainTimerTicked` 每分钟兜底。
+| | 日历今天（FACT） | 值日显示日（DISPLAY） |
+|---|---|---|
+| 定义 | 设备本地日历日期，配置不可改写 | `今天 + (启用 && now >= HH:MM ? 1 : 0)` |
+| 缓存 | 可随快照下发 | **绝不缓存**，每次渲染由设备时钟现算 |
+| 消费者 | state 写入、`day` 派生、auto-run、LLM 日期上下文、日历 isToday/isPast、编辑边界、规则与通知 | 主页 Hero、ClassIsland 组件、「接下来 3 天」起点 |
+| 标签 | 「今日值班」 | 切换后必须写「明日值日 · MM/dd 周X」 |
 
-`current_duty_date` / `component_refresh_time` 仍留在 API 响应里，仅为兼容旧客户端，语义上是纯信息字段。
+- 三端各实现同一条纯函数 `resolve_display_duty_date / resolveDisplayDutyDate / ResolveDisplayDutyDate`；只用设备本地时钟，不用带用户可调偏移的 `IExactTimeService`。边界表由三端测试共同钉住。
+- 跨午夜是连续的：同一日期在 00:00 只把「明日」换成「今日」，内容不跳；每个日期被连续展示 24h（前一日 HH:MM .. 当日 HH:MM）。
+- Python `compute_current_duty_date` 保持 `now.date()` 一行不动；新增 `compute_display_duty_date`。快照里 `display_duty_date` / `display_is_preview` **仅供诊断**，客户端不得拿它渲染。
+- Vue `useToday` 用模块级响应式 `now`（对齐整分钟 + visibilitychange/focus），`useDutyDisplayDate()` 同时依赖 `now` 与 workspace 规则；`useDutyToday()` 仍等于日历今天，日历/排班/统计/编辑边界继续用它。
+- C# `Today => DateTime.Now.Date` 不动；`DisplayDutyDate` / `IsPreview` 现算；`GetTodayItem()` 保留给规则/自动化，组件改用 `GetDisplayItem()`。快照只缓存**规则**（`component_refresh_time` / `duty_preview_enabled`），不缓存算好的日期。`ArmDisplayBoundaryTimer()` 精确对准边界与午夜触发重绘，`PostMainTimerTicked` 仍作分钟级兜底。
+- 设置页「值日显示」面板恢复边界与开关；`duty_preview_enabled` 默认 true，旧 host-config 里的 08:00 原样生效，无需迁移。
+
+`current_duty_date` 仍是纯信息字段（= 日历今天），老客户端不受影响。
 
 ### 批次 3 —— 降负载（低风险，可与 1/2 同批）
 
@@ -113,7 +122,7 @@
 |---|---|
 | 心跳容错 | 后端日志级别临时调高 / 手动 `POST /shutdown` 再快速拉起；或把 TTL 临时改 5s，观察是否连续 3 次才红 |
 | 离线态 | 停后端（不关客户端）→ 组件应显示旧数据 + "(离线)"灰字；重启后端 → 自动恢复常规色 |
-| 日期语义 | 在 08:00 前 / 后 / 23:59 后跨午夜分别查看主页与组件：两者都应显示**同一个设备日期**的值日，不出现"后一天"；把系统时间临时调到跨午夜前后，确认 60s 内一起翻转 |
+| 日期语义 | 07:59 / 08:00 / 23:59 / 00:00 四个时点分别查看主页与组件：边界前显示「今日值班」，边界后显示「明日值日 · MM/dd 周X」且两者取到同一条 `schedule_pool` 记录；跨午夜时日期不跳、只把标签从「明日」换成「今日」；关闭 `duty_preview_enabled` 后始终显示今天；规则/通知/日历仍按日历今天 |
 | 降负载 | 抓 60s 内 C# 侧请求数（DevTools / 后端 access log），确认 meta stat 降频、安全轮询变轻 |
 | 唤醒 | `powercfg` 进入睡眠再唤醒，观察重连耗时与是否闪红 |
 | 回归 | `dotnet build Duty-Agent-ClassIsland-Bridge/DutyAgentBridge.csproj` + `DutyAgent.Client` 均 0 警告 |
@@ -121,7 +130,8 @@
 ## 五、风险
 
 - **心跳容错窗口**：连续 3 次失败 = 最多约 5s×3 + 退避 ≈ 20s 才降级；期间若后端真挂了，组件仍显示旧数据（灰字）约 20s。这是**有意**的取舍——比闪红好。需要保证 TTL 与阈值匹配（后端 TTL 20s，桥接 5s 一拍 3 次 ≈ 15s，仍 < 20s，安全）。
-- **日期语义改动影响规则**："今日值日匹配"规则也读 `GetTodayItem()`，改 `Today` 后规则在 08:00 前后的行为会变（变得与后端一致，属修正）。需要顺带回归该规则。
+- **展示切换不得外溢**：规则、自动化指纹、通知、日历与自动运行一律读 `GetTodayItem()`（日历今天），只有组件/Hero 读 `GetDisplayItem()`。若把预览日期用到规则上，08:00 前后会出现"今天的值日"判成明天，属回归，需重点验证。
+- **远程浏览器时钟**：Web UI 若从另一台设备打开，本地时钟与主机不一致，`displayDutyDate` 会算错。当前按 loopback 同机假设实现；将来放开远程访问需改由后端下发展示日期并到点轮询。
 - **`FileSystemWatcher` 冷启动**：watcher 建立前 meta 可能已存在，`Start()` 里要**先立即 `CheckMetaFile()` 一次**再挂 watcher（现状已有立即检查）。
 - `--no-verify` 提交仅用于无 hook 仓库；本仓库无 hook，正常提交即可。
 

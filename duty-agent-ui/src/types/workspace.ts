@@ -19,6 +19,10 @@ export interface RosterPerson {
 export interface Workspace {
   roster: RosterPerson[];
   state: WorkspaceState;
-  /** 旧版后端字段，仅为兼容保留；前端不再据此推算"今天"。 */
+  /** 值日预览规则：到达该边界后展示次日值日。只影响展示，不改"今天"。 */
   component_refresh_time?: string;
+  duty_preview_enabled?: boolean;
+  /** 后端诊断字段；客户端必须从本地时钟现算，不得拿它渲染（缓存会过期）。 */
+  display_duty_date?: string;
+  display_is_preview?: boolean;
 }

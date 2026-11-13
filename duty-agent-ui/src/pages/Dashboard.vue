@@ -14,7 +14,7 @@ import PersonChip from '@/components/ui/PersonChip.vue';
 import ArrangementEditor from '@/components/schedule/ArrangementEditor.vue';
 import FirstRunWizard from '@/components/onboarding/FirstRunWizard.vue';
 import { useTheme } from '@/theme/useTheme';
-import { useToday, useDutyToday } from '@/composables/useToday';
+import { useToday, useDutyToday, useDutyDisplayDate } from '@/composables/useToday';
 import { useBackendConnection } from '@/composables/useBackendConnection';
 import { personChipStyle } from '@/utils/personColor';
 import {
@@ -44,6 +44,11 @@ const error = computed<string | null>(() =>
 );
 
 // "今天"由 useToday/useDutyToday 的模块级时钟单例驱动，不再依赖快照到达时机。
+// 值日展示日期另算：过了配置边界就切到次日，但绝不会改写上面的"今天"。
+const { displayDutyDate, isPreview } = useDutyDisplayDate(() => ({
+  boundary: workspace.value?.component_refresh_time ?? '08:00',
+  enabled: workspace.value?.duty_preview_enabled ?? true,
+}));
 
 // 后端连接状态统一消费 useBackendConnection 单例（数据源单一化）。
 const { status: connStatus, errorKind: connErrorKind } = useBackendConnection();
@@ -102,11 +107,13 @@ const contactByName = computed(() => {
   return map;
 });
 
-// ---- Hero:今日值班 ----
-const todayEntry = computed(() => poolByDate.value.get(dutyToday.value));
+// ---- Hero:今日值班 / 明日值日预告 ----
+// Hero 与"接下来 3 天"是展示层，跟随 displayDutyDate；
+// 日历、周条带、统计、编辑边界继续用 dutyToday（设备日历今天）。
+const todayEntry = computed(() => poolByDate.value.get(displayDutyDate.value));
 const todayPersons = computed(() => personsOf(todayEntry.value).slice(0, 3));
 const todayOverflow = computed(() => Math.max(0, personsOf(todayEntry.value).length - 3));
-const todayIsWorkday = computed(() => isWorkday(new Date(`${dutyToday.value}T00:00:00`)));
+const todayIsWorkday = computed(() => isWorkday(new Date(`${displayDutyDate.value}T00:00:00`)));
 
 /** Hero 的内容签名:数据变了才 flash,而不是"刷新了"就闪 */
 const todaySig = computed(() => todayPersons.value.join('|'));
@@ -114,7 +121,8 @@ const todaySig = computed(() => todayPersons.value.join('|'));
 // ---- 接下来 3 天:所有工作日缺口都标出来,周末显示"休" ----
 const next3Days = computed(() => {
   const days: { iso: string; persons: string[]; missed: boolean; rest: boolean }[] = [];
-  const cursor = new Date(`${dutyToday.value}T00:00:00`);
+  // 以 Hero 正在显示的日期为起点，避免预览态下与 Hero 重复同一天。
+  const cursor = new Date(`${displayDutyDate.value}T00:00:00`);
   for (let i = 1; i <= 3; i += 1) {
     cursor.setDate(cursor.getDate() + 1);
     const iso = fmtDate(cursor);
@@ -263,9 +271,12 @@ const copyContact = async (name: string) => {
     <!-- ======== Hero 行:今日值班 + 接下来 3 天 ======== -->
     <div class="hero-grid">
       <Panel class="hero-grid__main" padded v-flash="todaySig">
-        <template #title>今日值班</template>
+        <template #title>{{ isPreview ? '明日值日' : '今日值班' }}</template>
         <template #actions>
-          <span class="hero-date">{{ cnDateLabel(dutyToday) }}</span>
+          <span class="hero-date">
+            {{ isPreview ? '明日预告 · ' : '' }}{{ cnDateLabel(displayDutyDate) }}
+            <template v-if="isPreview">（今天 {{ monthDayLabel(today) }}）</template>
+          </span>
         </template>
 
         <div v-if="todayPersons.length" class="hero-duty">
@@ -294,14 +305,14 @@ const copyContact = async (name: string) => {
 
         <!-- 周末无人值班不是事故,不做警告样式 -->
         <div v-else-if="!todayIsWorkday" class="hero-duty__empty hero-duty__empty--rest">
-          <span class="hero-duty__empty-text">{{ dutyToday === today ? '今天' : '明日' }}休息</span>
-          <a-button @click="openEditor(dutyToday)">安排值班</a-button>
+          <span class="hero-duty__empty-text">{{ isPreview ? '明日' : '今天' }}休息</span>
+          <a-button @click="openEditor(displayDutyDate)">安排值班</a-button>
         </div>
 
         <!-- 工作日暂无安排:提示性文案 + 常规按钮,不用红色告警(未排是正常待办,不是故障) -->
         <div v-else class="hero-duty__empty">
-          <span class="hero-duty__empty-text">{{ dutyToday === today ? '今天' : '明天' }}无人值班</span>
-          <a-button @click="openEditor(dutyToday)">安排{{ dutyToday === today ? '今天' : '明天' }}</a-button>
+          <span class="hero-duty__empty-text">{{ isPreview ? '明天' : '今天' }}无人值班</span>
+          <a-button @click="openEditor(displayDutyDate)">安排{{ isPreview ? '明天' : '今天' }}</a-button>
         </div>
       </Panel>
 

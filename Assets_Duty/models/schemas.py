@@ -184,9 +184,9 @@ class DutyNotificationSettingsPatch(BaseModel):
     # Standalone-client lifecycle switches (Web settings "系统与自启" tab).
     client_auto_start: Optional[bool] = None
     client_close_action: Optional[Literal["ask", "tray", "exit"]] = None
-    # Deprecated: accepted for wire/backward compatibility with older clients,
-    # but ignored. "Today" is always the device calendar date.
+    # 值日预览（只影响展示，不改写"今天"）：到达该边界后显示次日值日并标注「明日」。
     component_refresh_time: Optional[str] = None
+    duty_preview_enabled: Optional[bool] = None
 
 
 class DutyModelProbeRequest(BaseModel):

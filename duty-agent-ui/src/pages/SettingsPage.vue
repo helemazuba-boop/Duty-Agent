@@ -10,6 +10,7 @@ import PageHeader from '@/components/ui/PageHeader.vue';
 import Panel from '@/components/ui/Panel.vue';
 import StatusDot from '@/components/ui/StatusDot.vue';
 import { api, type NotificationSettings } from '@/api/http';
+import { invalidateSnapshot } from '@/queries/useSnapshot';
 import { useBackendConnection } from '@/composables/useBackendConnection';
 import { useModelList } from '@/composables/useModelList';
 import { hasHost, onHostMessage, sendToHost } from '@/utils/hostBridge';
@@ -289,6 +290,9 @@ const notificationSettingsVersion = ref<number | null>(null);
 const reminderEnabled = ref(false);
 const reminderTimes = ref('07:40, 12:10');
 const notificationDuration = ref(8);
+// 值日预览：只决定主页/ClassIsland 展示哪一天的值日，不改"今天"。
+const componentRefreshTime = ref('08:00');
+const dutyPreviewEnabled = ref(true);
 const notificationEntry = ref<'system' | 'classisland' | 'both' | 'off'>('system');
 const systemNotificationsEnabled = ref(true);
 const scheduleCompletionNotificationEnabled = ref(true);
@@ -394,6 +398,8 @@ const applyNotificationSettings = (settings: NotificationSettings) => {
   reminderEnabled.value = settings.duty_reminder_enabled;
   reminderTimes.value = (settings.duty_reminder_times || []).join(', ');
   notificationDuration.value = settings.notification_duration_seconds || 8;
+  componentRefreshTime.value = settings.component_refresh_time || '08:00';
+  dutyPreviewEnabled.value = settings.duty_preview_enabled !== false;
   clientAutoStart.value = settings.client_auto_start === true;
   clientCloseAction.value = (['ask', 'tray', 'exit'] as const).includes(settings.client_close_action as any)
     ? settings.client_close_action
@@ -432,6 +438,11 @@ const saveNotificationSettings = async () => {
     message.error(`提醒时间格式不正确(应为 HH:MM):${invalid.join('、')}`);
     return;
   }
+  const boundary = componentRefreshTime.value.trim();
+  if (dutyPreviewEnabled.value && !TIME_PATTERN.test(boundary)) {
+    message.error('值日显示切换时间格式不正确(应为 HH:MM)');
+    return;
+  }
   notificationSettingsLoading.value = true;
   try {
     const settings = await api.updateNotificationSettings({
@@ -443,8 +454,12 @@ const saveNotificationSettings = async () => {
       duty_reminder_enabled: reminderEnabled.value,
       duty_reminder_times: times,
       notification_duration_seconds: notificationDuration.value,
+      component_refresh_time: boundary,
+      duty_preview_enabled: dutyPreviewEnabled.value,
     });
     applyNotificationSettings(settings);
+    // 值日预览规则存在 snapshot 里，立刻失效重拉，别等 20s 轮询。
+    void invalidateSnapshot();
     message.success('通知设置已保存');
   } catch (e: any) {
     if (e?.response?.status === 409) {
@@ -952,6 +967,46 @@ onMounted(async () => {
               </div>
             </div>
 
+          </div>
+        </Panel>
+
+        <Panel
+          class="da-gap-bottom"
+          title="值日显示"
+          subtitle="到达切换时间后，主页与 ClassIsland 组件显示次日值日，并明确标注「明日」"
+        >
+          <template #actions>
+            <Button
+              type="primary"
+              size="small"
+              :loading="notificationSettingsLoading"
+              @click="saveNotificationSettings"
+            >
+              <template #icon><SaveOutlined /></template>
+              保存
+            </Button>
+          </template>
+
+          <div class="form-grid">
+            <div class="config-item">
+              <div class="config-label">次日值日预告</div>
+              <div class="config-desc">关闭后始终显示今天；不影响日历今天、排班与自动运行</div>
+              <div class="config-switch">
+                <Switch v-model:checked="dutyPreviewEnabled" />
+              </div>
+            </div>
+
+            <div class="config-item">
+              <div class="config-label">切换时间</div>
+              <div class="config-desc">例如 08:00，到达后切到次日值日</div>
+              <Input
+                v-model:value="componentRefreshTime"
+                placeholder="08:00"
+                class="config-control config-control--narrow"
+                :maxlength="5"
+                :disabled="!dutyPreviewEnabled"
+              />
+            </div>
           </div>
         </Panel>
       </a-tab-pane>

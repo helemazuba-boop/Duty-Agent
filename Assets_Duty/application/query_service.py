@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import time
+from datetime import datetime
 
-from state_ops import DEFAULT_CLIENT_CLOSE_ACTION, Context, compute_current_duty_date, list_reset_archives, load_config, load_host_config, load_roster_entries, load_state
+from state_ops import DEFAULT_CLIENT_CLOSE_ACTION, Context, compute_current_duty_date, compute_display_duty_date, list_reset_archives, load_config, load_host_config, load_roster_entries, load_state
 
 try:
     from readiness import evaluate_readiness, probe_model
@@ -102,9 +103,10 @@ class QueryService:
             # 默认 False：自启是用户明确选择的结果，不是安装的副作用（商店合规）。
             "client_auto_start": bool(host_config.get("client_auto_start", False)),
             "client_close_action": str(host_config.get("client_close_action", DEFAULT_CLIENT_CLOSE_ACTION) or DEFAULT_CLIENT_CLOSE_ACTION),
-            # Legacy field, kept on the wire for older clients. It no longer
-            # shifts the duty date; "today" is always the device calendar date.
+            # 值日预览设置：到达边界后主页/组件显示次日值日（并明确标注「明日」）。
+            # 只决定展示哪一天，不改写 current_duty_date（永远是设备日历今天）。
             "component_refresh_time": str(host_config.get("component_refresh_time", "08:00") or "08:00"),
+            "duty_preview_enabled": bool(host_config.get("duty_preview_enabled", True)),
         }
         self._runtime.logger.info(
             "QueryService",
@@ -235,14 +237,24 @@ class QueryService:
             roster = []
 
         host_config = load_host_config(context)
+        # One clock read for both dates, so the fact date and the preview flag
+        # can never disagree around a boundary/midnight.
+        now = datetime.now()
+        calendar_today = compute_current_duty_date(host_config, now)
+        display_date = compute_display_duty_date(host_config, now)
         snapshot = {
             "config": load_config(context),
             "roster": roster,
             "state": load_state(context.paths["state"]),
-            # Always the device's local calendar date; see compute_current_duty_date.
-            "current_duty_date": compute_current_duty_date(host_config),
-            # Legacy field, kept on the wire for older clients; no date effect.
+            # FACT: always the device's local calendar date.
+            "current_duty_date": calendar_today,
+            # RULE: clients recompute the display date from their own clock on
+            # every render. These two values are diagnostics/legacy clients only
+            # — caching them is exactly what made the old flip timing random.
             "component_refresh_time": str(host_config.get("component_refresh_time", "08:00") or "08:00"),
+            "duty_preview_enabled": bool(host_config.get("duty_preview_enabled", True)),
+            "display_duty_date": display_date,
+            "display_is_preview": display_date != calendar_today,
         }
         self._runtime.logger.info(
             "QueryService",
